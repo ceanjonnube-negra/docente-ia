@@ -27,6 +27,12 @@ const detectarTitulo = (texto: string): string => {
   return 'Documento generado'
 }
 
+const detectarCampoFormativo = (texto: string): string | null => {
+  const match = texto.match(/Campo Formativo:\s*([^\n]+)/i)
+  if (match) return match[1].trim()
+  return null
+}
+
 export default function ChatPage() {
   const [mensajes, setMensajes] = useState<Mensaje[]>([])
   const [input, setInput] = useState('')
@@ -62,7 +68,7 @@ export default function ChatPage() {
       tipo: detectarTipo(texto),
       titulo: detectarTitulo(texto),
       contenido: texto,
-      campo_formativo: perfil?.campo_formativo || null,
+      campo_formativo: detectarCampoFormativo(texto) || perfil?.campo_formativo || null,
       grado: perfil?.grado || null,
       grupo: perfil?.grupo || null,
     })
