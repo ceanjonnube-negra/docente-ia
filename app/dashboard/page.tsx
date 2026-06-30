@@ -1,88 +1,105 @@
 'use client'
+
 import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+ process.env.NEXT_PUBLIC_SUPABASE_URL!,
+ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-const modulos = [
-  { icon: '📄', titulo: 'Planeaciones', desc: 'NEM por campo formativo', color: 'bg-purple-100', href: '#' },
-  { icon: '🎨', titulo: 'Material', desc: 'Actividades e imprimibles', color: 'bg-blue-100', href: '#' },
-  { icon: '📊', titulo: 'Evaluaciones', desc: 'Rúbricas y exámenes', color: 'bg-green-100', href: '#' },
-  { icon: '👨‍🎓', titulo: 'Alumnos', desc: 'Lista y seguimiento', color: 'bg-yellow-100', href: '#' },
-  { icon: '🏫', titulo: 'Mi Escuela', desc: 'Documentos institucionales', color: 'bg-orange-100', href: '#' },
-  { icon: '📢', titulo: 'Comunicados', desc: 'Avisos para padres', color: 'bg-pink-100', href: '#' },
-  { icon: '📋', titulo: 'Documentos', desc: 'Oficios, actas, constancias', color: 'bg-indigo-100', href: '#' },
-  { icon: '📅', titulo: 'Asistencia', desc: 'Control diario', color: 'bg-teal-100', href: '#' },
-]
-
 export default function Dashboard() {
-  const [perfil, setPerfil] = useState<any>(null)
-  const [hora, setHora] = useState('')
+ const [perfil, setPerfil] = useState<any>(null)
+ const [hora, setHora] = useState('')
 
-  useEffect(() => {
-    const h = new Date().getHours()
-    if (h < 12) setHora('Buenos días')
-    else if (h < 19) setHora('Buenas tardes')
-    else setHora('Buenas noches')
+ useEffect(() => {
+   const h = new Date().getHours()
+   if (h < 12) setHora('Buenos días')
+   else if (h < 19) setHora('Buenas tardes')
+   else setHora('Buenas noches')
 
-    const cargar = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data } = await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()
-        setPerfil(data)
-      }
-    }
-    cargar()
-  }, [])
+   const cargar = async () => {
+     const { data: { user } } = await supabase.auth.getUser()
+     if (!user) return
+     const { data } = await supabase
+       .from('perfiles_docentes')
+       .select('*')
+       .eq('user_id', user.id)
+       .single()
+     if (data) setPerfil(data)
+   }
+   cargar()
+ }, [])
 
-  const nombre = perfil?.nombre?.split(' ')[0] || 'Maestro'
+ const nombre = perfil?.nombre?.split(' ')[0]?.toUpperCase() || 'MAESTRO'
+ const escuela = perfil?.escuela || ''
+ const grado = perfil?.grado || ''
+ const grupo = perfil?.grupo || ''
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-purple-50">
-      <header className="bg-white border-b border-gray-100 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-sm">🤖</div>
-          <span className="font-black text-gray-900">Docente <span className="text-purple-600">IA</span></span>
-        </div>
-        <button onClick={async () => { await supabase.auth.signOut(); window.location.href = '/' }} className="text-sm text-gray-400 hover:text-gray-600">
-          Salir
-        </button>
-      </header>
+ return (
+   <div className="min-h-screen bg-gray-50">
+     {/* Header */}
+     <div style={{background: 'linear-gradient(135deg, #6C3FE8, #3B82F6)'}} className="px-5 pt-14 pb-6">
+       <p className="text-white/70 text-sm mb-1">{hora}</p>
+       <h1 className="text-white text-3xl font-black tracking-tight">{nombre} 👋</h1>
+       <p className="text-white/70 text-sm mt-1">{escuela} · {grado}°{grupo}</p>
 
-      <div className="max-w-md mx-auto px-4 py-6">
-        <div className="bg-gradient-to-r from-purple-600 to-blue-500 rounded-3xl p-6 mb-6 text-white shadow-lg">
-          <p className="text-purple-200 text-sm">{hora}</p>
-          <h1 className="text-2xl font-black mt-1">{nombre} 👋</h1>
-          {perfil && (
-            <p className="text-purple-200 text-sm mt-1">{perfil.escuela} · {perfil.grado}{perfil.grupo}</p>
-          )}
-          <div className="mt-4 flex items-center gap-2 bg-white/20 rounded-2xl p-3">
-            <span className="text-2xl">🤖</span>
-            <div>
-              <p className="font-semibold text-sm">¿Qué necesitas resolver hoy?</p>
-              <p className="text-purple-200 text-xs">Toca para abrir el asistente IA</p>
-            </div>
-          </div>
-        </div>
+       <a href="/dashboard/chat" className="flex items-center gap-3 mt-5 bg-white/15 rounded-2xl px-4 py-3">
+         <span className="text-2xl">🤖</span>
+         <div>
+           <p className="text-white font-semibold text-sm">¿Qué necesitas hoy, maestro?</p>
+           <p className="text-white/60 text-xs">Toca para abrir el asistente IA</p>
+         </div>
+       </a>
+     </div>
 
-        <a href="/dashboard/chat" className="block w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-2xl py-4 text-center font-bold shadow-lg hover:opacity-90 transition mb-6 text-base">
-          ✨ Abrir Chat IA
-        </a>
+     <div className="px-4 py-6 space-y-5">
+       {/* Accesos rápidos */}
+       <div>
+         <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Accesos rápidos</p>
+         <div className="grid grid-cols-3 gap-3">
+           <a href="/dashboard/chat?tipo=planeacion" className="bg-purple-50 rounded-2xl p-4 text-center">
+             <div className="text-3xl mb-2">📋</div>
+             <p className="text-xs font-bold text-gray-800">Planeación</p>
+             <p className="text-xs text-gray-400 mt-0.5">Semanal / diaria</p>
+           </a>
+           <a href="/dashboard/asistencia" className="bg-green-50 rounded-2xl p-4 text-center">
+             <div className="text-3xl mb-2">✅</div>
+             <p className="text-xs font-bold text-gray-800">Asistencia</p>
+             <p className="text-xs text-gray-400 mt-0.5">Lista del día</p>
+           </a>
+           <a href="/dashboard/alumnos" className="bg-yellow-50 rounded-2xl p-4 text-center">
+             <div className="text-3xl mb-2">👨‍🎓</div>
+             <p className="text-xs font-bold text-gray-800">Alumnos</p>
+             <p className="text-xs text-gray-400 mt-0.5">Seguimiento</p>
+           </a>
+         </div>
+       </div>
 
-        <h2 className="font-black text-gray-900 text-lg mb-3">Módulos</h2>
-        <div className="grid grid-cols-2 gap-3">
-          {modulos.map((m) => (
-            <a key={m.titulo} href={m.href} className={`${m.color} rounded-2xl p-4 block hover:shadow-md transition`}>
-              <div className="text-3xl mb-2">{m.icon}</div>
-              <h3 className="font-bold text-gray-900 text-sm">{m.titulo}</h3>
-              <p className="text-gray-500 text-xs mt-1">{m.desc}</p>
-            </a>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
+       {/* Chat IA */}
+       <a href="/dashboard/chat" style={{background: 'linear-gradient(135deg, #6C3FE8, #3B82F6)'}} className="block rounded-2xl p-5 text-center shadow-lg">
+         <p className="text-white font-black text-lg">✨ Abrir Chat IA</p>
+         <p className="text-white/70 text-xs mt-1">Planeaciones · Rúbricas · Citatorios · Más</p>
+       </a>
+
+       {/* Historial */}
+       <a href="/dashboard/historial" className="flex items-center gap-4 bg-white border-2 border-purple-100 rounded-2xl px-4 py-4">
+         <span className="text-3xl">📁</span>
+         <div className="flex-1">
+           <p className="text-sm font-bold text-purple-700">Historial de Documentos</p>
+           <p className="text-xs text-gray-400 mt-0.5">Todo organizado por fecha y alumno</p>
+         </div>
+         <span className="text-purple-400 text-xl">›</span>
+       </a>
+
+       {/* Salir */}
+       <button
+         onClick={async () => { await supabase.auth.signOut(); window.location.href = '/' }}
+         className="w-full text-center text-sm text-gray-400 py-2"
+       >
+         Salir
+       </button>
+     </div>
+   </div>
+ )
 }
