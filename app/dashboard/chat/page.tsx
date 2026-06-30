@@ -42,7 +42,7 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [grabando, setGrabando] = useState(false)
   const recognitionRef = useRef<any>(null)
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 
   const toggleMicrofono = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
