@@ -40,7 +40,35 @@ export default function ChatPage() {
   const [estado, setEstado] = useState('')
   const [perfil, setPerfil] = useState<any>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const [grabando, setGrabando] = useState(false)
+  const recognitionRef = useRef<any>(null)
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+
+  const toggleMicrofono = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      alert("Tu navegador no soporta comando de voz")
+      return
+    }
+    if (grabando) {
+      recognitionRef.current?.stop()
+      setGrabando(false)
+      return
+    }
+    const recognition = new SpeechRecognition()
+    recognition.lang = "es-MX"
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.onresult = (event: any) => {
+      const texto = event.results[0][0].transcript
+      setInput(prev => prev ? prev + " " + texto : texto)
+    }
+    recognition.onend = () => setGrabando(false)
+    recognition.onerror = () => setGrabando(false)
+    recognitionRef.current = recognition
+    recognition.start()
+    setGrabando(true)
+  }
 
   useEffect(() => {
     const cargarPerfil = async () => {
@@ -173,7 +201,10 @@ Estado: ${perfil.estado}` : ''
             placeholder="¿Qué necesitas hoy, maestro?"
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
-          <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40">
+          <button onClick={toggleMicrofono} className={`w-10 h-10 rounded-full flex items-center justify-center transition ${grabando ? "bg-red-500 text-white animate-pulse" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+          🎤
+        </button>
+        <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40">
             ↑
           </button>
         </div>
