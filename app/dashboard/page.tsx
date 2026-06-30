@@ -68,7 +68,7 @@ export default function Dashboard() {
              <p className="text-xs font-bold text-gray-800">Asistencia</p>
              <p className="text-xs text-gray-400 mt-0.5">Lista del día</p>
            </a>
-           <a href="/dashboard/alumnos" className="bg-yellow-50 rounded-2xl p-4 text-center">
+           <a href="/dashboard/alumnos" className="bg-yellow-50 rounded-2xl p-4 text-center"></a><a href="/dashboard/calendario" className="bg-green-50 rounded-2xl p-4 text-center"><div className="text-3xl mb-2">📅</div><p className="text-xs font-bold text-gray-800">Calendario</p><p className="text-xs text-gray-400 mt-0.5">SEP 2026-2027</p>
              <div className="text-3xl mb-2">👨‍🎓</div>
              <p className="text-xs font-bold text-gray-800">Alumnos</p>
              <p className="text-xs text-gray-400 mt-0.5">Seguimiento</p>
@@ -82,7 +82,12 @@ export default function Dashboard() {
          <p className="text-white/70 text-xs mt-1">Planeaciones · Rúbricas · Citatorios · Más</p>
        </a>
 
-       {/* Historial */}
+       {/* Calendario */}
+        <a href="/dashboard/calendario" className="flex items-center gap-4 bg-white border-2 border-green-100 rounded-2xl px-4 py-4">
+          <span className="text-2xl">📅</span>
+          <div><p className="text-sm font-bold text-green-700">Calendario Escolar</p><p className="text-xs text-gray-400">SEP 2026-2027 y mis actividades</p></div>
+        </a>
+        {/* Historial */}
        <a href="/dashboard/historial" className="flex items-center gap-4 bg-white border-2 border-purple-100 rounded-2xl px-4 py-4">
          <span className="text-3xl">📁</span>
          <div className="flex-1">
