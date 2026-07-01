@@ -46,7 +46,7 @@ export default function Onboarding() {
 
       <div className="flex items-center gap-4 mb-6">
         <div className="w-20 h-20 bg-gradient-to-br from-purple-100 to-purple-200 rounded-3xl flex items-center justify-center text-4xl flex-shrink-0">
-          🤖
+          <img src="/logo-docente-ia.svg" alt="Docente IA" className="w-full h-full object-contain" />
         </div>
         <div>
           <h1 className="text-2xl font-black text-gray-900">Crea tu cuenta</h1>
