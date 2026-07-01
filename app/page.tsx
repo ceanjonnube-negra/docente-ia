@@ -8,7 +8,7 @@ export default function Bienvenida() {
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-purple-50 flex flex-col items-center justify-between p-6 max-w-md mx-auto">
       <div className="w-full flex flex-col items-center pt-8">
         <div className="w-20 h-20 bg-gradient-to-br from-purple-600 to-blue-500 rounded-3xl flex items-center justify-center text-4xl mb-4 shadow-lg">
-          <img src="/logo-docente-ia.svg" alt="Docente IA" className="w-full h-full object-contain" />
+          <img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" />
         </div>
         <h1 className="text-4xl font-black text-gray-900 mb-1">
           Docente <span className="text-purple-600">IA</span>
