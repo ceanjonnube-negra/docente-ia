@@ -120,15 +120,32 @@ Municipio: ${perfil.municipio}
 Estado: ${perfil.estado}` : ''
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mensaje: input, contexto })
-      })
-      const data = await res.json()
-      const respuesta = data.respuesta
-      setMensajes([...nuevos, { rol: 'ia', texto: respuesta }])
-      await guardarEnHistorial(respuesta)
+  const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mensaje: input, contexto: perfil })
+    })
+
+    const reader = res.body?.getReader()
+    const decoder = new TextDecoder()
+    let respuesta = ''
+
+    setMensajes(prev => [...prev, { rol: 'ia', texto: '' }])
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        respuesta += decoder.decode(value, { stream: true })
+        setMensajes(prev => {
+          const copia = [...prev]
+          copia[copia.length - 1] = { rol: 'ia', texto: respuesta }
+          return copia
+        })
+      }
+    }
+
+    await guardarEnHistorial(respuesta)
       setEstado('')
     } catch {
       setMensajes([...nuevos, { rol: 'ia', texto: 'Error al conectar con la IA.' }])

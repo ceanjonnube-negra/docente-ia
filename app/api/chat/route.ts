@@ -6,7 +6,7 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 export async function POST(req: NextRequest) {
   const { mensaje, contexto } = await req.json()
 
-  const message = await client.messages.create({
+  const stream = client.messages.stream({
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos.
@@ -113,9 +113,20 @@ Se le solicita puntualidad y presencia. En caso de no poder asistir, favor de co
 Atentamente,
 [nombre del maestro]
 Docente de [grado] grado grupo [grupo]`,
-    messages: [{ role: 'user', content: mensaje }]
+    messages: [{ role: 'user', content: mensaje }],
   })
 
-  const respuesta = (message.content[0] as {type: string, text: string}).text
-  return NextResponse.json({ respuesta })
+  const encoder = new TextEncoder()
+  const readable = new ReadableStream({
+    async start(controller) {
+      for await (const text of (stream as any).textStream) {
+        controller.enqueue(encoder.encode(text))
+      }
+      controller.close()
+    },
+  })
+
+  return new Response(readable, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  })
 }
