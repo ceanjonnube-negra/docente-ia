@@ -41,6 +41,16 @@ export default function ChatPage() {
   const [perfil, setPerfil] = useState<any>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [grabando, setGrabando] = useState(false)
+  const [menuAbierto, setMenuAbierto] = useState(false)
+  const [historial, setHistorial] = useState<any[]>([])
+  const [cargandoHistorial, setCargandoHistorial] = useState(false)
+
+  const cargarHistorial = async () => {
+    setCargandoHistorial(true)
+    const { data } = await supabase.from('documentos_generados').select('*').order('created_at', { ascending: false }).limit(30)
+    if (data) setHistorial(data)
+    setCargandoHistorial(false)
+  }
   const recognitionRef = useRef<any>(null)
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 
@@ -166,6 +176,7 @@ Estado: ${perfil.estado}` : ''
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
+        <button onClick={() => { setMenuAbierto(true); cargarHistorial() }} className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">☰</button>
         <a href="/dashboard" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">←</a>
         <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
         <div>
@@ -173,6 +184,36 @@ Estado: ${perfil.estado}` : ''
           <p className="text-xs text-green-500">● En linea</p>
         </div>
       </header>
+
+      {menuAbierto && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="w-72 bg-white h-full shadow-xl flex flex-col">
+            <div className="p-4 border-b border-gray-100">
+              <button onClick={() => { setMensajes([]); setMenuAbierto(false) }}
+                className="w-full bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium">
+                + Nuevo chat
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-2">
+              <p className="text-xs text-gray-400 font-medium px-2 py-2">Historial</p>
+              {cargandoHistorial ? (
+                <p className="text-xs text-gray-400 text-center mt-4">Cargando...</p>
+              ) : historial.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center mt-4">Sin documentos aun</p>
+              ) : (
+                historial.map((doc) => (
+                  <button key={doc.id}
+                    onClick={() => { setMensajes([{ rol: 'ia', texto: doc.contenido }]); setMenuAbierto(false) }}
+                    className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-gray-50 text-sm text-gray-700 truncate block">
+                    {doc.titulo}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+          <div onClick={() => setMenuAbierto(false)} className="flex-1 bg-black/40"></div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {mensajes.map((m, i) => (
