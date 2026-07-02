@@ -57,16 +57,16 @@ export const generarWord = async (texto: string, perfil?: any) => {
       if (!tituloPrincipalUsado) {
         elementos.push(new Paragraph({
           alignment: AlignmentType.CENTER,
-          children: [new TextRun({ text: linea, bold: true, size: 32, color: '6B21A8' })],
+          children: [new TextRun({ text: linea, bold: true, size: 32, color: '166534' })],
           spacing: { before: 120, after: 200 },
-          border: { bottom: { color: '9333EA', space: 4, style: BorderStyle.SINGLE, size: 12 } }
+          border: { bottom: { color: '16A34A', space: 4, style: BorderStyle.SINGLE, size: 12 } }
         }))
         tituloPrincipalUsado = true
       } else {
         elementos.push(new Paragraph({
-          children: [new TextRun({ text: linea, bold: true, size: 24, color: '6B21A8' })],
+          children: [new TextRun({ text: linea, bold: true, size: 24, color: '166534' })],
           spacing: { before: 280, after: 140 },
-          shading: { type: ShadingType.CLEAR, color: 'auto', fill: 'F3E8FF' }
+          shading: { type: ShadingType.CLEAR, color: 'auto', fill: 'DCFCE7' }
         }))
       }
     } else if (esBullet(linea)) {

@@ -123,7 +123,7 @@ Estado: ${perfil.estado}` : ''
   const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mensaje: input, contexto: perfil })
+      body: JSON.stringify({ mensaje: input, contexto: contexto })
     })
 
     const reader = res.body?.getReader()
