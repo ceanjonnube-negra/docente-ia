@@ -1,4 +1,4 @@
-import { Document, Packer, Paragraph, TextRun, Header, AlignmentType } from 'docx'
+import { Document, Packer, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle } from 'docx'
 import { saveAs } from 'file-saver'
 
 const preprocesarTexto = (texto: string): string[] => {
@@ -28,6 +28,10 @@ const esTitulo = (linea: string): boolean => {
   return linea === linea.toUpperCase() && linea.length > 3
 }
 
+const esBullet = (linea: string): boolean => {
+  return /^-\s+/.test(linea.trim())
+}
+
 export const generarWord = async (texto: string, perfil?: any) => {
   const fecha = new Date().toLocaleDateString('es-MX')
 
@@ -46,17 +50,36 @@ export const generarWord = async (texto: string, perfil?: any) => {
 
   const lineas = preprocesarTexto(texto)
   const elementos: Paragraph[] = []
+  let tituloPrincipalUsado = false
 
   for (const linea of lineas) {
     if (esTitulo(linea)) {
+      if (!tituloPrincipalUsado) {
+        elementos.push(new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: linea, bold: true, size: 32, color: '6B21A8' })],
+          spacing: { before: 120, after: 200 },
+          border: { bottom: { color: '9333EA', space: 4, style: BorderStyle.SINGLE, size: 12 } }
+        }))
+        tituloPrincipalUsado = true
+      } else {
+        elementos.push(new Paragraph({
+          children: [new TextRun({ text: linea, bold: true, size: 24, color: '6B21A8' })],
+          spacing: { before: 280, after: 140 },
+          shading: { type: ShadingType.CLEAR, color: 'auto', fill: 'F3E8FF' }
+        }))
+      }
+    } else if (esBullet(linea)) {
       elementos.push(new Paragraph({
-        children: [new TextRun({ text: linea, bold: true, size: 24, color: '2E4057' })],
-        spacing: { before: 240, after: 120 }
+        children: [new TextRun({ text: linea.trim().replace(/^-\s+/, ''), size: 22, color: '374151' })],
+        bullet: { level: 0 },
+        spacing: { after: 60 }
       }))
     } else {
       elementos.push(new Paragraph({
-        children: [new TextRun({ text: linea, size: 22 })],
-        spacing: { after: 80 }
+        alignment: AlignmentType.JUSTIFIED,
+        children: [new TextRun({ text: linea, size: 22, color: '374151' })],
+        spacing: { after: 100 }
       }))
     }
   }
