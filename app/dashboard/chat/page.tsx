@@ -185,9 +185,14 @@ Estado: ${perfil.estado}` : ''
         </div>
       </header>
 
-      {menuAbierto && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="w-72 bg-white h-full shadow-xl flex flex-col">
+      <div
+        onMouseEnter={() => setMenuAbierto(true)}
+        onTouchStart={() => setMenuAbierto(true)}
+        className="fixed left-0 top-0 h-full w-4 z-40"
+      ></div>
+
+      <div className={`fixed inset-0 z-50 flex transition-opacity duration-300 ${menuAbierto ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+          <div className={`w-72 bg-white h-full shadow-xl flex flex-col transition-transform duration-300 ease-out ${menuAbierto ? 'translate-x-0' : '-translate-x-full'}`}>
             <div className="p-4 border-b border-gray-100">
               <button onClick={() => { setMensajes([]); setMenuAbierto(false) }}
                 className="w-full bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium">
@@ -213,7 +218,6 @@ Estado: ${perfil.estado}` : ''
           </div>
           <div onClick={() => setMenuAbierto(false)} className="flex-1 bg-black/40"></div>
         </div>
-      )}
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {mensajes.map((m, i) => (
