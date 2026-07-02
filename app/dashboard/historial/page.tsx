@@ -19,6 +19,13 @@ export default function HistorialPage() {
   const [filtro, setFiltro] = useState('todos')
   const [seleccionado, setSeleccionado] = useState<any>(null)
 
+  const eliminarDocumento = async (id: string) => {
+    if (!confirm('¿Eliminar este documento? Esta acción no se puede deshacer.')) return
+    await supabase.from('documentos_generados').delete().eq('id', id)
+    setDocumentos((prev: any[]) => prev.filter((d: any) => d.id !== id))
+    setSeleccionado(null)
+  }
+
   useEffect(() => {
     const cargar = async () => {
       const { data } = await supabase
@@ -100,6 +107,10 @@ export default function HistorialPage() {
               className="w-full bg-purple-600 text-white py-3 rounded-2xl text-sm font-medium">
               Descargar Word
             </button>
+          <button onClick={() => eliminarDocumento(seleccionado.id)}
+            className="w-full bg-red-50 text-red-600 py-3 rounded-2xl text-sm font-medium mt-2">
+            Eliminar documento
+          </button>
           </div>
         </div>
       )}
