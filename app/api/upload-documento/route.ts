@@ -24,7 +24,35 @@ function chunkText(text: string, chunkSize = 1000, overlap = 150) {
   return chunks;
 }
 
+async function extractTextFromImage(buffer: Buffer, mimeType: string): Promise<string> {
+  const base64 = buffer.toString('base64');
+  const openaiVision = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const response = await openaiVision.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Extrae todo el texto visible en esta imagen de forma literal y completa. No agregues comentarios ni interpretaciones, solo el texto tal como aparece.',
+          },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${mimeType};base64,${base64}` },
+          },
+        ],
+      },
+    ],
+    max_tokens: 4000,
+  })
+  return response.choices[0]?.message?.content || ''
+}
+
 async function extractText(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
+  if (mimeType.startsWith('image/')) {
+    return await extractTextFromImage(buffer, mimeType);
+  }
   if (mimeType === 'application/pdf' || filename.endsWith('.pdf')) {
     const pdfParse = (await import('pdf-parse') as any).default;
     const data = await pdfParse(buffer);

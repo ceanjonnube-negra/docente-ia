@@ -67,9 +67,17 @@ export default function DocumentosPage() {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.doc,.docx,.txt"
+          accept=".pdf,.doc,.docx,.txt,image/*"
           onChange={(e) => setArchivo(e.target.files?.[0] || null)}
-          className="w-full text-sm text-gray-600 mb-3 file:mr-3 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-green-600 file:text-white file:text-sm"
+          className="w-full text-sm text-gray-600 mb-2 file:mr-3 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-green-600 file:text-white file:text-sm"
+        />
+
+        <input
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={(e) => setArchivo(e.target.files?.[0] || null)}
+          className="w-full text-sm text-gray-600 mb-3 file:mr-3 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-blue-600 file:text-white file:text-sm"
         />
 
         <label className="text-xs text-gray-500 font-semibold">Categoria</label>
