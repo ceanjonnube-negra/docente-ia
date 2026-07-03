@@ -26,7 +26,7 @@ function chunkText(text: string, chunkSize = 1000, overlap = 150) {
 
 async function extractText(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
   if (mimeType === 'application/pdf' || filename.endsWith('.pdf')) {
-    const pdfParse = (await import('pdf-parse')).default;
+    const pdfParse = (await import('pdf-parse') as any).default;
     const data = await pdfParse(buffer);
     return data.text;
   }
@@ -34,7 +34,7 @@ async function extractText(buffer: Buffer, mimeType: string, filename: string): 
     mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
     filename.endsWith('.docx')
   ) {
-    const mammoth = (await import('mammoth')).default;
+    const mammoth = (await import('mammoth') as any).default;
     const result = await mammoth.extractRawText({ buffer });
     return result.value;
   }
