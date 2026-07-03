@@ -1,10 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { createClient } from '@supabase/supabase-js'
+import OpenAI from 'openai'
+
+const supabaseRAG = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+async function buscarContextoRAG(pregunta: string): Promise<string> {
+  try {
+    const embeddingResponse = await openaiRAG.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: pregunta,
+    })
+    const queryEmbedding = embeddingResponse.data[0].embedding
+
+    const { data, error } = await supabaseRAG.rpc('buscar_chunks_similares', {
+      query_embedding: queryEmbedding,
+      cantidad: 4,
+    })
+
+    if (error || !data || data.length === 0) return ''
+
+    const fragmentos = data
+      .map((d: any) => `Documento: ${d.nombre_archivo}\n${d.chunk_texto}`)
+      .join('\n\n---\n\n')
+
+    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder.`
+  } catch (e) {
+    console.error('Error buscando contexto RAG:', e)
+    return ''
+  }
+}
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(req: NextRequest) {
   const { mensaje, contexto } = await req.json()
+  const contextoRAG = await buscarContextoRAG(mensaje)
 
   const stream = await client.messages.create({
       stream: true,
@@ -12,7 +47,7 @@ export async function POST(req: NextRequest) {
     max_tokens: 3000,
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos.
 ${contexto ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
-${contexto}` : ''}
+${contexto}` : ''}${contextoRAG}
 
 REGLAS ABSOLUTAS:
 1. NUNCA preguntes grado, grupo, escuela, nombre, estado, municipio. Ya los tienes.
