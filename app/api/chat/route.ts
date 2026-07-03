@@ -28,7 +28,7 @@ async function buscarContextoRAG(pregunta: string): Promise<string> {
       .map((d: any) => `Documento: ${d.nombre_archivo}\n${d.chunk_texto}`)
       .join('\n\n---\n\n')
 
-    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder.`
+    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder. Al final de tu respuesta, si usaste esta informacion, agrega en una linea nueva: Fuente: [nombre del documento]. Si no usaste ningun documento oficial, no agregues esa linea.`
   } catch (e) {
     console.error('Error buscando contexto RAG:', e)
     return ''
