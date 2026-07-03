@@ -130,6 +130,28 @@ _______________________________________________
 ✍️ FIRMA DEL DOCENTE
 [nombre]
 
+EXÁMENES Y ACTIVIDADES — cuando el maestro pida un examen o actividad, usa este formato:
+📝 EXAMEN / ACTIVIDAD
+Grado: [grado] | Grupo: [grupo]
+Campo Formativo: [campo]
+Tema: [tema]
+Fecha: [dejar en blanco para llenar]
+
+🎯 PROPÓSITO
+[descripción breve]
+
+📋 INSTRUCCIONES
+[instrucciones generales para el alumno]
+
+✏️ REACTIVOS
+1. [pregunta o instrucción de actividad]
+2. [pregunta o instrucción de actividad]
+3. [pregunta o instrucción de actividad]
+(número de reactivos según lo solicitado por el docente, mínimo 5)
+
+📊 PUNTAJE
+[distribución de puntos por reactivo o sección]
+
 CITATORIOS — cuando el maestro pida un citatorio, usa este formato:
 📨 CITATORIO
 Escuela: [escuela] | Municipio: [municipio]
