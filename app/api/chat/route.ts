@@ -25,10 +25,10 @@ async function buscarContextoRAG(pregunta: string): Promise<string> {
     if (error || !data || data.length === 0) return ''
 
     const fragmentos = data
-      .map((d: any) => `Documento: ${d.nombre_archivo}\n${d.chunk_texto}`)
+      .map((d: any) => `Documento (categoria: ${d.categoria || "General"}): ${d.nombre_archivo}\n${d.chunk_texto}`)
       .join('\n\n---\n\n')
 
-    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder. Al final de tu respuesta, si usaste esta informacion, agrega en una linea nueva: Fuente: [nombre del documento]. Si no usaste ningun documento oficial, no agregues esa linea.`
+    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder. IMPORTANTE: si la categoria del documento es SEP puedes decir que la informacion proviene de la SEP; para cualquier otra categoria (Reglamentos, Normatividad, Acuerdos, Protocolos, Planeacion, Consejos Tecnicos, Formatos Oficiales, Personalizadas, etc) NUNCA atribuyas la informacion a la SEP, di que proviene del reglamento o documento interno de la escuela. Al final de tu respuesta, si usaste esta informacion, agrega en una linea nueva: Fuente: [nombre del documento]. Si no usaste ningun documento oficial, no agregues esa linea.`
   } catch (e) {
     console.error('Error buscando contexto RAG:', e)
     return ''
