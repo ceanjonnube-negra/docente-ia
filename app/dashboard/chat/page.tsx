@@ -193,6 +193,8 @@ Estado: ${perfil.estado}` : ''
 
       <div className={`fixed inset-0 z-50 flex transition-opacity duration-300 ${menuAbierto ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
           <div className={`w-72 bg-white h-full shadow-xl flex flex-col transition-transform duration-300 ease-out ${menuAbierto ? 'translate-x-0' : '-translate-x-full'}`}>
+
+        <a href="/documentos" className="mx-4 mt-4 flex items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50 py-2.5 text-sm font-semibold text-purple-700 hover:bg-purple-100">Subir documentos</a>
             <div className="p-4 border-b border-gray-100">
               <button onClick={() => { setMensajes([]); setMenuAbierto(false) }}
                 className="w-full bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium">
