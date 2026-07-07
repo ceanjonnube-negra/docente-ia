@@ -55,6 +55,35 @@ export default function ChatPage() {
   const recognitionRef = useRef<any>(null)
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 
+  const fotoInputRef = useRef<HTMLInputElement>(null)
+  const [procesandoFoto, setProcesandoFoto] = useState(false)
+
+  const tomarFotoChat = () => {
+    fotoInputRef.current?.click()
+  }
+
+  const manejarFotoChat = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setProcesandoFoto(true)
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const res = await fetch('/api/ocr-foto', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (res.ok && data.texto) {
+        setInput(data.texto)
+        setTimeout(() => enviar(), 100)
+      }
+    } catch (err) {
+      console.error(err)
+    }
+    setProcesandoFoto(false)
+    if (fotoInputRef.current) fotoInputRef.current.value = ''
+  }
+
   const toggleMicrofono = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) {
@@ -317,10 +346,12 @@ Estado: ${perfil.estado}` : ''
             placeholder="¿Qué necesitas hoy, maestro?"
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
-          <button onClick={toggleMicrofono} className={`w-10 h-10 rounded-full flex items-center justify-center transition ${grabando ? "bg-red-500 text-white animate-pulse" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+              <input ref={fotoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={manejarFotoChat} />
+              <button onClick={tomarFotoChat} disabled={procesandoFoto} className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0">📷</button>
+          <button onClick={toggleMicrofono} className={`w-10 h-10 rounded-full flex items-center justify-center transition flex-shrink-0 ${grabando ? "bg-red-500 text-white animate-pulse" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
           🎤
         </button>
-        <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40">
+        <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
             ↑
           </button>
         </div>
