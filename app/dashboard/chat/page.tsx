@@ -74,7 +74,7 @@ export default function ChatPage() {
       const res = await fetch('/api/ocr-foto', { method: 'POST', body: formData })
       const data = await res.json()
       if (res.ok && data.texto) {
-        setInput(data.texto)
+        setInput(`He tomado una foto de un documento. Este es el texto que se extrajo automaticamente:\n\n${data.texto}\n\nPor favor ayudame con esto.`)
         setTimeout(() => enviar(), 100)
       }
     } catch (err) {
