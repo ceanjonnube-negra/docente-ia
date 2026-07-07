@@ -9,7 +9,7 @@ const supabaseRAG = createClient(
 )
 const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-async function buscarContextoRAG(pregunta: string): Promise<string> {
+async function buscarContextoRAG(pregunta: string, institucionId: string | null): Promise<string> {
   try {
     const embeddingResponse = await openaiRAG.embeddings.create({
       model: 'text-embedding-3-small',
@@ -20,6 +20,7 @@ async function buscarContextoRAG(pregunta: string): Promise<string> {
     const { data, error } = await supabaseRAG.rpc('buscar_chunks_similares', {
       query_embedding: queryEmbedding,
       cantidad: 4,
+      p_institucion_id: institucionId,
     })
 
     if (error || !data || data.length === 0) return ''
@@ -38,8 +39,8 @@ async function buscarContextoRAG(pregunta: string): Promise<string> {
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(req: NextRequest) {
-  const { mensaje, contexto } = await req.json()
-  const contextoRAG = await buscarContextoRAG(mensaje)
+  const { mensaje, contexto, institucionId } = await req.json()
+  const contextoRAG = await buscarContextoRAG(mensaje, institucionId || null)
 
   const stream = await client.messages.create({
       stream: true,

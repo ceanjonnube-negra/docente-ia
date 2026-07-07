@@ -133,7 +133,7 @@ Estado: ${perfil.estado}` : ''
   const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mensaje: input, contexto: contexto })
+      body: JSON.stringify({ mensaje: input, contexto: contexto, institucionId: perfil?.institucion_id || null })
     })
 
     const reader = res.body?.getReader()
