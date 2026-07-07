@@ -192,32 +192,80 @@ Estado: ${perfil.estado}` : ''
       ></div>
 
       <div className={`fixed inset-0 z-50 flex transition-opacity duration-300 ${menuAbierto ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
-          <div className={`w-72 bg-white h-full shadow-xl flex flex-col transition-transform duration-300 ease-out ${menuAbierto ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className={`w-72 bg-white h-full shadow-xl flex flex-col transition-transform duration-300 ease-out ${menuAbierto ? 'translate-x-0' : '-translate-x-full'}`}>
 
-        <a href="/documentos" className="mx-4 mt-4 flex items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50 py-2.5 text-sm font-semibold text-purple-700 hover:bg-purple-100">Subir documentos</a>
-            <div className="p-4 border-b border-gray-100">
-              <button onClick={() => { setMensajes([]); setMenuAbierto(false) }}
-                className="w-full bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium">
-                + Nuevo chat
-              </button>
+          <div className="flex items-center gap-2 px-4 pt-5 pb-3">
+            <div className="w-9 h-9 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center text-lg">🍎</div>
+            <div className="font-serif font-bold text-gray-900 text-base">Docente <span className="text-green-600">IA</span></div>
+          </div>
+
+          <nav className="px-3 flex flex-col gap-0.5 mb-2">
+            <a href="/dashboard" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center text-sm">🏠</span>
+              <span className="text-sm font-semibold text-gray-800">Inicio</span>
+            </a>
+            <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-green-50">
+              <span className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center text-sm">💬</span>
+              <span className="text-sm font-semibold text-gray-800">Chat IA</span>
             </div>
-            <div className="flex-1 overflow-y-auto px-3 py-2">
-              <p className="text-xs text-gray-400 font-medium px-2 py-2">Historial</p>
-              {cargandoHistorial ? (
-                <p className="text-xs text-gray-400 text-center mt-4">Cargando...</p>
-              ) : historial.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center mt-4">Sin documentos aun</p>
-              ) : (
-                historial.map((doc) => (
-                  <button key={doc.id}
-                    onClick={() => { setMensajes([{ rol: 'ia', texto: doc.contenido }]); setMenuAbierto(false) }}
-                    className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-gray-50 text-sm text-gray-700 truncate block">
-                    {doc.titulo}
-                  </button>
-                ))
-              )}
+            <a href="/dashboard/planeacion" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-sm">📋</span>
+              <span className="text-sm font-semibold text-gray-800">Planeación</span>
+            </a>
+            <a href="/dashboard/calendario" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-sm">📅</span>
+              <span className="text-sm font-semibold text-gray-800">Calendario</span>
+            </a>
+            <a href="/dashboard/asistencia" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center text-sm">✅</span>
+              <span className="text-sm font-semibold text-gray-800">Asistencia</span>
+            </a>
+            <a href="/dashboard/seguimiento" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center text-sm">👥</span>
+              <span className="text-sm font-semibold text-gray-800">Seguimiento</span>
+            </a>
+            <a href="/documentos" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-sm">📄</span>
+              <span className="text-sm font-semibold text-gray-800">Documentos</span>
+            </a>
+          </nav>
+
+          <div className="border-t border-gray-100 mx-4"></div>
+
+          <div className="flex items-center justify-between px-4 pt-3 pb-1">
+            <span className="text-xs font-bold uppercase tracking-wide text-gray-400">Conversaciones</span>
+            <button onClick={() => { setMensajes([]); setMenuAbierto(false) }} className="text-purple-600 text-lg leading-none">+</button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-3 py-2">
+            {cargandoHistorial ? (
+              <p className="text-xs text-gray-400 text-center mt-4">Cargando...</p>
+            ) : historial.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center mt-4">Sin documentos aun</p>
+            ) : (
+              historial.map((doc) => (
+                <button key={doc.id}
+                  onClick={() => { setMensajes([{ rol: 'ia', texto: doc.contenido }]); setMenuAbierto(false) }}
+                  className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-gray-50 text-sm text-gray-700 truncate block">
+                  {doc.titulo}
+                </button>
+              ))
+            )}
+          </div>
+
+          <div className="p-3 border-t border-gray-100">
+            <div className="flex items-center gap-2.5 bg-gray-50 rounded-xl px-3 py-2.5">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-purple-400 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+                {(perfil?.nombre || 'M').slice(0,2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-gray-900 truncate">{perfil?.nombre || 'Maestro'}</p>
+                <p className="text-xs text-gray-400 truncate">{perfil?.escuela || ''}</p>
+              </div>
             </div>
           </div>
+        </div>
+
           <div onClick={() => setMenuAbierto(false)} className="flex-1 bg-black/40"></div>
         </div>
 
