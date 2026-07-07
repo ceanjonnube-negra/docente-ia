@@ -39,7 +39,7 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(req: NextRequest) {
-  const { mensaje, contexto, institucionId } = await req.json()
+  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo } = await req.json()
   const contextoRAG = await buscarContextoRAG(mensaje, institucionId || null)
 
   const stream = await client.messages.create({
@@ -172,7 +172,15 @@ Se le solicita puntualidad y presencia. En caso de no poder asistir, favor de co
 Atentamente,
 [nombre del maestro]
 Docente de [grado] grado grupo [grupo]`,
-    messages: [{ role: 'user', content: mensaje }],
+    messages: [{
+      role: 'user',
+      content: imagenBase64
+        ? [
+            { type: 'image', source: { type: 'base64', media_type: imagenTipo || 'image/jpeg', data: imagenBase64 } },
+            { type: 'text', text: mensaje }
+          ]
+        : mensaje
+    }],
   })
 
   const encoder = new TextEncoder()

@@ -57,6 +57,8 @@ export default function ChatPage() {
 
   const fotoInputRef = useRef<HTMLInputElement>(null)
   const [procesandoFoto, setProcesandoFoto] = useState(false)
+  const [imagenPendiente, setImagenPendiente] = useState<string | null>(null)
+  const [imagenTipoPendiente, setImagenTipoPendiente] = useState<string>('image/jpeg')
 
   const tomarFotoChat = () => {
     fotoInputRef.current?.click()
@@ -66,21 +68,14 @@ export default function ChatPage() {
     const file = e.target.files?.[0]
     if (!file) return
 
-    setProcesandoFoto(true)
-    const formData = new FormData()
-    formData.append('file', file)
-
-    try {
-      const res = await fetch('/api/ocr-foto', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (res.ok && data.texto) {
-        setInput(`He tomado una foto de un documento. Este es el texto que se extrajo automaticamente:\n\n${data.texto}\n\nPor favor ayudame con esto.`)
-        setTimeout(() => enviar(), 100)
-      }
-    } catch (err) {
-      console.error(err)
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      const base64 = (reader.result as string).split(',')[1]
+      setImagenPendiente(base64)
+      setImagenTipoPendiente(file.type || 'image/jpeg')
     }
-    setProcesandoFoto(false)
+    reader.readAsDataURL(file)
+
     if (fotoInputRef.current) fotoInputRef.current.value = ''
   }
 
@@ -148,6 +143,7 @@ export default function ChatPage() {
     const nuevos = [...mensajes, nuevoMensaje]
     setMensajes(nuevos)
     setInput('')
+    setImagenPendiente(null)
     setCargando(true)
     setEstado('Generando...')
 
@@ -163,7 +159,13 @@ Estado: ${perfil.estado}` : ''
   const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mensaje: input, contexto: contexto, institucionId: perfil?.institucion_id || null })
+      body: JSON.stringify({
+          mensaje: input,
+          contexto: contexto,
+          institucionId: perfil?.institucion_id || null,
+          imagenBase64: imagenPendiente,
+          imagenTipo: imagenTipoPendiente
+        })
     })
 
     const reader = res.body?.getReader()
@@ -337,6 +339,12 @@ Estado: ${perfil.estado}` : ''
         <div ref={bottomRef} />
       </div>
 
+      {imagenPendiente && (
+        <div className="px-4 pt-2 bg-white flex items-center gap-2">
+          <img src={`data:${imagenTipoPendiente};base64,${imagenPendiente}`} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+          <button onClick={() => setImagenPendiente(null)} className="text-xs text-red-500 underline">Quitar foto</button>
+        </div>
+      )}
       <div className="px-4 py-3 bg-white border-t border-gray-100">
         <div className="flex gap-2">
           <input
