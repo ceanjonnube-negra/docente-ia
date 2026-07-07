@@ -22,7 +22,7 @@ export default function Login() {
     } else {
       const { data: perfil } = await supabase.from('perfiles_docentes').select('id').single()
       if (perfil) {
-        window.location.href = '/dashboard'
+        window.location.href = '/dashboard/chat'
       } else {
         window.location.href = '/onboarding'
       }
