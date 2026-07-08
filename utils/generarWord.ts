@@ -1,4 +1,4 @@
-import { Document, Packer, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle } from 'docx'
+import { Document, Packer, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType } from 'docx'
 import { saveAs } from 'file-saver'
 
 const preprocesarTexto = (texto: string): string[] => {
@@ -32,6 +32,40 @@ const esBullet = (linea: string): boolean => {
   return /^-\s+/.test(linea.trim())
 }
 
+const CURP_REGEX = /[A-Z]{4}\d{6}[A-Z]{6}[A-Z0-9]\d/i
+const esListaConCurp = (lineas: string[]): boolean => {
+  const conCurp = lineas.filter(l => CURP_REGEX.test(l))
+  return conCurp.length >= 2
+}
+
+const generarTablaAlumnos = (lineas: string[]): Table => {
+  const filas: TableRow[] = []
+
+  filas.push(new TableRow({
+    children: [
+      new TableCell({ width: { size: 70, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: 'Nombre', bold: true, size: 20, color: 'FFFFFF' })] })], shading: { type: ShadingType.CLEAR, color: 'auto', fill: '16A34A' } }),
+      new TableCell({ width: { size: 30, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: 'CURP', bold: true, size: 20, color: 'FFFFFF' })] })], shading: { type: ShadingType.CLEAR, color: 'auto', fill: '16A34A' } }),
+    ]
+  }))
+
+  for (const linea of lineas) {
+    const l = linea.trim()
+    const curpMatch = l.match(CURP_REGEX)
+    if (!curpMatch) continue
+    const curp = curpMatch[0]
+    let resto = l.replace(curp, '')
+    resto = resto.replace(/^\d+\s*/, '').replace(/[|—:-]/g, ' ').replace(/\s+/g, ' ').trim()
+    filas.push(new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: resto, size: 20, color: '374151' })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: curp, size: 20, color: '374151' })] })] }),
+      ]
+    }))
+  }
+
+  return new Table({ rows: filas, width: { size: 100, type: WidthType.PERCENTAGE } })
+}
+
 export const generarWord = async (texto: string, perfil?: any) => {
   const fecha = new Date().toLocaleDateString('es-MX')
 
@@ -49,9 +83,12 @@ export const generarWord = async (texto: string, perfil?: any) => {
   })
 
   const lineas = preprocesarTexto(texto)
-  const elementos: Paragraph[] = []
+  const elementos: (Paragraph | Table)[] = []
   let tituloPrincipalUsado = false
 
+  if (esListaConCurp(lineas)) {
+    elementos.push(generarTablaAlumnos(lineas))
+  } else {
   for (const linea of lineas) {
     if (esTitulo(linea)) {
       if (!tituloPrincipalUsado) {
@@ -82,6 +119,7 @@ export const generarWord = async (texto: string, perfil?: any) => {
         spacing: { after: 100 }
       }))
     }
+  }
   }
 
   const piePagina = [

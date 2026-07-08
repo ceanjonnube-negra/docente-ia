@@ -1,11 +1,7 @@
 'use client'
 import { useState } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '@/lib/supabaseClient'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
 
 const pasos = [
   { campo: 'nombre', label: '¿Cómo te llamas?', sub: 'Empecemos con tu nombre.', placeholder: 'Escribe tu nombre completo', icono: '👤' },

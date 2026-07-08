@@ -1,15 +1,12 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 

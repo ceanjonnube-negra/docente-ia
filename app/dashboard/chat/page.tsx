@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '@/lib/supabaseClient'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { generarWord } from '@/utils/generarWord'
@@ -53,8 +53,7 @@ export default function ChatPage() {
     setCargandoHistorial(false)
   }
   const recognitionRef = useRef<any>(null)
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-
+  
   const fotoInputRef = useRef<HTMLInputElement>(null)
   const [procesandoFoto, setProcesandoFoto] = useState(false)
   const [imagenPendiente, setImagenPendiente] = useState<string | null>(null)

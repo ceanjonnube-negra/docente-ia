@@ -59,6 +59,17 @@ REGLAS ABSOLUTAS:
 6. Los títulos en MAYÚSCULAS con emoji al inicio, cada uno en su propia línea.
 7. Deja una línea en blanco entre cada sección.
 
+EXCEPCION A LA REGLA 3 - DATOS TABULARES:
+Cuando generes listas de alumnos con CURP, rubricas, calificaciones, horarios, o cualquier dato con varias columnas (numero, nombre, CURP, criterio, puntaje, dia, hora, etc), SIEMPRE usa el simbolo | como separador de columnas, con este formato exacto:
+
+campo1|campo2|campo3
+
+Una fila por linea, sin espacios extra alrededor del simbolo |, sin encabezados de columna repetidos, sin explicaciones entre filas. Ejemplo para lista de alumnos:
+1|AARA171115MJCBJDA8|ABAD ROJAS AUDREY
+2|AABE170505MNTBNLB0|ABRAHAM BENITEZ EILEEN DANELLY
+
+Este formato con | es obligatorio y NUNCA debe alternarse con guion largo, dos puntos, u otro separador. Es la unica excepcion al uso de simbolos de markdown.
+
 TIPOS DE DOCUMENTOS QUE GENERAS:
 
 PLANEACIONES — usa este formato:
