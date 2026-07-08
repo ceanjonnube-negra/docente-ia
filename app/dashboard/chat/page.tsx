@@ -122,7 +122,7 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajes])
 
-  const actualizarProcesoActivo = async (respuesta: string): Promise<string> => {
+  const actualizarProcesoActivo = async (respuesta: string, mensajeOriginal: string): Promise<string> => {
     const match = respuesta.match(/\[\[PROCESO:tipo=([^;]+);actual=(\d+);total=(\d+);estado=([^\]]+)\]\]/)
     if (!match) return respuesta
 
@@ -132,15 +132,16 @@ export default function ChatPage() {
       const nuevoEstado = estadoProceso.includes('completado') ? 'completado' : 'activo'
       const { data: existente } = await supabase
         .from('procesos_activos')
-        .select('id')
+        .select('id, contexto')
         .eq('user_id', user.id)
         .eq('tipo_proceso', tipo)
         .eq('estado', 'activo')
         .maybeSingle()
 
       if (existente) {
+        const mensajeGuardado = existente.contexto?.mensajeOriginal || mensajeOriginal
         await supabase.from('procesos_activos').update({
-          contexto: { actual: parseInt(actual), total: parseInt(total) },
+          contexto: { actual: parseInt(actual), total: parseInt(total), mensajeOriginal: mensajeGuardado },
           estado: nuevoEstado,
           updated_at: new Date().toISOString()
         }).eq('id', existente.id)
@@ -148,7 +149,7 @@ export default function ChatPage() {
         await supabase.from('procesos_activos').insert({
           user_id: user.id,
           tipo_proceso: tipo,
-          contexto: { actual: parseInt(actual), total: parseInt(total) },
+          contexto: { actual: parseInt(actual), total: parseInt(total), mensajeOriginal },
           estado: nuevoEstado
         })
       }
@@ -222,7 +223,7 @@ Estado: ${perfil.estado}` : ''
       }
     }
 
-    const respuestaLimpia = await actualizarProcesoActivo(respuesta)
+    const respuestaLimpia = await actualizarProcesoActivo(respuesta, input)
     setMensajes(prev => {
       const copia = [...prev]
       copia[copia.length - 1] = { rol: 'ia', texto: respuestaLimpia }
