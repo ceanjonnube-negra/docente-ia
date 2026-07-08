@@ -39,8 +39,30 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(req: NextRequest) {
-  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo } = await req.json()
+  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo, userId } = await req.json()
   const contextoRAG = await buscarContextoRAG(mensaje, institucionId || null)
+
+  let contextoProceso = `
+
+INSTRUCCION SOBRE TAREAS LARGAS DE VARIOS ELEMENTOS: Cuando el maestro pida generar varios elementos similares en serie (ejemplo: fichas descriptivas de varios alumnos, examenes de varios temas, actividades de varios dias), identifica cuantos elementos totales se piden. Genera SOLO el elemento actual en tu respuesta (no todos de golpe, salvo que el maestro pida explicitamente todos juntos). Al final de tu respuesta, en su propia linea, incluye exactamente este marcador tecnico que el maestro nunca vera en pantalla: [[PROCESO:tipo=NOMBRE_CORTO_DE_LA_TAREA;actual=NUMERO_DEL_ELEMENTO_QUE_ACABAS_DE_GENERAR;total=TOTAL_DE_ELEMENTOS;estado=activo_si_faltan_mas_o_completado_si_es_el_ultimo]]. Si la tarea no es de varios elementos en serie, no incluyas ningun marcador.`
+
+  if (userId) {
+    const { data: proceso } = await supabaseRAG
+      .from('procesos_activos')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('estado', 'activo')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (proceso) {
+      contextoProceso = `\n\nPROCESO ACTIVO EN CURSO (el maestro ya empezo esta tarea, NO la reinicies, continua exactamente donde se quedo salvo que el maestro pida algo distinto):
+Tipo: ${proceso.tipo_proceso}
+Contexto guardado: ${JSON.stringify(proceso.contexto)}
+Si el mensaje del maestro es una instruccion para continuar (ej: continua, sigue, el siguiente, haz el que sigue), retoma exactamente desde el punto guardado usando el mismo formato y estilo. Al terminar cada elemento de una tarea larga, incluye al final de tu respuesta, en su propia linea, exactamente este marcador (el maestro nunca vera esta linea): [[PROCESO:tipo=${proceso.tipo_proceso};actual=NUMERO;total=TOTAL;estado=activo_o_completado]]`
+    }
+  }
 
   const stream = await client.messages.create({
       stream: true,
@@ -48,7 +70,7 @@ export async function POST(req: NextRequest) {
     max_tokens: 3000,
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos.
 ${contexto ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
-${contexto}` : ''}${contextoRAG}
+${contexto}` : ''}${contextoRAG}${contextoProceso}
 
 REGLAS ABSOLUTAS:
 1. NUNCA preguntes grado, grupo, escuela, nombre, estado, municipio. Ya los tienes.

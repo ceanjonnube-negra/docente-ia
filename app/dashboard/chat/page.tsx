@@ -122,6 +122,40 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [mensajes])
 
+  const actualizarProcesoActivo = async (respuesta: string): Promise<string> => {
+    const match = respuesta.match(/\[\[PROCESO:tipo=([^;]+);actual=(\d+);total=(\d+);estado=([^\]]+)\]\]/)
+    if (!match) return respuesta
+
+    const [marcadorCompleto, tipo, actual, total, estadoProceso] = match
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const nuevoEstado = estadoProceso.includes('completado') ? 'completado' : 'activo'
+      const { data: existente } = await supabase
+        .from('procesos_activos')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('tipo_proceso', tipo)
+        .eq('estado', 'activo')
+        .maybeSingle()
+
+      if (existente) {
+        await supabase.from('procesos_activos').update({
+          contexto: { actual: parseInt(actual), total: parseInt(total) },
+          estado: nuevoEstado,
+          updated_at: new Date().toISOString()
+        }).eq('id', existente.id)
+      } else {
+        await supabase.from('procesos_activos').insert({
+          user_id: user.id,
+          tipo_proceso: tipo,
+          contexto: { actual: parseInt(actual), total: parseInt(total) },
+          estado: nuevoEstado
+        })
+      }
+    }
+    return respuesta.replace(marcadorCompleto, '').trim()
+  }
+
   const guardarEnHistorial = async (texto: string) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
@@ -138,6 +172,7 @@ export default function ChatPage() {
 
   const enviar = async () => {
     if (!input.trim() || cargando) return
+    const { data: { user } } = await supabase.auth.getUser()
     const nuevoMensaje: Mensaje = { rol: 'usuario', texto: input }
     const nuevos = [...mensajes, nuevoMensaje]
     setMensajes(nuevos)
@@ -163,7 +198,8 @@ Estado: ${perfil.estado}` : ''
           contexto: contexto,
           institucionId: perfil?.institucion_id || null,
           imagenBase64: imagenPendiente,
-          imagenTipo: imagenTipoPendiente
+          imagenTipo: imagenTipoPendiente,
+          userId: user?.id || null
         })
     })
 
@@ -186,7 +222,13 @@ Estado: ${perfil.estado}` : ''
       }
     }
 
-    await guardarEnHistorial(respuesta)
+    const respuestaLimpia = await actualizarProcesoActivo(respuesta)
+    setMensajes(prev => {
+      const copia = [...prev]
+      copia[copia.length - 1] = { rol: 'ia', texto: respuestaLimpia }
+      return copia
+    })
+    await guardarEnHistorial(respuestaLimpia)
       setEstado('')
     } catch {
       setMensajes([...nuevos, { rol: 'ia', texto: 'Error al conectar con la IA.' }])
@@ -340,8 +382,16 @@ Estado: ${perfil.estado}` : ''
 
       {imagenPendiente && (
         <div className="px-4 pt-2 bg-white flex items-center gap-2">
-          <img src={`data:${imagenTipoPendiente};base64,${imagenPendiente}`} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
-          <button onClick={() => setImagenPendiente(null)} className="text-xs text-red-500 underline">Quitar foto</button>
+          <div className="relative w-16 h-16">
+            <img src={`data:${imagenTipoPendiente};base64,${imagenPendiente}`} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+            <button
+              onClick={() => setImagenPendiente(null)}
+              className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
+              aria-label="Quitar foto"
+            >
+              ×
+            </button>
+          </div>
         </div>
       )}
       <div className="px-4 py-3 bg-white border-t border-gray-100">
