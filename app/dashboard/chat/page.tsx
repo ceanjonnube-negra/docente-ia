@@ -53,7 +53,7 @@ export default function ChatPage() {
     setCargandoHistorial(false)
   }
   const recognitionRef = useRef<any>(null)
-  
+
   const fotoInputRef = useRef<HTMLInputElement>(null)
   const [procesandoFoto, setProcesandoFoto] = useState(false)
   const [imagenPendiente, setImagenPendiente] = useState<string | null>(null)
@@ -191,11 +191,12 @@ Municipio: ${perfil.municipio}
 Estado: ${perfil.estado}` : ''
 
     try {
-          const { data: { session } } = await supabase.auth.getSession()
- const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      const { data: { session } } = await supabase.auth.getSession()
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           mensaje: input,
           contexto: contexto,
           institucionId: perfil?.institucion_id || null,
@@ -203,36 +204,35 @@ Estado: ${perfil.estado}` : ''
           imagenTipo: imagenTipoPendiente,
           userId: user?.id || null,
           accessToken: session?.access_token || null
-
         })
-    })
+      })
 
-    const reader = res.body?.getReader()
-    const decoder = new TextDecoder()
-    let respuesta = ''
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      let respuesta = ''
 
-    setMensajes(prev => [...prev, { rol: 'ia', texto: '' }])
+      setMensajes(prev => [...prev, { rol: 'ia', texto: '' }])
 
-    if (reader) {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        respuesta += decoder.decode(value, { stream: true })
-        setMensajes(prev => {
-          const copia = [...prev]
-          copia[copia.length - 1] = { rol: 'ia', texto: respuesta }
-          return copia
-        })
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          respuesta += decoder.decode(value, { stream: true })
+          setMensajes(prev => {
+            const copia = [...prev]
+            copia[copia.length - 1] = { rol: 'ia', texto: respuesta }
+            return copia
+          })
+        }
       }
-    }
 
-    const respuestaLimpia = await actualizarProcesoActivo(respuesta, input)
-    setMensajes(prev => {
-      const copia = [...prev]
-      copia[copia.length - 1] = { rol: 'ia', texto: respuestaLimpia }
-      return copia
-    })
-    await guardarEnHistorial(respuestaLimpia)
+      const respuestaLimpia = await actualizarProcesoActivo(respuesta, input)
+      setMensajes(prev => {
+        const copia = [...prev]
+        copia[copia.length - 1] = { rol: 'ia', texto: respuestaLimpia }
+        return copia
+      })
+      await guardarEnHistorial(respuestaLimpia)
       setEstado('')
     } catch {
       setMensajes([...nuevos, { rol: 'ia', texto: 'Error al conectar con la IA.' }])
@@ -253,7 +253,7 @@ Estado: ${perfil.estado}` : ''
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
-        
+
         <div onClick={() => { setMenuAbierto(true); cargarHistorial() }} className="w-8 h-8 flex items-center justify-center text-2xl mr-2 flex-shrink-0 mt-1 cursor-pointer">🍎</div>
         <div>
           <p className="font-bold text-gray-900 text-sm">Asistente Docente IA</p>
@@ -271,27 +271,27 @@ Estado: ${perfil.estado}` : ''
         <div className={`w-72 bg-white h-full shadow-xl flex flex-col transition-transform duration-300 ease-out ${menuAbierto ? 'translate-x-0' : '-translate-x-full'}`}>
 
           <div className="flex items-center gap-2 px-4 pt-5 pb-3">
-      <div className="relative">
-        <div onClick={() => setMenuConfigAbierto(!menuConfigAbierto)} className="w-9 h-9 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center text-lg cursor-pointer">🍎</div>
-        {menuConfigAbierto && (
-          <div className="absolute left-0 top-11 w-52 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
-            <a href="/documentos" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">📤 Subir documentos</a>
-            <a href="/dashboard/configuracion" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">⚙️ Configuración</a>
-          </div>
-        )}
-      </div>
+            <div className="relative">
+              <div onClick={() => setMenuConfigAbierto(!menuConfigAbierto)} className="w-9 h-9 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center text-lg cursor-pointer">🍎</div>
+              {menuConfigAbierto && (
+                <div className="absolute left-0 top-11 w-52 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
+                  <a href="/documentos" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">📤 Subir documentos</a>
+                  <a href="/dashboard/configuracion" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">⚙️ Configuración</a>
+                </div>
+              )}
+            </div>
             <div className="font-serif font-bold text-gray-900 text-base">Docente <span className="text-green-600">IA</span></div>
           </div>
 
           <div className="mx-3 mb-3 bg-gray-50 rounded-xl p-3 flex items-center gap-2">
-        <div className="w-10 h-10 rounded-full bg-green-100 border-2 border-green-400 flex items-center justify-center text-lg flex-shrink-0">👨‍🏫</div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-gray-800 truncate">{perfil?.nombre || 'Cargando...'}</p>
-          <p className="text-xs text-gray-500 truncate">{perfil?.escuela || ''} {perfil?.grado ? `· ${perfil.grado}° ${perfil.grupo || ''}` : ''}</p>
-        </div>
-      </div>
+            <div className="w-10 h-10 rounded-full bg-green-100 border-2 border-green-400 flex items-center justify-center text-lg flex-shrink-0">👨‍🏫</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-gray-800 truncate">{perfil?.nombre || 'Cargando...'}</p>
+              <p className="text-xs text-gray-500 truncate">{perfil?.escuela || ''} {perfil?.grado ? `· ${perfil.grado}° ${perfil.grupo || ''}` : ''}</p>
+            </div>
+          </div>
 
-      <nav className="px-3 flex flex-col gap-0.5 mb-2">
+          <nav className="px-3 flex flex-col gap-0.5 mb-2">
             <a href="/dashboard" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center text-sm">🏠</span>
               <span className="text-sm font-semibold text-gray-800">Inicio</span>
@@ -300,6 +300,10 @@ Estado: ${perfil.estado}` : ''
               <span className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center text-sm">💬</span>
               <span className="text-sm font-semibold text-gray-800">Chat IA</span>
             </div>
+            <a href="/dashboard/asistencia" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center text-sm">✅</span>
+              <span className="text-sm font-semibold text-gray-800">Asistencia</span>
+            </a>
             <a href="/dashboard/planeacion" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-sm">📋</span>
               <span className="text-sm font-semibold text-gray-800">Planeación</span>
@@ -307,10 +311,6 @@ Estado: ${perfil.estado}` : ''
             <a href="/dashboard/calendario" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-sm">📅</span>
               <span className="text-sm font-semibold text-gray-800">Calendario</span>
-            </a>
-            <a href="/dashboard/asistencia" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
-              <span className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center text-sm">✅</span>
-              <span className="text-sm font-semibold text-gray-800">Asistencia</span>
             </a>
             <a href="/dashboard/seguimiento" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center text-sm">👥</span>
@@ -344,10 +344,10 @@ Estado: ${perfil.estado}` : ''
               ))
             )}
           </div>
-      </div>
-
-          <div onClick={() => setMenuAbierto(false)} className="flex-1 bg-black/40"></div>
         </div>
+
+        <div onClick={() => setMenuAbierto(false)} className="flex-1 bg-black/40"></div>
+      </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {mensajes.map((m, i) => (
@@ -407,12 +407,12 @@ Estado: ${perfil.estado}` : ''
             placeholder="¿Qué necesitas hoy, maestro?"
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
-              <input ref={fotoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={manejarFotoChat} />
-              <button onClick={tomarFotoChat} disabled={procesandoFoto} className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0">📷</button>
+          <input ref={fotoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={manejarFotoChat} />
+          <button onClick={tomarFotoChat} disabled={procesandoFoto} className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0">📷</button>
           <button onClick={toggleMicrofono} className={`w-10 h-10 rounded-full flex items-center justify-center transition flex-shrink-0 ${grabando ? "bg-red-500 text-white animate-pulse" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-          🎤
-        </button>
-        <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
+            🎤
+          </button>
+          <button onClick={() => enviar()} disabled={cargando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
             ↑
           </button>
         </div>
