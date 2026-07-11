@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
+import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { obtenerSesionContexto } from '@/lib/sesionContexto'
+import { consultarAsistenciaAlumno, contextoAlumno, contextoGrupo } from '@/lib/motorContexto'
 
 const supabaseRAG = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -38,8 +41,97 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+// Envuelve un texto ya resuelto (sin pasar por el modelo grande) en el
+// mismo formato de streaming de texto plano que el cliente ya espera,
+// para no tener que tocar app/dashboard/chat/page.tsx.
+function respuestaTexto(texto: string): Response {
+  const encoder = new TextEncoder()
+  const readable = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(texto))
+      controller.close()
+    },
+  })
+  return new Response(readable, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+}
+
 export async function POST(req: NextRequest) {
-  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo, userId } = await req.json()
+  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken } = await req.json()
+
+  // Cliente con la sesión real del docente (necesario para que
+  // auth.uid() funcione dentro de las RPC del Motor de Contexto).
+  // supabaseRAG (service role) se sigue usando solo para RAG y
+  // procesos_activos, sin cambios.
+  const supabaseUser = accessToken
+    ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+        global: { headers: { Authorization: `Bearer ${accessToken}` } },
+      })
+    : null
+
+  // --- Clasificador de Nivel 0 (solo si tenemos sesión de usuario real) ---
+  let contextoEnriquecido = contexto || ''
+  if (supabaseUser && userId) {
+    try {
+      const sesion = await obtenerSesionContexto(supabaseUser, userId)
+      const clasificacion = await clasificarNivel0(mensaje, sesion)
+
+      // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
+      // nada todavía, se le pide al docente que aclare.
+      if (clasificacion.datos_faltantes.length > 0 || clasificacion.entidades_resueltas.alumno_ambiguo) {
+        if (clasificacion.entidades_resueltas.alumno_ambiguo) {
+          const opciones = clasificacion.entidades_resueltas.opciones_alumno_ambiguo.join(', ')
+          return respuestaTexto(`Tengo más de un alumno que coincide con ese nombre: ${opciones}. ¿A cuál te refieres?`)
+        }
+        if (clasificacion.datos_faltantes.includes('alumno')) {
+          return respuestaTexto('¿De qué alumno se trata?')
+        }
+      }
+
+      // Nivel 1: consultar_asistencia — respuesta directa, sin pasar por el modelo grande.
+      if (
+        clasificacion.intencion_principal === 'consultar_asistencia' &&
+        clasificacion.nivel_ejecucion === 1 &&
+        clasificacion.entidades_resueltas.alumno_id &&
+        sesion.ciclo_escolar_id
+      ) {
+        try {
+          const datos = await consultarAsistenciaAlumno(
+            supabaseUser,
+            clasificacion.entidades_resueltas.alumno_id,
+            sesion.ciclo_escolar_id
+          )
+          const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+          return respuestaTexto(
+            `${nombre} lleva ${datos.faltas} falta(s), ${datos.retardos} retardo(s) y ${datos.justificadas} justificada(s) de ${datos.dias_registrados} días registrados este ciclo escolar.`
+          )
+        } catch (e) {
+          console.error('Error consultando asistencia:', e)
+          // Si falla la consulta directa, seguimos al flujo normal como respaldo.
+        }
+      }
+
+      // Nivel 4: ficha_descriptiva / planeacion_nueva — se enriquece el
+      // contexto con datos reales antes de la llamada grande a Claude.
+      if (clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) {
+        try {
+          if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
+            const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
+            contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
+          } else if (clasificacion.intencion_principal === 'planeacion_nueva' && sesion.grupo_activo_id) {
+            const ctxGrupo = await contextoGrupo(supabaseUser, sesion.grupo_activo_id)
+            contextoEnriquecido += `\n\nCONTEXTO REAL DEL GRUPO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxGrupo)}`
+          }
+        } catch (e) {
+          console.error('Error ensamblando contexto Nivel 4:', e)
+          // Si falla, seguimos sin el contexto enriquecido en vez de romper la respuesta.
+        }
+      }
+    } catch (e) {
+      console.error('Error en Clasificador de Nivel 0, continuando con flujo normal:', e)
+    }
+  }
+  // --- Fin Clasificador de Nivel 0 ---
+
   const contextoRAG = await buscarContextoRAG(mensaje, institucionId || null)
 
   let contextoProceso = `
@@ -69,8 +161,8 @@ Si el mensaje del maestro es una instruccion para continuar (ej: continua, sigue
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos.
-${contexto ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
-${contexto}` : ''}${contextoRAG}${contextoProceso}
+${contextoEnriquecido ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
+${contextoEnriquecido}` : ''}${contextoRAG}${contextoProceso}
 
 REGLAS ABSOLUTAS:
 1. NUNCA preguntes grado, grupo, escuela, nombre, estado, municipio. Ya los tienes.

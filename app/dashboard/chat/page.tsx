@@ -191,7 +191,8 @@ Municipio: ${perfil.municipio}
 Estado: ${perfil.estado}` : ''
 
     try {
-  const res = await fetch('/api/chat', {
+          const { data: { session } } = await supabase.auth.getSession()
+ const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -200,7 +201,9 @@ Estado: ${perfil.estado}` : ''
           institucionId: perfil?.institucion_id || null,
           imagenBase64: imagenPendiente,
           imagenTipo: imagenTipoPendiente,
-          userId: user?.id || null
+          userId: user?.id || null,
+          accessToken: session?.access_token || null
+
         })
     })
 
