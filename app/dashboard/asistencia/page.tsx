@@ -93,7 +93,7 @@ export default function AsistenciaPage() {
         </div>
       </header>
 
-      <input ref={inputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={procesarFoto} />
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={procesarFoto} />
 
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {alumnos.length === 0 ? (
