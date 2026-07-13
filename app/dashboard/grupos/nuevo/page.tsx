@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -25,7 +25,7 @@ const GRADOS_POR_NIVEL: Record<NivelEducativo, string[]> = {
 const NIVELES: {
   valor: NivelEducativo;
   etiqueta: string;
-  icono: JSX.Element;
+  icono: ReactNode;
 }[] = [
   {
     valor: 'preescolar',
