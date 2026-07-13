@@ -35,6 +35,11 @@ export default function AsistenciaPage() {
     formData.append('file', file)
     formData.append('docente_id', user.id)
 
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      formData.append('access_token', session.access_token)
+    }
+
     try {
       const res = await fetch('/api/asistencia-foto', { method: 'POST', body: formData })
       const data = await res.json()

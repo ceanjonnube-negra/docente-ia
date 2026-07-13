@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
 export const runtime = 'nodejs';
@@ -15,6 +16,13 @@ export async function POST(req: Request) {
     const file = formData.get('file') as File;
     const docenteId = formData.get('docente_id') as string;
     const grupo = (formData.get('grupo') as string) || '';
+    const accessToken = formData.get('access_token') as string;
+
+    const supabaseUser = accessToken
+      ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+          global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        })
+      : supabase;
 
     if (!file || !docenteId) {
       return NextResponse.json({ error: 'Falta la foto o el docente_id' }, { status: 400 });
@@ -56,7 +64,7 @@ export async function POST(req: Request) {
     for (const nombre of nombresExtraidos) {
       const nombreLimpio = nombre.trim();
       if (!nombreLimpio) continue;
-      await supabase
+      await supabaseUser
         .from('alumnos')
         .upsert(
           { nombre: nombreLimpio, docente_id: docenteId, grupo },
@@ -64,7 +72,7 @@ export async function POST(req: Request) {
         );
     }
 
-    const { data: alumnos, error } = await supabase
+    const { data: alumnos, error } = await supabaseUser
       .from('alumnos')
       .select('id, nombre')
       .eq('docente_id', docenteId)
