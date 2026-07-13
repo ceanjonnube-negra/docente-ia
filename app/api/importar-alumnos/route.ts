@@ -49,7 +49,7 @@ async function extraerTextoDeArchivo(
   }
 
   if (extension === 'pdf') {
-    const pdfParse = (await import('pdf-parse')).default as any
+          const pdfParse = ((await import('pdf-parse')) as any).default;
 ;
     const resultado = await pdfParse(buffer);
     return resultado.text;
