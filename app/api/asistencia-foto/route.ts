@@ -68,7 +68,7 @@ export async function POST(req: Request) {
       const { error: upsertError } = await supabaseUser
         .from('alumnos')
         .upsert(
-          { nombre: nombreLimpio, docente_id: docenteId, grupo },
+          { nombre: nombreLimpio, docente_id: docenteId, grupo_id: grupo || null },
           { onConflict: 'nombre,docente_id', ignoreDuplicates: true }
         );
       if (upsertError) {
