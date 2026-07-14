@@ -167,14 +167,14 @@ export default function FichaAlumnoPage() {
               <label className="text-xs text-gray-500 mb-1 block">Sexo</label>
               <div className="flex gap-2">
                 <button
-                  onClick={() => setSexo('F')}
-                  className={`flex-1 py-2 rounded-lg text-sm border ${sexo === 'F' ? 'bg-rose-100 border-rose-300 text-rose-700' : 'bg-white border-gray-200 text-gray-500'}`}
+                  onClick={() => setSexo('M')}
+                  className={`flex-1 py-2 rounded-lg text-sm border ${sexo === 'M' ? 'bg-rose-100 border-rose-300 text-rose-700' : 'bg-white border-gray-200 text-gray-500'}`}
                 >
                   Niña
                 </button>
                 <button
-                  onClick={() => setSexo('M')}
-                  className={`flex-1 py-2 rounded-lg text-sm border ${sexo === 'M' ? 'bg-sky-100 border-sky-300 text-sky-700' : 'bg-white border-gray-200 text-gray-500'}`}
+                  onClick={() => setSexo('H')}
+                  className={`flex-1 py-2 rounded-lg text-sm border ${sexo === 'H' ? 'bg-sky-100 border-sky-300 text-sky-700' : 'bg-white border-gray-200 text-gray-500'}`}
                 >
                   Niño
                 </button>

@@ -108,13 +108,13 @@ export default function ListaPage() {
     cargarTodo()
   }, [])
 
-  const totalNinas = alumnos.filter(a => a.sexo === 'F').length
-  const totalNinos = alumnos.filter(a => a.sexo === 'M').length
+  const totalNinas = alumnos.filter(a => a.sexo === 'M').length
+  const totalNinos = alumnos.filter(a => a.sexo === 'H').length
 
   const alumnosFiltrados = alumnos.filter(a => {
     if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
-    if (filtro === 'ninas' && a.sexo !== 'F') return false
-    if (filtro === 'ninos' && a.sexo !== 'M') return false
+    if (filtro === 'ninas' && a.sexo !== 'M') return false
+    if (filtro === 'ninos' && a.sexo !== 'H') return false
     if (filtro === 'presentes' && resumenes[a.id]?.presenteHoy !== true) return false
     if (filtro === 'ausentes' && resumenes[a.id]?.presenteHoy !== false) return false
     return true
@@ -180,7 +180,7 @@ export default function ListaPage() {
 
         {alumnosFiltrados.map(a => {
           const r = resumenes[a.id]
-          const esNina = a.sexo === 'F'
+          const esNina = a.sexo === 'M'
           return (
             <button
               key={a.id}
@@ -196,7 +196,7 @@ export default function ListaPage() {
                 </span>
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
-                <span>{a.sexo === 'F' ? 'Niña' : a.sexo === 'M' ? 'Niño' : '—'}</span>
+                <span>{a.sexo === 'M' ? 'Niña' : a.sexo === 'H' ? 'Niño' : '—'}</span>
                 <span>{calcularEdad(a.fecha_nacimiento)}</span>
                 <span>Asist: {r?.totalAsistencias ?? 0}</span>
                 <span>Faltas: {r?.totalFaltas ?? 0}</span>
