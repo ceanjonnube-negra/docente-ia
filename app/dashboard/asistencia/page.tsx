@@ -51,7 +51,11 @@ export default function AsistenciaPage() {
         const nuevosPresentes: Record<string, boolean> = {}
         data.alumnos.forEach((a: Alumno) => { nuevosPresentes[a.id] = true })
         setPresentes(nuevosPresentes)
+        if (data.errores_upsert) {
+        setMensaje(`⚠️ Detectados ${data.nuevos_detectados}, pero hubo errores: ${data.errores_upsert.join(' | ')}`)
+      } else {
         setMensaje(`✅ ${data.nuevos_detectados} nombre(s) detectados. Lista actualizada.`)
+      }
       }
     } catch (err) {
       setMensaje('Error al procesar la foto.')

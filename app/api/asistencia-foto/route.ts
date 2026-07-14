@@ -61,15 +61,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No se pudo leer la lista con claridad' }, { status: 422 });
     }
 
+    const erroresUpsert: string[] = [];
     for (const nombre of nombresExtraidos) {
       const nombreLimpio = nombre.trim();
       if (!nombreLimpio) continue;
-      await supabaseUser
+      const { error: upsertError } = await supabaseUser
         .from('alumnos')
         .upsert(
           { nombre: nombreLimpio, docente_id: docenteId, grupo },
           { onConflict: 'nombre,docente_id', ignoreDuplicates: true }
         );
+      if (upsertError) {
+        console.error('Error upsert alumno:', nombreLimpio, upsertError);
+        erroresUpsert.push(`${nombreLimpio}: ${upsertError.message}`);
+      }
     }
 
     const { data: alumnos, error } = await supabaseUser
@@ -84,6 +89,7 @@ export async function POST(req: Request) {
       success: true,
       nuevos_detectados: nombresExtraidos.length,
       alumnos,
+      errores_upsert: erroresUpsert.length > 0 ? erroresUpsert : undefined,
     });
   } catch (err: any) {
     console.error(err);
