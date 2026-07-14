@@ -70,26 +70,39 @@ export default function AsistenciaPage() {
   }
 
   const guardarAsistencia = async () => {
-    setGuardando(true)
-    const registros = alumnos.map(a => ({ alumno_id: a.id, presente: presentes[a.id] ?? true }))
+  setGuardando(true)
+  setMensaje('')
 
-    try {
-      const res = await fetch('/api/asistencia-guardar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ registros }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setMensaje(`✅ Asistencia guardada (${data.guardados} alumnos).`)
-      } else {
-        setMensaje(data.error || 'No se pudo guardar.')
-      }
-    } catch {
-      setMensaje('Error al guardar.')
-    }
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) {
+    setMensaje('No se pudo identificar la sesión. Vuelve a iniciar sesión.')
     setGuardando(false)
+    return
   }
+
+  const registros = alumnos.map(a => ({ alumno_id: a.id, presente: presentes[a.id] ?? true }))
+
+  try {
+    const res = await fetch('/api/asistencia-guardar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        registros,
+        access_token: session.access_token,
+      }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setMensaje(`✅ Asistencia guardada (${data.guardados} alumnos).`)
+    } else {
+      setMensaje(data.error || 'No se pudo guardar.')
+    }
+  } catch {
+    setMensaje('Error al guardar.')
+  }
+  setGuardando(false)
+}
+
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
