@@ -36,10 +36,10 @@ export async function POST(req: Request) {
           content: [
             {
               type: 'text',
-              text: `Analiza esta lista oficial de alumnos (probablemente de la SEP) y extrae, para cada alumno, exactamente estos campos si están visibles: nombre completo, CURP, sexo (responde únicamente "H" para hombre o "M" para mujer, según lo indicado en el documento), y fecha de nacimiento en formato YYYY-MM-DD.
+              text: `Analiza esta lista oficial de alumnos (probablemente de la SEP) y extrae, para cada alumno, exactamente estos campos si están visibles: número de lista (el número consecutivo o de renglón que identifica el orden del alumno en la lista, como número entero), nombre completo, CURP, sexo (responde únicamente "H" para hombre o "M" para mujer, según lo indicado en el documento), y fecha de nacimiento en formato YYYY-MM-DD.
 
 Responde ÚNICAMENTE en este formato JSON, sin texto adicional ni backticks:
-{"alumnos": [{"nombre": "...", "curp": "...", "sexo": "H", "fecha_nacimiento": "2015-03-20"}]}
+{"alumnos": [{"numero_lista": 1, "nombre": "...", "curp": "...", "sexo": "H", "fecha_nacimiento": "2015-03-20"}]}
 
 Si algún campo no es legible o no aparece para un alumno, usa null en ese campo (nunca inventes datos).`,
             },
@@ -56,6 +56,7 @@ Si algún campo no es legible o no aparece para un alumno, usa null en ese campo
     const jsonLimpio = contenido.replace(/```json|```/g, '').trim();
 
     let alumnosDetectados: Array<{
+      numero_lista: number | null;
       nombre: string;
       curp: string | null;
       sexo: string | null;
@@ -70,7 +71,7 @@ Si algún campo no es legible o no aparece para un alumno, usa null en ese campo
 
     const { data: alumnosExistentes, error: errorAlumnos } = await supabaseUser
       .from('alumnos')
-      .select('id, nombre, curp, sexo, fecha_nacimiento')
+      .select('id, nombre, curp, sexo, fecha_nacimiento, numero_lista')
       .eq('docente_id', docenteId);
 
     if (errorAlumnos || !alumnosExistentes) {
@@ -117,6 +118,7 @@ Si algún campo no es legible o no aparece para un alumno, usa null en ese campo
           curp: detectado.curp || match.curp,
           sexo: detectado.sexo || match.sexo,
           fecha_nacimiento: detectado.fecha_nacimiento || match.fecha_nacimiento,
+          numero_lista: detectado.numero_lista ?? match.numero_lista,
         })
         .eq('id', match.id);
 
