@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -31,6 +31,8 @@ function calcularEdad(fechaNacimiento: string | null): string {
 
 export default function ListaPage() {
   const router = useRouter()
+  const inputRef = useRef<HTMLInputElement>(null)
+
   const [nombreGrupo, setNombreGrupo] = useState('')
   const [alumnos, setAlumnos] = useState<Alumno[]>([])
   const [resumenes, setResumenes] = useState<Record<string, Resumen>>({})
@@ -39,74 +41,126 @@ export default function ListaPage() {
   const [busqueda, setBusqueda] = useState('')
   const [filtro, setFiltro] = useState<'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes'>('todos')
 
-  useEffect(() => {
-    const cargarTodo = async () => {
-      setCargando(true)
+  const [importando, setImportando] = useState(false)
+  const [resumenImportacion, setResumenImportacion] = useState<null | {
+    total_detectados: number
+    actualizados: number
+    sin_emparejar: number
+    detalle: Array<{ nombre_detectado: string; alumno_emparejado: string | null; actualizado: boolean; motivo?: string }>
+  }>(null)
 
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        setMensaje('No se pudo identificar al maestro.')
-        setCargando(false)
-        return
-      }
+  const cargarTodo = async () => {
+    setCargando(true)
 
-      const { data: grupos, error: errorGrupo } = await supabase
-        .from('grupos')
-        .select('id, nombre_grupo, ciclo_escolar_id, ciclos_escolares!inner(activo)')
-        .eq('docente_id', user.id)
-        .eq('ciclos_escolares.activo', true)
-        .order('creado_en', { ascending: false })
-        .limit(1)
-
-      if (errorGrupo || !grupos || grupos.length === 0) {
-        setMensaje('No se encontró un grupo activo.')
-        setCargando(false)
-        return
-      }
-
-      const grupo = grupos[0]
-      setNombreGrupo(grupo.nombre_grupo)
-
-      const { data: alumnosDelGrupo, error: errorAlumnos } = await supabase
-        .from('alumnos')
-        .select('id, nombre, numero_lista, curp, sexo, fecha_nacimiento')
-        .eq('grupo_id', grupo.id)
-        .order('numero_lista', { ascending: true, nullsFirst: false })
-
-      if (errorAlumnos || !alumnosDelGrupo) {
-        setMensaje('No se pudo cargar la lista de alumnos.')
-        setCargando(false)
-        return
-      }
-
-      setAlumnos(alumnosDelGrupo)
-
-      const idsAlumnos = alumnosDelGrupo.map(a => a.id)
-      const hoy = new Date().toISOString().slice(0, 10)
-
-      const [{ data: asistenciasTodas }, { data: incidenciasTodas }] = await Promise.all([
-        supabase.from('asistencias').select('alumno_id, fecha, presente').in('alumno_id', idsAlumnos),
-        supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
-      ])
-
-      const nuevosResumenes: Record<string, Resumen> = {}
-      alumnosDelGrupo.forEach(a => {
-        const registros = (asistenciasTodas || []).filter(r => r.alumno_id === a.id)
-        const registroHoy = registros.find(r => r.fecha === hoy)
-        nuevosResumenes[a.id] = {
-          presenteHoy: registroHoy ? registroHoy.presente : null,
-          totalAsistencias: registros.filter(r => r.presente).length,
-          totalFaltas: registros.filter(r => !r.presente).length,
-          incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
-        }
-      })
-      setResumenes(nuevosResumenes)
-
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setMensaje('No se pudo identificar al maestro.')
       setCargando(false)
+      return
     }
 
+    const { data: grupos, error: errorGrupo } = await supabase
+      .from('grupos')
+      .select('id, nombre_grupo, ciclo_escolar_id, ciclos_escolares!inner(activo)')
+      .eq('docente_id', user.id)
+      .eq('ciclos_escolares.activo', true)
+      .order('creado_en', { ascending: false })
+      .limit(1)
+
+    if (errorGrupo || !grupos || grupos.length === 0) {
+      setMensaje('No se encontró un grupo activo.')
+      setCargando(false)
+      return
+    }
+
+    const grupo = grupos[0]
+    setNombreGrupo(grupo.nombre_grupo)
+
+    const { data: alumnosDelGrupo, error: errorAlumnos } = await supabase
+      .from('alumnos')
+      .select('id, nombre, numero_lista, curp, sexo, fecha_nacimiento')
+      .eq('grupo_id', grupo.id)
+      .order('numero_lista', { ascending: true, nullsFirst: false })
+
+    if (errorAlumnos || !alumnosDelGrupo) {
+      setMensaje('No se pudo cargar la lista de alumnos.')
+      setCargando(false)
+      return
+    }
+
+    setAlumnos(alumnosDelGrupo)
+
+    const idsAlumnos = alumnosDelGrupo.map(a => a.id)
+    const hoy = new Date().toISOString().slice(0, 10)
+
+    const [{ data: asistenciasTodas }, { data: incidenciasTodas }] = await Promise.all([
+      supabase.from('asistencias').select('alumno_id, fecha, presente').in('alumno_id', idsAlumnos),
+      supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
+    ])
+
+    const nuevosResumenes: Record<string, Resumen> = {}
+    alumnosDelGrupo.forEach(a => {
+      const registros = (asistenciasTodas || []).filter(r => r.alumno_id === a.id)
+      const registroHoy = registros.find(r => r.fecha === hoy)
+      nuevosResumenes[a.id] = {
+        presenteHoy: registroHoy ? registroHoy.presente : null,
+        totalAsistencias: registros.filter(r => r.presente).length,
+        totalFaltas: registros.filter(r => !r.presente).length,
+        incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
+      }
+    })
+    setResumenes(nuevosResumenes)
+
+    setCargando(false)
+  }
+
+  useEffect(() => {
     cargarTodo()
   }, [])
+
+  const tomarFoto = () => {
+    inputRef.current?.click()
+  }
+
+  const procesarFotoDatos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setImportando(true)
+    setMensaje('')
+    setResumenImportacion(null)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { session } } = await supabase.auth.getSession()
+
+    if (!user || !session?.access_token) {
+      setMensaje('No se pudo identificar la sesión.')
+      setImportando(false)
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('docente_id', user.id)
+    formData.append('access_token', session.access_token)
+
+    try {
+      const res = await fetch('/api/importar-datos-alumnos', { method: 'POST', body: formData })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setMensaje(data.error || 'No se pudo procesar la lista.')
+      } else {
+        setResumenImportacion(data)
+        await cargarTodo()
+      }
+    } catch {
+      setMensaje('Error al procesar la foto.')
+    }
+
+    setImportando(false)
+    if (inputRef.current) inputRef.current.value = ''
+  }
 
   const totalNinas = alumnos.filter(a => a.sexo === 'M').length
   const totalNinos = alumnos.filter(a => a.sexo === 'H').length
@@ -130,13 +184,22 @@ export default function ListaPage() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={procesarFotoDatos} />
+
       <header className="px-4 py-4 bg-white border-b border-gray-100 shadow-sm">
         <div className="flex items-center gap-3 mb-3">
           <a href="/dashboard/chat" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">‹</a>
-          <div>
+          <div className="flex-1">
             <p className="font-bold text-gray-900 text-base">{nombreGrupo || 'Lista'}</p>
             <p className="text-xs text-gray-400">{new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           </div>
+          <button
+            onClick={tomarFoto}
+            disabled={importando}
+            className="px-3 py-2 bg-gray-100 rounded-full text-xs font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-40 whitespace-nowrap"
+          >
+            {importando ? 'Leyendo...' : '📷 Importar datos'}
+          </button>
         </div>
         <div className="flex gap-2 text-xs">
           <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg py-2 text-center">
@@ -153,6 +216,18 @@ export default function ListaPage() {
           </div>
         </div>
       </header>
+
+      {resumenImportacion && (
+        <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 text-xs">
+          <p className="font-semibold text-indigo-900 mb-1">
+            ✅ {resumenImportacion.actualizados} de {resumenImportacion.total_detectados} alumnos actualizados
+            {resumenImportacion.sin_emparejar > 0 && ` · ${resumenImportacion.sin_emparejar} sin emparejar`}
+          </p>
+          <button onClick={() => setResumenImportacion(null)} className="text-indigo-500 underline">
+            Cerrar resumen
+          </button>
+        </div>
+      )}
 
       <div className="px-4 py-3 bg-white border-b border-gray-100">
         <input
