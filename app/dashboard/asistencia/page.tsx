@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 
@@ -12,6 +12,61 @@ export default function AsistenciaPage() {
   const [guardando, setGuardando] = useState(false)
   const [mensaje, setMensaje] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const [grupoActivo, setGrupoActivo] = useState<{ id: string; nombre_grupo: string } | null>(null)
+const [cargandoLista, setCargandoLista] = useState(true)
+
+useEffect(() => {
+  const cargarGrupoYAlumnos = async () => {
+    setCargandoLista(true)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setMensaje('No se pudo identificar al maestro.')
+      setCargandoLista(false)
+      return
+    }
+
+    const { data: grupos, error: errorGrupo } = await supabase
+      .from('grupos')
+      .select('id, nombre_grupo, ciclo_escolar_id, ciclos_escolares!inner(activo)')
+      .eq('docente_id', user.id)
+      .eq('ciclos_escolares.activo', true)
+      .order('creado_en', { ascending: false })
+      .limit(1)
+
+    if (errorGrupo || !grupos || grupos.length === 0) {
+      setMensaje('No se encontró un grupo activo. Importa tu lista para comenzar.')
+      setCargandoLista(false)
+      return
+    }
+
+    const grupo = grupos[0]
+    setGrupoActivo({ id: grupo.id, nombre_grupo: grupo.nombre_grupo })
+
+    const { data: alumnosDelGrupo, error: errorAlumnos } = await supabase
+      .from('alumnos')
+      .select('id, nombre')
+      .eq('grupo_id', grupo.id)
+      .order('nombre', { ascending: true })
+
+    if (errorAlumnos || !alumnosDelGrupo) {
+      setMensaje('No se pudo cargar la lista de alumnos.')
+      setCargandoLista(false)
+      return
+    }
+
+    setAlumnos(alumnosDelGrupo)
+
+    const nuevosPresentes: Record<string, boolean> = {}
+    alumnosDelGrupo.forEach((a: Alumno) => { nuevosPresentes[a.id] = true })
+    setPresentes(nuevosPresentes)
+
+    setCargandoLista(false)
+  }
+
+  cargarGrupoYAlumnos()
+}, [])
+
 
   const tomarFoto = () => {
     inputRef.current?.click()
