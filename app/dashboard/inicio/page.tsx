@@ -2,26 +2,21 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
-import { useAsistente } from '@/lib/asistente/hooks'
 
 
 const toTitle = (s: string) => s ? s.toLowerCase().replace(/\w/g, c => c.toUpperCase()) : ''
 
 export default function Dashboard() {
   const router = useRouter()
-  const asistente = useAsistente()
   const [perfil, setPerfil] = useState<any>(null)
 
-  // Inicio es un módulo neutral — nunca debe mostrarse con el Chat IA
-  // abierto encima, sin importar cómo se llegó aquí (enlace explícito,
-  // botón nativo de "atrás" del navegador, o una página restaurada desde
-  // el bfcache de Safari con el chat todavía abierto en su momento). Ver
-  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA: cerrarPanel() solo afecta la
-  // visibilidad del panel, nunca la conversación guardada.
-  useEffect(() => {
-    asistente.cerrarPanel()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // NOTA: Inicio NO cierra el panel del Chat IA al montar. /dashboard/chat
+  // abre el panel y luego hace router.replace('/dashboard/inicio') como
+  // navegación suave — Inicio monta debajo de ese mismo cambio de ruta, así
+  // que un cierre automático aquí cancelaba la apertura un instante después
+  // de que ocurriera (el chat se abría y se cerraba solo). Ver
+  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA: el panel solo se cierra cuando
+  // el propio docente lo decide.
 
   useEffect(() => {
     const cargar = async () => {
