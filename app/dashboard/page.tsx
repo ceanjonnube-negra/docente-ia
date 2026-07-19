@@ -16,6 +16,8 @@
 import { useEffect } from 'react'
 import { useAsistente } from '@/lib/asistente/hooks'
 
+export const dynamic = 'force-dynamic'
+
 export default function Dashboard() {
   const asistente = useAsistente()
 
