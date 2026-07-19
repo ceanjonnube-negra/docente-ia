@@ -66,7 +66,7 @@ export default function Registro() {
           Ya tengo cuenta → Iniciar sesión
         </button>
         <button
-          onClick={() => window.location.href = '/'}
+          onClick={() => window.location.href = '/bienvenida'}
           className="w-full text-gray-400 text-sm"
         >
           ← Volver

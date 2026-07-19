@@ -28,7 +28,10 @@ export default function Dashboard() {
     cargar()
   }, [])
 
-  const salir = async () => { await supabase.auth.signOut(); router.push('/') }
+  // "/" ahora es la raíz del Chat IA (ver RFC-0002) — tras cerrar
+  // sesión el docente debe caer en la página de bienvenida/login, no en
+  // un intento de abrir el chat sin sesión activa.
+  const salir = async () => { await supabase.auth.signOut(); router.push('/bienvenida') }
 
   return (
     <div className="min-h-screen flex flex-col items-center px-4 py-6" style={{backgroundColor: '#8BC34A'}}>

@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import AsistentePanel from "@/components/Asistente/AsistentePanel";
+import BuildBadge from "@/components/BuildBadge";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,7 +29,17 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {children}
+        {/* Servicio global del Chat IA — se monta una sola vez aquí, en
+            el layout raíz, para TODA la aplicación (antes solo vivía en
+            app/dashboard/layout.tsx, lo que dejaba fuera "/" y
+            "/documentos": abrirPanel() ahí no tenía ningún componente
+            real que reaccionara). Un solo AsistentePanel para cualquier
+            ruta, nunca duplicado. */}
+        <AsistentePanel />
+        <BuildBadge />
+      </body>
     </html>
   );
 }

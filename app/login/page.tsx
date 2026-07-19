@@ -59,7 +59,7 @@ export default function Login() {
           {loading ? 'Entrando...' : 'Iniciar sesión'}
         </button>
         <button
-          onClick={() => window.location.href = '/'}
+          onClick={() => window.location.href = '/bienvenida'}
           className="w-full text-purple-600 font-semibold py-2 text-sm"
         >
           ← Volver
