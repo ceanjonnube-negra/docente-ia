@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'inicio-link-fix-v18-9fb7372'
+export const BUILD_ID = 'no-auto-restore-v19-64648e7'
