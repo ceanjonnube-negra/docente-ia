@@ -261,7 +261,15 @@ export async function POST(req: NextRequest) {
       console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:contenido] OK — ${documentoTexto.length} caracteres (fuente=${fuenteContenido})`)
       try {
         const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
-        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseUser, userId), 'generar-archivo')
+        // Storage necesita el cliente de service role: el bucket
+        // documentos-generados-ia se creó sin políticas RLS explícitas
+        // (no hay acceso a SQL/migraciones desde este proyecto — ver
+        // lib/documentGen/almacenamiento.ts), así que el cliente
+        // autenticado como el docente (supabaseUser) no tiene permiso
+        // para escribir ahí. supabaseRAG (service role) sí — causa raíz
+        // real confirmada en producción: "new row violates row-level
+        // security policy" en la etapa de subida.
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
         return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
@@ -349,6 +357,15 @@ export async function POST(req: NextRequest) {
   if (supabaseUser && userId && sesion && REQUIERE_CLASIFICADOR_NIVEL0.test(mensaje)) {
     try {
       const clasificacion = await clasificarNivel0(mensaje, sesion)
+      // Diagnóstico — nunca visible al maestro. Con esto se puede ver en
+      // vercel logs EXACTAMENTE por qué una consulta como "¿cuántas
+      // faltas tiene Audrey?" no llegó a responder con el dato real: si
+      // el clasificador no resolvió al alumno, si sesion.ciclo_escolar_id
+      // viene null (el contexto activo del docente no tiene ciclo
+      // escolar configurado), o si consultarAsistenciaAlumno falló.
+      console.log(
+        `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id}`
+      )
 
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.
@@ -363,25 +380,26 @@ export async function POST(req: NextRequest) {
       }
 
       // Nivel 1: consultar_asistencia — respuesta directa, sin pasar por el modelo grande.
-      if (
-        clasificacion.intencion_principal === 'consultar_asistencia' &&
-        clasificacion.nivel_ejecucion === 1 &&
-        clasificacion.entidades_resueltas.alumno_id &&
-        sesion.ciclo_escolar_id
-      ) {
-        try {
-          const datos = await consultarAsistenciaAlumno(
-            supabaseUser,
-            clasificacion.entidades_resueltas.alumno_id,
-            sesion.ciclo_escolar_id
-          )
-          const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
-          return respuestaTexto(
-            `${nombre} lleva ${datos.faltas} falta(s), ${datos.retardos} retardo(s) y ${datos.justificadas} justificada(s) de ${datos.dias_registrados} días registrados este ciclo escolar.`
-          )
-        } catch (e) {
-          console.error('Error consultando asistencia:', e)
-          // Si falla la consulta directa, seguimos al flujo normal como respaldo.
+      if (clasificacion.intencion_principal === 'consultar_asistencia' && clasificacion.nivel_ejecucion === 1) {
+        if (!clasificacion.entidades_resueltas.alumno_id) {
+          console.log('[NIVEL0] consultar_asistencia sin alumno_id resuelto — cae al flujo normal (Claude sin el dato real)')
+        } else if (!sesion.ciclo_escolar_id) {
+          console.log('[NIVEL0] consultar_asistencia con alumno_id pero sesion.ciclo_escolar_id es null — docente_contexto_activo no tiene ciclo escolar configurado, cae al flujo normal')
+        } else {
+          try {
+            const datos = await consultarAsistenciaAlumno(
+              supabaseUser,
+              clasificacion.entidades_resueltas.alumno_id,
+              sesion.ciclo_escolar_id
+            )
+            const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+            return respuestaTexto(
+              `${nombre} lleva ${datos.faltas} falta(s), ${datos.retardos} retardo(s) y ${datos.justificadas} justificada(s) de ${datos.dias_registrados} días registrados este ciclo escolar.`
+            )
+          } catch (e) {
+            console.error('[NIVEL0] Error consultando asistencia (consultarAsistenciaAlumno):', e)
+            // Si falla la consulta directa, seguimos al flujo normal como respaldo.
+          }
         }
       }
 
@@ -743,7 +761,8 @@ Grado: [grado] | Grupo: [grupo]
       if (texto && esDocumentoFormal(texto)) {
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
         const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
-        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseUser, userId), 'generar-archivo-combinado')
+        // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
         return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
