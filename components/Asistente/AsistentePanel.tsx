@@ -248,7 +248,11 @@ export default function AsistentePanel() {
           </div>
 
           <nav className="px-3 flex flex-col gap-0.5 mb-2">
-            <a href="/dashboard/inicio" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+            {/* "Inicio" ahora significa el Chat IA — es el root/home
+                funcional real de la app (ver app/page.tsx). La portada
+                verde sigue existiendo en /dashboard/inicio pero ya no es
+                el destino de este control. */}
+            <a href="/" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center text-sm">🏠</span>
               <span className="text-sm font-semibold text-gray-800">Inicio</span>
             </a>
