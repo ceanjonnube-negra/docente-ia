@@ -19,7 +19,6 @@ import {
   establecerConversacionActiva,
   guardarConversacion,
   listarConversaciones,
-  obtenerConversacionActivaId,
   type ConversacionResumen,
 } from './persistencia'
 import type {
@@ -33,14 +32,16 @@ import type {
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
-// Una sola lectura de localStorage al cargar el módulo (síncrona) — la
-// conversación activa ya está restaurada antes de que AsistentePanel
-// monte, sin ningún parpadeo a la pantalla de bienvenida. Si no hay
-// ninguna conversación activa todavía (primera vez que se abre la app,
-// o la anterior se eliminó), se crea una vacía — nunca se manda a
-// escribir sin que exista un id de conversación donde guardar.
-const ID_CONVERSACION_INICIAL = obtenerConversacionActivaId() ?? crearNuevaConversacion()
-const CONVERSACION_RESTAURADA = cargarConversacionPorId(ID_CONVERSACION_INICIAL)
+// Al cargar el módulo SOLO se lee el índice liviano (id/título/fecha) de
+// conversaciones guardadas — para que la barra lateral tenga qué
+// mostrar. Nunca se selecciona ni se cargan mensajes de ninguna
+// conversación automáticamente: la existencia de conversaciones
+// persistidas no debe asignar activeConversationId por sí sola. El
+// docente decide cuál abrir (ver abrirConversacion) o si empieza una
+// nueva escribiendo (ver enviarMensaje) — el Chat IA siempre monta en su
+// vista inicial, sin importar desde dónde se llegó (inicio de la app,
+// botón Inicio, o cualquier módulo).
+const INDICE_CONVERSACIONES_INICIAL = listarConversaciones()
 
 export type EstadoAsistente = {
   mensajes: MensajeConversacion[]
@@ -78,11 +79,13 @@ export type EstadoAsistente = {
   // editandoDocumentoId (que cubre ediciones de contenido Y
   // finalizaciones), este SOLO se activa para finalizaciones.
   documentoFinalizandoId: string | null
-  // Id de la conversación que se está viendo ahora mismo y lista
-  // ligera (id/título/fecha) de todas las conversaciones guardadas —
-  // ver lib/asistente/persistencia.ts. AsistentePanel las usa para
-  // pintar la barra lateral y saber cuál está resaltada como activa.
-  conversacionActivaId: string
+  // Id de la conversación que se está viendo ahora mismo — null cuando
+  // no hay ninguna seleccionada (vista inicial del Chat IA, ver
+  // ARQUITECTURA: al montar nunca se abre una conversación sola). Lista
+  // ligera (id/título/fecha) de todas las conversaciones guardadas — ver
+  // lib/asistente/persistencia.ts. AsistentePanel las usa para pintar la
+  // barra lateral y saber cuál está resaltada como activa.
+  conversacionActivaId: string | null
   listaConversaciones: ConversacionResumen[]
 }
 
@@ -100,9 +103,13 @@ let contadorId = 0
 const nuevoId = () => `msg-${Date.now()}-${contadorId++}`
 
 class AsistenteServiceImpl {
-  private conversacionActivaId: string = ID_CONVERSACION_INICIAL
-  private listaConversaciones: ConversacionResumen[] = listarConversaciones()
-  private mensajes: MensajeConversacion[] = CONVERSACION_RESTAURADA?.mensajes ?? []
+  // null = sin conversación seleccionada (vista inicial) — nunca se
+  // asigna sola a partir de lo que haya guardado en localStorage. Solo
+  // abrirConversacion() (toque manual) o el primer mensaje escrito desde
+  // la vista inicial (ver enviarMensaje) le dan un valor real.
+  private conversacionActivaId: string | null = null
+  private listaConversaciones: ConversacionResumen[] = INDICE_CONVERSACIONES_INICIAL
+  private mensajes: MensajeConversacion[] = []
   private contexto: ContextoAplicacion = CONTEXTO_VACIO
   private estadoMotor: EstadoMotor = 'inactivo'
   private panelAbierto = false
@@ -151,13 +158,10 @@ class AsistenteServiceImpl {
   // Último documento formal (planeación, rúbrica, resumen, etc.) que el
   // asistente generó — permite que "agrégale...", "corrige...",
   // "hazlo más corto..." modifiquen ESE documento en vez de crear uno
-  // nuevo (ver enviarMensaje/editarDocumento). Restaurado junto con
-  // mensajes — pero solo si el mensaje que referencia de verdad sigue
-  // en el historial restaurado (defensivo ante un guardado a medias).
-  private documentoActivo: { id: string; texto: string } | null =
-    CONVERSACION_RESTAURADA?.documentoActivo && CONVERSACION_RESTAURADA.mensajes.some((m) => m.id === CONVERSACION_RESTAURADA.documentoActivo!.id)
-      ? CONVERSACION_RESTAURADA.documentoActivo
-      : null
+  // nuevo (ver enviarMensaje/editarDocumento). Se carga junto con los
+  // mensajes de una conversación, solo cuando el docente la abre — nunca
+  // al montar el servicio.
+  private documentoActivo: { id: string; texto: string } | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -265,7 +269,10 @@ class AsistenteServiceImpl {
   // de conversaciones para que la barra lateral refleje el título/fecha
   // más recientes sin tener que releer todo desde localStorage.
   private guardarAhora() {
-    if (this.mensajes.length === 0) return // conversación vacía: nada que guardar todavía
+    // Sin conversación activa (vista inicial, nada escrito todavía) o
+    // sin mensajes: no hay nada que guardar — nunca se le pasa null a
+    // guardarConversacion().
+    if (!this.conversacionActivaId || this.mensajes.length === 0) return
     guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo)
     this.listaConversaciones = listarConversaciones()
   }
@@ -331,13 +338,14 @@ class AsistenteServiceImpl {
   }
 
   // Borra una conversación guardada de forma permanente — si era la
-  // activa, la conversación en pantalla pasa a ser una nueva vacía (nunca
-  // se queda mostrando mensajes que ya no existen en el almacenamiento).
+  // activa, la pantalla vuelve a la vista inicial (null), nunca genera
+  // sola una conversación nueva: la existencia/ausencia de datos
+  // guardados no debe asignar activeConversationId por sí misma.
   eliminarConversacion(id: string) {
     eliminarConversacionGuardada(id)
     this.listaConversaciones = listarConversaciones()
     if (id === this.conversacionActivaId) {
-      this.conversacionActivaId = crearNuevaConversacion()
+      this.conversacionActivaId = null
       this.mensajes = []
       this.documentoActivo = null
       this.limpiarEstadoTransitorio()
@@ -357,7 +365,7 @@ class AsistenteServiceImpl {
     this.documentoActivo = null
     this.limpiarEstadoTransitorio()
     borrarTodasLasConversaciones()
-    this.conversacionActivaId = crearNuevaConversacion()
+    this.conversacionActivaId = null
     this.listaConversaciones = []
     this.notificar()
   }
@@ -574,6 +582,14 @@ class AsistenteServiceImpl {
         // agrega el mensaje del docente antes de llamar al motor. Este es
         // un turno nuevo del docente: lo que diga el asistente después
         // abre una burbuja nueva, no continúa la anterior.
+        //
+        // Igual que enviarMensaje(): si se llega aquí desde la vista
+        // inicial (sin conversación seleccionada — ej. el docente activó
+        // el modo voz directo desde el arranque), hablar por primera vez
+        // ES la acción que crea la conversación nueva.
+        if (!this.conversacionActivaId) {
+          this.conversacionActivaId = crearNuevaConversacion()
+        }
         this.transcripcionParcial = ''
         this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: evento.texto, creadoEn: Date.now() }]
         this.turnoAbierto = null
@@ -749,6 +765,14 @@ class AsistenteServiceImpl {
   async enviarMensaje(texto: string, adjunto?: AdjuntoImagen) {
     const limpio = texto.trim()
     if (!limpio || this.generando) return
+
+    // Vista inicial (sin conversación seleccionada): escribir el primer
+    // mensaje ES la acción que crea la conversación nueva — ver
+    // ARQUITECTURA: "al crear una conversación nueva: 1. crear un nuevo
+    // conversationId". Nunca pasa nada implícito antes de esto.
+    if (!this.conversacionActivaId) {
+      this.conversacionActivaId = crearNuevaConversacion()
+    }
 
     // Con un documento activo: primero se revisa si el mensaje nombra un
     // formato de archivo real ("Word", "archivo Word", "DOCX", "a PDF",
