@@ -55,8 +55,14 @@ export async function subirBuffer(sb: SupabaseClient, ruta: string, buffer: Buff
 }
 
 // Etapa "URL firmada" aislada — nunca pública ni permanente (ver arriba).
-export async function crearUrlFirmada(sb: SupabaseClient, ruta: string): Promise<string> {
-  const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(ruta, VENCIMIENTO_URL_SEGUNDOS)
+// `nombreDescarga` fuerza Content-Disposition: attachment con ese nombre
+// de archivo — sin esto, Safari/Chrome en el celular a veces solo abren
+// una pestaña en blanco con un .docx en vez de descargarlo o abrirlo con
+// Word/Office, porque el navegador intenta renderizarlo inline.
+export async function crearUrlFirmada(sb: SupabaseClient, ruta: string, nombreDescarga?: string): Promise<string> {
+  const { data, error } = await sb.storage
+    .from(BUCKET)
+    .createSignedUrl(ruta, VENCIMIENTO_URL_SEGUNDOS, nombreDescarga ? { download: nombreDescarga } : undefined)
   if (error || !data?.signedUrl) throw new Error(`Error generando URL de descarga: ${error?.message || 'sin URL'}`)
   return data.signedUrl
 }
@@ -76,6 +82,6 @@ export async function subirArchivoGenerado(
 ): Promise<ArchivoGenerado> {
   const ruta = rutaArchivo(userId, nombreArchivo)
   await subirBuffer(sb, ruta, buffer, contentType)
-  const url = await crearUrlFirmada(sb, ruta)
+  const url = await crearUrlFirmada(sb, ruta, nombreArchivo)
   return { tipo, nombre: nombreArchivo, url }
 }

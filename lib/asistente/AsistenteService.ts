@@ -714,8 +714,22 @@ class AsistenteServiceImpl {
         // enviarMensaje). Si lo que se acaba de terminar es un documento
         // formal, queda marcado como el documento activo para ediciones.
         if (this.turnoAbierto) {
-          const msg = this.mensajes.find(m => m.id === this.turnoAbierto)
-          if (msg && esDocumentoFormal(msg.texto)) this.documentoActivo = { id: msg.id, texto: msg.texto }
+          const idx = this.mensajes.findIndex(m => m.id === this.turnoAbierto)
+          const msg = idx !== -1 ? this.mensajes[idx] : undefined
+          if (msg && evento.archivo) {
+            // CASO 3 (ver FINALIZAR ARCHIVO en app/api/chat/route.ts):
+            // el maestro pidió el archivo real en el MISMO mensaje que
+            // pidió el contenido ("hazme un examen y pásalo a Word"),
+            // sin que existiera un documentoActivo previo — este turno
+            // nunca pasó por enviarComoFinalizacion/editandoDocumentoId
+            // (ver arriba), así que evento.archivo se tenía que adjuntar
+            // aquí también o la tarjeta de descarga nunca aparecía y el
+            // maestro solo veía el texto plano "Documento generado
+            // correctamente."
+            this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo }, ...this.mensajes.slice(idx + 1)]
+          } else if (msg && esDocumentoFormal(msg.texto)) {
+            this.documentoActivo = { id: msg.id, texto: msg.texto }
+          }
         }
         this.notificar()
         break

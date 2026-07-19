@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'docx-storage-rls-fix-v20-207a32e'
+export const BUILD_ID = 'docx-entrega-tarjeta-v21-pending'

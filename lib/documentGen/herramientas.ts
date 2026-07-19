@@ -162,9 +162,23 @@ export async function ejecutarHerramientaDocumento(
   // almacenamiento.ts).
   let url: string
   try {
-    url = await medirEtapa(`${etiqueta}:url-firmada`, () => crearUrlFirmada(sb, ruta))
+    url = await medirEtapa(`${etiqueta}:url-firmada`, () => crearUrlFirmada(sb, ruta, nombre))
   } catch {
     throw new ErrorHerramientaDocumento(`${etiqueta}-URL`, `Fallo obteniendo la URL de descarga del ${tipo}`)
+  }
+
+  // ETAPA 7.5: verificación de accesibilidad real — nunca se responde
+  // éxito solo porque Storage aceptó la subida y devolvió una URL
+  // firmada; se comprueba que esa URL exacta, la que va a recibir el
+  // maestro, de verdad sirve el archivo antes de decir "listo".
+  try {
+    await medirEtapa(`${etiqueta}:verificacion-url`, async () => {
+      const res = await fetch(url, { method: 'HEAD' })
+      if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
+    })
+  } catch (err) {
+    console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible:`, err)
+    throw new ErrorHerramientaDocumento(`${etiqueta}-URL-VERIF`, `La URL de descarga del ${tipo} no quedó accesible`)
   }
 
   // ETAPA 8 (entrega al usuario) ocurre en app/api/chat/route.ts, al
