@@ -58,7 +58,7 @@ export default function HistorialPage() {
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
-        <a href="/dashboard/inicio" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500">←</a>
+        <a href="/dashboard" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500">←</a>
         <div>
           <p className="font-bold text-gray-900 text-sm">Historial de Documentos</p>
           <p className="text-xs text-gray-400">{documentos.length} documentos generados</p>

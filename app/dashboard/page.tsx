@@ -2,23 +2,25 @@
 
 // app/dashboard/page.tsx
 //
-// "/dashboard" ya no fuerza la apertura del Chat IA — ver ARQUITECTURA
-// DE NAVEGACIÓN DEL CHAT IA: la navegación siempre le pertenece al
-// docente, el chat nunca debe abrirse por decisión propia de la
-// aplicación (ni al volver de otro módulo, ni al reabrir la app). Esta
-// ruta solo existe como red de seguridad para cualquier enlace viejo que
-// todavía apunte aquí — redirige directo a Inicio (/dashboard/inicio),
-// la pantalla neutral. Abrir el Chat IA sigue siendo posible en
-// cualquier momento tocando su ícono explícitamente (ver
-// /dashboard/chat, o el burbuja flotante del panel).
+// "/dashboard" es el punto de entrada real de toda la aplicación
+// autenticada — el Chat IA es la pantalla principal (ver REDISEÑO DE
+// ARQUITECTURA: eliminar la pantalla verde como pantalla principal).
+// Abre el panel global directo, sin ninguna pantalla intermedia (ver
+// components/Asistente/AsistentePanel.tsx, montado en el layout). Si ya
+// existe una conversación, el panel la restaura automáticamente (ver
+// lib/asistente/persistencia.ts) — el docente entra directo a donde se
+// quedó, listo para escribir o hablar. Inicio (la portada verde)
+// conserva todas sus funciones tal cual, ahora en /dashboard/inicio,
+// accesible desde el menú lateral del chat — solo dejó de ser la
+// pantalla con la que arranca la app.
 import { useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useAsistente } from '@/lib/asistente/hooks'
 
 export default function Dashboard() {
-  const router = useRouter()
+  const asistente = useAsistente()
 
   useEffect(() => {
-    router.replace('/dashboard/inicio')
+    asistente.abrirPanel()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
