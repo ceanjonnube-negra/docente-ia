@@ -27,7 +27,7 @@ export default function Onboarding() {
       setGuardando(true)
       const { data: { user } } = await supabase.auth.getUser()
       await supabase.from('perfiles_docentes').upsert({ id: user?.id, ...datos })
-      window.location.href = '/dashboard'
+      window.location.href = '/dashboard/inicio'
     }
   }
 

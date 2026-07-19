@@ -1,8 +1,22 @@
-export default function PlaneacionPage() {{
+'use client'
+import { useEffect } from 'react'
+import { useAsistente } from '@/lib/asistente/hooks'
+
+export default function PlaneacionPage() {
+  // Planeación es un módulo independiente — nunca debe mostrarse con el
+  // Chat IA abierto encima, sin importar cómo se llegó aquí (ver
+  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA). cerrarPanel() solo afecta
+  // la visibilidad del panel, nunca la conversación guardada.
+  const asistente = useAsistente()
+  useEffect(() => {
+    asistente.cerrarPanel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
-        <a href="/dashboard" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">‹</a>
+        <a href="/dashboard/inicio" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">‹</a>
         <div className="w-8 h-8 bg-gradient-to-br from-amber-400 to-amber-600 rounded-xl flex items-center justify-center text-xs">📋</div>
         <div>
           <p className="font-bold text-gray-900 text-sm">Planeación</p>
@@ -17,4 +31,4 @@ export default function PlaneacionPage() {{
       </div>
     </div>
   )
-}}
+}

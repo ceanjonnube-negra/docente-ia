@@ -4,7 +4,19 @@ import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
-import { consultarAsistenciaAlumno, contextoAlumno, contextoGrupo } from '@/lib/motorContexto'
+import {
+  asistenciaGrupoResumen,
+  calendarioProximo,
+  consultarAsistenciaAlumno,
+  contextoAlumno,
+  contextoGrupo,
+  documentosDelDocente,
+  necesidadesApoyoGrupo,
+  registrarAsistenciaMasiva,
+} from '@/lib/motorContexto'
+import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
+import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
+import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 
 const supabaseRAG = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,7 +44,7 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
       .map((d: any) => `Documento (categoria: ${d.categoria || "General"}): ${d.nombre_archivo}\n${d.chunk_texto}`)
       .join('\n\n---\n\n')
 
-    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES OFICIALES:\n${fragmentos}\n\nUsa esta informacion oficial cuando sea relevante para responder. IMPORTANTE: si la categoria del documento es SEP puedes decir que la informacion proviene de la SEP; para cualquier otra categoria (Reglamentos, Normatividad, Acuerdos, Protocolos, Planeacion, Consejos Tecnicos, Formatos Oficiales, Personalizadas, etc) NUNCA atribuyas la informacion a la SEP, di que proviene del reglamento o documento interno de la escuela. Al final de tu respuesta, si usaste esta informacion, agrega en una linea nueva: Fuente: [nombre del documento]. Si no usaste ningun documento oficial, no agregues esa linea.`
+    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES DISPONIBLES (posible Fuente 2 o 3, ver PRIORIZACION DE FUENTES):\n${fragmentos}\n\nSi la categoria del documento es SEP, es informacion oficial de la SEP subida a este sistema. Para cualquier otra categoria (Reglamentos, Normatividad, Acuerdos, Protocolos, Planeacion, Consejos Tecnicos, Formatos Oficiales, Personalizadas, etc) es un documento interno de la escuela — NUNCA la atribuyas a la SEP, di que proviene del reglamento/documento interno correspondiente por su nombre real.`
   } catch (e) {
     console.error('Error buscando contexto RAG:', e)
     return ''
@@ -40,6 +52,16 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
 }
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// El Clasificador de Nivel 0 (ver lib/clasificadorNivel0.ts) es una
+// llamada completa y bloqueante a Claude, aparte de la respuesta real —
+// necesaria para enrutar asistencia/ficha/planeación sin pasar por el
+// modelo grande, pero un costo de latencia innecesario para el resto de
+// los mensajes (un cuento, un examen, una pregunta cualquiera), que de
+// todos modos terminan cayendo en "conversacion_general" sin hacer nada.
+// Este filtro local y gratuito evita esa llamada cuando el mensaje
+// claramente no es de los que el Nivel 0 sabe enrutar.
+const REQUIERE_CLASIFICADOR_NIVEL0 = /asistenc|\bfalta(s)?\b|retardo|tardanza|pas[ae]r?\s+lista|ficha\s+descriptiva|planeaci[oó]n|apoyo|document(o|os)|almacenad|calendario|actividad(es)?|programad/i
 
 // Envuelve un texto ya resuelto (sin pasar por el modelo grande) en el
 // mismo formato de streaming de texto plano que el cliente ya espera,
@@ -55,8 +77,126 @@ function respuestaTexto(texto: string): Response {
   return new Response(readable, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
 }
 
+// El maestro nunca debe ver detalle técnico (HTTP, JSON, mensajes crudos
+// de la API de Anthropic/OpenAI, stack traces) — ver ARQUITECTURA
+// MAESTRA, principio de ERRORES. El detalle real siempre se registra con
+// console.error para diagnóstico; esto es lo único que llega al chat.
+const MENSAJE_ERROR_GENERICO = 'No fue posible completar la solicitud en este momento. Intenta de nuevo en unos segundos.'
+const MENSAJE_ERROR_DOCUMENTO = 'No fue posible generar el documento en este momento. Toca para intentar de nuevo.'
+
+// Tiempo máximo que se espera la respuesta de Anthropic antes de darla
+// por colgada — sin esto, una llamada que nunca resuelve (no rechaza, no
+// responde) deja al maestro viendo "Generando..." indefinidamente, sin
+// que ningún catch se dispare nunca. 25s es generoso para el primer byte
+// de un stream real, pero corta una conexión realmente muerta.
+const TIMEOUT_ANTHROPIC_MS = 25_000
+
+// DIAGNÓSTICO DE FALLAS DEL MODELO — clasifica cualquier error real de
+// la llamada a Anthropic en una de 5 categorías, para poder decidir
+// automáticamente si vale la pena reintentar (ver debeReintentar) y para
+// que el registro interno (console.error) diga la causa real en vez de
+// un stack trace suelto. Nunca se expone al maestro — ver MENSAJE_ERROR_*.
+type CategoriaErrorIA = 'conexion' | 'timeout' | 'creditos' | 'configuracion' | 'proveedor' | 'desconocido'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function clasificarErrorIA(err: any): CategoriaErrorIA {
+  const nombre = String(err?.name || '')
+  const mensaje = String(err?.error?.error?.message || err?.error?.message || err?.message || '')
+
+  // TIMEOUT — se disparó el AbortController de TIMEOUT_ANTHROPIC_MS
+  // (ver conReintento) o el propio SDK reporta timeout de conexión.
+  if (nombre === 'AbortError' || /timeout|timed out/i.test(nombre) || /timeout|timed out/i.test(mensaje)) {
+    return 'timeout'
+  }
+
+  const status: number | undefined = err?.status
+  const tipo: string | undefined = err?.error?.error?.type || err?.error?.type || err?.type
+
+  // CONEXIÓN — nunca hubo respuesta HTTP real de Anthropic (DNS, TLS,
+  // conexión rechazada/reiniciada a medio camino).
+  if (status === undefined && /fetch failed|ECONNRESET|ENOTFOUND|EAI_AGAIN|network/i.test(mensaje)) {
+    return 'conexion'
+  }
+
+  // CONFIGURACIÓN — API key ausente/inválida/sin permiso. Reintentar NO
+  // ayuda: la petición siguiente falla exactamente igual.
+  if (status === 401 || tipo === 'authentication_error' || tipo === 'permission_error') {
+    return 'configuracion'
+  }
+
+  // CRÉDITOS INSUFICIENTES — falla real y actual confirmada en
+  // producción (ver diagnóstico). Es un estado de facturación, no un
+  // problema técnico — reintentar jamás lo resuelve.
+  if (status === 400 && /credit balance|insufficient/i.test(mensaje)) {
+    return 'creditos'
+  }
+
+  // PROVEEDOR — límite de tasa (429) o falla del lado de Anthropic
+  // (5xx/sobrecarga). Genuinamente transitorio: un segundo intento
+  // segundos después suele funcionar.
+  if (status === 429 || tipo === 'rate_limit_error' || tipo === 'overloaded_error' || (status !== undefined && status >= 500)) {
+    return 'proveedor'
+  }
+
+  // Cualquier otro 400 (parámetros inválidos, payload mal formado) es un
+  // error de CONFIGURACIÓN de la petición misma — reintentar manda
+  // exactamente el mismo payload otra vez y falla igual.
+  if (status === 400) return 'configuracion'
+
+  return 'desconocido'
+}
+
+// Solo estas categorías son genuinamente transitorias — reintentar
+// cualquier otra es tiempo perdido (falla garantizada otra vez) y en el
+// caso de CRÉDITOS además desperdicia una llamada más contra el saldo.
+const CATEGORIAS_REINTENTABLES: ReadonlySet<CategoriaErrorIA> = new Set(['conexion', 'timeout', 'proveedor'])
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function debeReintentar(err: any, categoria: CategoriaErrorIA): boolean {
+  // Anthropic mismo manda esta cabecera indicando si reintentar tiene
+  // caso — si dice que no, se respeta sin importar la categoría.
+  const encabezadoNoReintentar = typeof err?.headers?.get === 'function' && err.headers.get('x-should-retry') === 'false'
+  if (encabezadoNoReintentar) return false
+  return CATEGORIAS_REINTENTABLES.has(categoria)
+}
+
+// Reintenta SOLO cuando la falla es de una categoría transitoria (ver
+// clasificarErrorIA/debeReintentar) — nunca contra créditos insuficientes
+// ni problemas de configuración, que fallan garantizado otra vez y en el
+// caso de créditos desperdician una llamada más. `etiqueta` identifica el
+// sitio de la llamada en los logs (hay 3: conversación normal, CASO 3 de
+// documento combinado, generación/subida del archivo).
+async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<T> {
+  try {
+    return await fn()
+  } catch (primerError) {
+    const categoria = clasificarErrorIA(primerError)
+    console.error(`[IA:${etiqueta}] Falla (categoría=${categoria}):`, primerError)
+    if (!debeReintentar(primerError, categoria)) throw primerError
+    console.error(`[IA:${etiqueta}] Categoría transitoria (${categoria}) — reintentando una vez...`)
+    try {
+      return await fn()
+    } catch (segundoError) {
+      const categoria2 = clasificarErrorIA(segundoError)
+      console.error(`[IA:${etiqueta}] Reintento también falló (categoría=${categoria2}):`, segundoError)
+      throw segundoError
+    }
+  }
+}
+
 export async function POST(req: NextRequest) {
-  const { mensaje, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken, zonaHoraria, finalizarArchivo } = await req.json()
+
+  // Turnos previos reales de la conversación (ver MotorTextoClaude.
+  // establecerHistorial) — sin esto Claude solo ve el mensaje suelto de
+  // ahora mismo y "olvida" de qué se habló un turno antes.
+  const historialMensajes: { role: 'user' | 'assistant'; content: string }[] = Array.isArray(historial)
+    ? historial.filter((h: unknown): h is { role: 'user' | 'assistant'; content: string } =>
+        typeof h === 'object' && h !== null &&
+        typeof (h as { content?: unknown }).content === 'string' &&
+        ((h as { role?: unknown }).role === 'user' || (h as { role?: unknown }).role === 'assistant')
+      )
+    : []
 
   // Cliente con la sesión real del docente (necesario para que
   // auth.uid() funcione dentro de las RPC del Motor de Contexto).
@@ -68,11 +208,146 @@ export async function POST(req: NextRequest) {
       })
     : null
 
-  // --- Clasificador de Nivel 0 (solo si tenemos sesión de usuario real) ---
-  let contextoEnriquecido = contexto || ''
-  if (supabaseUser && userId) {
+  // FINALIZAR ARCHIVO — cuando el maestro pide el documento activo en un
+  // formato real (Word/PDF/PowerPoint/Excel), se genera y sube el
+  // archivo directo, SIN pasar por Claude: es una acción mecánica (el
+  // contenido ya se acordó en la conversación), no una decisión que el
+  // modelo deba tomar. Así se garantiza que la herramienta SIEMPRE se
+  // ejecute — nunca depende de que una llamada al modelo grande decida
+  // responder con texto en vez de generar el archivo (la falla real que
+  // se venía reportando), ni de que la API de Anthropic esté disponible.
+  //
+  // Dos caminos llegan aquí:
+  // 1. El cliente ya detectó la intención (ver detectarHerramientaDocumento
+  //    en lib/asistente/documentos.ts) y manda el texto del documento
+  //    activo directo — ver `finalizarArchivo` en el cuerpo.
+  // 2. Red de seguridad: el cliente NO mandó finalizarArchivo (por
+  //    ejemplo, perdió el rastro del documento activo tras recargar la
+  //    página — documentoActivo vive solo en memoria del navegador), pero
+  //    el mensaje de todos modos nombra un formato real Y el historial
+  //    real de la conversación trae un documento recuperable. Nunca debe
+  //    depender solo de la memoria del cliente.
+  // Formato real que el maestro pidió (o null si no pidió ninguno) —
+  // calculado una sola vez aquí porque lo necesitan TANTO el camino
+  // rápido de abajo (documento recuperable) COMO el CASO 3 más adelante
+  // (nada que recuperar, Claude tiene que redactarlo primero).
+  const tipoHerramientaSolicitado: TipoHerramienta | null =
+    finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string'
+      ? finalizarArchivo.tipo
+      : detectarHerramientaDocumento(mensaje || '')
+
+  if (supabaseUser && userId && tipoHerramientaSolicitado) {
+    let documentoTexto = ''
+    let fuenteContenido: 'cliente' | 'historial' | 'ninguna' = 'ninguna'
+
+    if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
+      documentoTexto = finalizarArchivo.documentoTexto
+      fuenteContenido = 'cliente'
+    } else {
+      const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
+      if (ultimoDocumento) {
+        documentoTexto = ultimoDocumento.content
+        fuenteContenido = 'historial'
+      }
+    }
+
+    // ETAPA 1 (detección de la intención): ya se resolvió arriba —
+    // tipoHerramientaSolicitado. ETAPA 2 (obtención del contenido): el
+    // texto no se redacta aquí, se recupera ya hecho — de dónde exactamente
+    // es lo único que varía.
+    console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=${fuenteContenido}`)
+
+    if (documentoTexto && esDocumentoFormal(documentoTexto)) {
+      console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:contenido] OK — ${documentoTexto.length} caracteres (fuente=${fuenteContenido})`)
+      try {
+        const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseUser, userId), 'generar-archivo')
+        const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+        console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+      } catch (err) {
+        if (err instanceof HerramientaNoDisponibleError) {
+          // No es una falla real — el maestro pidió algo que a propósito
+          // todavía no está implementado (imagen/audio/video). Un mensaje
+          // honesto y en español simple no viola ERRORES: no expone
+          // nada técnico, solo el límite real de la app.
+          return NextResponse.json({ error: err.message }, { status: 502 })
+        }
+        const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
+        console.error(`Error ejecutando herramienta de documento [${codigo}]:`, err)
+        return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
+      }
+    }
+    // No había documento recuperable (ni mandado por el cliente ni en el
+    // historial) — cae al flujo normal de abajo. Si tipoHerramientaSolicitado
+    // sigue puesto, el CASO 3 (justo antes de "let stream") intercepta la
+    // respuesta de Claude en vez de dejarla pasar como texto normal.
+  }
+
+  // RAG y "proceso activo" no dependen del Clasificador de Nivel 0 ni de
+  // su resultado — se disparan de inmediato en paralelo con él en vez de
+  // esperar a que termine para empezar recién ahí (eran ~2 llamadas de
+  // red seguidas antes de llegar siquiera a Claude).
+  const contextoRAGPromise = buscarContextoRAG(mensaje, institucionId || null)
+  const procesoActivoPromise = userId
+    ? Promise.resolve(
+        supabaseRAG
+          .from('procesos_activos')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('estado', 'activo')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      )
+        .then(({ data }) => data)
+        .catch(() => null)
+    : Promise.resolve(null)
+
+  // La sesión real (grupo activo + lista de alumnos con nombre e ID) se
+  // obtiene SIEMPRE que haya un docente autenticado — no solo cuando el
+  // mensaje parece pedir una acción concreta. Son 2 consultas indexadas
+  // y corren en paralelo con el resto (RAG, proceso activo), así que no
+  // agregan una vuelta de red extra. Esto es lo que le permite al Chat
+  // IA responder "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez
+  // de fingir que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
+  const sesion = (supabaseUser && userId)
+    ? await obtenerSesionContexto(supabaseUser, userId, zonaHoraria).catch((e) => {
+        console.error('Error obteniendo sesión de contexto:', e)
+        return null
+      })
+    : null
+
+  // Resumen SIEMPRE disponible del grupo activo y su lista de alumnos —
+  // se inyecta en DATOS DEL MAESTRO más abajo pase lo que pase, sin
+  // depender del clasificador. Es lo que hace posible responder "sí,
+  // tengo acceso a la lista del grupo 3°B, hay 28 alumnos" en vez de
+  // "no tengo acceso directo a tu lista".
+  const resumenGrupoTexto = sesion
+    ? sesion.grupo_activo_id
+      ? (() => {
+          const alumnos = sesion.alumnos_del_grupo_activo
+          const ninas = alumnos.filter((a) => a.sexo === 'M').length
+          const ninos = alumnos.filter((a) => a.sexo === 'H').length
+          const listaConNumero = alumnos
+            .slice()
+            .sort((a, b) => (a.numero_lista ?? 999) - (b.numero_lista ?? 999))
+            .map((a) => `${a.numero_lista ?? '—'}. ${a.nombre_completo} (${a.sexo === 'M' ? 'niña' : a.sexo === 'H' ? 'niño' : 'sexo no registrado'})`)
+            .join('\n')
+          return `Grupo activo: sí hay un grupo configurado (ID interno ${sesion.grupo_activo_id}).\nAlumnos inscritos activos: ${alumnos.length} (${ninas} niñas, ${ninos} niños${alumnos.length - ninas - ninos > 0 ? `, ${alumnos.length - ninas - ninos} sin sexo registrado` : ''}).${
+            alumnos.length > 0 ? `\nLista de alumnos con número de lista real (úsalo tal cual, nunca inventes uno distinto):\n${listaConNumero}` : ''
+          }`
+        })()
+      : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
+    : null
+
+  // --- Clasificador de Nivel 0 (solo si el mensaje parece pedir una
+  // ACCIÓN o un dato específico — ver REQUIERE_CLASIFICADOR_NIVEL0. La
+  // sesión de arriba ya está disponible siempre; esto solo decide si
+  // vale la pena la llamada extra a Claude para clasificar la intención) ---
+  let contextoEnriquecido = [contexto || '', resumenGrupoTexto || ''].filter(Boolean).join('\n\n')
+  if (supabaseUser && userId && sesion && REQUIERE_CLASIFICADOR_NIVEL0.test(mensaje)) {
     try {
-      const sesion = await obtenerSesionContexto(supabaseUser, userId)
       const clasificacion = await clasificarNivel0(mensaje, sesion)
 
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
@@ -110,8 +385,43 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Nivel 4: ficha_descriptiva / planeacion_nueva — se enriquece el
-      // contexto con datos reales antes de la llamada grande a Claude.
+      // Nivel 1: registrar_asistencia ("pasa lista", "toma asistencia", etc.
+      // — todas la misma acción real) — marca a todo el grupo activo como
+      // presente por default, sin pasar por el modelo grande.
+      if (
+        clasificacion.intencion_principal === 'registrar_asistencia' &&
+        clasificacion.nivel_ejecucion === 1 &&
+        sesion.grupo_activo_id
+      ) {
+        try {
+          await registrarAsistenciaMasiva(supabaseUser, sesion.grupo_activo_id, sesion.fecha_actual, [])
+
+          // La tabla legada `asistencias` (alumno_id, no inscripcion_id) no
+          // la toca la RPC — se sincroniza aquí para que los contadores de
+          // Lista no queden desfasados con lo registrado desde el chat.
+          if (sesion.alumnos_del_grupo_activo.length > 0) {
+            const filasLegadas = sesion.alumnos_del_grupo_activo.map((a) => ({
+              alumno_id: a.alumno_id,
+              fecha: sesion.fecha_actual,
+              presente: true,
+            }))
+            const { error: errorLegado } = await supabaseUser
+              .from('asistencias')
+              .upsert(filasLegadas, { onConflict: 'alumno_id,fecha' })
+            if (errorLegado) console.error('Error sincronizando asistencias (legado) desde el chat:', errorLegado)
+          }
+
+          return respuestaTexto('Listo. Ya pasé lista — todos tus alumnos quedaron como presentes por default. Si alguien faltó o llegó tarde, dime su nombre y lo corrijo.')
+        } catch (e) {
+          console.error('Error registrando asistencia masiva:', e)
+          // Si falla, seguimos al flujo normal como respaldo.
+        }
+      }
+
+      // Nivel 4: ficha_descriptiva / planeacion_nueva / consultas
+      // agregadas de grupo — se enriquece el contexto con datos reales
+      // antes de la llamada grande a Claude, para que conteste con la
+      // cifra o el nombre real en vez de decir que no tiene acceso.
       if (clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) {
         try {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
@@ -120,6 +430,18 @@ export async function POST(req: NextRequest) {
           } else if (clasificacion.intencion_principal === 'planeacion_nueva' && sesion.grupo_activo_id) {
             const ctxGrupo = await contextoGrupo(supabaseUser, sesion.grupo_activo_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL GRUPO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxGrupo)}`
+          } else if (clasificacion.intencion_principal === 'consultar_asistencia_grupo' && sesion.grupo_activo_id) {
+            const resumen = await asistenciaGrupoResumen(supabaseUser, sesion.grupo_activo_id, sesion.fecha_actual)
+            contextoEnriquecido += `\n\nASISTENCIA REAL DEL GRUPO HOY (${resumen.fecha}) Y RANKING DE FALTAS DEL CICLO (usa estos datos, no inventes otros; si una lista viene vacía, dilo con honestidad en vez de inventar nombres):\n${JSON.stringify(resumen)}`
+          } else if (clasificacion.intencion_principal === 'consultar_apoyo' && sesion.grupo_activo_id) {
+            const apoyos = await necesidadesApoyoGrupo(supabaseUser, sesion.grupo_activo_id)
+            contextoEnriquecido += `\n\nALUMNOS CON NECESIDAD DE APOYO REGISTRADA (usa estos datos; si la lista viene vacía, significa que no hay ninguna registrada todavía — dilo con honestidad):\n${JSON.stringify(apoyos)}`
+          } else if (clasificacion.intencion_principal === 'consultar_documentos' && userId) {
+            const documentos = await documentosDelDocente(supabaseUser, userId)
+            contextoEnriquecido += `\n\nDOCUMENTOS REALES YA GENERADOS POR EL MAESTRO (usa estos datos, no inventes otros):\n${JSON.stringify(documentos)}`
+          } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
+            const eventos = await calendarioProximo(supabaseUser, userId, sesion.fecha_actual)
+            contextoEnriquecido += `\n\nPRÓXIMOS EVENTOS REALES DEL CALENDARIO ESCOLAR (usa estos datos, no inventes otros; si viene vacío, dilo con honestidad):\n${JSON.stringify(eventos)}`
           }
         } catch (e) {
           console.error('Error ensamblando contexto Nivel 4:', e)
@@ -132,21 +454,24 @@ export async function POST(req: NextRequest) {
   }
   // --- Fin Clasificador de Nivel 0 ---
 
-  const contextoRAG = await buscarContextoRAG(mensaje, institucionId || null)
+  const contextoRAG = await contextoRAGPromise
+
+  // Fecha, hora y ciclo escolar reales — SIEMPRE en la zona horaria real
+  // del dispositivo del maestro (mandada por el cliente, ver
+  // motorTextoClaude.ts / motorOpenAIRealtime.ts), nunca una zona fija.
+  // Un valor fijo como "America/Mexico_City" producía desfases de hasta
+  // 2 horas para un maestro en cualquier otra zona de México (Mazatlán,
+  // Tijuana, Cancún) — ver lib/tiempo/TimeService.ts, único lugar del
+  // proyecto que calcula esto.
+  const infoFechaHora = obtenerFechaHora(zonaHoraria)
+  const cicloEscolar = infoFechaHora.cicloEscolar
 
   let contextoProceso = `
 
-INSTRUCCION SOBRE TAREAS LARGAS DE VARIOS ELEMENTOS: Cuando el maestro pida generar varios elementos similares en serie (ejemplo: fichas descriptivas de varios alumnos, examenes de varios temas, actividades de varios dias), identifica cuantos elementos totales se piden. Genera SOLO el elemento actual en tu respuesta (no todos de golpe, salvo que el maestro pida explicitamente todos juntos). Al final de tu respuesta, en su propia linea, incluye exactamente este marcador tecnico que el maestro nunca vera en pantalla: [[PROCESO:tipo=NOMBRE_CORTO_DE_LA_TAREA;actual=NUMERO_DEL_ELEMENTO_QUE_ACABAS_DE_GENERAR;total=TOTAL_DE_ELEMENTOS;estado=activo_si_faltan_mas_o_completado_si_es_el_ultimo]]. Si la tarea no es de varios elementos en serie, no incluyas ningun marcador.`
+INSTRUCCION SOBRE TAREAS LARGAS DE VARIOS ELEMENTOS: esto SOLO aplica cuando el maestro pide explícitamente varios documentos SEPARADOS en la misma solicitud (ejemplo: "hazme las fichas descriptivas de estos 5 alumnos", "hazme examenes de 3 temas distintos", "planeaciones de las próximas 4 semanas") — cada elemento sería, por sí solo, un documento completo. NO aplica a un solo documento que internamente tenga varias partes (un examen con varios reactivos, una planeación con varios días, una lectura con varias preguntas de comprensión) — eso es UN solo documento y se entrega completo en una sola respuesta, sin marcador. Solo cuando de verdad se pidieron varios documentos separados: identifica cuántos se piden en total y genera SOLO el elemento actual en tu respuesta (no todos de golpe, salvo que el maestro pida explícitamente todos juntos). Al final de tu respuesta, en su propia línea, incluye exactamente este marcador técnico que el maestro nunca verá en pantalla: [[PROCESO:tipo=NOMBRE_CORTO_DE_LA_TAREA;actual=NUMERO_DEL_ELEMENTO_QUE_ACABAS_DE_GENERAR;total=TOTAL_DE_ELEMENTOS;estado=activo_si_faltan_mas_o_completado_si_es_el_ultimo]]. Si la tarea no es de varios documentos separados en serie, NO incluyas ningún marcador.`
 
   if (userId) {
-    const { data: proceso } = await supabaseRAG
-      .from('procesos_activos')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('estado', 'activo')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const proceso = await procesoActivoPromise
 
     if (proceso) {
       contextoProceso = `\n\nPROCESO ACTIVO EN CURSO (el maestro ya empezo esta tarea, NO la reinicies, continua exactamente donde se quedo salvo que el maestro pida algo distinto):
@@ -156,22 +481,81 @@ Si el mensaje del maestro es una instruccion para continuar (ej: continua, sigue
     }
   }
 
-  const stream = await client.messages.create({
-      stream: true,
-    model: 'claude-sonnet-4-6',
-    max_tokens: 3000,
-    system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos.
+  // Parámetros de la llamada a Claude, compartidos por el streaming
+  // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
+  // el archivo en un solo mensaje, ver más abajo) — el único que cambia
+  // entre ambos es `stream`.
+  const parametrosClaude = {
+    model: 'claude-sonnet-4-6' as const,
+    // Antes en 3000 — un documento largo real (una planeación de 10 días
+    // con propósito, PDAs, actividades de inicio/desarrollo/cierre y
+    // evaluación POR DÍA) fácilmente pasa de esa cifra. Cuando el modelo
+    // se quedaba sin tokens a media respuesta, el flujo de streaming del
+    // cliente terminaba con muy poco o nada de texto útil — uno de los
+    // caminos reales hacia la "burbuja vacía" reportada.
+    max_tokens: 8000,
+    system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos, y también su asesor pedagógico de confianza: el lugar donde consultan información oficial de la SEP, documentos internos de su escuela y los datos de su propio grupo, sin tener que buscar en otro lado.
+
+CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
+
+CONCIENCIA DE DATOS REALES — eres el cerebro central de Docente IA, no un chatbot genérico de propósito general: tienes acceso directo y automático a los datos reales del grupo activo del maestro (ver DATOS DEL MAESTRO más abajo, donde siempre viene el grupo activo y su lista de alumnos si existen) sin que el maestro tenga que dártelos ni preguntarte si los tienes. Tienes PROHIBIDO responder con frases genéricas de chatbot que nieguen o duden de tu acceso a la información de la aplicación — nunca digas "no tengo acceso directo...", "puedes decirme los nombres...", "podemos organizar una lista desde cero...", "si quieres podemos hacerlo juntos..." ni cualquier variante equivalente: son falsas dentro de esta aplicación y rompen la confianza del maestro. Si el maestro pregunta si ya tienes acceso a su lista, sus alumnos, su grupo, o cualquier dato que sí aparezca en DATOS DEL MAESTRO, respóndele con ese dato real y confirma que sí lo tienes — nunca finjas no saberlo. Ejemplo: "¿Ya tienes acceso a mi lista de alumnos?" → "Sí. Ya tengo acceso a la lista del grupo [nombre]. Actualmente hay [N] alumnos registrados. ¿Qué deseas hacer con ellos?". Si el dato específico que pide el maestro NO aparece en DATOS DEL MAESTRO (por ejemplo, una ficha descriptiva o documento que todavía no se ha generado), dilo con honestidad y ofrece la acción concreta para resolverlo — nunca lo confundas con no tener acceso a la aplicación en general. Ejemplo: "Aún no encuentro una lista registrada para este grupo. ¿Deseas importarla o crear una nueva?"
+
+TONO Y ARRANQUE DE RESPUESTA — eres un asistente profesional, cercano, inteligente y natural: como conversar con un buen asistente humano, mexicano, especializado en educación básica — nunca frío y telegráfico, nunca relleno vacío. El arranque depende del tipo de mensaje:
+- Mensaje puramente social, sin ninguna tarea (ej. "¿Qué onda? ¿Cómo estás?", "Hola", "Buenas noches"): responde con calidez breve y natural, variando la frase cada vez — puedes saludar de vuelta y usar el nombre del maestro cuando lo tengas. Ejemplos válidos (no repitas siempre el mismo): "Buenas noches, [nombre]. ¿Qué vamos a preparar?", "Buenas noches. ¿En qué trabajamos?", "Todo bien. ¿Qué necesitas preparar?". Nunca respondas solo "Dime." o "¿Qué necesitas?" a secas.
+- MODO CONSULTA o contenido rápido dentro de la conversación (una pregunta, una explicación, "dame unos problemas de resta", etc.): puedes ir directo al contenido, o abrir con una frase breve y útil que confirme qué preparaste ("Preparé cinco problemas de resta para tercer grado, con dificultad progresiva:") seguida del contenido en la misma respuesta. Cualquiera de las dos formas es válida — lo que nunca debe pasar es una respuesta robótica de una sola palabra suelta: "Dime.", "Ahí va.", "Entendido.", "Perfecto.", "Claro.", "Voy a hacerlo." no son respuestas completas por sí solas.
+- MODO DOCUMENTO (los tipos formales definidos abajo, con su título en mayúsculas y emoji): sigue yendo directo al título, sin ninguna frase previa — la aplicación usa esa primera línea para mostrar el documento como tarjeta descargable; una frase antes de ella rompe esa tarjeta.
+
+NUNCA NARRES TUS PROPIAS REGLAS — todo lo anterior es instrucción interna, el maestro jamás debe enterarse de que existe. Tienes PROHIBIDO decir frases como "recuerda que voy directo al contenido", "sin saludos ni introducciones", "vamos al grano", "como asistente...", "mi función es..." o cualquier variante que explique o mencione tu propio comportamiento o tus reglas — eso también es relleno, igual de prohibido que una respuesta seca. Simplemente compórtate así, sin anunciarlo nunca.
+
+MEMORIA DE LA CONVERSACIÓN — tienes arriba, como turnos previos reales, todo lo que se ha dicho en esta conversación. Úsalo siempre: si el maestro ya te dio el grado, tema, o tipo de documento en un mensaje anterior, jamás lo vuelvas a preguntar ni cambies de nivel/grado/tema por tu cuenta. Si dice "hazlo en Word", "ahora en PDF", "hazlo oficial" o "agrégale algo" sin repetir el tema, se refiere al ÚLTIMO documento del que se habló — continúa exactamente ese mismo, nunca empieces uno distinto.
+
+FECHA Y HORA ACTUALES DEL SISTEMA — en la zona horaria real del dispositivo del maestro (${infoFechaHora.zonaHoraria}), NUNCA UTC ni una zona distinta: hoy es ${infoFechaHora.diaSemana} ${infoFechaHora.fechaLegible}, son las ${infoFechaHora.horaLegible}. Ciclo escolar actual: ${infoFechaHora.cicloEscolar}. Si el maestro pregunta la hora o la fecha, responde exactamente con estos datos — nunca inventes ni uses un año, fecha u hora de tu memoria de entrenamiento, ni asumas una zona horaria distinta a la indicada arriba.
+
+ANTICIPACIÓN AUTOMÁTICA — cuando el maestro pida un recurso educativo (examen, guía, planeación, actividad, ficha, cuento, fábula, lectura, comprensión, ejercicios, práctica, problema, resumen, oficio), no te limites a lo mínimo que pidió literalmente ni le preguntes los detalles uno por uno. Interpreta la intención completa y construye automáticamente el mejor recurso posible para ese contexto: título atractivo, contenido adecuado al grado del maestro, y los elementos pedagógicos que ese tipo de recurso normalmente necesita (por ejemplo: un cuento o fábula normalmente lleva moraleja si aplica, preguntas de comprensión lectora y una actividad de cierre — ver el formato de CUENTOS, FÁBULAS Y LECTURAS abajo). El maestro no debería tener que pedir cada pieza por separado.
 ${contextoEnriquecido ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
 ${contextoEnriquecido}` : ''}${contextoRAG}${contextoProceso}
 
-REGLAS ABSOLUTAS:
+PRIORIZACIÓN DE FUENTES — decide antes de responder cualquier consulta informativa (no aplica a generación de documentos ni a acciones dentro de la app):
+1. Fuente SEP (conocimiento oficial): si la pregunta es general sobre el marco oficial vigente (Planes y Programas de Estudio, Nueva Escuela Mexicana, campos formativos, PDA, ejes articuladores, orientaciones didácticas, evaluación, acuerdos oficiales, calendario escolar, manuales, protocolos, convivencia escolar, inclusión, educación especial) y no hay un documento institucional que la resuelva mejor, respóndela con tu conocimiento confiable de ese marco oficial. Interprétala y explícala en lenguaje claro, como lo haría un asesor pedagógico — nunca respondas como si solo hubieras buscado un documento. Si algún detalle muy específico o reciente no lo tienes con certeza, dilo con honestidad en vez de inventarlo.
+2. Fuente interna de la escuela: si la pregunta hace referencia explícita a la escuela del maestro (reglamento, manual de convivencia propio, circulares, oficios, acuerdos internos) y existe un documento institucional relevante (ver INFORMACION DE DOCUMENTOS INSTITUCIONALES arriba), básate en ese documento real, nunca en la SEP.
+3. Datos de la app: si la pregunta es sobre un alumno, el grupo o la escuela del maestro, usa exclusivamente los DATOS DEL MAESTRO/CONTEXTO REAL ya inyectados arriba — nunca inventes cifras ni nombres. Si el dato que piden no está disponible ahí, dilo con honestidad en vez de adivinar.
+Si tu respuesta combinó más de una fuente, dilo.
+
+CITAR LA FUENTE — solo cuando la respuesta se apoyó en información oficial o en un documento (nunca la agregues para conversación general ni para acciones dentro de la app):
+Al final de tu respuesta, separado por una línea en blanco, agrega discretamente un bloque así (una sola fuente):
+Fuente:
+SEP – [nombre del programa o documento]
+o si fueron varias:
+Fuentes consultadas:
+- SEP – [nombre]
+- [nombre del documento interno]
+Nunca interrumpas la explicación principal con la cita ni la menciones a media respuesta; va siempre al final, en su propio bloque.
+
+MODO CONSULTA — aplica cuando el maestro hace una pregunta o pide una explicación (no un documento formal de los definidos abajo):
+- Responde en párrafos cortos, pensados para leerse desde un celular. Evita bloques enormes de texto.
+- Usa títulos y viñetas solo cuando ayuden a la claridad, no en cada respuesta.
+- No copies documentos completos: resume, explica e interpreta con tus propias palabras.
+- El tono es cálido y natural — ver TONO Y ARRANQUE DE RESPUESTA arriba para cómo abrir la respuesta según el tipo de mensaje.
+- Después de responder una consulta oficial o pedagógica, puedes sugerir como máximo UNA acción útil relacionada, en una sola frase al final, después de la cita si la hay (ejemplo: "Si lo deseas, puedo elaborar una rúbrica alineada con este PDA."). Nunca sugieras más de una opción, y nunca la agregues si no es realmente relevante.
+
+MODO DOCUMENTO — las siguientes reglas aplican cuando el maestro pide generar uno de los documentos formales de abajo (planeación, rúbrica, examen/actividad, citatorio, resumen formal, cuento/fábula/lectura), no en modo consulta:
+Qué cuenta como MODO DOCUMENTO: además de los tipos con formato fijo de abajo, también entra aquí cualquier resumen o documento formal que el maestro pida como ENTREGABLE — resumen de una ley, reglamento, acuerdo, norma o documento oficial ("resúmeme la ley...", "hazme un resumen de...", "necesito un documento con...", "genera un resumen formal de..."), y cualquier recurso educativo como examen, guía, planeación, actividad, ficha, cuento, fábula, lectura, ejercicios o práctica. Si el maestro solo está preguntando o pidiendo que le expliques algo ("¿qué dice la ley sobre...", "explícame...", "¿por qué...") es MODO CONSULTA, no esto.
 1. NUNCA preguntes grado, grupo, escuela, nombre, estado, municipio. Ya los tienes.
-2. NUNCA uses frases introductorias. Ve directo al documento.
+2. NUNCA uses frases introductorias ni cierres conversacionales. Ve directo al contenido; termina cuando termine el contenido, sin despedidas ni ofrecimientos de ayuda adicional.
 3. NUNCA uses markdown: sin asteriscos, sin simbolos | , sin ---, sin #.
 4. Usa terminología NEM: campos formativos, PDAs, proyectos didácticos. NUNCA "asignaturas".
 5. NUNCA uses tablas de ningún tipo en el texto.
 6. Los títulos en MAYÚSCULAS con emoji al inicio, cada uno en su propia línea.
 7. Deja una línea en blanco entre cada sección.
+8. Básate únicamente en información real: el contexto inyectado, la fuente citada, o tu conocimiento confiable y verificado del marco oficial. Si no tienes certeza de un dato específico (número de artículo, fracción, fecha, cifra exacta), dilo explícitamente en el documento en vez de inventarlo — nunca inventes contenido legal o normativo.
+9. DOCUMENTO OFICIAL: si el maestro pidió el documento con frases como "hazme un documento oficial", "formato oficial", "oficio", "documento para entregar", "formato institucional", "de manera oficial", "para imprimir" o "lista/listo para imprimir", agrega ANTES del título este encabezado con datos reales (nunca los preguntes, ya los tienes en DATOS DEL MAESTRO):
+Escuela: [escuela]
+Docente: [nombre]
+Grado y Grupo: [grado]° [grupo]
+Fecha: [fecha actual]
+Lugar: [municipio], [estado]
+Si el maestro NO pidió el documento como oficial, no agregues este encabezado.
+10. DOCUMENTOS NORMALES (no oficiales): cuentos, fábulas, lecturas, exámenes, actividades, guías y recursos educativos NO llevan firma, nombre del maestro ni encabezado institucional por defecto — quedan neutros y reutilizables. Esos datos solo aparecen si el maestro los pide explícitamente o si aplica la regla 9 (documento oficial).
 
 EXCEPCION A LA REGLA 3 - DATOS TABULARES:
 Cuando generes listas de alumnos con CURP, rubricas, calificaciones, horarios, o cualquier dato con varias columnas (numero, nombre, CURP, criterio, puntaje, dia, hora, etc), SIEMPRE usa el simbolo | como separador de columnas, con este formato exacto:
@@ -186,14 +570,14 @@ Este formato con | es obligatorio y NUNCA debe alternarse con guion largo, dos p
 
 TIPOS DE DOCUMENTOS QUE GENERAS:
 
-PLANEACIONES — usa este formato:
-📋 PLANEACIÓN DIDÁCTICA SEMANAL
-Maestro: [nombre] | Escuela: [escuela]
-Grado: [grado] | Grupo: [grupo] | Municipio: [municipio]
+PLANEACIONES — usa este formato. La duración por defecto es de 5 días (una semana) si el maestro no especifica otra cosa; si pide un número de días distinto (por ejemplo "para 10 días"), genera EXACTAMENTE esa cantidad de días completos, nunca menos, y organízalos con progresión real de principio a fin (conocimientos previos → desarrollo del contenido → práctica/aplicación → producto final) — nunca repitas la misma actividad en días distintos:
+📋 PLANEACIÓN DIDÁCTICA
+Grado: [grado] | Grupo: [grupo]
 Campo Formativo: [campo]
 Proyecto Didáctico: [nombre]
+Duración: [número de días real] días
 
-🎯 PROPÓSITO DE LA SEMANA
+🎯 PROPÓSITO GENERAL
 [descripción]
 
 📚 PROGRESIONES DE APRENDIZAJE (PDAs)
@@ -203,7 +587,7 @@ Proyecto Didáctico: [nombre]
 🧰 MATERIALES
 - [material 1]
 
-📅 LUNES — [título]
+📅 DÍA 1 — [título del día, distinto en cada día]
 🔹 Inicio (15 min)
 [descripción]
 🔸 Desarrollo (30 min)
@@ -212,14 +596,13 @@ Proyecto Didáctico: [nombre]
 [descripción]
 📌 Evaluación: [descripción]
 
-(repetir para cada día)
+(repetir con "📅 DÍA 2", "📅 DÍA 3", etc. hasta completar exactamente el número de días pedido — cada día con su propio título y contenido, nunca copiado del anterior)
 
-✍️ FIRMA DEL DOCENTE
-[nombre]
+🎓 PRODUCTO FINAL
+[qué entregan o demuestran los alumnos al terminar todos los días — solo inclúyelo si la planeación tiene más de un día]
 
 RÚBRICAS — cuando el maestro pida una rúbrica, usa este formato:
 📊 RÚBRICA DE EVALUACIÓN
-Maestro: [nombre] | Escuela: [escuela]
 Grado: [grado] | Grupo: [grupo]
 Campo Formativo: [campo]
 Actividad o Proyecto: [nombre]
@@ -253,9 +636,6 @@ CRITERIO 2: [nombre del criterio]
 ✍️ OBSERVACIONES DEL DOCENTE
 _______________________________________________
 
-✍️ FIRMA DEL DOCENTE
-[nombre]
-
 EXÁMENES Y ACTIVIDADES — cuando el maestro pida un examen o actividad, usa este formato:
 📝 EXAMEN / ACTIVIDAD
 Grado: [grado] | Grupo: [grupo]
@@ -282,7 +662,7 @@ CITATORIOS — cuando el maestro pida un citatorio, usa este formato:
 📨 CITATORIO
 Escuela: [escuela] | Municipio: [municipio]
 Fecha: [fecha actual]
-Ciclo Escolar: 2024-2025
+Ciclo Escolar: ${cicloEscolar}
 
 Estimado padre/madre de familia de: _______________
 Grado y Grupo: [grado] [grupo]
@@ -296,26 +676,126 @@ Se le solicita puntualidad y presencia. En caso de no poder asistir, favor de co
 
 Atentamente,
 [nombre del maestro]
-Docente de [grado] grado grupo [grupo]`,
-    messages: [{
-      role: 'user',
-      content: imagenBase64
-        ? [
-            { type: 'image', source: { type: 'base64', media_type: imagenTipo || 'image/jpeg', data: imagenBase64 } },
-            { type: 'text', text: mensaje }
-          ]
-        : mensaje
-    }],
-  })
+Docente de [grado] grado grupo [grupo]
+
+RESÚMENES FORMALES — cuando el maestro pida el resumen de una ley, reglamento, acuerdo o documento oficial como entregable (no como explicación conversacional), usa este formato:
+📄 RESUMEN — [nombre real de la ley/reglamento/documento]
+Fecha de elaboración: [fecha actual]
+
+🎯 OBJETO Y ALCANCE
+[de qué trata el documento, a quién aplica]
+
+📋 PUNTOS CLAVE
+[apartados o artículos relevantes agrupados por tema, con su numeración real si la tienes con certeza; si no tienes certeza de un número exacto, dilo en vez de inventarlo]
+
+📌 IMPLICACIONES PARA EL DOCENTE
+[qué debe saber o hacer el maestro concretamente a partir de este documento]
+
+La cita de fuente (ver CITAR LA FUENTE arriba) va siempre al final de este documento, no al centro.
+
+CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lectura o texto narrativo, construye automáticamente el recurso completo (ver ANTICIPACIÓN AUTOMÁTICA arriba): título atractivo, texto narrativo adecuado al grado del maestro, moraleja si es fábula, preguntas de comprensión lectora, y una actividad de cierre — sin preguntar cada pieza por separado. Usa este formato:
+📖 [TÍTULO ATRACTIVO DEL TEXTO]
+Grado: [grado] | Grupo: [grupo]
+
+[texto narrativo: cuento, fábula o lectura, con vocabulario y extensión adecuados al grado]
+
+💡 MORALEJA
+[solo si es fábula: la enseñanza de la historia en una frase clara; omite esta sección por completo si no es fábula]
+
+🤔 COMPRENSIÓN LECTORA
+1. [pregunta de comprensión]
+2. [pregunta de comprensión]
+3. [pregunta de comprensión]
+(mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
+
+✏️ ACTIVIDAD
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]`,
+    messages: [
+      ...historialMensajes,
+      {
+        role: 'user' as const,
+        content: imagenBase64
+          ? [
+              { type: 'image', source: { type: 'base64', media_type: imagenTipo || 'image/jpeg', data: imagenBase64 } },
+              { type: 'text', text: mensaje }
+            ]
+          : mensaje
+      },
+    ],
+  }
+
+  // CASO 3 de FINALIZAR ARCHIVO — el maestro pidió el archivo real
+  // (Word/PDF/PowerPoint/Excel) pero no había ningún documento previo
+  // que recuperar (ver arriba): "redáctalo Y entrégamelo como archivo"
+  // en un solo mensaje. Claude sigue redactando el contenido (lo
+  // necesita), pero la respuesta NUNCA se transmite como texto al chat
+  // — se recibe completa aquí (sin streaming) y, si es un documento
+  // formal válido, se convierte directo en el archivo real. El maestro
+  // nunca ve el contenido en prosa en este caso.
+  if (supabaseUser && userId && tipoHerramientaSolicitado) {
+    const etiquetaCaso3 = ETIQUETA_MODULO[tipoHerramientaSolicitado]
+    console.log(`[PIPELINE ${etiquetaCaso3}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=claude-directo (sin documento previo que recuperar)`)
+    try {
+      const inicioContenido = Date.now()
+      const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'claude-documento-combinado')
+      const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
+
+      if (texto && esDocumentoFormal(texto)) {
+        console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
+        const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseUser, userId), 'generar-archivo-combinado')
+        const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+        console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+      }
+      console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)
+      // Claude no produjo un documento formal (era más bien una consulta
+      // o le faltó información) — se entrega tal cual, como respuesta
+      // normal, en vez de perder la respuesta.
+      return respuestaTexto(texto || 'No entendí bien qué documento necesitas. ¿Puedes darme más detalles?')
+    } catch (err) {
+      if (err instanceof HerramientaNoDisponibleError) {
+        console.error('Herramienta no disponible:', err)
+        return NextResponse.json({ error: err.message }, { status: 502 })
+      }
+      const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
+      console.error(`Error generando y finalizando documento en un solo paso [${codigo}]:`, err)
+      return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
+    }
+  }
+
+  let stream
+  try {
+    stream = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: true }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'conversacion')
+  } catch (err) {
+    // Antes esto no estaba envuelto en try/catch: cualquier falla real
+    // de Claude (límite de crédito, rate limit, error de red, petición
+    // inválida) tronaba la ruta entera sin responder nada — el cliente
+    // (MotorTextoClaude) leía un cuerpo vacío y lo trataba como una
+    // respuesta válida, produciendo la burbuja vacía reportada. El
+    // detalle real (que puede incluir mensajes crudos de la API de
+    // Anthropic) se queda SOLO en el log — el maestro nunca debe verlo,
+    // ver ARQUITECTURA MAESTRA, principio de ERRORES.
+    console.error(`[IA:conversacion] Falla definitiva (categoría=${clasificarErrorIA(err)}):`, err)
+    return NextResponse.json({ error: MENSAJE_ERROR_GENERICO }, { status: 502 })
+  }
 
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {
-      for await (const event of stream) {
+      try {
+        for await (const event of stream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             controller.enqueue(encoder.encode(event.delta.text))
           }
         }
+      } catch (err) {
+        // Ya se había empezado a mandar texto plano — no se puede
+        // convertir esto en un JSON de error a estas alturas. Se registra
+        // para diagnóstico; el cliente ve la conexión cortarse, que ya
+        // maneja como error (ver motorTextoClaude.ts).
+        console.error('Error durante el streaming de Claude:', err)
+      }
       controller.close()
     },
   })

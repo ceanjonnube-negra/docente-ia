@@ -1,19 +1,25 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import { obtenerRosterConPosicion, type AlumnoConPosicion } from '@/lib/rosterGrupo'
+import ImportacionInteligente from '@/components/ImportacionInteligente'
+import type { GrupoParaImportar } from '@/lib/importacionInteligente'
+import { useAsistente, useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
+import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
+import { fechaISOHoy, formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 
-type Alumno = {
-  id: string
-  nombre: string
-  numero_lista: number | null
-  curp: string | null
-  sexo: string | null
-  fecha_nacimiento: string | null
-}
+type Alumno = AlumnoConPosicion
+type EstadoAsistencia = 'presente' | 'falta' | 'retardo'
+
+const ESTADOS_ASISTENCIA: { valor: EstadoAsistencia; icono: string; etiqueta: string }[] = [
+  { valor: 'presente', icono: '🟢', etiqueta: 'Presente' },
+  { valor: 'falta', icono: '🔴', etiqueta: 'Falta' },
+  { valor: 'retardo', icono: '🟠', etiqueta: 'Retardo' },
+]
 
 type Resumen = {
-  presenteHoy: boolean | null
+  estadoHoy: EstadoAsistencia | null
   totalAsistencias: number
   totalFaltas: number
   incidencias: number
@@ -30,10 +36,25 @@ function calcularEdad(fechaNacimiento: string | null): string {
 }
 
 export default function ListaPage() {
-  const router = useRouter()
-  const inputRef = useRef<HTMLInputElement>(null)
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <p className="text-sm text-gray-400">Cargando lista...</p>
+      </div>
+    }>
+      <ListaPageContent />
+    </Suspense>
+  )
+}
 
+function ListaPageContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  const [mostrarExitoImportacion, setMostrarExitoImportacion] = useState(() => searchParams.get('importado') === '1')
+  const [mostrarExitoBaja, setMostrarExitoBaja] = useState(() => searchParams.get('eliminado') === '1')
   const [nombreGrupo, setNombreGrupo] = useState('')
+  const [grupo, setGrupo] = useState<GrupoParaImportar | null>(null)
   const [alumnos, setAlumnos] = useState<Alumno[]>([])
   const [resumenes, setResumenes] = useState<Record<string, Resumen>>({})
   const [cargando, setCargando] = useState(true)
@@ -41,13 +62,8 @@ export default function ListaPage() {
   const [busqueda, setBusqueda] = useState('')
   const [filtro, setFiltro] = useState<'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes'>('todos')
 
-  const [importando, setImportando] = useState(false)
-  const [resumenImportacion, setResumenImportacion] = useState<null | {
-    total_detectados: number
-    actualizados: number
-    sin_emparejar: number
-    detalle: Array<{ nombre_detectado: string; alumno_emparejado: string | null; actualizado: boolean; motivo?: string }>
-  }>(null)
+  const [estados, setEstados] = useState<Record<string, EstadoAsistencia>>({})
+  const [guardandoAsistencia, setGuardandoAsistencia] = useState(false)
 
   const cargarTodo = async () => {
     setCargando(true)
@@ -61,7 +77,7 @@ export default function ListaPage() {
 
     const { data: grupos, error: errorGrupo } = await supabase
       .from('grupos')
-      .select('id, nombre_grupo, ciclo_escolar_id, ciclos_escolares!inner(activo)')
+      .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, ciclos_escolares!inner(activo)')
       .eq('docente_id', user.id)
       .eq('ciclos_escolares.activo', true)
       .order('creado_en', { ascending: false })
@@ -73,16 +89,18 @@ export default function ListaPage() {
       return
     }
 
-    const grupo = grupos[0]
-    setNombreGrupo(grupo.nombre_grupo)
+    const grupoActivo = grupos[0]
+    setNombreGrupo(grupoActivo.nombre_grupo)
+    setGrupo({
+      id: grupoActivo.id,
+      institucion_id: grupoActivo.institucion_id,
+      docente_id: grupoActivo.docente_id,
+      ciclo_escolar_id: grupoActivo.ciclo_escolar_id,
+    })
 
-    const { data: alumnosDelGrupo, error: errorAlumnos } = await supabase
-      .from('alumnos')
-      .select('id, nombre, numero_lista, curp, sexo, fecha_nacimiento')
-      .eq('grupo_id', grupo.id)
-      .order('numero_lista', { ascending: true, nullsFirst: false })
+    const { data: alumnosDelGrupo, error: errorAlumnos } = await obtenerRosterConPosicion(supabase, grupoActivo.id)
 
-    if (errorAlumnos || !alumnosDelGrupo) {
+    if (errorAlumnos) {
       setMensaje('No se pudo cargar la lista de alumnos.')
       setCargando(false)
       return
@@ -91,25 +109,52 @@ export default function ListaPage() {
     setAlumnos(alumnosDelGrupo)
 
     const idsAlumnos = alumnosDelGrupo.map(a => a.id)
-    const hoy = new Date().toISOString().slice(0, 10)
+    // Zona horaria real del dispositivo — toISOString() siempre da la
+    // fecha en UTC sin importar dónde corra, así que cerca de medianoche
+    // podía buscar el registro de asistencia del día equivocado.
+    const hoy = fechaISOHoy(obtenerZonaHorariaDispositivo())
 
-    const [{ data: asistenciasTodas }, { data: incidenciasTodas }] = await Promise.all([
+    const [{ data: asistenciasTodas }, { data: incidenciasTodas }, { data: inscripcionesActivas }] = await Promise.all([
       supabase.from('asistencias').select('alumno_id, fecha, presente').in('alumno_id', idsAlumnos),
       supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
+      supabase.from('inscripciones').select('id, alumno_id').eq('grupo_id', grupoActivo.id).eq('estatus', 'activo'),
     ])
+
+    const inscripcionPorAlumno = new Map(
+      (inscripcionesActivas || []).map((i: { id: string; alumno_id: string }) => [i.alumno_id, i.id])
+    )
+    const inscripcionIds = Array.from(inscripcionPorAlumno.values())
+
+    const { data: registrosHoy } = inscripcionIds.length > 0
+      ? await supabase
+          .from('asistencia_registro')
+          .select('inscripcion_id, estatus')
+          .eq('fecha', hoy)
+          .in('inscripcion_id', inscripcionIds)
+      : { data: [] as { inscripcion_id: string; estatus: string }[] }
+
+    const estatusPorInscripcion = new Map(
+      (registrosHoy || []).map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus as EstadoAsistencia])
+    )
 
     const nuevosResumenes: Record<string, Resumen> = {}
     alumnosDelGrupo.forEach(a => {
       const registros = (asistenciasTodas || []).filter(r => r.alumno_id === a.id)
-      const registroHoy = registros.find(r => r.fecha === hoy)
+      const inscripcionId = inscripcionPorAlumno.get(a.id)
       nuevosResumenes[a.id] = {
-        presenteHoy: registroHoy ? registroHoy.presente : null,
+        estadoHoy: (inscripcionId && estatusPorInscripcion.get(inscripcionId)) || null,
         totalAsistencias: registros.filter(r => r.presente).length,
         totalFaltas: registros.filter(r => !r.presente).length,
         incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
       }
     })
     setResumenes(nuevosResumenes)
+
+    const nuevosEstados: Record<string, EstadoAsistencia> = {}
+    alumnosDelGrupo.forEach(a => {
+      nuevosEstados[a.id] = nuevosResumenes[a.id]?.estadoHoy ?? 'presente'
+    })
+    setEstados(nuevosEstados)
 
     setCargando(false)
   }
@@ -118,61 +163,95 @@ export default function ListaPage() {
     cargarTodo()
   }, [])
 
-  const tomarFoto = () => {
-    inputRef.current?.click()
+  useEffect(() => {
+    if (!mostrarExitoImportacion) return
+    router.replace('/dashboard/lista')
+    const timer = setTimeout(() => setMostrarExitoImportacion(false), 4000)
+    return () => clearTimeout(timer)
+  }, [mostrarExitoImportacion, router])
+
+  useEffect(() => {
+    if (!mostrarExitoBaja) return
+    router.replace('/dashboard/lista')
+    const timer = setTimeout(() => setMostrarExitoBaja(false), 4000)
+    return () => clearTimeout(timer)
+  }, [mostrarExitoBaja, router])
+
+  const importacionCompletada = async () => {
+    await cargarTodo()
+    setMostrarExitoImportacion(true)
   }
 
-  const procesarFotoDatos = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const marcarEstadoHoy = (id: string, estado: EstadoAsistencia) => {
+    setEstados(prev => ({ ...prev, [id]: estado }))
+  }
 
-    setImportando(true)
+  const guardarAsistenciaHoy = async () => {
+    const registros = alumnos.map(a => ({ alumno_id: a.id, estado: estados[a.id] ?? 'presente' }))
+
+    setGuardandoAsistencia(true)
     setMensaje('')
-    setResumenImportacion(null)
 
-    const { data: { user } } = await supabase.auth.getUser()
     const { data: { session } } = await supabase.auth.getSession()
-
-    if (!user || !session?.access_token) {
-      setMensaje('No se pudo identificar la sesión.')
-      setImportando(false)
+    if (!session?.access_token) {
+      setMensaje('No se pudo identificar la sesión. Vuelve a iniciar sesión.')
+      setGuardandoAsistencia(false)
       return
     }
 
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('docente_id', user.id)
-    formData.append('access_token', session.access_token)
-
     try {
-      const res = await fetch('/api/importar-datos-alumnos', { method: 'POST', body: formData })
+      const res = await fetch('/api/asistencia-guardar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ registros, access_token: session.access_token, zonaHoraria: obtenerZonaHorariaDispositivo() }),
+      })
       const data = await res.json()
-
-      if (!res.ok) {
-        setMensaje(data.error || 'No se pudo procesar la lista.')
-      } else {
-        setResumenImportacion(data)
+      if (res.ok) {
+        setMensaje(`✅ Asistencia guardada (${data.guardados} alumnos).`)
         await cargarTodo()
+      } else {
+        setMensaje(data.error || 'No se pudo guardar la asistencia.')
       }
     } catch {
-      setMensaje('Error al procesar la foto.')
+      setMensaje('Error al guardar la asistencia.')
     }
-
-    setImportando(false)
-    if (inputRef.current) inputRef.current.value = ''
+    setGuardandoAsistencia(false)
   }
 
   const totalNinas = alumnos.filter(a => a.sexo === 'M').length
   const totalNinos = alumnos.filter(a => a.sexo === 'H').length
 
+  const totalPresentes = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'presente').length
+  const totalFaltas = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'falta').length
+  const totalRetardos = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'retardo').length
+
   const alumnosFiltrados = alumnos.filter(a => {
     if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
     if (filtro === 'ninas' && a.sexo !== 'M') return false
     if (filtro === 'ninos' && a.sexo !== 'H') return false
-    if (filtro === 'presentes' && resumenes[a.id]?.presenteHoy !== true) return false
-    if (filtro === 'ausentes' && resumenes[a.id]?.presenteHoy !== false) return false
+    if (filtro === 'presentes' && (estados[a.id] ?? 'presente') !== 'presente') return false
+    if (filtro === 'ausentes' && (estados[a.id] ?? 'presente') !== 'falta') return false
     return true
   })
+
+  // El asistente siempre sabe que el docente está viendo Lista y de qué
+  // grupo, sin tener que preguntarlo.
+  useContextoAsistente({
+    pantalla: 'lista',
+    grupoId: grupo?.id,
+    datosAdicionales: { nombreGrupo, totalAlumnos: alumnos.length },
+  })
+  useHerramientasAsistente([herramientaMarcarAsistencia])
+
+  // Lista es un módulo independiente — nunca debe mostrarse con el Chat
+  // IA abierto encima, sin importar cómo se llegó aquí (ver ARQUITECTURA
+  // DE NAVEGACIÓN DEL CHAT IA). cerrarPanel() solo afecta la visibilidad
+  // del panel, nunca la conversación guardada.
+  const asistente = useAsistente()
+  useEffect(() => {
+    asistente.cerrarPanel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   if (cargando) {
     return (
@@ -184,22 +263,14 @@ export default function ListaPage() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={procesarFotoDatos} />
-
       <header className="px-4 py-4 bg-white border-b border-gray-100 shadow-sm">
         <div className="flex items-center gap-3 mb-3">
-          <a href="/dashboard/chat" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">‹</a>
+          <a href="/dashboard/inicio" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-200">‹</a>
           <div className="flex-1">
             <p className="font-bold text-gray-900 text-base">{nombreGrupo || 'Lista'}</p>
-            <p className="text-xs text-gray-400">{new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+            <p className="text-xs text-gray-400">{formatearFecha(new Date(), obtenerZonaHorariaDispositivo(), { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           </div>
-          <button
-            onClick={tomarFoto}
-            disabled={importando}
-            className="px-3 py-2 bg-gray-100 rounded-full text-xs font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-40 whitespace-nowrap"
-          >
-            {importando ? 'Leyendo...' : '📷 Importar datos'}
-          </button>
+          <ImportacionInteligente grupo={grupo} onImportacionCompleta={importacionCompletada} />
         </div>
         <div className="flex gap-2 text-xs">
           <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg py-2 text-center">
@@ -217,15 +288,32 @@ export default function ListaPage() {
         </div>
       </header>
 
-      {resumenImportacion && (
-        <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 text-xs">
-          <p className="font-semibold text-indigo-900 mb-1">
-            ✅ {resumenImportacion.actualizados} de {resumenImportacion.total_detectados} alumnos actualizados
-            {resumenImportacion.sin_emparejar > 0 && ` · ${resumenImportacion.sin_emparejar} sin emparejar`}
-          </p>
-          <button onClick={() => setResumenImportacion(null)} className="text-indigo-500 underline">
-            Cerrar resumen
-          </button>
+      {alumnos.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 px-4 py-3 bg-white border-b border-gray-100">
+          <div className="rounded-xl bg-green-50 border border-green-200 py-2 text-center">
+            <p className="text-lg font-bold text-green-700">{totalPresentes}</p>
+            <p className="text-[11px] font-medium text-green-600">🟢 Presentes</p>
+          </div>
+          <div className="rounded-xl bg-red-50 border border-red-200 py-2 text-center">
+            <p className="text-lg font-bold text-red-700">{totalFaltas}</p>
+            <p className="text-[11px] font-medium text-red-600">🔴 Faltas</p>
+          </div>
+          <div className="rounded-xl bg-orange-50 border border-orange-200 py-2 text-center">
+            <p className="text-lg font-bold text-orange-700">{totalRetardos}</p>
+            <p className="text-[11px] font-medium text-orange-600">🟠 Retardos</p>
+          </div>
+        </div>
+      )}
+
+      {mostrarExitoImportacion && (
+        <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-100 text-center text-xs font-semibold text-emerald-700">
+          ✅ Importación completada correctamente
+        </div>
+      )}
+
+      {mostrarExitoBaja && (
+        <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-100 text-center text-xs font-semibold text-emerald-700">
+          ✅ Alumno eliminado correctamente
         </div>
       )}
 
@@ -256,19 +344,31 @@ export default function ListaPage() {
         {alumnosFiltrados.map(a => {
           const r = resumenes[a.id]
           const esNina = a.sexo === 'M'
+          const estadoLocal = estados[a.id] ?? 'presente'
           return (
-            <button
+            <div
               key={a.id}
               onClick={() => router.push(`/dashboard/lista/${a.id}`)}
-              className={`w-full text-left px-4 py-3 rounded-xl border ${esNina ? 'bg-rose-50/60 border-rose-100' : 'bg-sky-50/60 border-sky-100'}`}
+              className={`w-full text-left px-4 py-3 rounded-xl border cursor-pointer ${esNina ? 'bg-rose-50/60 border-rose-100' : 'bg-sky-50/60 border-sky-100'}`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-semibold text-gray-900">
-                  {a.numero_lista ? `${a.numero_lista}. ` : ''}{a.nombre}
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-sm font-semibold text-gray-900 min-w-0 truncate">
+                  {a.posicion}. {a.nombre}
                 </span>
-                <span className="text-lg">
-                  {r?.presenteHoy === true ? '✅' : r?.presenteHoy === false ? '❌' : '—'}
-                </span>
+                <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                  {ESTADOS_ASISTENCIA.map(op => (
+                    <button
+                      key={op.valor}
+                      type="button"
+                      onClick={() => marcarEstadoHoy(a.id, op.valor)}
+                      aria-label={op.etiqueta}
+                      aria-pressed={estadoLocal === op.valor}
+                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs border transition ${estadoLocal === op.valor ? 'bg-white border-gray-300 shadow-sm scale-105' : 'bg-transparent border-transparent opacity-40'}`}
+                    >
+                      {op.icono}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
                 <span>{a.sexo === 'M' ? 'Niña' : a.sexo === 'H' ? 'Niño' : '—'}</span>
@@ -277,10 +377,22 @@ export default function ListaPage() {
                 <span>Faltas: {r?.totalFaltas ?? 0}</span>
                 <span>Incidencias: {r?.incidencias ?? 0}</span>
               </div>
-            </button>
+            </div>
           )
         })}
       </div>
+
+      {alumnos.length > 0 && (
+        <div className="p-4 border-t border-gray-100 bg-white">
+          <button
+            onClick={guardarAsistenciaHoy}
+            disabled={guardandoAsistencia}
+            className="w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm disabled:opacity-50"
+          >
+            {guardandoAsistencia ? 'Guardando...' : 'Guardar asistencia de hoy'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

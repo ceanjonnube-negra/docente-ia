@@ -19,6 +19,11 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 export type ClasificacionNivel0 = {
   intencion_principal:
     | 'consultar_asistencia'
+    | 'registrar_asistencia'
+    | 'consultar_asistencia_grupo'
+    | 'consultar_apoyo'
+    | 'consultar_documentos'
+    | 'consultar_calendario'
     | 'ficha_descriptiva'
     | 'planeacion_nueva'
     | 'conversacion_general'
@@ -62,7 +67,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida:
 {
-  "intencion_principal": "consultar_asistencia" | "ficha_descriptiva" | "planeacion_nueva" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_nueva" | "conversacion_general" | "intencion_no_reconocida",
   "nivel_ejecucion": 1 | 2 | 3 | 4,
   "requiere_ia": boolean,
   "requiere_contexto_memoria": boolean,
@@ -85,15 +90,20 @@ alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
 
 REGLAS:
 1. Si el mensaje pregunta por faltas/asistencia/retardos de un alumno específico → intencion_principal="consultar_asistencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false.
-2. Si pide una ficha descriptiva de un alumno → intencion_principal="ficha_descriptiva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
-3. Si pide una planeación → intencion_principal="planeacion_nueva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. entidades_resueltas.alumno_id queda null en este caso.
-4. Para 1 y 2: busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" (coincidencia por nombre, tolerante a mayúsculas/acentos/nombre parcial).
+2. Si el mensaje pide tomar/pasar/registrar la asistencia del día para todo el grupo (no de un alumno específico) → intencion_principal="registrar_asistencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, entidades_resueltas.alumno_id=null, datos_faltantes=[]. Todas estas frases (y variantes equivalentes) significan exactamente lo mismo: "pasa lista", "toma asistencia", "vamos a pasar lista", "haz la lista", "registra asistencia", "ya pasaste lista hoy", "marca asistencia".
+3. Si pide una ficha descriptiva de un alumno → intencion_principal="ficha_descriptiva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
+4. Si pide una planeación → intencion_principal="planeacion_nueva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. entidades_resueltas.alumno_id queda null en este caso.
+5. Si pregunta por asistencia a nivel de TODO el grupo, no de un alumno específico — "¿quién faltó hoy?", "¿quién tiene más faltas?", "¿cuál fue la última asistencia registrada?", "¿quién no ha llegado?" — → intencion_principal="consultar_asistencia_grupo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true, entidades_resueltas.alumno_id=null.
+6. Si pregunta qué alumnos requieren apoyo, tienen necesidades especiales, o van rezagados/con dificultades → intencion_principal="consultar_apoyo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
+7. Si pregunta qué documentos tiene generados/guardados/almacenados en la aplicación (planeaciones, fichas, exámenes, citatorios que ya generó antes) → intencion_principal="consultar_documentos", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
+8. Si pregunta por actividades, eventos o fechas programadas en el calendario escolar → intencion_principal="consultar_calendario", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
+9. Para 1 y 3: busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" (coincidencia por nombre, tolerante a mayúsculas/acentos/nombre parcial).
    - Si hay exactamente una coincidencia: entidades_resueltas.alumno_id = su alumno_id, alumno_ambiguo=false, datos_faltantes=[].
    - Si no se menciona ningún alumno o no hay coincidencia: alumno_id=null, agrega "alumno" a datos_faltantes, nivel_confianza baja (<0.5).
    - Si hay más de una coincidencia: alumno_ambiguo=true, opciones_alumno_ambiguo con los nombres, agrega "alumno" a datos_faltantes.
-5. Si no puedes identificar ninguna de las intenciones anteriores con confianza razonable, usa intencion_principal="conversacion_general", nivel_ejecucion=3, requiere_ia=true, requiere_contexto_memoria=false, datos_faltantes=[], requiere_confirmacion=false.
-6. requiere_confirmacion=true solo si alumno_ambiguo=true o si "alumno" está en datos_faltantes para una intención que lo necesita.
-7. Nunca inventes un alumno_id que no exista literalmente en alumnos_del_grupo_activo.`;
+10. Si no puedes identificar ninguna de las intenciones anteriores con confianza razonable, usa intencion_principal="conversacion_general", nivel_ejecucion=3, requiere_ia=true, requiere_contexto_memoria=false, datos_faltantes=[], requiere_confirmacion=false.
+11. requiere_confirmacion=true solo si alumno_ambiguo=true o si "alumno" está en datos_faltantes para una intención que lo necesita.
+12. Nunca inventes un alumno_id que no exista literalmente en alumnos_del_grupo_activo.`;
 }
 
 export async function clasificarNivel0(

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { useRouter } from 'next/navigation'
+import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { useAsistente } from '@/lib/asistente/hooks'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
@@ -10,7 +11,6 @@ const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
 type Evento = { id: string; titulo: string; fecha: string; tipo: string; color: string; descripcion: string; es_sep: boolean }
 
 export default function CalendarioPage() {
-  const router = useRouter()
   const hoy = new Date()
   const [mes, setMes] = useState(hoy.getMonth())
   const [anio, setAnio] = useState(hoy.getFullYear())
@@ -18,6 +18,16 @@ export default function CalendarioPage() {
   const [eventoSel, setEventoSel] = useState<Evento | null>(null)
   const [mostrarForm, setMostrarForm] = useState(false)
   const [nuevo, setNuevo] = useState({ titulo: '', fecha: '', descripcion: '' })
+
+  // Calendario es un módulo independiente — nunca debe mostrarse con el
+  // Chat IA abierto encima, sin importar cómo se llegó aquí (ver
+  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA). cerrarPanel() solo afecta
+  // la visibilidad del panel, nunca la conversación guardada.
+  const asistente = useAsistente()
+  useEffect(() => {
+    asistente.cerrarPanel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => { cargarEventos() }, [mes, anio])
 
@@ -48,7 +58,7 @@ export default function CalendarioPage() {
     <div className="min-h-screen bg-gray-50 p-4">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-4">
-          <button onClick={() => router.back()} className="text-gray-500 text-xl">←</button>
+          <a href="/dashboard/inicio" className="text-gray-500 text-xl">←</a>
           <h1 className="text-2xl font-bold text-gray-800">📅 Calendario Escolar 2026-2027</h1>
         </div>
         <div className="flex flex-wrap gap-3 mb-4 text-sm">
@@ -81,14 +91,14 @@ export default function CalendarioPage() {
             <div className="space-y-2">{eventos.sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(e => (
               <div key={e.id} onClick={()=>setEventoSel(e)} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
                 <div className="w-3 h-3 rounded-full" style={{backgroundColor:e.color}}/>
-                <div><p className="text-sm font-medium">{e.titulo}</p><p className="text-xs text-gray-400">{new Date(e.fecha+'T12:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long'})}</p></div>
+                <div><p className="text-sm font-medium">{e.titulo}</p><p className="text-xs text-gray-400">{formatearFecha(e.fecha, obtenerZonaHorariaDispositivo(), {day:'numeric',month:'long'})}</p></div>
               </div>
             ))}</div>}
         </div>
         <button onClick={()=>setMostrarForm(true)} className="w-full py-3 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-2xl font-semibold">+ Agregar actividad propia</button>
         {eventoSel && <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl p-6 w-full max-w-sm">
           <div className="flex items-center gap-3 mb-3"><div className="w-4 h-4 rounded-full" style={{backgroundColor:eventoSel.color}}/><h3 className="font-bold">{eventoSel.titulo}</h3></div>
-          <p className="text-sm text-gray-500">{new Date(eventoSel.fecha+'T12:00:00').toLocaleDateString('es-MX',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p>
+          <p className="text-sm text-gray-500">{formatearFecha(eventoSel.fecha, obtenerZonaHorariaDispositivo(), {weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p>
           {eventoSel.descripcion&&<p className="text-sm text-gray-600 mt-2">{eventoSel.descripcion}</p>}
           <button onClick={()=>setEventoSel(null)} className="mt-4 w-full py-2 bg-gray-100 rounded-xl text-gray-600">Cerrar</button>
         </div></div>}

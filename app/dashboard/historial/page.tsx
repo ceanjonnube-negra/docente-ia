@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { generarWord } from '@/utils/generarWord'
+import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { useAsistente } from '@/lib/asistente/hooks'
 
 
 const iconos: Record<string, string> = {
@@ -13,6 +15,16 @@ const iconos: Record<string, string> = {
 }
 
 export default function HistorialPage() {
+  // Historial es un módulo independiente — nunca debe mostrarse con el
+  // Chat IA abierto encima, sin importar cómo se llegó aquí (ver
+  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA). cerrarPanel() solo afecta
+  // la visibilidad del panel, nunca la conversación guardada.
+  const asistente = useAsistente()
+  useEffect(() => {
+    asistente.cerrarPanel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [documentos, setDocumentos] = useState<any[]>([])
   const [cargando, setCargando] = useState(true)
   const [filtro, setFiltro] = useState('todos')
@@ -41,16 +53,12 @@ export default function HistorialPage() {
     ? documentos
     : documentos.filter(d => d.tipo === filtro)
 
-  const formatFecha = (fecha: string) => {
-    return new Date(fecha).toLocaleDateString('es-MX', {
-      day: '2-digit', month: 'short', year: 'numeric'
-    })
-  }
+  const formatFecha = (fecha: string) => formatearFecha(fecha, obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short', year: 'numeric' })
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
-        <a href="/dashboard" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500">←</a>
+        <a href="/dashboard/inicio" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500">←</a>
         <div>
           <p className="font-bold text-gray-900 text-sm">Historial de Documentos</p>
           <p className="text-xs text-gray-400">{documentos.length} documentos generados</p>

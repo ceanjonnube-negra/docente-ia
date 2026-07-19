@@ -1,8 +1,19 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { useAsistente } from '@/lib/asistente/hooks'
 
 export default function DocumentosPage() {
+  // Documentos es un módulo independiente — nunca debe mostrarse con el
+  // Chat IA abierto encima, sin importar cómo se llegó aquí (ver
+  // ARQUITECTURA DE NAVEGACIÓN DEL CHAT IA). cerrarPanel() solo afecta
+  // la visibilidad del panel, nunca la conversación guardada.
+  const asistente = useAsistente()
+  useEffect(() => {
+    asistente.cerrarPanel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [archivo, setArchivo] = useState<File | null>(null)
   const [categoria, setCategoria] = useState('Normatividad')
   const [descripcion, setDescripcion] = useState('')
