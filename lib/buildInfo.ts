@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'rfc0001-chat-entrypoint-v17-8a1bc50'
+export const BUILD_ID = 'chat-root-v17-01b8be2'
