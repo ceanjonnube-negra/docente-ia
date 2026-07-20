@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "verificar:menu-adjuntos": "tsx scripts/verificar-menu-adjuntos.ts"
+    "verificar:adjuntos-nativos": "tsx scripts/verificar-adjuntos-nativos.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

@@ -24,8 +24,6 @@ import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
-import MenuAdjuntos from '@/components/ui/MenuAdjuntos'
-import { OPCIONES_ADJUNTO_CHAT } from '@/lib/asistente/menuAdjuntosChat'
 import type { AdjuntoImagen } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -234,6 +232,7 @@ export default function AsistentePanel() {
 
   const [procesandoFoto] = useState(false)
   const [adjuntoPendiente, setAdjuntoPendiente] = useState<AdjuntoImagen | null>(null)
+  const adjuntoInputRef = useRef<HTMLInputElement>(null)
 
   // Panel temporal de diagnóstico del modo voz — solo con ?voiceDebug=1 en
   // la URL. Se lee del navegador (no de useSearchParams/Next) para no
@@ -273,8 +272,17 @@ export default function AsistentePanel() {
   }, [asistente.archivoReutilizadoId])
 
 
-  const manejarSeleccionAdjunto = (_opcionId: string, files: FileList) => {
-    const file = files[0]
+  // Un solo <input type="file"> nativo, sin menú propio antes — en
+  // iPhone/Android/escritorio, el sistema operativo YA ofrece su
+  // propio selector (Fototeca/Tomar foto/Elegir archivo en iOS,
+  // equivalente en Android/escritorio) en cuanto se llama a
+  // adjuntoInputRef.current.click(); un menú propio delante de eso
+  // solo producía una segunda capa redundante que no se puede evitar
+  // desde HTML (ver commits anteriores). Decisión de UX explícita:
+  // un solo flujo, el nativo.
+  const manejarSeleccionAdjunto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
     if (!file) return
     const reader = new FileReader()
     reader.onloadend = () => {
@@ -614,15 +622,24 @@ export default function AsistentePanel() {
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
           {!asistente.modoVoz && (
-            <MenuAdjuntos
-              opciones={OPCIONES_ADJUNTO_CHAT}
-              onArchivos={manejarSeleccionAdjunto}
-              triggerLabel="📷"
-              triggerAriaLabel="Adjuntar cámara, fotos o archivos"
-              disabled={procesandoFoto}
-              triggerClassName="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0"
-              placement="top-start"
-            />
+            <>
+              <input
+                ref={adjuntoInputRef}
+                type="file"
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                className="hidden"
+                onChange={manejarSeleccionAdjunto}
+              />
+              <button
+                type="button"
+                onClick={() => adjuntoInputRef.current?.click()}
+                disabled={procesandoFoto}
+                aria-label="Adjuntar cámara, fotos o archivos"
+                className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0"
+              >
+                📷
+              </button>
+            </>
           )}
           <div className="relative">
             {asistente.modoVoz && asistente.estadoEscucha && (
