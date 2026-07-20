@@ -357,9 +357,13 @@ export function construirTextoListaAlumnos(
   // documento ahora usa exactamente el mismo.
   const ordenados = [...alumnos].sort((a, b) => a.nombre_completo.localeCompare(b.nombre_completo, 'es'));
 
-  const metadatos = [grado ? `Grado: ${grado}°` : null, grupo ? `Grupo: ${grupo}` : null, `Total: ${ordenados.length} alumno(s)`]
-    .filter(Boolean)
-    .join(' | ');
+  // Debajo del título, únicamente "3° B" — nunca "Grado: 3° | Grupo: B"
+  // (el encabezado institucional del documento, ver
+  // lib/documentGen/encabezadoDocumento.ts, ya muestra Grado/Grupo por
+  // separado; repetirlo aquí era la duplicación reportada). `grado` ya
+  // incluye el símbolo real cuando aplica (el selector de onboarding
+  // guarda "3°", no "3"), así que nunca se le concatena un "°" extra.
+  const subtitulo = [grado, grupo].filter(Boolean).join(' ');
 
   // El número de cada renglón es la posición en ESTE orden alfabético
   // recién calculado (1, 2, 3...), nunca el numero_lista guardado —
@@ -367,5 +371,9 @@ export function construirTextoListaAlumnos(
   // fila se vería inconsistente (ver razón del ordenamiento arriba).
   const filas = ordenados.map((a, i) => `${i + 1}. ${a.nombre_completo}`).join('\n');
 
-  return `📋 LISTA DE ALUMNOS\n${metadatos}\n\n${filas}`;
+  // Resumen final — dato real, contado aquí mismo, nunca reportado por
+  // la IA (no hay IA involucrada en este documento en absoluto).
+  const resumen = `RESUMEN\nTotal de alumnos: ${ordenados.length}`;
+
+  return `📋 LISTA OFICIAL DE ALUMNOS\n${subtitulo}\n\n${filas}\n\n${resumen}`;
 }

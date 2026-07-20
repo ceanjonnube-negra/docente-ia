@@ -336,7 +336,7 @@ export async function POST(req: NextRequest) {
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
-        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
           // No es una falla real — el maestro pidió algo que a propósito
@@ -444,7 +444,7 @@ export async function POST(req: NextRequest) {
         )
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[LISTA_ALUMNOS] entrega OK — ${archivo.nombre}`)
-        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
           return NextResponse.json({ error: err.message }, { status: 502 })
@@ -722,14 +722,8 @@ Qué cuenta como MODO DOCUMENTO: además de los tipos con formato fijo de abajo,
 6. Los títulos en MAYÚSCULAS con emoji al inicio, cada uno en su propia línea.
 7. Deja una línea en blanco entre cada sección.
 8. Básate únicamente en información real: el contexto inyectado, la fuente citada, o tu conocimiento confiable y verificado del marco oficial. Si no tienes certeza de un dato específico (número de artículo, fracción, fecha, cifra exacta), dilo explícitamente en el documento en vez de inventarlo — nunca inventes contenido legal o normativo.
-9. DOCUMENTO OFICIAL: si el maestro pidió el documento con frases como "hazme un documento oficial", "formato oficial", "oficio", "documento para entregar", "formato institucional", "de manera oficial", "para imprimir" o "lista/listo para imprimir", agrega ANTES del título este encabezado con datos reales (nunca los preguntes, ya los tienes en DATOS DEL MAESTRO):
-Escuela: [escuela]
-Docente: [nombre]
-Grado y Grupo: [grado]° [grupo]
-Fecha: [fecha actual]
-Lugar: [municipio], [estado]
-Si el maestro NO pidió el documento como oficial, no agregues este encabezado.
-10. DOCUMENTOS NORMALES (no oficiales): cuentos, fábulas, lecturas, exámenes, actividades, guías y recursos educativos NO llevan firma, nombre del maestro ni encabezado institucional por defecto — quedan neutros y reutilizables. Esos datos solo aparecen si el maestro los pide explícitamente o si aplica la regla 9 (documento oficial).
+9. NUNCA escribas un encabezado institucional (Escuela, Docente, Grado, Grupo, Fecha, Lugar, Ciclo Escolar) al inicio del documento, ni antes ni después del título, sin importar si el maestro lo pidió como "oficial" o no — la aplicación ya agrega ese encabezado automáticamente, con los datos reales, de forma consistente en todos los documentos. Si tú también lo escribes, aparece DUPLICADO. Ve directo del primer título (regla 6) al contenido.
+10. DOCUMENTOS NORMALES Y OFICIALES por igual: nunca agregues firma, nombre del maestro ni bloque de encabezado dentro del cuerpo del documento — la aplicación ya agrega automáticamente el encabezado institucional completo y la firma al final de cada documento, siempre con el mismo formato. Tu contenido empieza en el título y termina en la última línea del contenido real, sin nada de eso.
 11. NOMBRES DE ALUMNOS SON UN DATO OFICIAL, NUNCA TEXTO LIBRE: cuando menciones el nombre de un alumno en cualquier documento (citatorio, ficha, oficio, reporte, lo que sea), cópialo EXACTAMENTE tal como aparece en "Lista de alumnos" dentro de DATOS DEL MAESTRO — carácter por carácter, en el mismo orden. Tienes PROHIBIDO invertir, reordenar, abreviar o "corregir" el orden de apellidos y nombres, y PROHIBIDO usar el formato bibliográfico "Apellido, Nombre" bajo cualquier circunstancia, aunque te parezca más formal u ordenado — el nombre real del alumno YA viene en el orden oficial correcto (apellido paterno, apellido materno, nombre(s)) y reordenarlo produce un dato falso. Si necesitas generar una LISTA completa de alumnos del grupo (no un solo alumno mencionado de paso), no la redactes tú: la aplicación ya intercepta esa petición antes de que te llegue y genera la lista directo desde la base de datos — si de todos modos te llega, es señal de que debes responder con el documento vacío de ese contenido específico en vez de inventarlo.
 
 EXCEPCION A LA REGLA 3 - DATOS TABULARES:
@@ -922,7 +916,7 @@ Grado: [grado] | Grupo: [grupo]
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
-        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
       }
       console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)
       // Claude no produjo un documento formal (era más bien una consulta
