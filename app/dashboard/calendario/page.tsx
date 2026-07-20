@@ -41,6 +41,27 @@ function categoriaDe(e: Pick<Evento, 'tipo' | 'es_sep'>): { etiqueta: string; ic
   return { etiqueta: e.tipo || 'Evento oficial', icono: '📌' }
 }
 
+// Deslizar hacia abajo para cerrar cualquiera de las hojas inferiores
+// (formulario, lista de actividades, tarjeta de detalle) — igual que
+// un Bottom Sheet de iPhone. Un solo hook, tres usos abajo: nunca se
+// duplica la lógica de arrastre entre los 3 modales.
+function useArrastreCerrar(cerrar: () => void) {
+  const [arrastreY, setArrastreY] = useState(0)
+  const inicioRef = useRef<number | null>(null)
+  const iniciar = (e: React.PointerEvent) => { inicioRef.current = e.clientY }
+  const mover = (e: React.PointerEvent) => {
+    if (inicioRef.current === null) return
+    const delta = e.clientY - inicioRef.current
+    if (delta > 0) setArrastreY(delta)
+  }
+  const terminar = () => {
+    if (arrastreY > 80) cerrar()
+    setArrastreY(0)
+    inicioRef.current = null
+  }
+  return { arrastreY, onPointerDown: iniciar, onPointerMove: mover, onPointerUp: terminar, onPointerCancel: terminar }
+}
+
 export default function CalendarioPage() {
   const hoy = new Date()
   const [mes, setMes] = useState(hoy.getMonth())
@@ -118,6 +139,11 @@ export default function CalendarioPage() {
 
   const diasEnMes = new Date(anio, mes + 1, 0).getDate()
   const primerDia = new Date(anio, mes, 1).getDay()
+  // Filas reales de la grilla (incluida la última, aunque no esté
+  // completa) — se usa para decidir si el menú contextual de un día
+  // en la última fila debe abrirse hacia ARRIBA en vez de hacia abajo,
+  // para que nunca quede cortado por el borde de la tarjeta.
+  const totalFilas = Math.ceil((primerDia + diasEnMes) / 7)
   const evsDia = (d: number) => {
     const f = `${anio}-${String(mes + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
     return eventos.filter(e => e.fecha.startsWith(f) && !categoriasInactivas.has(categoriaDe(e).etiqueta))
@@ -197,7 +223,12 @@ export default function CalendarioPage() {
   const agregar = async () => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user || !nuevo.titulo || !nuevo.fecha) return
-    await supabase.from('calendario_eventos').insert({ user_id: user.id, titulo: nuevo.titulo, fecha: nuevo.fecha, tipo: 'actividad', color: '#8b5cf6', descripcion: nuevo.descripcion, es_sep: false })
+    // Rosa (#ec4899), no morado — el morado (#8b5cf6) ya lo usa el
+    // análisis de calendario por IA para "evento_oficial"/"consejo
+    // técnico" (ver lib/calendario/analisisCalendario.ts); con el mismo
+    // color, un punto de actividad propia y uno de un evento oficial
+    // en el mismo día eran indistinguibles a simple vista.
+    await supabase.from('calendario_eventos').insert({ user_id: user.id, titulo: nuevo.titulo, fecha: nuevo.fecha, tipo: 'actividad', color: '#ec4899', descripcion: nuevo.descripcion, es_sep: false })
     cerrarFormulario()
     cargarEventos()
     cargarCiclo()
@@ -239,6 +270,16 @@ export default function CalendarioPage() {
     setNuevo(FORM_VACIO)
     setDiaSeleccionado(null)
   }
+  const cerrarDetalle = () => {
+    setEventoSel(null)
+    setConfirmandoEliminar(false)
+  }
+
+  // Un hook por hoja inferior — mismo componente/lógica de arrastre
+  // reutilizada 3 veces (ver useArrastreCerrar arriba).
+  const arrastreForm = useArrastreCerrar(cerrarFormulario)
+  const arrastreLista = useArrastreCerrar(cerrarListaDia)
+  const arrastreDetalle = useArrastreCerrar(cerrarDetalle)
 
   // Categorías reales, derivadas del ciclo completo (no solo del mes
   // visible) — nunca una lista fija adivinada, siempre lo que de
@@ -273,6 +314,12 @@ export default function CalendarioPage() {
   const eventosDelMesFiltrados = eventos
     .filter(e => !categoriasInactivas.has(categoriaDe(e).etiqueta))
     .sort((a, b) => a.fecha.localeCompare(b.fecha))
+
+  // Un solo lugar que decide "¿hay un menú contextual de día abierto
+  // ahora mismo?" — lo usan tanto la capa transparente de cierre como
+  // el botón flotante "Hoy", para que nunca se estorben entre sí (ver
+  // más abajo): mientras el menú está abierto, "Hoy" se oculta.
+  const menuContextualAbierto = diaSeleccionado !== null && evsDia(diaSeleccionado).length > 0
 
   return (
     <div className="min-h-screen bg-gray-50 pb-28">
@@ -392,7 +439,7 @@ export default function CalendarioPage() {
               deja que cualquier otra celda se siga tocando con
               normalidad y solo captura el toque cuando cae fuera del
               calendario. */}
-          {diaSeleccionado !== null && evsDia(diaSeleccionado).length > 0 && (
+          {menuContextualAbierto && (
             <div className="fixed inset-0 z-20" onClick={cerrarSeleccionDia} />
           )}
 
@@ -416,9 +463,16 @@ export default function CalendarioPage() {
               const menuAbierto = diaResaltado && evs.length > 0
               // Columnas 4-6 (jue/vie/sáb, 0-indexado desde domingo):
               // el menú se ancla a la derecha de la celda para no
-              // salirse por el borde derecho de la pantalla.
+              // salirse por el borde derecho de la pantalla. Última
+              // fila de la grilla: el menú se ancla hacia ARRIBA de la
+              // celda en vez de hacia abajo, para que nunca quede
+              // cortado por el borde de la tarjeta del calendario ni
+              // se dibuje encima de la tarjeta "Eventos del mes" de
+              // abajo.
               const columna = (primerDia + i) % 7
               const anclarDerecha = columna >= 4
+              const fila = Math.floor((primerDia + i) / 7)
+              const anclarArriba = fila === totalFilas - 1
               return (
                 <div key={d} className="relative">
                   <button
@@ -440,7 +494,7 @@ export default function CalendarioPage() {
                       panel inferior. */}
                   {menuAbierto && (
                     <div
-                      className={`absolute top-full mt-1.5 z-40 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden py-1 animate-[fadeIn_.12s_ease-out] ${anclarDerecha ? 'right-0' : 'left-0'}`}
+                      className={`absolute z-40 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden py-1 animate-[fadeIn_.12s_ease-out] ${anclarDerecha ? 'right-0' : 'left-0'} ${anclarArriba ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
                     >
                       <button
                         onClick={() => verActividadesDelDia(d)}
@@ -491,8 +545,12 @@ export default function CalendarioPage() {
         </div>
       </div>
 
-      {/* Botón flotante "Hoy" — solo cuando no se está viendo el mes actual */}
-      {!viendoMesActual && (
+      {/* Botón flotante "Hoy" — solo cuando no se está viendo el mes
+          actual Y no hay un menú contextual de día abierto (mismo
+          nivel z-40 que el menú; se oculta mientras el menú está
+          activo para que nunca compitan por el mismo espacio ni se
+          tapen entre sí). */}
+      {!viendoMesActual && !menuContextualAbierto && (
         <button
           onClick={irAHoy}
           className="fixed bottom-24 right-5 z-40 bg-gray-900 text-white text-sm font-bold px-5 py-3 rounded-full shadow-lg hover:bg-gray-800 active:scale-95 transition-all flex items-center gap-1.5"
@@ -508,10 +566,18 @@ export default function CalendarioPage() {
           nueva aquí, "Duplicar" tampoco se agrega todavía. */}
       {diaListaAbierta !== null && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={cerrarListaDia}>
-          <div onClick={e => e.stopPropagation()} className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-[slideUp_.2s_ease-out] max-h-[75vh] overflow-y-auto">
+          <div
+            onClick={e => e.stopPropagation()}
+            onPointerDown={arrastreLista.onPointerDown}
+            onPointerMove={arrastreLista.onPointerMove}
+            onPointerUp={arrastreLista.onPointerUp}
+            onPointerCancel={arrastreLista.onPointerCancel}
+            style={{ transform: `translateY(${arrastreLista.arrastreY}px)` }}
+            className="bg-white rounded-t-3xl sm:rounded-3xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] w-full max-w-sm shadow-2xl animate-[slideUp_0.32s_cubic-bezier(0.32,0.72,0,1)] max-h-[75vh] overflow-y-auto"
+          >
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-4 sm:hidden" />
             <h3 className="font-bold text-gray-900 mb-0.5">Actividades del día</h3>
-            <p className="text-xs text-gray-400 mb-4 capitalize">
+            <p className="text-xs text-gray-400 mb-4">
               {formatearFecha(fechaDeSeleccion(diaListaAbierta), obtenerZonaHorariaDispositivo(), { weekday: 'long', day: 'numeric', month: 'long' })}
             </p>
             <div className="space-y-1.5">
@@ -540,8 +606,16 @@ export default function CalendarioPage() {
 
       {/* Tarjeta de detalle del día */}
       {eventoSel && (
-        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={() => { setEventoSel(null); setConfirmandoEliminar(false) }}>
-          <div onClick={e => e.stopPropagation()} className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-[slideUp_.2s_ease-out]">
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={cerrarDetalle}>
+          <div
+            onClick={e => e.stopPropagation()}
+            onPointerDown={arrastreDetalle.onPointerDown}
+            onPointerMove={arrastreDetalle.onPointerMove}
+            onPointerUp={arrastreDetalle.onPointerUp}
+            onPointerCancel={arrastreDetalle.onPointerCancel}
+            style={{ transform: `translateY(${arrastreDetalle.arrastreY}px)` }}
+            className="bg-white rounded-t-3xl sm:rounded-3xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] w-full max-w-sm shadow-2xl animate-[slideUp_0.32s_cubic-bezier(0.32,0.72,0,1)]"
+          >
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-4 sm:hidden" />
             {(() => {
               const c = categoriaDe(eventoSel)
@@ -554,7 +628,7 @@ export default function CalendarioPage() {
                       <p className="text-xs font-semibold mt-0.5" style={{ color: eventoSel.color }}>{c.etiqueta}</p>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-500 mt-3 capitalize">{formatearFecha(eventoSel.fecha, obtenerZonaHorariaDispositivo(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                  <p className="text-sm text-gray-500 mt-3">{formatearFecha(eventoSel.fecha, obtenerZonaHorariaDispositivo(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
                   {eventoSel.descripcion && (
                     <div className="mt-3 bg-gray-50 rounded-2xl p-3">
                       <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Descripción</p>
@@ -582,7 +656,7 @@ export default function CalendarioPage() {
               )
             )}
 
-            <button onClick={() => { setEventoSel(null); setConfirmandoEliminar(false) }} className="mt-3 w-full py-2.5 text-gray-400 text-sm font-medium">Cerrar</button>
+            <button onClick={cerrarDetalle} className="mt-3 w-full py-2.5 text-gray-400 text-sm font-medium">Cerrar</button>
           </div>
         </div>
       )}
@@ -590,26 +664,45 @@ export default function CalendarioPage() {
       {/* Agregar / Editar actividad propia — mismo formulario para ambos */}
       {mostrarForm && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={cerrarFormulario}>
-          <div onClick={e => e.stopPropagation()} className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-[slideUp_.2s_ease-out]">
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-4 sm:hidden" />
-            <h3 className="font-bold text-gray-900 mb-4">{actividadEditando ? 'Editar actividad' : 'Nueva actividad'}</h3>
+          <div
+            onClick={e => e.stopPropagation()}
+            onPointerDown={arrastreForm.onPointerDown}
+            onPointerMove={arrastreForm.onPointerMove}
+            onPointerUp={arrastreForm.onPointerUp}
+            onPointerCancel={arrastreForm.onPointerCancel}
+            style={{ transform: `translateY(${arrastreForm.arrastreY}px)` }}
+            className="bg-white rounded-t-3xl sm:rounded-3xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] w-full max-w-sm shadow-2xl animate-[slideUp_0.32s_cubic-bezier(0.32,0.72,0,1)]"
+          >
+            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-3 sm:hidden" />
+            <h3 className="font-bold text-gray-900 mb-2.5">{actividadEditando ? 'Editar actividad' : 'Nueva actividad'}</h3>
             {/* La fecha ya viene del día que el docente seleccionó en
                 el calendario — no es un campo editable aquí (ver
-                tocarDia/abrirFormularioConFecha). No hay campo de Hora:
-                calendario_eventos no tiene esa columna todavía (ni hay
-                acceso a migraciones desde este entorno) — se agrega
-                cuando el modelo la tenga, tal como pide el RFC ("si
-                aplica"/"si existe en el modelo"). */}
+                tocarDia/abrirFormularioConFecha). Se muestra como
+                información contextual, nunca como una caja de input
+                deshabilitado. No hay campo de Hora: calendario_eventos
+                no tiene esa columna todavía (ni hay acceso a
+                migraciones desde este entorno) — se agrega cuando el
+                modelo la tenga, tal como pide el RFC ("si aplica"/"si
+                existe en el modelo"). */}
             {nuevo.fecha && (
-              <div className="bg-gray-50 rounded-2xl p-3 mb-3">
-                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Fecha</p>
-                <p className="text-sm font-medium text-gray-800 capitalize">
-                  {formatearFecha(nuevo.fecha, obtenerZonaHorariaDispositivo(), { day: 'numeric', month: 'long', year: 'numeric' })}
-                </p>
-              </div>
+              <p className="text-xs text-gray-400 mb-2.5 flex items-center gap-1.5">
+                <span>📅</span>
+                {formatearFecha(nuevo.fecha, obtenerZonaHorariaDispositivo(), { day: 'numeric', month: 'long', year: 'numeric' })}
+              </p>
             )}
-            <input value={nuevo.titulo} onChange={e => setNuevo(p => ({ ...p, titulo: e.target.value }))} placeholder="Título" className="w-full border border-gray-200 rounded-2xl px-3.5 py-2.5 mb-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
-            <textarea value={nuevo.descripcion} onChange={e => setNuevo(p => ({ ...p, descripcion: e.target.value }))} placeholder="Descripción (opcional)" className="w-full border border-gray-200 rounded-2xl px-3.5 py-2.5 mb-4 text-sm h-20 focus:outline-none focus:ring-2 focus:ring-purple-400" />
+            {/* autoFocus: el teclado debe aparecer solo apenas se abre
+                el formulario, sin que el docente tenga que tocar el
+                campo — el propio toque en el día es el gesto que abre
+                este modal, así que el enfoque automático de React
+                ocurre dentro de esa misma interacción del usuario. */}
+            <input
+              autoFocus
+              value={nuevo.titulo}
+              onChange={e => setNuevo(p => ({ ...p, titulo: e.target.value }))}
+              placeholder="Título"
+              className="w-full border border-gray-200 rounded-2xl px-3.5 py-2 mb-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
+            />
+            <textarea value={nuevo.descripcion} onChange={e => setNuevo(p => ({ ...p, descripcion: e.target.value }))} placeholder="Descripción (opcional)" className="w-full border border-gray-200 rounded-2xl px-3.5 py-2 mb-3 text-sm h-14 focus:outline-none focus:ring-2 focus:ring-purple-400" />
             <div className="flex gap-2">
               <button onClick={cerrarFormulario} className="flex-1 py-2.5 bg-gray-100 rounded-2xl text-sm font-semibold text-gray-600">Cancelar</button>
               <button onClick={actividadEditando ? actualizarActividad : agregar} className="flex-1 py-2.5 bg-purple-600 text-white rounded-2xl text-sm font-bold hover:bg-purple-700 transition-colors">{actividadEditando ? 'Guardar cambios' : 'Guardar'}</button>
