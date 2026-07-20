@@ -57,6 +57,22 @@ export const ETIQUETA_MODULO: Record<TipoHerramienta, string> = {
   video: 'VIDEO',
 }
 
+// Tag de exportación por formato — un grep de "[DOCX_EXPORT]" o
+// "[PDF_EXPORT]" en `vercel logs` aísla de un vistazo todas las
+// solicitudes de ESE formato, sin mezclarlas con las de los demás.
+// Agregar un formato nuevo (xlsx/pptx ya real; odt/csv a futuro) es
+// una entrada más aquí — nunca requiere tocar app/api/chat/route.ts,
+// que solo conoce TipoHerramienta, nunca un formato específico.
+const ETIQUETA_EXPORT: Record<TipoHerramienta, string> = {
+  word: 'DOCX_EXPORT',
+  pdf: 'PDF_EXPORT',
+  powerpoint: 'PPTX_EXPORT',
+  excel: 'XLSX_EXPORT',
+  imagen: 'IMAGEN_EXPORT',
+  audio: 'AUDIO_EXPORT',
+  video: 'VIDEO_EXPORT',
+}
+
 const CONTENT_TYPES = {
   word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   pdf: 'application/pdf',
@@ -111,6 +127,8 @@ export async function ejecutarHerramientaDocumento(
     throw new HerramientaNoDisponibleError(`La generación de ${tipo} todavía no está disponible en esta aplicación — falta elegir proveedor.`)
   }
 
+  console.log(`[${ETIQUETA_EXPORT[tipo]}] userId=${userId} — solicitud de exportación recibida`)
+
   const etiqueta = ETIQUETA_MODULO[tipo]
   const titulo = extraerTitulo(texto)
   const generadores = {
@@ -154,7 +172,9 @@ export async function ejecutarHerramientaDocumento(
   const ruta = rutaArchivo(userId, nombre)
   try {
     await medirEtapa(`${etiqueta}:subida`, () => subirBuffer(sb, ruta, buffer, CONTENT_TYPES[tipo]))
-  } catch {
+    console.log(`[UPLOAD] ${etiqueta} — ${nombre} subido a Storage`)
+  } catch (err) {
+    console.error(`[UPLOAD] ${etiqueta} — fallo subiendo ${nombre}:`, err)
     throw new ErrorHerramientaDocumento(`${etiqueta}-SUB`, `Fallo subiendo el archivo ${tipo}`)
   }
 
@@ -163,7 +183,9 @@ export async function ejecutarHerramientaDocumento(
   let url: string
   try {
     url = await medirEtapa(`${etiqueta}:url-firmada`, () => crearUrlFirmada(sb, ruta, nombre))
-  } catch {
+    console.log(`[SIGNED_URL] ${etiqueta} — URL firmada obtenida para ${nombre}`)
+  } catch (err) {
+    console.error(`[SIGNED_URL] ${etiqueta} — fallo obteniendo la URL de ${nombre}:`, err)
     throw new ErrorHerramientaDocumento(`${etiqueta}-URL`, `Fallo obteniendo la URL de descarga del ${tipo}`)
   }
 
@@ -180,6 +202,8 @@ export async function ejecutarHerramientaDocumento(
     console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible:`, err)
     throw new ErrorHerramientaDocumento(`${etiqueta}-URL-VERIF`, `La URL de descarga del ${tipo} no quedó accesible`)
   }
+
+  console.log(`[DOWNLOAD_READY] ${etiqueta} — ${nombre} verificado y listo para el maestro`)
 
   // ETAPA 8 (entrega al usuario) ocurre en app/api/chat/route.ts, al
   // devolver este resultado envuelto en el marcador

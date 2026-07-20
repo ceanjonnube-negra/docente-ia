@@ -27,6 +27,7 @@ import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/Ti
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
 const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
+const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
 
 // Vista previa de solo lectura del documento activo — se ve como un
 // documento real (título centrado, secciones, viñetas), no como un
@@ -356,7 +357,7 @@ export default function AsistentePanel() {
                   </div>
                   <div className="px-3 pb-3">
                     <button onClick={() => window.open(m.archivo!.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
-                      ⬇️ Descargar
+                      ⬇️ Descargar{NOMBRE_FORMATO[m.archivo.tipo] ? ` ${NOMBRE_FORMATO[m.archivo.tipo]}` : ''}
                     </button>
                   </div>
                 </div>
