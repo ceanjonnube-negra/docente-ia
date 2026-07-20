@@ -123,6 +123,17 @@ class AsistenteServiceImpl {
   private avisoGeneracion: string | null = null
   private avisoGeneracionTimer: ReturnType<typeof setTimeout> | null = null
   private documentoFinalizandoId: string | null = null
+  // Contenido real del documento que se está convirtiendo a archivo
+  // (Word/PDF/...) — se preserva aparte porque, mientras dura la
+  // finalización, el servidor va a transmitir "Documento generado
+  // correctamente." + un marcador técnico en vez del documento (ver
+  // FINALIZAR ARCHIVO en app/api/chat/route.ts). Sin esto, ese texto
+  // genérico terminaba sobrescribiendo la vista previa real de la
+  // burbuja (ver 'respuesta-parcial' más abajo) — el docente perdía de
+  // vista el documento justo cuando debía poder verlo Y descargarlo a
+  // la vez, y si pedía un segundo formato después ("también en PDF"),
+  // el contenido real ya se había perdido.
+  private textoDocumentoFinalizando: string | null = null
   // Últimos parámetros de una edición/generación de documento que falló
   // — permite reintentar exactamente lo mismo sin volver a escribir el
   // mensaje ni perder el documento activo (ver reintentarGeneracion()).
@@ -299,6 +310,7 @@ class AsistenteServiceImpl {
     this.turnoAbierto = null
     this.editandoDocumentoId = null
     this.documentoFinalizandoId = null
+    this.textoDocumentoFinalizando = null
     this.avisoGeneracion = null
     this.avisoVoz = null
     this.ultimoIntentoEdicion = null
@@ -630,7 +642,16 @@ class AsistenteServiceImpl {
         if (this.editandoDocumentoId) {
           const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
           if (idx !== -1) {
-            const actualizado = { ...this.mensajes[idx], texto: evento.texto }
+            // FINALIZAR ARCHIVO (no una edición de contenido real): el
+            // servidor transmite "Documento generado correctamente." +
+            // el marcador técnico, nunca el documento — la burbuja debe
+            // seguir mostrando el documento real (ver
+            // textoDocumentoFinalizando) para que la vista previa nunca
+            // desaparezca ni se reemplace por ese texto genérico.
+            const texto = this.documentoFinalizandoId === this.editandoDocumentoId && this.textoDocumentoFinalizando
+              ? this.textoDocumentoFinalizando
+              : evento.texto
+            const actualizado = { ...this.mensajes[idx], texto }
             this.mensajes = [...this.mensajes.slice(0, idx), actualizado, ...this.mensajes.slice(idx + 1)]
           }
           this.notificar()
@@ -673,6 +694,7 @@ class AsistenteServiceImpl {
           if (textoVacio) {
             this.editandoDocumentoId = null
             this.documentoFinalizandoId = null
+            this.textoDocumentoFinalizando = null
             this.mostrarAvisoGeneracion('No pude generar el archivo. Toca para reintentar.')
             this.notificar()
             break
@@ -691,10 +713,16 @@ class AsistenteServiceImpl {
               ]
             }
           }
+          // El documento sigue activo (con su texto real intacto, ver
+          // arriba) tanto si se acaba de finalizar a archivo como si fue
+          // una edición de contenido — así un segundo formato ("también
+          // en PDF") o una nueva edición reutilizan el contenido real en
+          // vez de partir de cero o de "Documento generado correctamente.".
           const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
           if (doc) this.documentoActivo = { id: doc.id, texto: doc.texto }
           this.editandoDocumentoId = null
           this.documentoFinalizandoId = null
+          this.textoDocumentoFinalizando = null
           this.ultimoIntentoEdicion = null
           this.notificar()
           break
@@ -740,6 +768,7 @@ class AsistenteServiceImpl {
         const estabaEditandoUnDocumento = this.editandoDocumentoId !== null
         this.editandoDocumentoId = null
         this.documentoFinalizandoId = null
+        this.textoDocumentoFinalizando = null
         this.turnoAbierto = null
         this.turnoUsuarioPendiente = false
         this.textoAsistentePendiente = ''
@@ -889,6 +918,7 @@ class AsistenteServiceImpl {
     this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }]
     this.editandoDocumentoId = idDocumento
     this.documentoFinalizandoId = idDocumento
+    this.textoDocumentoFinalizando = documentoTexto
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion().
     this.ultimoIntentoEdicion = { idDocumento, textoParaModelo: '', finalizarArchivo: { tipo, documentoTexto, textoOriginal: textoVisible } }
@@ -922,7 +952,10 @@ class AsistenteServiceImpl {
     }
     await this.asegurarMotor()
     this.editandoDocumentoId = idDocumento
-    if (finalizarArchivo) this.documentoFinalizandoId = idDocumento
+    if (finalizarArchivo) {
+      this.documentoFinalizandoId = idDocumento
+      this.textoDocumentoFinalizando = finalizarArchivo.documentoTexto
+    }
     this.notificar()
     if (finalizarArchivo) {
       await this.ejecutarFinalizacion(finalizarArchivo.tipo, finalizarArchivo.documentoTexto, finalizarArchivo.textoOriginal)

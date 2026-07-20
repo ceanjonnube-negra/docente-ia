@@ -28,6 +28,13 @@ export const FRASES_FINALIZAR_DOCUMENTO = [
   'listo para imprimir', 'genera el documento', 'generar el documento',
   'descárgala', 'descárgalo', 'descargarla', 'descargarlo', 'a pdf', 'documento final',
   'imprímelo', 'imprimelo', 'quiero el word', 'quiero el pdf',
+  // Ampliado — el maestro pide el archivo con estas palabras sueltas
+  // tan seguido como con las frases de arriba: "mándamelo", "archivo",
+  // "documento" (a secas), "descargar", "imprimir" (a secas). Mientras
+  // exista un documento activo, cualquiera de estas ya es intención de
+  // ENTREGA, no de edición (ver detectarHerramientaDocumento).
+  'mándamelo', 'mandamelo', 'mándalo', 'mandalo', 'envíamelo', 'enviamelo',
+  'descárgamelo', 'descargamelo', 'descargar', 'imprimir', 'archivo', 'documento',
 ]
 
 // Sistema de prioridades de herramientas de generación de archivos —

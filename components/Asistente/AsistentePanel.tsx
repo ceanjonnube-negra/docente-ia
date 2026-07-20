@@ -29,6 +29,32 @@ const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositi
 const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
 const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
 
+// Tarjeta de descarga — un único componente para cualquier tipo de
+// documento oficial (planeación, lista, ficha, oficio...) y cualquier
+// formato (Word/PDF/...); nunca se duplica ni se crea una variante por
+// tipo de documento. Se renderiza SIEMPRE que el mensaje traiga un
+// archivo real, en paralelo a la vista previa si la hay — nunca en su
+// lugar (ver el render de mensajes más abajo: nunca es
+// `esDoc ? Preview : TarjetaDescarga`, siempre ambas si aplican).
+function TarjetaDescarga({ archivo, className = '' }: { archivo: { tipo: string; nombre: string; url: string }; className?: string }) {
+  return (
+    <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border border-green-100 rounded-bl-sm overflow-hidden ${className}`}>
+      <div className="px-4 py-3 flex items-center gap-2.5">
+        <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[archivo.tipo] || '📄'}</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-gray-900 truncate">{archivo.nombre}</p>
+          <p className="text-xs text-green-600">Documento oficial listo</p>
+        </div>
+      </div>
+      <div className="px-3 pb-3">
+        <button onClick={() => window.open(archivo.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
+          ⬇️ Descargar{NOMBRE_FORMATO[archivo.tipo] ? ` ${NOMBRE_FORMATO[archivo.tipo]}` : ''}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Vista previa de solo lectura del documento activo — se ve como un
 // documento real (título centrado, secciones, viñetas), no como un
 // mensaje de chat más. Reemplaza la tarjeta anterior de "título +
@@ -340,26 +366,16 @@ export default function AsistentePanel() {
               {m.rol === 'asistente' && (
                 <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
               )}
-              {esDoc ? (
-                <VistaPreviaDocumento
-                  texto={m.texto}
-                  escribiendo={esUltimoGenerando}
-                  generandoArchivo={asistente.documentoFinalizandoId === m.id}
-                />
-              ) : m.rol === 'asistente' && m.archivo ? (
-                <div className="w-full max-w-sm bg-white rounded-2xl shadow-md border border-green-100 rounded-bl-sm overflow-hidden">
-                  <div className="px-4 py-3 flex items-center gap-2.5">
-                    <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[m.archivo.tipo] || '📄'}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-gray-900 truncate">{m.archivo.nombre}</p>
-                      <p className="text-xs text-green-600">Listo para descargar</p>
-                    </div>
-                  </div>
-                  <div className="px-3 pb-3">
-                    <button onClick={() => window.open(m.archivo!.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
-                      ⬇️ Descargar{NOMBRE_FORMATO[m.archivo.tipo] ? ` ${NOMBRE_FORMATO[m.archivo.tipo]}` : ''}
-                    </button>
-                  </div>
+              {esDoc || (m.rol === 'asistente' && m.archivo) ? (
+                <div className="flex flex-col items-start gap-2 w-full">
+                  {esDoc && (
+                    <VistaPreviaDocumento
+                      texto={m.texto}
+                      escribiendo={esUltimoGenerando}
+                      generandoArchivo={asistente.documentoFinalizandoId === m.id}
+                    />
+                  )}
+                  {m.archivo && <TarjetaDescarga archivo={m.archivo} />}
                 </div>
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>
