@@ -7,6 +7,7 @@
 // para que auth.uid() funcione dentro de las RPC con SECURITY DEFINER).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DiferenciaCalendario } from './asistente/tipos';
 
 export type ExcepcionAsistencia = {
   alumno_id: string;
@@ -376,4 +377,136 @@ export function construirTextoListaAlumnos(
   const resumen = `RESUMEN\nTotal de alumnos: ${ordenados.length}`;
 
   return `📋 LISTA OFICIAL DE ALUMNOS\n${subtitulo}\n\n${filas}\n\n${resumen}`;
+}
+
+// --- Corrección de calendario desde una foto del calendario oficial
+// (ver lib/calendario/analisisCalendario.ts y
+// app/api/calendario/aplicar/route.ts) ---
+
+export type EventoCalendarioCompleto = {
+  id: string;
+  titulo: string;
+  fecha: string;
+  tipo: string;
+  color: string;
+  descripcion: string;
+  es_sep: boolean;
+};
+
+// Todo el ciclo escolar (no solo "próximos", como calendarioProximo) —
+// para comparar contra una foto del calendario oficial hace falta ver
+// también lo que ya pasó, no solo lo que falta. Incluye eventos
+// oficiales compartidos (user_id null) y propios del docente, igual
+// que calendarioProximo — pero aplicarCorreccionesCalendario, más
+// abajo, SOLO escribe sobre filas propias del docente (ver esa nota).
+export async function calendarioCicloCompleto(
+  sb: SupabaseClient,
+  userId: string,
+  inicioCiclo: string,
+  finCiclo: string
+): Promise<EventoCalendarioCompleto[]> {
+  const { data } = await sb
+    .from('calendario_eventos')
+    .select('id, titulo, fecha, tipo, color, descripcion, es_sep')
+    .gte('fecha', inicioCiclo)
+    .lte('fecha', finCiclo)
+    .or(`user_id.eq.${userId},user_id.is.null`)
+    .order('fecha', { ascending: true });
+
+  return (data || []) as EventoCalendarioCompleto[];
+}
+
+export type ResultadoCorreccionesCalendario = {
+  exito: boolean;
+  error?: string;
+  agregados: number;
+  corregidos: number;
+  eliminados: number;
+  // Subconjunto de `diferencias` que SÍ se escribió de verdad — nunca
+  // lo que Claude propuso, siempre lo que Supabase confirmó. Sirve
+  // para construir un resumen final por categoría real (ver
+  // construirResumenExito en lib/calendario/analisisCalendario.ts) sin
+  // volver a inventar ninguna cifra.
+  aplicadas: DiferenciaCalendario[];
+};
+
+// Escribe las diferencias ya mostradas y confirmadas por el docente.
+// SIEMPRE con user_id=userId y es_sep=false, nunca sobre un evento
+// oficial compartido (user_id null) — un solo docente jamás debe poder
+// alterar el calendario oficial de toda la plataforma desde su propio
+// chat. Cada UPDATE/DELETE lleva .eq('user_id', userId) Y usa
+// .select() para contar únicamente las filas que de verdad se vieron
+// afectadas — si Claude propuso "corregir"/"eliminar" sobre un id que
+// no le pertenece al docente (por ejemplo, un evento oficial
+// compartido), la operación no toca nada y NO se cuenta como éxito,
+// en vez de reportar un cambio que nunca ocurrió (mismo criterio que
+// escribirAsistencia: nunca confirmar sin verificar).
+export async function aplicarCorreccionesCalendario(
+  sb: SupabaseClient,
+  userId: string,
+  diferencias: DiferenciaCalendario[]
+): Promise<ResultadoCorreccionesCalendario> {
+  if (diferencias.length === 0) return { exito: true, agregados: 0, corregidos: 0, eliminados: 0, aplicadas: [] };
+
+  const aAgregar = diferencias.filter((d) => d.accion === 'agregar');
+  const aCorregir = diferencias.filter((d) => d.accion === 'corregir' && d.id);
+  const aEliminar = diferencias.filter((d) => d.accion === 'eliminar' && d.id);
+
+  let agregados = 0;
+  let corregidos = 0;
+  let eliminados = 0;
+  const aplicadas: DiferenciaCalendario[] = [];
+
+  if (aAgregar.length > 0) {
+    const filas = aAgregar.map((d) => ({
+      user_id: userId,
+      titulo: d.evento.titulo,
+      fecha: d.evento.fecha,
+      tipo: d.evento.tipo,
+      color: d.evento.color,
+      descripcion: d.evento.descripcion,
+      es_sep: false,
+    }));
+    const { data, error } = await sb.from('calendario_eventos').insert(filas).select();
+    if (error) return { exito: false, error: error.message, agregados: 0, corregidos: 0, eliminados: 0, aplicadas: [] };
+    agregados = data?.length ?? 0;
+    // insert() de un solo array es atómico (todo o nada) salvo el error
+    // ya manejado arriba — si no hubo error, las filas SÍ se guardaron.
+    aplicadas.push(...aAgregar);
+  }
+
+  for (const d of aCorregir) {
+    const { data, error } = await sb
+      .from('calendario_eventos')
+      .update({
+        titulo: d.evento.titulo,
+        fecha: d.evento.fecha,
+        tipo: d.evento.tipo,
+        color: d.evento.color,
+        descripcion: d.evento.descripcion,
+      })
+      .eq('id', d.id as string)
+      .eq('user_id', userId)
+      .select();
+    if (error) return { exito: false, error: error.message, agregados, corregidos, eliminados, aplicadas };
+    const filasAfectadas = data?.length ?? 0;
+    corregidos += filasAfectadas;
+    if (filasAfectadas > 0) aplicadas.push(d);
+  }
+
+  if (aEliminar.length > 0) {
+    const ids = aEliminar.map((d) => d.id as string);
+    const { data, error } = await sb
+      .from('calendario_eventos')
+      .delete()
+      .in('id', ids)
+      .eq('user_id', userId)
+      .select('id');
+    if (error) return { exito: false, error: error.message, agregados, corregidos, eliminados, aplicadas };
+    const idsEliminados = new Set(((data || []) as { id: string }[]).map((f) => f.id));
+    eliminados = idsEliminados.size;
+    aplicadas.push(...aEliminar.filter((d) => idsEliminados.has(d.id as string)));
+  }
+
+  return { exito: true, agregados, corregidos, eliminados, aplicadas };
 }

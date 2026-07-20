@@ -16,6 +16,29 @@ export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 // muestra un botón de descarga real en vez de la tarjeta de borrador.
 export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string }
 
+// Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
+// inteligente de actualización del Calendario Escolar") — el docente
+// confirma con un toque, sin tener que escribir. `estilo` decide el
+// color del botón (primario = verde, la acción recomendada; secundario
+// = gris, cancelar/alternativa). Genérico a propósito: cualquier flujo
+// futuro que necesite "proponer → confirmar con un botón" reutiliza
+// este mismo tipo en vez de inventar otro.
+export type AccionMensaje = { id: string; etiqueta: string; estilo: 'primario' | 'secundario' }
+
+export type TipoAccionCalendario = 'agregar' | 'corregir' | 'eliminar'
+
+// Una diferencia detectada entre la foto del calendario oficial y
+// calendario_eventos real — ver lib/calendario/analisisCalendario.ts.
+// `id` identifica la fila real a modificar/eliminar (ausente en
+// 'agregar', obligatorio en 'corregir'/'eliminar' — así nunca hace
+// falta re-adivinar qué fila es cuál al aplicar los cambios).
+export type DiferenciaCalendario = {
+  accion: TipoAccionCalendario
+  id?: string
+  evento: { titulo: string; fecha: string; tipo: string; color: string; descripcion: string }
+  motivo: string
+}
+
 export type MensajeConversacion = {
   id: string
   rol: RolMensaje
@@ -28,6 +51,19 @@ export type MensajeConversacion = {
   // conversación (ver lib/asistente/persistencia.ts), no solo mientras
   // dura la sesión.
   imagen?: AdjuntoImagen
+  // Botones de confirmación sobre este mensaje (ver AccionMensaje) y,
+  // una vez que el docente toca uno, qué id eligió — con esto la
+  // burbuja deja de mostrar los botones y nunca se puede confirmar dos
+  // veces el mismo mensaje (ver confirmarAccionCalendario en
+  // AsistenteService.ts).
+  acciones?: AccionMensaje[]
+  accionElegida?: string
+  // Diferencias de calendario pendientes de confirmar, calculadas por
+  // /api/calendario/analizar — viajan pegadas al mensaje (no a un
+  // "proceso activo" en el servidor) para no interferir con el
+  // mecanismo genérico de "proceso activo en curso" que ya usa la
+  // generación de documentos largos.
+  datosAccionCalendario?: DiferenciaCalendario[]
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
@@ -102,7 +138,7 @@ export type EventoMotor =
   // nunca se muestra en pantalla, para que AsistenteService pueda
   // seguir usándolo como fuente si el docente pide otro formato
   // después ("ahora en PDF").
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[] }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

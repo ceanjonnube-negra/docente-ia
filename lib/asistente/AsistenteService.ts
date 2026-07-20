@@ -11,6 +11,9 @@ import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
+import { obtenerPerfilYSesion } from './perfilDocente'
+import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -23,9 +26,11 @@ import {
   type DocumentoActivoGuardado,
 } from './persistencia'
 import type {
+  AccionMensaje,
   AdjuntoImagen,
   ArchivoGeneradoInfo,
   ContextoAplicacion,
+  DiferenciaCalendario,
   EstadoMotor,
   EventoMotor,
   Herramienta,
@@ -33,6 +38,25 @@ import type {
   MotorConversacional,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
+
+class ErrorLimiteDeTiempoAccion extends Error {}
+
+// Mismo patrón de conLimiteDeTiempo que ya usan motorTextoClaude.ts (
+// cliente) y app/api/chat/route.ts (servidor) — copia local a
+// propósito, no una utilidad compartida (ver esos archivos: es una
+// duplicación pequeña e intencional, no una entidad que otros módulos
+// deban importar).
+async function conLimiteDeTiempoAccion<T>(promesa: Promise<T>, ms: number, mensaje: string): Promise<T> {
+  let temporizador!: ReturnType<typeof setTimeout>
+  const limite = new Promise<never>((_, reject) => {
+    temporizador = setTimeout(() => reject(new ErrorLimiteDeTiempoAccion(mensaje)), ms)
+  })
+  try {
+    return await Promise.race([promesa, limite])
+  } finally {
+    clearTimeout(temporizador)
+  }
+}
 
 // Al cargar el módulo SOLO se lee el índice liviano (id/título/fecha) de
 // conversaciones guardadas — para que la barra lateral tenga qué
@@ -93,6 +117,12 @@ export type EstadoAsistente = {
   // de una sola vez para que AsistentePanel baje el scroll y resalte la
   // tarjeta de un archivo que se reutilizó sin regenerar.
   archivoReutilizadoId: string | null
+  // Secuencia visual mientras se aplica una corrección de calendario
+  // confirmada (ver confirmarAccionCalendario) — null el resto del
+  // tiempo. `mensajeId` es el mensaje con los botones que el docente
+  // tocó, para que AsistentePanel sepa en qué burbuja mostrar la
+  // animación en vez de un estado global ambiguo.
+  accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null
 }
 
 export type PasoDebugVoz = {
@@ -199,6 +229,22 @@ class AsistenteServiceImpl {
   private archivoReutilizadoId: string | null = null
   private archivoReutilizadoTimer: ReturnType<typeof setTimeout> | null = null
 
+  // Secuencia visual (ver EstadoAsistente.accionCalendarioEnProgreso)
+  // mientras se aplica una corrección de calendario ya confirmada —
+  // puramente cosmética, igual que useEtapaGeneracion en
+  // AsistentePanel.tsx: el trabajo real ocurre en una sola llamada a
+  // /api/calendario/aplicar, este temporizador solo va avanzando el
+  // texto que se muestra mientras esa llamada está en curso.
+  private accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null = null
+  private accionCalendarioTimer: ReturnType<typeof setInterval> | null = null
+  private readonly ETAPAS_ACCION_CALENDARIO = [
+    'Analizando cambios...',
+    'Corrigiendo eventos...',
+    'Creando respaldo...',
+    'Actualizando calendario...',
+    'Sincronizando información...',
+  ]
+
   // En modo voz, la transcripción del habla del docente y la respuesta
   // del modelo son dos procesos async INDEPENDIENTES de la Realtime API
   // — el segundo puede terminar primero. Sin esto, la burbuja del
@@ -237,7 +283,25 @@ class AsistenteServiceImpl {
       conversacionActivaId: this.conversacionActivaId,
       listaConversaciones: this.listaConversaciones,
       archivoReutilizadoId: this.archivoReutilizadoId,
+      accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
     }
+  }
+
+  private iniciarProgresoAccionCalendario(mensajeId: string) {
+    if (this.accionCalendarioTimer) clearInterval(this.accionCalendarioTimer)
+    let indice = 0
+    this.accionCalendarioEnProgreso = { mensajeId, etapa: this.ETAPAS_ACCION_CALENDARIO[0] }
+    this.accionCalendarioTimer = setInterval(() => {
+      indice = Math.min(indice + 1, this.ETAPAS_ACCION_CALENDARIO.length - 1)
+      this.accionCalendarioEnProgreso = { mensajeId, etapa: this.ETAPAS_ACCION_CALENDARIO[indice] }
+      this.notificar()
+    }, 1100)
+    this.notificar()
+  }
+
+  private detenerProgresoAccionCalendario() {
+    if (this.accionCalendarioTimer) { clearInterval(this.accionCalendarioTimer); this.accionCalendarioTimer = null }
+    this.accionCalendarioEnProgreso = null
   }
 
   private mostrarArchivoReutilizado(idMensaje: string) {
@@ -365,6 +429,7 @@ class AsistenteServiceImpl {
     if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
     if (this.avisoVozTimer) { clearTimeout(this.avisoVozTimer); this.avisoVozTimer = null }
     if (this.archivoReutilizadoTimer) { clearTimeout(this.archivoReutilizadoTimer); this.archivoReutilizadoTimer = null }
+    this.detenerProgresoAccionCalendario()
     this.archivoReutilizadoId = null
     this.turnoAbierto = null
     this.editandoDocumentoId = null
@@ -888,6 +953,18 @@ class AsistenteServiceImpl {
       this.conversacionActivaId = crearNuevaConversacion()
     }
 
+    // Verificación de calendario con foto — antes de cualquier otra
+    // regla (incluida "documento activo" abajo): una foto del
+    // calendario oficial nunca debe interpretarse como edición del
+    // documento que se esté redactando en ese momento. Detección
+    // determinista (ver esVerificacionCalendarioConImagen), no una
+    // decisión de IA — igual que detectarHerramientaDocumento más
+    // abajo. No toca documentoActivo ni ninguna otra rama existente.
+    if (esVerificacionCalendarioConImagen(limpio, adjunto) && adjunto) {
+      await this.analizarCalendarioDesdeImagen(limpio, adjunto)
+      return
+    }
+
     // Con un documento activo: primero se revisa si el mensaje nombra un
     // formato de archivo real ("Word", "archivo Word", "DOCX", "a PDF",
     // "descárgalo"...) — eso es FINALIZAR ARCHIVO, se genera el archivo
@@ -941,6 +1018,158 @@ class AsistenteServiceImpl {
       await this.motor?.enviarTexto(limpio, adjunto)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    }
+  }
+
+  // Compara la foto adjunta contra el calendario real y responde con un
+  // resumen ejecutivo + botones — nunca pasa por MotorTextoClaude (no
+  // hay streaming aquí, la respuesta necesita llegar completa para
+  // construir los botones de una sola vez). Ver
+  // app/api/calendario/analizar/route.ts. Sigue exactamente el mismo
+  // criterio de "nunca colgarse en silencio" que motorTextoClaude.ts:
+  // sesión y fetch con límite de tiempo real, y CUALQUIER falla termina
+  // en un mensaje de error visible, nunca en generando=true para
+  // siempre.
+  private async analizarCalendarioDesdeImagen(texto: string, adjunto: AdjuntoImagen) {
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagen: adjunto }]
+    this.generando = true
+    this.notificar()
+
+    const controlador = new AbortController()
+    const temporizadorFetch = setTimeout(() => controlador.abort(), 55_000)
+
+    try {
+      const { user, session } = await conLimiteDeTiempoAccion(
+        obtenerPerfilYSesion(),
+        12_000,
+        'Tiempo de espera agotado obteniendo la sesión del docente'
+      )
+
+      const res = await fetch('/api/calendario/analizar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mensaje: texto,
+          imagenBase64: adjunto.base64,
+          imagenTipo: adjunto.tipo,
+          userId: user?.id || null,
+          accessToken: session?.access_token || null,
+          zonaHoraria: obtenerZonaHorariaDispositivo(),
+        }),
+        signal: controlador.signal,
+      })
+
+      const cuerpo = await res.json().catch(() => null)
+      if (!res.ok || !cuerpo || typeof cuerpo.error === 'string') {
+        throw new Error(cuerpo?.error || 'No pude analizar la imagen del calendario. Intenta de nuevo.')
+      }
+
+      const acciones: AccionMensaje[] | undefined = Array.isArray(cuerpo.acciones) && cuerpo.acciones.length > 0 ? cuerpo.acciones : undefined
+      const datosAccionCalendario: DiferenciaCalendario[] | undefined =
+        Array.isArray(cuerpo.datosAccionCalendario) && cuerpo.datosAccionCalendario.length > 0 ? cuerpo.datosAccionCalendario : undefined
+
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '', creadoEn: Date.now(), acciones, datosAccionCalendario },
+      ]
+    } catch (err) {
+      const mensajeError =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'El análisis del calendario tardó demasiado. Intenta de nuevo.'
+          : err instanceof Error
+            ? err.message
+            : 'No pude analizar la imagen del calendario. Intenta de nuevo.'
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: mensajeError, creadoEn: Date.now() }]
+    } finally {
+      clearTimeout(temporizadorFetch)
+      this.generando = false
+      this.notificar()
+      this.persistirConversacion()
+    }
+  }
+
+  // El docente tocó un botón de acción sobre un mensaje (ver
+  // AccionMensaje) — hoy solo existen los botones del análisis de
+  // calendario, pero el método queda genérico por id de acción para no
+  // tener que reabrir esta pieza si mañana hay otro flujo con botones.
+  // accionElegida se marca ANTES de hacer cualquier trabajo, así los
+  // botones desaparecen de inmediato y el mismo mensaje nunca puede
+  // confirmarse dos veces (doble toque, doble pestaña, etc.).
+  async confirmarAccionCalendario(mensajeId: string, accionId: string) {
+    const mensaje = this.mensajes.find((m) => m.id === mensajeId)
+    if (!mensaje || mensaje.accionElegida || this.generando) return
+
+    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, accionElegida: accionId } : m))
+    this.notificar()
+    this.persistirConversacion()
+
+    if (accionId === 'cancelar') {
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no realicé ningún cambio en el calendario.', creadoEn: Date.now() },
+      ]
+      this.notificar()
+      this.persistirConversacion()
+      return
+    }
+
+    if (accionId !== 'actualizar_calendario') return
+
+    const diferencias = mensaje.datosAccionCalendario
+    if (!diferencias || diferencias.length === 0) {
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'asistente', texto: 'No encontré los cambios pendientes de ese análisis. Envía de nuevo la foto del calendario.', creadoEn: Date.now() },
+      ]
+      this.notificar()
+      this.persistirConversacion()
+      return
+    }
+
+    this.generando = true
+    this.iniciarProgresoAccionCalendario(mensajeId)
+
+    const controlador = new AbortController()
+    const temporizadorFetch = setTimeout(() => controlador.abort(), 55_000)
+
+    try {
+      const { user, session } = await conLimiteDeTiempoAccion(
+        obtenerPerfilYSesion(),
+        12_000,
+        'Tiempo de espera agotado obteniendo la sesión del docente'
+      )
+
+      const res = await fetch('/api/calendario/aplicar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diferencias, userId: user?.id || null, accessToken: session?.access_token || null }),
+        signal: controlador.signal,
+      })
+
+      const cuerpo = await res.json().catch(() => null)
+      if (!res.ok || !cuerpo || typeof cuerpo.error === 'string') {
+        throw new Error(cuerpo?.error || 'No pude actualizar el calendario. Intenta de nuevo.')
+      }
+
+      const archivo: ArchivoGeneradoInfo | undefined = cuerpo.archivoRespaldo || undefined
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '✅ Calendario actualizado correctamente.', creadoEn: Date.now(), archivo },
+      ]
+    } catch (err) {
+      const mensajeError =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'La actualización del calendario tardó demasiado. Intenta de nuevo.'
+          : err instanceof Error
+            ? err.message
+            : 'No pude actualizar el calendario. Intenta de nuevo.'
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: `No pude actualizar el calendario: ${mensajeError}`, creadoEn: Date.now() }]
+    } finally {
+      clearTimeout(temporizadorFetch)
+      this.detenerProgresoAccionCalendario()
+      this.generando = false
+      this.notificar()
+      this.persistirConversacion()
     }
   }
 

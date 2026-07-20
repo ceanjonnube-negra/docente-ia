@@ -33,6 +33,7 @@ export function useAsistente() {
     nuevaConversacion: () => AsistenteService.nuevaConversacion(),
     abrirConversacion: (id: string) => AsistenteService.abrirConversacion(id),
     eliminarConversacion: (id: string) => AsistenteService.eliminarConversacion(id),
+    confirmarAccionCalendario: (mensajeId: string, accionId: string) => AsistenteService.confirmarAccionCalendario(mensajeId, accionId),
   }
 }
 

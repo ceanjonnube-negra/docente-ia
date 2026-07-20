@@ -498,6 +498,19 @@ export default function AsistentePanel() {
                       generandoArchivo={asistente.documentoFinalizandoId === m.id}
                     />
                   )}
+                  {/* Un mensaje puede traer archivo (ej. el respaldo del
+                      calendario, ver confirmarAccionCalendario) SIN ser un
+                      documento formal con título — esDoc solo cubre el
+                      caso de planeación/lista/ficha/oficio. Sin esto, el
+                      texto real (el resumen "✅ Calendario actualizado...")
+                      desaparecería en silencio detrás de la tarjeta. */}
+                  {!esDoc && m.texto && (
+                    <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed bg-white text-gray-800 shadow-sm rounded-bl-sm w-full">
+                      <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
                   {/* Última condición del flujo: independientemente de si
                       hubo vista previa (esDoc) o de qué tipo de documento
                       sea (planeación, lista, ficha, oficio...), en cuanto
@@ -532,6 +545,41 @@ export default function AsistentePanel() {
                       </div>
                     ) : m.texto}
                   </div>
+                  {/* Botones de confirmación (ver AccionMensaje) — se
+                      esconden en cuanto el docente elige uno
+                      (accionElegida ya viene marcado, ver
+                      confirmarAccionCalendario) para que nunca se pueda
+                      confirmar dos veces el mismo mensaje. */}
+                  {m.acciones && m.acciones.length > 0 && !m.accionElegida && (
+                    <div className="flex gap-2 mt-1.5">
+                      {m.acciones.map((accion) => (
+                        <button
+                          key={accion.id}
+                          type="button"
+                          onClick={() => asistente.confirmarAccionCalendario(m.id, accion.id)}
+                          disabled={asistente.generando}
+                          className={
+                            accion.estilo === 'primario'
+                              ? 'px-4 py-2 rounded-full text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition disabled:opacity-40'
+                              : 'px-4 py-2 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40'
+                          }
+                        >
+                          {accion.etiqueta}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {/* Secuencia visual mientras se aplica la acción
+                      confirmada — puramente cosmética (ver
+                      iniciarProgresoAccionCalendario en
+                      AsistenteService.ts), el mensaje de éxito o error
+                      real llega después como un mensaje nuevo. */}
+                  {asistente.accionCalendarioEnProgreso?.mensajeId === m.id && (
+                    <div className="flex items-center gap-2 px-3 py-2 mt-1.5 rounded-2xl bg-purple-50 text-purple-700 text-xs font-medium animate-pulse">
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 flex-shrink-0" />
+                      {asistente.accionCalendarioEnProgreso.etapa}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
