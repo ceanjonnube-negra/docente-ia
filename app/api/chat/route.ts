@@ -28,10 +28,18 @@ const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 async function buscarContextoRAG(pregunta: string, institucionId: string | null): Promise<string> {
   try {
-    const embeddingResponse = await openaiRAG.embeddings.create({
-      model: 'text-embedding-3-small',
-      input: pregunta,
-    })
+    // Sin timeout explícito, esta llamada podía quedarse esperando
+    // indefinidamente (ver TIMEOUT_NIVEL0_MS en lib/clasificadorNivel0.ts
+    // — mismo problema, otro proveedor) — buscarContextoRAG se dispara
+    // para CUALQUIER mensaje, no solo los que pasan por el Clasificador
+    // de Nivel 0, así que este límite protege la ruta completa de chat.
+    const embeddingResponse = await openaiRAG.embeddings.create(
+      {
+        model: 'text-embedding-3-small',
+        input: pregunta,
+      },
+      { timeout: TIMEOUT_RAG_MS }
+    )
     const queryEmbedding = embeddingResponse.data[0].embedding
 
     const { data, error } = await supabaseRAG.rpc('buscar_chunks_similares', {
@@ -104,6 +112,28 @@ const MENSAJE_ERROR_DOCUMENTO = 'No fue posible generar el documento en este mom
 // que ningún catch se dispare nunca. 25s es generoso para el primer byte
 // de un stream real, pero corta una conexión realmente muerta.
 const TIMEOUT_ANTHROPIC_MS = 25_000
+// Mismo criterio para las dos llamadas externas que corren ANTES de
+// llegar siquiera a Claude — la búsqueda RAG (OpenAI) y la sesión de
+// contexto (Supabase). Ninguna de las dos tenía límite: si cualquiera
+// se quedaba esperando, /api/chat entero nunca respondía nada, sin
+// importar qué tan bien protegida estuviera la llamada principal a
+// Claude más abajo.
+const TIMEOUT_RAG_MS = 10_000
+const TIMEOUT_SESION_MS = 10_000
+
+class ErrorLimiteDeTiempo extends Error {}
+
+async function conLimiteDeTiempo<T>(promesa: Promise<T>, ms: number, mensaje: string): Promise<T> {
+  let temporizador!: ReturnType<typeof setTimeout>
+  const limite = new Promise<never>((_, reject) => {
+    temporizador = setTimeout(() => reject(new ErrorLimiteDeTiempo(mensaje)), ms)
+  })
+  try {
+    return await Promise.race([promesa, limite])
+  } finally {
+    clearTimeout(temporizador)
+  }
+}
 
 // DIAGNÓSTICO DE FALLAS DEL MODELO — clasifica cualquier error real de
 // la llamada a Anthropic en una de 5 categorías, para poder decidir
@@ -354,7 +384,7 @@ export async function POST(req: NextRequest) {
   // IA responder "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez
   // de fingir que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
   const sesion = (supabaseUser && userId)
-    ? await obtenerSesionContexto(supabaseUser, userId, zonaHoraria).catch((e) => {
+    ? await conLimiteDeTiempo(obtenerSesionContexto(supabaseUser, userId, zonaHoraria), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
         console.error('Error obteniendo sesión de contexto:', e)
         return null
       })
@@ -594,7 +624,11 @@ export async function POST(req: NextRequest) {
   }
   // --- Fin Clasificador de Nivel 0 ---
 
-  const contextoRAG = await contextoRAGPromise
+  // Red de seguridad adicional: buscarContextoRAG ya protege su propia
+  // llamada a OpenAI con timeout, pero la consulta RPC a Supabase que
+  // sigue después (buscar_chunks_similares) no tiene uno propio — este
+  // límite cubre esa parte también sin tener que tocar la función.
+  const contextoRAG = await conLimiteDeTiempo(contextoRAGPromise, TIMEOUT_RAG_MS + 5_000, 'Tiempo de espera agotado en la búsqueda de contexto RAG').catch(() => '')
 
   // Fecha, hora y ciclo escolar reales — SIEMPRE en la zona horaria real
   // del dispositivo del maestro (mandada por el cliente, ver
@@ -611,7 +645,7 @@ export async function POST(req: NextRequest) {
 INSTRUCCION SOBRE TAREAS LARGAS DE VARIOS ELEMENTOS: esto SOLO aplica cuando el maestro pide explícitamente varios documentos SEPARADOS en la misma solicitud (ejemplo: "hazme las fichas descriptivas de estos 5 alumnos", "hazme examenes de 3 temas distintos", "planeaciones de las próximas 4 semanas") — cada elemento sería, por sí solo, un documento completo. NO aplica a un solo documento que internamente tenga varias partes (un examen con varios reactivos, una planeación con varios días, una lectura con varias preguntas de comprensión) — eso es UN solo documento y se entrega completo en una sola respuesta, sin marcador. Solo cuando de verdad se pidieron varios documentos separados: identifica cuántos se piden en total y genera SOLO el elemento actual en tu respuesta (no todos de golpe, salvo que el maestro pida explícitamente todos juntos). Al final de tu respuesta, en su propia línea, incluye exactamente este marcador técnico que el maestro nunca verá en pantalla: [[PROCESO:tipo=NOMBRE_CORTO_DE_LA_TAREA;actual=NUMERO_DEL_ELEMENTO_QUE_ACABAS_DE_GENERAR;total=TOTAL_DE_ELEMENTOS;estado=activo_si_faltan_mas_o_completado_si_es_el_ultimo]]. Si la tarea no es de varios documentos separados en serie, NO incluyas ningún marcador.`
 
   if (userId) {
-    const proceso = await procesoActivoPromise
+    const proceso = await conLimiteDeTiempo(procesoActivoPromise, TIMEOUT_SESION_MS, 'Tiempo de espera agotado consultando el proceso activo').catch(() => null)
 
     if (proceso) {
       contextoProceso = `\n\nPROCESO ACTIVO EN CURSO (el maestro ya empezo esta tarea, NO la reinicies, continua exactamente donde se quedo salvo que el maestro pida algo distinto):

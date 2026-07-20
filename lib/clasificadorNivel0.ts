@@ -127,18 +127,35 @@ REGLAS:
 13. CONFIRMACIÓN DE SEGUIMIENTO: si el mensaje actual es una respuesta afirmativa breve ("sí", "sí es correcto", "así es", "correcto", "exacto", "confirmado", "sí, regístralo") Y el ÚLTIMO turno del ASISTENTE en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN" es una pregunta del tipo "¿Te refieres a [nombre]?" sobre asistencia, entonces: intencion_principal="marcar_asistencia_individual", resuelve entidades_resueltas contra ese mismo [nombre] (búscalo en alumnos_del_grupo_activo), toma estado_asistencia_solicitado del turno del MAESTRO anterior a esa pregunta, y esta vez requiere_confirmacion=false (ya se confirmó explícitamente).`;
 }
 
+// CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras
+// generar un documento: esta era la ÚNICA llamada a Claude en todo el
+// proyecto sin límite de tiempo explícito (compárese con las otras dos
+// en app/api/chat/route.ts, que sí usan { timeout: TIMEOUT_ANTHROPIC_MS
+// }). Cualquier edición de un documento activo ("Haz equipos de 6"
+// después de generar un Word) pasa por aquí casi siempre — el prompt
+// interno de edición (construirPromptEdicion en AsistenteService.ts)
+// contiene la palabra "documento" varias veces, así que dispara el gate
+// REQUIERE_CLASIFICADOR_NIVEL0 en prácticamente cualquier edición. Si
+// esta llamada se quedaba esperando, la ruta completa de /api/chat
+// nunca terminaba — el try/catch de abajo ya existía, pero nunca se
+// disparaba porque nada la delataba como colgada.
+const TIMEOUT_NIVEL0_MS = 12_000;
+
 export async function clasificarNivel0(
   mensaje: string,
   sesion: SesionContexto,
   historialReciente: TurnoReciente[] = []
 ): Promise<ClasificacionNivel0> {
   try {
-    const respuesta = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      system: construirPrompt(sesion, historialReciente),
-      messages: [{ role: 'user', content: mensaje }],
-    });
+    const respuesta = await client.messages.create(
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: construirPrompt(sesion, historialReciente),
+        messages: [{ role: 'user', content: mensaje }],
+      },
+      { timeout: TIMEOUT_NIVEL0_MS }
+    );
 
     const bloque = respuesta.content.find((b) => b.type === 'text');
     if (!bloque || bloque.type !== 'text') return FALLBACK;
