@@ -339,18 +339,33 @@ export function construirTextoListaAlumnos(
   grado: string | null | undefined,
   grupo: string | null | undefined
 ): string {
-  const ordenados = [...alumnos].sort((a, b) => {
-    if (a.numero_lista != null && b.numero_lista != null) return a.numero_lista - b.numero_lista;
-    if (a.numero_lista != null) return -1;
-    if (b.numero_lista != null) return 1;
-    return a.nombre_completo.localeCompare(b.nombre_completo, 'es');
-  });
+  // Orden alfabético REAL — primer apellido, segundo apellido, nombre —
+  // sin dividir ni tocar el texto: nombre_completo YA está guardado en
+  // ese orden institucional exacto ("Abad Rojas Audrey" = apellido
+  // paterno + apellido materno + nombre, como una sola cadena), así que
+  // comparar la cadena completa con localeCompare produce ese orden de
+  // tres niveles de forma natural, sin heurísticas de split().
+  //
+  // A propósito NO se ordena por numero_lista: ese campo refleja el
+  // orden en que llegaron los alumnos al importar (ver
+  // app/api/importar-alumnos/route.ts, donde Claude le asigna
+  // numero_lista=1,2,3... siguiendo el orden del documento fuente que
+  // se fotografió o subió) — no hay garantía de que ese documento
+  // fuente ya viniera alfabetizado por apellido. lib/rosterGrupo.ts
+  // (el módulo Lista real) ya tenía este mismo criterio — ordenar por
+  // el nombre completo, nunca confiar en numero_lista para esto — este
+  // documento ahora usa exactamente el mismo.
+  const ordenados = [...alumnos].sort((a, b) => a.nombre_completo.localeCompare(b.nombre_completo, 'es'));
 
   const metadatos = [grado ? `Grado: ${grado}°` : null, grupo ? `Grupo: ${grupo}` : null, `Total: ${ordenados.length} alumno(s)`]
     .filter(Boolean)
     .join(' | ');
 
-  const filas = ordenados.map((a, i) => `${a.numero_lista ?? i + 1}. ${a.nombre_completo}`).join('\n');
+  // El número de cada renglón es la posición en ESTE orden alfabético
+  // recién calculado (1, 2, 3...), nunca el numero_lista guardado —
+  // mostrar un numero_lista que no corresponde al orden real de la
+  // fila se vería inconsistente (ver razón del ordenamiento arriba).
+  const filas = ordenados.map((a, i) => `${i + 1}. ${a.nombre_completo}`).join('\n');
 
   return `📋 LISTA DE ALUMNOS\n${metadatos}\n\n${filas}`;
 }
