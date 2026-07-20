@@ -10,20 +10,23 @@
 
 import type { OpcionAdjunto } from '@/components/ui/MenuAdjuntos'
 
-// "Fotos" y "Archivos" permiten marcar varias en el selector porque así
-// se espera de una galería/explorador de archivos, pero el chat solo
-// adjunta una por mensaje (igual que "Tomar foto" siempre hizo) — se
-// usa la primera que el maestro marcó (ver manejarSeleccionAdjunto en
-// AsistentePanel.tsx).
-//
-// "Archivos" usa extensiones de imagen explícitas (.jpg/.jpeg/.png/
-// .heic/.heif), NUNCA el comodín "image/*", para no mezclarlo con las
-// extensiones de documento — esa mezcla es lo que hacía que el
-// sistema operativo mostrara su propio selector encima de este menú
-// (ver nota en components/ui/MenuAdjuntos.tsx). Mismo criterio que ya
-// usaba ImportacionInteligente.tsx para su opción "Archivos".
+// HOTFIX (segundo menú nativo en Fotos/Archivos): ni "multiple" ni
+// mezclar categorías de accept son gratis en iOS/Android — un
+// <input type="file"> SIN capture y SIN esas dos cosas es la única
+// combinación que abre el recurso de forma directa, sin que el propio
+// sistema operativo muestre su panel de "¿Fototeca, Tomar foto o
+// Elegir archivo?" encima de este menú:
+//   - "Fotos" ya no permite selección múltiple (una imagen por
+//     mensaje, igual que "Tomar foto" siempre hizo) — con "multiple"
+//     puesto, iOS mostraba su propio selector antes de dejar elegir.
+//   - "Archivos" ya no incluye extensiones de imagen en su accept —
+//     mezclar imagen+documento en la misma opción es lo que hacía que
+//     el sistema ofreciera Fototeca/Cámara además del explorador de
+//     archivos. Para una imagen se usa "Fotos".
+// El chat solo adjunta un archivo por mensaje en cualquier caso (ver
+// manejarSeleccionAdjunto en AsistentePanel.tsx).
 export const OPCIONES_ADJUNTO_CHAT: OpcionAdjunto[] = [
   { id: 'camara', icono: '📷', titulo: 'Tomar foto', descripcion: 'Fotografía una lista o documento', accept: 'image/*', capture: 'environment' },
-  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', descripcion: 'Selecciona una o varias imágenes', accept: 'image/*', multiple: true },
-  { id: 'archivos', icono: '📄', titulo: 'Archivos', descripcion: 'PDF, Word, Excel o imágenes', accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.heic,.heif', multiple: true },
+  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', descripcion: 'Selecciona una imagen', accept: 'image/*' },
+  { id: 'archivos', icono: '📄', titulo: 'Archivos', descripcion: 'PDF, Word, Excel o PowerPoint', accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx' },
 ]

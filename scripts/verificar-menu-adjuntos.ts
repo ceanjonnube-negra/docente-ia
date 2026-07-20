@@ -53,14 +53,19 @@ const archivos = OPCIONES_ADJUNTO_CHAT.find((o) => o.id === 'archivos')
 
 // Causa raíz real del "segundo menú" (el selector nativo del sistema
 // operativo apareciendo encima del menú propio, con textos como
-// "Fototeca"/"Tomar foto"/"Seleccionar archivos"): mezclar el comodín
-// "image/*" con extensiones de documento en el mismo `accept` — eso es
-// justo lo que hace que iOS/Android muestren su propio selector de
-// "¿de dónde sacas la imagen?" otra vez. Nunca debe volver a pasar.
-verificar(!archivos?.accept.includes('image/*'), 'Archivos NO mezcla el comodín image/* (causa real del selector nativo duplicado)')
-;['.jpg', '.jpeg', '.png'].forEach((ext) => {
-  verificar(!!archivos?.accept.includes(ext), `Archivos acepta imágenes por extensión explícita (${ext}), no por comodín`)
-})
+// "Fototeca"/"Tomar foto"/"Seleccionar archivos"): en iOS/Android, un
+// <input type="file"> sin `capture` dispara el selector nativo del
+// sistema en cuanto (a) su `accept` mezcla imágenes con documentos, o
+// (b) tiene `multiple` — ambas cosas hacen que el teléfono pregunte
+// otra vez "¿de dónde sacas esto?" encima del menú propio. Nunca deben
+// volver a pasar para Fotos/Archivos.
+verificar(!archivos?.accept.includes('image/*'), 'Archivos NO mezcla el comodín image/* (dispara el selector nativo)')
+verificar(!/\.(jpe?g|png|heic|heif|gif|webp)\b/i.test(archivos?.accept || ''), 'Archivos NO incluye ninguna extensión de imagen (esa mezcla también dispara el selector nativo)')
+verificar(!archivos?.multiple, 'Archivos NO permite selección múltiple (eso también dispara el selector nativo)')
+
+const fotos = OPCIONES_ADJUNTO_CHAT.find((o) => o.id === 'fotos')
+verificar(!fotos?.multiple, 'Fotos NO permite selección múltiple (con "multiple" el sistema mostraba su propio selector)')
+verificar(!fotos?.capture, 'Fotos no fuerza la cámara (debe ir directo a la galería)')
 
 const titulosNormalizados = OPCIONES_ADJUNTO_CHAT.map((o) => o.titulo.toLowerCase())
 PROHIBIDAS.forEach((prohibida) => {
