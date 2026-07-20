@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'multiples-fotos-v42-88230cf'
+export const BUILD_ID = 'menu-dia-calendario-v43-d9045e3'
