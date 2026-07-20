@@ -62,9 +62,31 @@ function TarjetaDescarga({ archivo, className = '' }: { archivo: { tipo: string;
 // toda modificación y toda descarga se piden escribiendo o hablando
 // (ver AsistenteService.enviarMensaje), así que esta vista nunca
 // necesita controles propios.
+// Un documento grande (Word/PDF de varias páginas) puede tardar
+// legítimamente decenas de segundos en generarse — nunca es un
+// cuelgue (ver TIMEOUT_FETCH_DOCUMENTO_MS en motorTextoClaude.ts).
+// Este texto rotativo es solo tranquilidad visual para el maestro
+// mientras espera, no un reporte literal de en qué línea de código
+// está el servidor en ese instante — se queda en la última frase si
+// el proceso tarda más que el ciclo completo.
+const ETAPAS_GENERACION = ['Preparando documento...', 'Generando contenido...', 'Creando archivo...', 'Finalizando...']
+
+function useEtapaGeneracion(activo: boolean): string {
+  const [indice, setIndice] = useState(0)
+  useEffect(() => {
+    if (!activo) return
+    const intervalo = setInterval(() => {
+      setIndice(i => Math.min(i + 1, ETAPAS_GENERACION.length - 1))
+    }, 4000)
+    return () => clearInterval(intervalo)
+  }, [activo])
+  return ETAPAS_GENERACION[indice]
+}
+
 function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto: string; escribiendo: boolean; generandoArchivo: boolean }) {
   const lineas = analizarContenido(texto)
   const titulo = extraerTitulo(texto)
+  const etapaGeneracion = useEtapaGeneracion(generandoArchivo)
   return (
     <div className="w-full max-w-sm bg-white rounded-2xl shadow-md border border-gray-200 rounded-bl-sm overflow-hidden">
       <div className="px-3 pt-2 pb-1.5 bg-gray-50 border-b border-gray-100 flex items-center gap-1.5">
@@ -99,7 +121,7 @@ function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto:
       {generandoArchivo && (
         <div className="flex items-center justify-center gap-2 px-3 py-2.5 bg-gray-50 border-t border-gray-100 text-xs font-semibold text-purple-600">
           <span className="w-3.5 h-3.5 border-2 border-purple-300 border-t-purple-600 rounded-full animate-spin" aria-hidden="true" />
-          Generando documento...
+          {etapaGeneracion}
         </div>
       )}
     </div>

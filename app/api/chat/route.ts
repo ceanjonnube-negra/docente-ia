@@ -113,6 +113,15 @@ const MENSAJE_ERROR_DOCUMENTO = 'No fue posible generar el documento en este mom
 // que ningún catch se dispare nunca. 25s es generoso para el primer byte
 // de un stream real, pero corta una conexión realmente muerta.
 const TIMEOUT_ANTHROPIC_MS = 25_000
+// CASO 3 de FINALIZAR ARCHIVO (más abajo) llama a Claude con
+// stream:false — a diferencia del streaming normal, esa llamada no
+// devuelve NADA hasta que termina de redactar el documento COMPLETO
+// (hasta 8000 tokens: una planeación de varios días, un examen largo).
+// Usar el mismo límite de "tiempo al primer byte" (25s) para una
+// respuesta que necesita completarse entera antes de responder algo
+// era la causa real de "Tardó demasiado en responder" en documentos
+// grandes que en realidad iban bien, solo tardados — nunca colgados.
+const TIMEOUT_ANTHROPIC_DOCUMENTO_MS = 55_000
 // Mismo criterio para las dos llamadas externas que corren ANTES de
 // llegar siquiera a Claude — la búsqueda RAG (OpenAI) y la sesión de
 // contexto (Supabase). Ninguna de las dos tenía límite: si cualquiera
@@ -145,6 +154,19 @@ type CategoriaErrorIA = 'conexion' | 'timeout' | 'creditos' | 'configuracion' | 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function clasificarErrorIA(err: any): CategoriaErrorIA {
+  // HerramientaNoDisponibleError (imagen/audio/video sin proveedor) es
+  // un límite real y permanente — reintentar manda exactamente la
+  // misma petición y falla igual, así que jamás debe clasificarse como
+  // transitorio.
+  if (err instanceof HerramientaNoDisponibleError) return 'configuracion'
+  // ErrorHerramientaDocumento (conversión/subida/URL del pipeline de
+  // documentos) no tiene forma de error de Anthropic — sin esta rama
+  // caía siempre en 'desconocido' (no reintentable) y una falla de
+  // Storage momentánea nunca se reintentaba, ni una sola vez. Es el
+  // mismo tipo de falla transitoria de infraestructura que 'proveedor'
+  // (un segundo o tercer intento después suele funcionar).
+  if (err instanceof ErrorHerramientaDocumento) return 'proveedor'
+
   const nombre = String(err?.name || '')
   const mensaje = String(err?.error?.error?.message || err?.error?.message || err?.message || '')
 
@@ -910,7 +932,7 @@ Grado: [grado] | Grupo: [grupo]
     console.log(`[PIPELINE ${etiquetaCaso3}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=claude-directo (sin documento previo que recuperar)`)
     try {
       const inicioContenido = Date.now()
-      const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'claude-documento-combinado')
+      const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
 
       if (texto && esDocumentoFormal(texto)) {

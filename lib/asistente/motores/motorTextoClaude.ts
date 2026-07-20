@@ -51,17 +51,25 @@ const detectarCampoFormativo = (texto: string): string | null => {
 type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
 
 // CAUSA RAÍZ del chat "colgado" tras generar/descargar un documento:
-// ver el comentario grande dentro de enviarTexto(). Estos dos límites
+// ver el comentario grande dentro de enviarTexto(). Estos límites
 // garantizan que CUALQUIER await de esta función SIEMPRE termina —
 // con éxito o con un error real — en vez de quedar pendiente para
 // siempre. obtenerPerfilYSesion() (auth de Supabase) rara vez tarda
-// más de 1-2s; 12s ya es generoso. El fetch a /api/chat puede tardar
-// más (Claude redactando un documento largo), pero el servidor mismo
-// nunca deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver
-// app/api/chat/route.ts) antes de responder algo — 35s deja margen de
-// sobra para esa respuesta más la latencia de red real.
+// más de 1-2s; 12s ya es generoso.
 const TIMEOUT_SESION_MS = 12_000
+// Fetch normal (conversación, sin generar archivo): el servidor nunca
+// deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver app/api/chat/
+// route.ts) antes de responder algo — 35s deja margen de sobra.
 const TIMEOUT_FETCH_MS = 35_000
+// Fetch de FINALIZAR ARCHIVO (finalizarArchivo presente): puede incluir
+// una redacción completa de Claude sin streaming de hasta 8000 tokens
+// (CASO 3, hasta TIMEOUT_ANTHROPIC_DOCUMENTO_MS=55s en el servidor) más
+// la conversión/subida/verificación real del archivo — un documento
+// grande tardando 40-90s es NORMAL, no un cuelgue, y no debe mostrar
+// "Tardó demasiado en responder" (ver RFC "generación de documentos
+// tolerante a tiempos largos"). 130s deja margen real de sobra incluso
+// con un reintento interno del servidor de por medio.
+const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
 
 class ErrorLimiteDeTiempo extends Error {}
 
@@ -160,7 +168,7 @@ export class MotorTextoClaude implements MotorConversacional {
       )
       const contextoTexto = construirInstrucciones(perfil, this.contexto)
 
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), TIMEOUT_FETCH_MS)
+      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
         method: 'POST',

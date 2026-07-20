@@ -134,6 +134,12 @@ class AsistenteServiceImpl {
   // la vez, y si pedía un segundo formato después ("también en PDF"),
   // el contenido real ya se había perdido.
   private textoDocumentoFinalizando: string | null = null
+  // Cuántas veces se ha intentado la finalización de archivo ACTUAL sin
+  // que el maestro haya tenido que tocar nada — ver el reintento
+  // automático en el 'error' de manejarEventoMotor. Se reinicia al
+  // empezar una finalización nueva y al terminar (éxito o agotado).
+  private intentosFinalizacionActual = 0
+  private readonly INTENTOS_MAXIMOS_FINALIZACION = 3
   // Últimos parámetros de una edición/generación de documento que falló
   // — permite reintentar exactamente lo mismo sin volver a escribir el
   // mensaje ni perder el documento activo (ver reintentarGeneracion()).
@@ -252,6 +258,32 @@ class AsistenteServiceImpl {
     }, 6000)
   }
 
+  // Reintento automático de FINALIZAR ARCHIVO — hasta
+  // INTENTOS_MAXIMOS_FINALIZACION veces, sin que el maestro tenga que
+  // tocar nada ni volver a escribir "pásalo a Word": reintentarGeneracion()
+  // ya conserva tipo/documentoTexto/textoOriginal exactos. Solo aplica a
+  // fallas de FINALIZACIÓN de archivo (no a ediciones de contenido) y
+  // nunca al límite permanente de imagen/audio/video (reintentar eso no
+  // cambia nada, es exactamente el mismo resultado la próxima vez). El
+  // maestro nunca ve los intentos intermedios — solo, si los tres
+  // fallan, el mensaje final con el botón de reintentar manual.
+  // Devuelve true si quedó un reintento automático en curso (el llamador
+  // no debe mostrar ningún aviso todavía), false si ya se mostró el
+  // aviso final y no hay más reintentos automáticos pendientes.
+  private intentarReintentoAutomatico(estabaFinalizandoArchivo: boolean, mensajeError: string): boolean {
+    const esLimitePermanente = /todavía no está disponible/i.test(mensajeError)
+    if (estabaFinalizandoArchivo && !esLimitePermanente && this.intentosFinalizacionActual < this.INTENTOS_MAXIMOS_FINALIZACION - 1) {
+      this.intentosFinalizacionActual += 1
+      this.reintentarGeneracion()
+      return true
+    }
+    this.intentosFinalizacionActual = 0
+    this.mostrarAvisoGeneracion(
+      estabaFinalizandoArchivo && !esLimitePermanente ? 'No fue posible generar el documento en este momento. Toca para reintentar.' : mensajeError
+    )
+    return false
+  }
+
   private notificar() {
     this.snapshot = this.construirSnapshot()
     this.listeners.forEach(listener => listener())
@@ -311,6 +343,7 @@ class AsistenteServiceImpl {
     this.editandoDocumentoId = null
     this.documentoFinalizandoId = null
     this.textoDocumentoFinalizando = null
+    this.intentosFinalizacionActual = 0
     this.avisoGeneracion = null
     this.avisoVoz = null
     this.ultimoIntentoEdicion = null
@@ -692,10 +725,11 @@ class AsistenteServiceImpl {
 
         if (this.editandoDocumentoId) {
           if (textoVacio) {
+            const estabaFinalizandoArchivo = this.documentoFinalizandoId !== null
             this.editandoDocumentoId = null
             this.documentoFinalizandoId = null
             this.textoDocumentoFinalizando = null
-            this.mostrarAvisoGeneracion('No pude generar el archivo. Toca para reintentar.')
+            if (this.intentarReintentoAutomatico(estabaFinalizandoArchivo, 'No pude generar el archivo. Toca para reintentar.')) break
             this.notificar()
             break
           }
@@ -723,6 +757,7 @@ class AsistenteServiceImpl {
           this.editandoDocumentoId = null
           this.documentoFinalizandoId = null
           this.textoDocumentoFinalizando = null
+          this.intentosFinalizacionActual = 0
           this.ultimoIntentoEdicion = null
           this.notificar()
           break
@@ -766,6 +801,7 @@ class AsistenteServiceImpl {
         this.generando = false
         this.estadoMotor = 'error'
         const estabaEditandoUnDocumento = this.editandoDocumentoId !== null
+        const estabaFinalizandoArchivo = this.documentoFinalizandoId !== null
         this.editandoDocumentoId = null
         this.documentoFinalizandoId = null
         this.textoDocumentoFinalizando = null
@@ -782,7 +818,7 @@ class AsistenteServiceImpl {
           // evento.mensaje ya trae el detalle específico del servidor
           // cuando existe (ej. "Error detectado en el módulo DOCX") — ver
           // motorTextoClaude.enviarTexto.
-          this.mostrarAvisoGeneracion(evento.mensaje)
+          if (this.intentarReintentoAutomatico(estabaFinalizandoArchivo, evento.mensaje)) break
         } else {
           this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: Date.now() }]
         }
@@ -923,6 +959,9 @@ class AsistenteServiceImpl {
     this.editandoDocumentoId = idDocumento
     this.documentoFinalizandoId = idDocumento
     this.textoDocumentoFinalizando = documentoTexto
+    // Nueva finalización — cuenta desde cero para su propio ciclo de
+    // hasta 3 intentos automáticos (ver intentarReintentoAutomatico()).
+    this.intentosFinalizacionActual = 0
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion().
     this.ultimoIntentoEdicion = { idDocumento, textoParaModelo: '', finalizarArchivo: { tipo, documentoTexto, textoOriginal: textoVisible } }
