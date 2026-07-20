@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'nombres-oficiales-v27-a4bce9d'
+export const BUILD_ID = 'confirmar-antes-de-escribir-v28-pending'

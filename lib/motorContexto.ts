@@ -221,6 +221,65 @@ export async function consultarAsistenciaAlumno(sb: SupabaseClient, alumnoId: st
   return data as { faltas: number; retardos: number; justificadas: number; dias_registrados: number };
 }
 
+export type RegistroAsistencia = { alumno_id: string; estado: 'presente' | 'falta' | 'retardo' };
+export type ResultadoEscrituraAsistencia = { exito: boolean; error?: string; guardados: number };
+
+// Fuente única de verdad para ESCRIBIR asistencia — un alumno o varios
+// a la vez, misma función. app/api/asistencia-guardar/route.ts (Lista,
+// guardado por lote) y app/api/chat/route.ts (Chat IA, un alumno a la
+// vez por nombre) llaman aquí, en vez de cada uno reimplementar el
+// upsert por su cuenta. Nunca reporta éxito sin que Supabase confirme
+// la escritura real — devuelve { exito:false, error } ante cualquier
+// falla, para que quien llama pueda responder con honestidad en vez de
+// asumir que ya quedó guardado (ver CORRECCIÓN — nunca confirmar una
+// operación antes de verificarla).
+export async function escribirAsistencia(
+  sb: SupabaseClient,
+  registros: RegistroAsistencia[],
+  fecha: string,
+  grupoId?: string | null
+): Promise<ResultadoEscrituraAsistencia> {
+  if (registros.length === 0) return { exito: true, guardados: 0 };
+
+  // Tabla legada `asistencias` — solo booleano `presente` (un retardo
+  // cuenta como presente para ese modelo, igual que ya hacía Lista).
+  const filas = registros.map((r) => ({
+    alumno_id: r.alumno_id,
+    fecha,
+    presente: r.estado !== 'falta',
+    ...(grupoId ? { grupo_id: grupoId } : {}),
+  }));
+
+  const { data, error } = await sb.from('asistencias').upsert(filas, { onConflict: 'alumno_id,fecha' }).select();
+  if (error) return { exito: false, error: error.message, guardados: 0 };
+
+  // Modelo nuevo del CORE (asistencia_registro, vía inscripcion_id,
+  // guarda el estatus completo incluido retardo) — de mejor esfuerzo:
+  // si falla, no cambia el resultado porque la tabla legada de arriba
+  // ya quedó guardada correctamente (mismo criterio que ya usaba
+  // app/api/asistencia-guardar/route.ts).
+  const alumnoIds = registros.map((r) => r.alumno_id);
+  const { data: inscripcionesActivas } = await sb
+    .from('inscripciones')
+    .select('id, alumno_id')
+    .in('alumno_id', alumnoIds)
+    .eq('estatus', 'activo');
+
+  const inscripcionPorAlumno = new Map(
+    ((inscripcionesActivas || []) as { id: string; alumno_id: string }[]).map((i) => [i.alumno_id, i.id])
+  );
+  const filasRegistro = registros
+    .filter((r) => inscripcionPorAlumno.has(r.alumno_id))
+    .map((r) => ({ inscripcion_id: inscripcionPorAlumno.get(r.alumno_id) as string, fecha, estatus: r.estado }));
+
+  if (filasRegistro.length > 0) {
+    const { error: errorRegistro } = await sb.from('asistencia_registro').upsert(filasRegistro, { onConflict: 'inscripcion_id,fecha' });
+    if (errorRegistro) console.error('Error al guardar asistencia_registro (de mejor esfuerzo):', errorRegistro);
+  }
+
+  return { exito: true, guardados: data?.length ?? 0 };
+}
+
 export async function actualizarDatosAlumno(
   sb: SupabaseClient,
   alumnoId: string,

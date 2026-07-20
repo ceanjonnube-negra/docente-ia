@@ -12,6 +12,7 @@ import {
   contextoAlumno,
   contextoGrupo,
   documentosDelDocente,
+  escribirAsistencia,
   necesidadesApoyoGrupo,
   registrarAsistenciaMasiva,
 } from '@/lib/motorContexto'
@@ -434,7 +435,12 @@ export async function POST(req: NextRequest) {
   let contextoEnriquecido = [contexto || '', resumenGrupoTexto || ''].filter(Boolean).join('\n\n')
   if (supabaseUser && userId && sesion && REQUIERE_CLASIFICADOR_NIVEL0.test(mensaje)) {
     try {
-      const clasificacion = await clasificarNivel0(mensaje, sesion)
+      // Últimos turnos reales — solo para que el clasificador pueda
+      // resolver una confirmación breve ("sí") como continuación de su
+      // propia pregunta "¿Te refieres a...?" del turno anterior (ver
+      // regla 13 en clasificadorNivel0.ts). No es historial "de
+      // edición" (esEdicionDocumento), así que no aplica ese riesgo.
+      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       // Diagnóstico — nunca visible al maestro. Con esto se puede ver en
       // vercel logs EXACTAMENTE por qué una consulta como "¿cuántas
       // faltas tiene Audrey?" no llegó a responder con el dato real: si
@@ -509,8 +515,46 @@ export async function POST(req: NextRequest) {
 
           return respuestaTexto('Listo. Ya pasé lista — todos tus alumnos quedaron como presentes por default. Si alguien faltó o llegó tarde, dime su nombre y lo corrijo.')
         } catch (e) {
-          console.error('Error registrando asistencia masiva:', e)
-          // Si falla, seguimos al flujo normal como respaldo.
+          // NUNCA dejar caer esto al flujo normal: si la escritura real
+          // falló, Claude no debe tener oportunidad de responder algo
+          // conversacional que suene a éxito ("listo, ya pasé lista")
+          // sin que haya pasado de verdad (ver CORRECCIÓN — nunca
+          // confirmar una operación antes de verificarla).
+          console.error('[NIVEL0] registrar_asistencia — la escritura falló, respondiendo con honestidad:', e)
+          return respuestaTexto('No fue posible pasar lista en este momento. Intenta de nuevo en unos segundos.')
+        }
+      }
+
+      // Nivel 1: marcar_asistencia_individual — un alumno específico,
+      // por nombre. Nunca responde éxito sin que Supabase confirme la
+      // escritura real (ver escribirAsistencia en lib/motorContexto.ts)
+      // y, si el nombre solo coincidió por semejanza fonética (típico
+      // de dictado por voz, ej. "Outrid" por "Audrey"), pide
+      // confirmación explícita ANTES de escribir nada.
+      if (clasificacion.intencion_principal === 'marcar_asistencia_individual' && clasificacion.nivel_ejecucion === 1) {
+        const alumnoId = clasificacion.entidades_resueltas.alumno_id
+        const estado = clasificacion.estado_asistencia_solicitado
+        const nombreReal = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+
+        if (!alumnoId || !estado) {
+          console.log(`[NIVEL0] marcar_asistencia_individual sin alumno_id (${alumnoId}) o estado (${estado}) resuelto — cae al flujo normal`)
+        } else if (clasificacion.requiere_confirmacion) {
+          console.log(`[NIVEL0] marcar_asistencia_individual requiere confirmación (motivo=${clasificacion.motivo_confirmacion}) — alumno_id=${alumnoId}, todavía NO se escribió nada`)
+          return respuestaTexto(`¿Te refieres a ${nombreReal}? Confírmamelo y registro la asistencia.`)
+        } else {
+          try {
+            const resultado = await escribirAsistencia(supabaseUser, [{ alumno_id: alumnoId, estado }], sesion.fecha_actual, sesion.grupo_activo_id)
+            if (!resultado.exito) {
+              console.error(`[NIVEL0] marcar_asistencia_individual — Supabase rechazó la escritura, alumno_id=${alumnoId}:`, resultado.error)
+              return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
+            }
+            const etiqueta = estado === 'presente' ? 'presente' : estado === 'falta' ? 'con falta' : 'con retardo'
+            console.log(`[NIVEL0] marcar_asistencia_individual OK — alumno_id=${alumnoId} estado=${estado}`)
+            return respuestaTexto(`Listo, ${nombreReal} quedó registrado ${etiqueta} el día de hoy.`)
+          } catch (e) {
+            console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}:`, e)
+            return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
+          }
         }
       }
 
