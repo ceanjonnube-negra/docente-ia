@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -20,9 +20,11 @@ import {
   guardarConversacion,
   listarConversaciones,
   type ConversacionResumen,
+  type DocumentoActivoGuardado,
 } from './persistencia'
 import type {
   AdjuntoImagen,
+  ArchivoGeneradoInfo,
   ContextoAplicacion,
   EstadoMotor,
   EventoMotor,
@@ -87,6 +89,10 @@ export type EstadoAsistente = {
   // barra lateral y saber cuál está resaltada como activa.
   conversacionActivaId: string | null
   listaConversaciones: ConversacionResumen[]
+  // Ver comentario junto a archivoReutilizadoId (campo privado) — señal
+  // de una sola vez para que AsistentePanel baje el scroll y resalte la
+  // tarjeta de un archivo que se reutilizó sin regenerar.
+  archivoReutilizadoId: string | null
 }
 
 export type PasoDebugVoz = {
@@ -178,12 +184,20 @@ class AsistenteServiceImpl {
   // nuevo (ver enviarMensaje/editarDocumento). Se carga junto con los
   // mensajes de una conversación, solo cuando el docente la abre — nunca
   // al montar el servicio.
-  private documentoActivo: { id: string; texto: string } | null = null
+  private documentoActivo: DocumentoActivoGuardado | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
   // documentos ni de ediciones.
   private editandoDocumentoId: string | null = null
+  // Señal efímera para la UI: acaba de reutilizarse (sin regenerar) el
+  // archivo de ESE mensaje — AsistentePanel baja el scroll hasta ahí y
+  // aplica una animación breve de resaltado. Se apaga sola (mismo
+  // patrón que avisoGeneracion/avisoVoz) para que el efecto de React
+  // que dispara el scroll nunca tenga que llamar a setState — solo lee
+  // este valor y actúa sobre el DOM. Nunca se persiste.
+  private archivoReutilizadoId: string | null = null
+  private archivoReutilizadoTimer: ReturnType<typeof setTimeout> | null = null
 
   // En modo voz, la transcripción del habla del docente y la respuesta
   // del modelo son dos procesos async INDEPENDIENTES de la Realtime API
@@ -222,7 +236,18 @@ class AsistenteServiceImpl {
       documentoFinalizandoId: this.documentoFinalizandoId,
       conversacionActivaId: this.conversacionActivaId,
       listaConversaciones: this.listaConversaciones,
+      archivoReutilizadoId: this.archivoReutilizadoId,
     }
+  }
+
+  private mostrarArchivoReutilizado(idMensaje: string) {
+    if (this.archivoReutilizadoTimer) clearTimeout(this.archivoReutilizadoTimer)
+    this.archivoReutilizadoId = idMensaje
+    this.archivoReutilizadoTimer = setTimeout(() => {
+      this.archivoReutilizadoId = null
+      this.archivoReutilizadoTimer = null
+      this.notificar()
+    }, 1800)
   }
 
   // Agrega un paso al panel ?voiceDebug=1 — capado a los últimos 40 para
@@ -339,6 +364,8 @@ class AsistenteServiceImpl {
   private limpiarEstadoTransitorio() {
     if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
     if (this.avisoVozTimer) { clearTimeout(this.avisoVozTimer); this.avisoVozTimer = null }
+    if (this.archivoReutilizadoTimer) { clearTimeout(this.archivoReutilizadoTimer); this.archivoReutilizadoTimer = null }
+    this.archivoReutilizadoId = null
     this.turnoAbierto = null
     this.editandoDocumentoId = null
     this.documentoFinalizandoId = null
@@ -652,7 +679,7 @@ class AsistenteServiceImpl {
             this.generando = false
             this.finalPendiente = false
             if (esDocumentoFormal(this.mensajes[this.mensajes.length - 1].texto)) {
-              this.documentoActivo = { id: this.turnoAbierto, texto: this.mensajes[this.mensajes.length - 1].texto }
+              this.actualizarDocumentoActivo(this.turnoAbierto, this.mensajes[this.mensajes.length - 1].texto)
             }
           }
           this.notificar()
@@ -753,7 +780,7 @@ class AsistenteServiceImpl {
           // en PDF") o una nueva edición reutilizan el contenido real en
           // vez de partir de cero o de "Documento generado correctamente.".
           const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
-          if (doc) this.documentoActivo = { id: doc.id, texto: doc.texto }
+          if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
           this.editandoDocumentoId = null
           this.documentoFinalizandoId = null
           this.textoDocumentoFinalizando = null
@@ -790,8 +817,16 @@ class AsistenteServiceImpl {
             // maestro solo veía el texto plano "Documento generado
             // correctamente."
             this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo }, ...this.mensajes.slice(idx + 1)]
+            // documentoActivo también se fija aquí (antes no pasaba) —
+            // usando evento.contenidoOriginal (el texto real que Claude
+            // redactó, ver route.ts CASO 3) en vez de msg.texto, que a
+            // estas alturas ya es "Documento generado correctamente."
+            // Sin esto, pedir después "ahora en PDF" no tenía ningún
+            // documento activo del que partir y no había forma de
+            // reutilizar el contenido sin volver a pedírselo a Claude.
+            this.actualizarDocumentoActivo(msg.id, evento.contenidoOriginal ?? msg.texto, evento.archivo)
           } else if (msg && esDocumentoFormal(msg.texto)) {
-            this.documentoActivo = { id: msg.id, texto: msg.texto }
+            this.actualizarDocumentoActivo(msg.id, msg.texto)
           }
         }
         this.notificar()
@@ -868,7 +903,27 @@ class AsistenteServiceImpl {
     if (this.documentoActivo) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
-        await this.enviarComoFinalizacion(this.documentoActivo.id, limpio, tipoFinalizar, this.documentoActivo.texto)
+        // Resolución del archivo referenciado: si el maestro nombró un
+        // formato real ("a PDF", "en power poin"), ese es el que pide.
+        // Si solo dijo algo genérico ("descárgalo", "ábrelo", "el
+        // archivo"), detectarHerramientaDocumento cae al default fijo
+        // ('word') — pero lo correcto es el ÚLTIMO formato que ya se
+        // generó para este documento, no siempre Word (ver "resolución
+        // del archivo referenciado").
+        const formatoExplicito = detectarFormatoExplicito(limpio)
+        const tipoResuelto = formatoExplicito ?? (this.documentoActivo.ultimoFormatoGenerado as TipoHerramienta | undefined) ?? tipoFinalizar
+
+        // No regenerar archivos existentes: mismo documento (mismo id,
+        // mismo texto — ver actualizarDocumentoActivo) y ese formato ya
+        // se generó antes → se reutiliza tal cual, sin tocar la red, sin
+        // volver a llamar al modelo ni al pipeline de documentos.
+        const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
+        if (archivoExistente) {
+          this.reutilizarArchivoExistente(limpio, archivoExistente)
+          return
+        }
+
+        await this.enviarComoFinalizacion(this.documentoActivo.id, limpio, tipoResuelto, this.documentoActivo.texto)
         return
       }
       await this.enviarComoEdicion(this.documentoActivo.id, limpio, this.construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
@@ -889,11 +944,28 @@ class AsistenteServiceImpl {
     }
   }
 
+  // Fuente única para "fijar" documentoActivo — un borrador nuevo, una
+  // finalización a archivo, una edición de contenido por IA, o una
+  // edición manual (ver los 4 lugares que la llaman) todas pasan por
+  // aquí. Decide si la caché de archivos ya generados (archivosGenerados)
+  // se conserva o se invalida: se conserva SOLO si es literalmente el
+  // mismo documento (mismo id) con el mismo texto — cualquier cambio
+  // real de contenido vuelve obsoletos los archivos ya generados para
+  // la versión anterior (ver "conversión entre formatos" vs "nueva
+  // versión modificada").
+  private actualizarDocumentoActivo(id: string, texto: string, archivoNuevo?: ArchivoGeneradoInfo) {
+    const mismoDocumentoSinCambios = this.documentoActivo?.id === id && this.documentoActivo?.texto === texto
+    const archivosPrevios = mismoDocumentoSinCambios ? (this.documentoActivo?.archivosGenerados ?? {}) : {}
+    const archivosGenerados = archivoNuevo ? { ...archivosPrevios, [archivoNuevo.tipo]: archivoNuevo } : archivosPrevios
+    const ultimoFormatoGenerado = archivoNuevo?.tipo ?? (mismoDocumentoSinCambios ? this.documentoActivo?.ultimoFormatoGenerado : undefined)
+    this.documentoActivo = { id, texto, archivosGenerados, ultimoFormatoGenerado }
+  }
+
   // Edición manual directa (botón "Editar"): sobrescribe el texto sin
   // pasar por el modelo.
   actualizarMensaje(id: string, nuevoTexto: string) {
     this.mensajes = this.mensajes.map(m => (m.id === id ? { ...m, texto: nuevoTexto } : m))
-    if (this.documentoActivo?.id === id) this.documentoActivo = { id, texto: nuevoTexto }
+    if (this.documentoActivo?.id === id) this.actualizarDocumentoActivo(id, nuevoTexto)
     this.notificar()
   }
 
@@ -942,6 +1014,25 @@ class AsistenteServiceImpl {
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }
+  }
+
+  // "No regenerar archivos existentes": el maestro pidió un formato que
+  // YA está listo para el documento activo — se reutiliza tal cual, sin
+  // tocar la red, sin volver a invocar a Claude, sin volver a generar
+  // el archivo ni subir nada a Storage. Sincrónico y siempre exitoso
+  // (no hay nada que pueda fallar aquí — el archivo ya existe).
+  private reutilizarArchivoExistente(textoVisible: string, archivo: ArchivoGeneradoInfo) {
+    const idMensaje = nuevoId()
+    this.mensajes = [
+      ...this.mensajes,
+      { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
+      { id: idMensaje, rol: 'asistente', texto: 'El documento ya está listo. Puedes descargarlo aquí.', creadoEn: Date.now(), archivo },
+    ]
+    this.turnoAbierto = null
+    // Señal de una sola vez (se apaga sola) para que AsistentePanel baje
+    // el scroll y resalte la tarjeta — ver mostrarArchivoReutilizado().
+    this.mostrarArchivoReutilizado(idMensaje)
+    this.notificar()
   }
 
   // Genera el archivo real del documento activo (Word/PDF/PowerPoint/

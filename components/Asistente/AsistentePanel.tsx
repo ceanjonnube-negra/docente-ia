@@ -36,21 +36,87 @@ const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', power
 // archivo real, en paralelo a la vista previa si la hay — nunca en su
 // lugar (ver el render de mensajes más abajo: nunca es
 // `esDoc ? Preview : TarjetaDescarga`, siempre ambas si aplican).
-function TarjetaDescarga({ archivo, className = '' }: { archivo: { tipo: string; nombre: string; url: string }; className?: string }) {
+// Mismo criterio que VENCIMIENTO_URL_SEGUNDOS en
+// lib/documentGen/almacenamiento.ts (7 días) — la URL firmada real no
+// se puede consultar sin gastar una llamada de red, así que se estima
+// a partir de cuándo se creó el mensaje que trae el archivo (mismo
+// instante en que se generó), un dato que ya existe y no hay que
+// duplicar.
+const VENCIMIENTO_URL_MS = 7 * 24 * 60 * 60 * 1000
+
+async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
+  const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
+  try {
+    if (nav?.canShare) {
+      try {
+        const res = await fetch(archivo.url)
+        const blob = await res.blob()
+        const file = new File([blob], archivo.nombre, { type: blob.type || 'application/octet-stream' })
+        if (nav.canShare({ files: [file] })) {
+          await nav.share({ files: [file], title: archivo.nombre })
+          return
+        }
+      } catch {
+        // el archivo no se pudo traer para compartir como adjunto —
+        // sigue al siguiente nivel de respaldo (compartir la URL)
+      }
+    }
+    if (nav?.share) {
+      await nav.share({ title: archivo.nombre, url: archivo.url })
+      return
+    }
+    await navigator.clipboard.writeText(archivo.url)
+    alCopiarEnlace()
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return // el docente canceló la hoja de compartir, no es un error
+    window.open(archivo.url, '_blank')
+  }
+}
+
+function TarjetaDescarga({ archivo, creadoEn, className = '', resaltado = false }: { archivo: { tipo: string; nombre: string; url: string }; creadoEn: number; className?: string; resaltado?: boolean }) {
+  const [enlaceCopiado, setEnlaceCopiado] = useState(false)
+  // Date.now() no puede llamarse en el cuerpo del render (impuro para
+  // el linter de React) — se calcula una sola vez al montar/cambiar
+  // creadoEn. No necesita reactividad en vivo (nadie espera que la
+  // tarjeta cambie de "vigente" a "vencida" sola mientras la mira): la
+  // ventana real es de días, así que el único momento en que importa
+  // es cuando se abre la conversación.
+  const [vencido, setVencido] = useState(false)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- valor derivado de Date.now() (impuro por definición); solo se necesita una vez al montar, no reactividad continua.
+    setVencido(Date.now() - creadoEn > VENCIMIENTO_URL_MS)
+  }, [creadoEn])
+  const nombreFormato = NOMBRE_FORMATO[archivo.tipo] ? ` ${NOMBRE_FORMATO[archivo.tipo]}` : ''
+
   return (
-    <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border border-green-100 rounded-bl-sm overflow-hidden ${className}`}>
+    <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
       <div className="px-4 py-3 flex items-center gap-2.5">
         <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[archivo.tipo] || '📄'}</span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-gray-900 truncate">{archivo.nombre}</p>
-          <p className="text-xs text-green-600">Documento oficial listo</p>
+          <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
+            {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Documento oficial listo'}
+          </p>
         </div>
       </div>
-      <div className="px-3 pb-3">
-        <button onClick={() => window.open(archivo.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
-          ⬇️ Descargar{NOMBRE_FORMATO[archivo.tipo] ? ` ${NOMBRE_FORMATO[archivo.tipo]}` : ''}
-        </button>
-      </div>
+      {!vencido && (
+        <div className="px-3 pb-3 space-y-1.5">
+          <button onClick={() => window.open(archivo.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
+            ⬇️ Descargar{nombreFormato}
+          </button>
+          <div className="flex gap-1.5">
+            <button onClick={() => window.open(archivo.url, '_blank')} className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50">
+              🔗 Abrir
+            </button>
+            <button
+              onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+              className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
+            >
+              {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -174,6 +240,21 @@ export default function AsistentePanel() {
   useEffect(() => {
     if (asistente.panelAbierto) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [asistente.mensajes, asistente.panelAbierto])
+
+  // "No regenerar archivos existentes" (reutilizarArchivoExistente en
+  // AsistenteService): en vez de esperar a que el nuevo mensaje quede
+  // al fondo del scroll normal, se baja explícitamente hasta la
+  // tarjeta reutilizada — así queda claro que "ya está listo" en vez de
+  // sentirse como que no pasó nada. El resaltado en sí (prop
+  // `resaltado` de TarjetaDescarga, más abajo) se deriva directo de
+  // asistente.archivoReutilizadoId — ese valor ya se apaga solo del
+  // lado del servicio (mismo patrón que avisoGeneracion/avisoVoz), así
+  // que este efecto solo toca el DOM (el scroll), nunca llama a
+  // setState.
+  useEffect(() => {
+    if (!asistente.archivoReutilizadoId) return
+    document.getElementById(`asistente-msg-${asistente.archivoReutilizadoId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [asistente.archivoReutilizadoId])
 
 
   const tomarFotoChat = () => fotoInputRef.current?.click()
@@ -384,7 +465,7 @@ export default function AsistentePanel() {
           const esUltimoGenerando = asistente.generando && i === asistente.mensajes.length - 1
           const esDoc = m.rol === 'asistente' && esDocumentoFormal(m.texto)
           return (
-            <div key={m.id} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
+            <div key={m.id} id={`asistente-msg-${m.id}`} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
               {m.rol === 'asistente' && (
                 <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
               )}
@@ -403,7 +484,7 @@ export default function AsistentePanel() {
                       el mensaje trae una URL firmada real del archivo, la
                       tarjeta oficial de descarga se renderiza — la vista
                       previa nunca la sustituye. */}
-                  {m.archivo?.url && <TarjetaDescarga archivo={m.archivo} />}
+                  {m.archivo?.url && <TarjetaDescarga archivo={m.archivo} creadoEn={m.creadoEn} resaltado={asistente.archivoReutilizadoId === m.id} />}
                 </div>
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>

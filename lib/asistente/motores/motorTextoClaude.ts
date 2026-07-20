@@ -235,9 +235,10 @@ export class MotorTextoClaude implements MotorConversacional {
       }
 
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
-      const { texto: respuestaLimpia, archivo } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
+      const { texto: sinArchivo, archivo } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
+      const { texto: respuestaLimpia, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -270,6 +271,25 @@ export class MotorTextoClaude implements MotorConversacional {
       const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
       const archivo = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as ArchivoGeneradoInfo
       return { texto: respuesta.replace(match[0], '').trim(), archivo }
+    } catch {
+      return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico con el contenido REAL redactado por Claude cuando
+  // CASO 3 (ver app/api/chat/route.ts) generó contenido y archivo en el
+  // mismo turno, sin documento previo que recuperar — nunca se muestra
+  // en pantalla, solo permite que AsistenteService guarde un
+  // documentoActivo con texto real, para que "ahora en PDF" después no
+  // se quede sin fuente que reutilizar.
+  private procesarMarcadorDeContenido(respuesta: string): { texto: string; contenidoOriginal?: string } {
+    const match = respuesta.match(/\[\[DOCUMENTO_CONTENIDO:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const contenidoOriginal = new TextDecoder('utf-8').decode(bytes)
+      return { texto: respuesta.replace(match[0], '').trim(), contenidoOriginal }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
     }

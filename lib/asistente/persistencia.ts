@@ -21,7 +21,7 @@
 
 import { esDocumentoFormal } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
-import type { MensajeConversacion } from './tipos'
+import type { ArchivoGeneradoInfo, MensajeConversacion } from './tipos'
 
 const VERSION = 2
 const CLAVE_INDICE = 'docente-ia:conversaciones'
@@ -40,7 +40,19 @@ const CLAVE_FORMATO_VIEJO = 'docente-ia:conversacion'
 const TOPE_CONVERSACIONES = 30
 const TOPE_MENSAJES = 80
 
-export type DocumentoActivoGuardado = { id: string; texto: string }
+export type DocumentoActivoGuardado = {
+  id: string
+  texto: string
+  // Caché de archivos YA generados para este documento exacto (mismo
+  // id, mismo texto) — evita regenerar el mismo formato dos veces (ver
+  // "no regenerar archivos existentes" en AsistenteService.ts). Se
+  // invalida (vuelve a quedar vacía) en cuanto el texto cambia por una
+  // edición real. Opcionales para no romper conversaciones guardadas
+  // antes de que existieran estos campos — código viejo simplemente
+  // los lee como undefined y arranca con la caché vacía.
+  archivosGenerados?: Record<string, ArchivoGeneradoInfo>
+  ultimoFormatoGenerado?: string
+}
 export type ConversacionResumen = { id: string; titulo: string; actualizadaEn: number }
 
 type ConversacionGuardada = {

@@ -941,8 +941,20 @@ Grado: [grado] | Grupo: [grupo]
         // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+        // El CASO 3 nunca manda el contenido redactado como texto plano
+        // al chat (el maestro nunca lo ve en prosa) — pero sin él, el
+        // cliente no tiene NINGÚN contenido real que reutilizar si
+        // después pide "ahora en PDF"/"conviértelo a PowerPoint": no
+        // hay documentoActivo con texto real que mandar, y la única red
+        // de seguridad del servidor (buscar el último documento formal
+        // en el historial) tampoco lo encuentra, porque en el chat solo
+        // quedó "Documento generado correctamente." — nunca el
+        // documento. Este marcador es SOLO para eso: se decodifica en
+        // el cliente para poblar documentoActivo.texto (fuente real
+        // para conversiones futuras), nunca se muestra en pantalla.
+        const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(texto, 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
-        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
+        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}\n${marcadorContenido}`)
       }
       console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)
       // Claude no produjo un documento formal (era más bien una consulta

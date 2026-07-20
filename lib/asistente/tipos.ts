@@ -95,7 +95,13 @@ export type EventoMotor =
   | { tipo: 'transcripcion-parcial'; texto: string }
   | { tipo: 'mensaje-usuario'; texto: string }
   | { tipo: 'respuesta-parcial'; texto: string }
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo }
+  // contenidoOriginal: solo presente cuando el servidor generó el
+  // archivo Y redactó el contenido en el mismo turno (CASO 3 de
+  // FINALIZAR ARCHIVO, ver app/api/chat/route.ts) — el texto real que
+  // nunca se muestra en pantalla, para que AsistenteService pueda
+  // seguir usándolo como fuente si el docente pide otro formato
+  // después ("ahora en PDF").
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

@@ -35,6 +35,14 @@ export const FRASES_FINALIZAR_DOCUMENTO = [
   // ENTREGA, no de edición (ver detectarHerramientaDocumento).
   'mándamelo', 'mandamelo', 'mándalo', 'mandalo', 'envíamelo', 'enviamelo',
   'descárgamelo', 'descargamelo', 'descargar', 'imprimir', 'archivo', 'documento',
+  // Acciones de continuidad sobre el archivo ya generado ("pásalo",
+  // "ábrelo", "compártelo"...) y errores de dictado comunes
+  // ("documeto"). A propósito NO se incluye "hazlo" suelto: es
+  // demasiado genérico y aparece todo el tiempo en instrucciones de
+  // EDICIÓN reales ("hazlo más corto", "hazlo para 4to grado") —
+  // agregarlo rompería esa distinción para cualquier documento activo.
+  'pásalo', 'pasalo', 'pásamelo', 'pasamelo', 'conviértelo', 'conviertelo', 'ábrelo', 'abrelo',
+  'compártelo', 'compartelo', 'bájalo', 'bajalo', 'documeto',
 ]
 
 // Sistema de prioridades de herramientas de generación de archivos —
@@ -55,11 +63,16 @@ export type TipoHerramienta = 'word' | 'pdf' | 'powerpoint' | 'excel' | 'imagen'
 // además todavía no está implementado (ver HerramientaNoDisponibleError).
 const VERBO_GENERAR = /\b(genera|generar|crea|crear|quiero|dame|hazme|necesito)\b/i
 
+// Variantes con error ortográfico/de dictado que de verdad se
+// observaron ("eord", "wor", "power poin", "pe de efe", "exel") — una
+// lista curada y explícita, no un comparador de distancia aproximada
+// genérico: cubre los casos reales sin arriesgar falsos positivos
+// sobre palabras normales de una conversación.
 const PATRONES_FORMATO: { tipo: TipoHerramienta; patron: RegExp }[] = [
-  { tipo: 'word', patron: /\bword\b|\bdocx\b/i },
-  { tipo: 'pdf', patron: /\bpdf\b/i },
-  { tipo: 'powerpoint', patron: /power\s*point|presentaci[oó]n(\s+de)?\s+diapositivas|\bdiapositivas\b|\bslides?\b|\bpptx\b/i },
-  { tipo: 'excel', patron: /\bexcel\b|hoja\s+de\s+c[aá]lculo|\bxlsx\b|\bspreadsheet\b/i },
+  { tipo: 'word', patron: /\bword\b|\bdocx\b|\bwor\b|\beord\b|\bguord\b|\bdoc\b|documento\s+editable/i },
+  { tipo: 'pdf', patron: /\bpdf\b|\bpe\s*de\s*efe\b|documento\s+fijo/i },
+  { tipo: 'powerpoint', patron: /power\s*point|power\s*poin\b|presentaci[oó]n(\s+de)?\s+diapositivas|\bdiapositivas\b|\bslides?\b|\bpptx\b|\bppt\b/i },
+  { tipo: 'excel', patron: /\bexcel\b|\bexel\b|hoja\s+de\s+c[aá]lculo|\bxlsx\b|\bspreadsheet\b/i },
   { tipo: 'imagen', patron: /\bformato\s+imagen\b|\bcomo\s+imagen\b|\bilustraci[oó]n(es)?\b/i },
   { tipo: 'audio', patron: /\bformato\s+audio\b|\bcomo\s+audio\b/i },
   { tipo: 'video', patron: /\bformato\s+v[ií]deo\b|\bcomo\s+v[ií]deo\b/i },
@@ -73,12 +86,23 @@ function detectarGeneracionMultimedia(texto: string): TipoHerramienta | null {
   return null
 }
 
-export function detectarHerramientaDocumento(texto: string): TipoHerramienta | null {
+// Solo el formato que el maestro NOMBRÓ de verdad ("en Word", "a PDF",
+// "en power poin") — nunca el default de FRASES_FINALIZAR_DOCUMENTO.
+// AsistenteService.ts lo usa para distinguir "el maestro pidió un
+// formato específico" de "el maestro solo dijo 'descárgalo'/'ábrelo'
+// sin nombrar ninguno" — en el segundo caso, reutiliza el ÚLTIMO
+// formato generado del documento activo en vez de asumir Word siempre
+// (ver resolución del archivo referenciado).
+export function detectarFormatoExplicito(texto: string): TipoHerramienta | null {
   for (const { tipo, patron } of PATRONES_FORMATO) {
     if (patron.test(texto)) return tipo
   }
-  const multimedia = detectarGeneracionMultimedia(texto)
-  if (multimedia) return multimedia
+  return detectarGeneracionMultimedia(texto)
+}
+
+export function detectarHerramientaDocumento(texto: string): TipoHerramienta | null {
+  const explicito = detectarFormatoExplicito(texto)
+  if (explicito) return explicito
   const minuscula = texto.toLowerCase()
   return FRASES_FINALIZAR_DOCUMENTO.some((frase) => minuscula.includes(frase)) ? 'word' : null
 }
