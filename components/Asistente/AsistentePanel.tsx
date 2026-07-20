@@ -366,7 +366,7 @@ export default function AsistentePanel() {
               {m.rol === 'asistente' && (
                 <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
               )}
-              {esDoc || (m.rol === 'asistente' && m.archivo) ? (
+              {esDoc || (m.rol === 'asistente' && m.archivo?.url) ? (
                 <div className="flex flex-col items-start gap-2 w-full">
                   {esDoc && (
                     <VistaPreviaDocumento
@@ -375,7 +375,13 @@ export default function AsistentePanel() {
                       generandoArchivo={asistente.documentoFinalizandoId === m.id}
                     />
                   )}
-                  {m.archivo && <TarjetaDescarga archivo={m.archivo} />}
+                  {/* Última condición del flujo: independientemente de si
+                      hubo vista previa (esDoc) o de qué tipo de documento
+                      sea (planeación, lista, ficha, oficio...), en cuanto
+                      el mensaje trae una URL firmada real del archivo, la
+                      tarjeta oficial de descarga se renderiza — la vista
+                      previa nunca la sustituye. */}
+                  {m.archivo?.url && <TarjetaDescarga archivo={m.archivo} />}
                 </div>
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>
