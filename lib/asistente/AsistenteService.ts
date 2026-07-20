@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, detectarSupresionRepeticion, esDocumentoFormal, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -994,20 +994,6 @@ class AsistenteServiceImpl {
     // trabaja sobre él, nunca abre uno nuevo ni exige un verbo
     // específico al inicio.
     if (this.documentoActivo) {
-      // "No lo repitas" / "no vuelvas a explicarlo" / "no escribas nada":
-      // no piden ninguna acción, solo confirman que no hay que volver a
-      // mostrar el documento — se acusa recibo sin tocar el modelo ni el
-      // documento activo (ver detectarSupresionRepeticion).
-      if (detectarSupresionRepeticion(limpio)) {
-        this.mensajes = [
-          ...this.mensajes,
-          { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now() },
-          { id: nuevoId(), rol: 'asistente', texto: 'Entendido, no lo repito.', creadoEn: Date.now() },
-        ]
-        this.turnoAbierto = null
-        this.notificar()
-        return
-      }
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un

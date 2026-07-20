@@ -12,37 +12,64 @@ export function esDocumentoFormal(texto: string): boolean {
   return PATRON_TITULO_DOCUMENTO.test(texto.trim())
 }
 
-// Frases que piden la versión final/descargable del documento activo —
+// Normaliza para comparar por sinónimo/palabra, no por texto exacto:
+// minúsculas + sin acentos. Con esto una sola entrada ("mandamelo")
+// cubre tanto "mándamelo" como "mandamelo" sin duplicar la lista, y
+// "Envíamelo en Word" coincide igual que "en Word, envíamelo" (el
+// orden de las palabras deja de importar porque se compara por
+// inclusión, no por posición). Sigue siendo un diccionario curado y
+// explícito (ver nota en PATRONES_FORMATO más abajo), no un
+// comparador de distancia aproximada genérico — evita falsos
+// positivos sobre palabras normales de una conversación.
+function normalizar(texto: string): string {
+  return texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+// Frases que piden la versión final/descargable del documento activo, o
+// que piden explícitamente NO repetir/explicar su contenido de nuevo —
 // pueden aparecer en cualquier parte del mensaje, porque así se piden de
 // verdad: "De manera oficial para imprimir.", "Ahora pásala a Word.",
-// "Lista para imprimir.", "Genera el documento.", "Descárgala." Mientras
-// exista un documento activo, CUALQUIER mensaje que no aparezca aquí (ni
-// nombre un formato real, ver detectarHerramientaDocumento) se entiende
-// como una modificación de ESE documento — ver enviarMensaje en
+// "Entrégalo.", "No lo vuelvas a explicar." Mientras exista un documento
+// activo, CUALQUIER mensaje que no aparezca aquí (ni nombre un formato
+// real, ver detectarHerramientaDocumento) se entiende como una
+// modificación de ESE documento — ver enviarMensaje en
 // AsistenteService.ts. "editable" queda fuera a propósito: es una señal
 // de edición (el maestro sigue trabajando el contenido), no de
-// descarga inmediata.
+// descarga inmediata. Comparadas ya sin acentos, ver normalizar().
 export const FRASES_FINALIZAR_DOCUMENTO = [
-  'en word', 'a word', 'hazla oficial', 'hazlo oficial', 'de manera oficial',
+  'en word', 'a word', 'a pdf', 'hazla oficial', 'hazlo oficial', 'de manera oficial',
   'formato oficial', 'documento oficial', 'para imprimir', 'lista para imprimir',
   'listo para imprimir', 'genera el documento', 'generar el documento',
-  'descárgala', 'descárgalo', 'descargarla', 'descargarlo', 'a pdf', 'documento final',
-  'imprímelo', 'imprimelo', 'quiero el word', 'quiero el pdf',
-  // Ampliado — el maestro pide el archivo con estas palabras sueltas
-  // tan seguido como con las frases de arriba: "mándamelo", "archivo",
-  // "documento" (a secas), "descargar", "imprimir" (a secas). Mientras
-  // exista un documento activo, cualquiera de estas ya es intención de
-  // ENTREGA, no de edición (ver detectarHerramientaDocumento).
-  'mándamelo', 'mandamelo', 'mándalo', 'mandalo', 'envíamelo', 'enviamelo',
-  'descárgamelo', 'descargamelo', 'descargar', 'imprimir', 'archivo', 'documento',
-  // Acciones de continuidad sobre el archivo ya generado ("pásalo",
-  // "ábrelo", "compártelo"...) y errores de dictado comunes
-  // ("documeto"). A propósito NO se incluye "hazlo" suelto: es
-  // demasiado genérico y aparece todo el tiempo en instrucciones de
-  // EDICIÓN reales ("hazlo más corto", "hazlo para 4to grado") —
-  // agregarlo rompería esa distinción para cualquier documento activo.
-  'pásalo', 'pasalo', 'pásamelo', 'pasamelo', 'conviértelo', 'conviertelo', 'ábrelo', 'abrelo',
-  'compártelo', 'compartelo', 'bájalo', 'bajalo', 'documeto',
+  'genera el archivo', 'generar el archivo', 'documento final',
+  'quiero el word', 'quiero el pdf',
+  // Verbos sueltos y sus conjugaciones/variantes de dictado más
+  // comunes: mandar, enviar, descargar, imprimir, pasar, convertir,
+  // abrir, compartir, bajar, entregar. Mientras exista un documento
+  // activo, cualquiera de estas ya es intención de ENTREGA, no de
+  // edición (ver detectarHerramientaDocumento). A propósito NO se
+  // incluye "hazlo" suelto: es demasiado genérico y aparece todo el
+  // tiempo en instrucciones de EDICIÓN reales ("hazlo más corto",
+  // "hazlo para 4to grado") — agregarlo rompería esa distinción.
+  'mandamelo', 'mandalo', 'enviamelo', 'descargamelo', 'descargala', 'descargalo',
+  'descargarla', 'descargarlo', 'descargar', 'imprimelo', 'imprimir',
+  'pasalo', 'pasamelo', 'conviertelo', 'abrelo', 'compartelo', 'comparte', 'compartir',
+  'bajalo', 'entregalo', 'entrega', 'entregar', 'documeto',
+  // Nombra el resultado sin verbo ("solo el archivo", "mándame el
+  // documento")
+  'archivo', 'documento',
+  // Pide que no se repita/explique de nuevo el documento activo — no es
+  // una instrucción de EDICIÓN real (cambiar contenido), sino la misma
+  // intención de ENTREGA que "descárgalo": dar el resultado sin volver
+  // a narrarlo. Sin esto caería en enviarComoEdicion (ver
+  // AsistenteService.ts) y confundiría al modelo con una frase que no
+  // pide ningún cambio de contenido.
+  'no lo repitas', 'no la repitas', 'no repitas nada', 'no repitas el contenido',
+  'no vuelvas a explicarlo', 'no vuelvas a explicarla', 'no lo vuelvas a explicar', 'no la vuelvas a explicar',
+  'no lo expliques de nuevo', 'no la expliques de nuevo', 'no escribas nada',
+  'no me lo repitas', 'no me lo vuelvas a explicar',
 ]
 
 // Sistema de prioridades de herramientas de generación de archivos —
@@ -103,25 +130,6 @@ export function detectarFormatoExplicito(texto: string): TipoHerramienta | null 
 export function detectarHerramientaDocumento(texto: string): TipoHerramienta | null {
   const explicito = detectarFormatoExplicito(texto)
   if (explicito) return explicito
-  const minuscula = texto.toLowerCase()
-  return FRASES_FINALIZAR_DOCUMENTO.some((frase) => minuscula.includes(frase)) ? 'word' : null
-}
-
-// Frases que piden explícitamente que la respuesta NO repita ni vuelva a
-// explicar el documento activo — a diferencia de FRASES_FINALIZAR_
-// DOCUMENTO (piden el archivo) o una edición real (piden cambiar el
-// contenido), estas no piden nada que ejecutar: sin este chequeo caerían
-// en enviarComoEdicion (ver AsistenteService.ts), que las mandaría al
-// modelo como si "no lo repitas" fuera una instrucción de edición del
-// documento — confuso y sin sentido. Se responde con un acuse breve, sin
-// tocar el modelo ni el documento activo.
-export const FRASES_SUPRIMIR_REPETICION = [
-  'no lo repitas', 'no la repitas', 'no vuelvas a explicarlo', 'no vuelvas a explicarla',
-  'no lo expliques de nuevo', 'no la expliques de nuevo', 'no escribas nada',
-  'no repitas nada', 'no me lo repitas', 'no me lo vuelvas a explicar',
-]
-
-export function detectarSupresionRepeticion(texto: string): boolean {
-  const minuscula = texto.toLowerCase()
-  return FRASES_SUPRIMIR_REPETICION.some((frase) => minuscula.includes(frase))
+  const normalizado = normalizar(texto)
+  return FRASES_FINALIZAR_DOCUMENTO.some((frase) => normalizado.includes(frase)) ? 'word' : null
 }
