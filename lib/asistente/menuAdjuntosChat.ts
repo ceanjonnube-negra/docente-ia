@@ -12,11 +12,18 @@ import type { OpcionAdjunto } from '@/components/ui/MenuAdjuntos'
 
 // "Fotos" y "Archivos" permiten marcar varias en el selector porque así
 // se espera de una galería/explorador de archivos, pero el chat solo
-// adjunta una por mensaje (igual que "Cámara" siempre hizo) — se usa
-// la primera que el maestro marcó (ver manejarSeleccionAdjunto en
+// adjunta una por mensaje (igual que "Tomar foto" siempre hizo) — se
+// usa la primera que el maestro marcó (ver manejarSeleccionAdjunto en
 // AsistentePanel.tsx).
+//
+// "Archivos" usa extensiones de imagen explícitas (.jpg/.jpeg/.png/
+// .heic/.heif), NUNCA el comodín "image/*", para no mezclarlo con las
+// extensiones de documento — esa mezcla es lo que hacía que el
+// sistema operativo mostrara su propio selector encima de este menú
+// (ver nota en components/ui/MenuAdjuntos.tsx). Mismo criterio que ya
+// usaba ImportacionInteligente.tsx para su opción "Archivos".
 export const OPCIONES_ADJUNTO_CHAT: OpcionAdjunto[] = [
-  { id: 'camara', icono: '📷', titulo: 'Cámara', accept: 'image/*', capture: 'environment' },
-  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', accept: 'image/*', multiple: true },
-  { id: 'archivos', icono: '📄', titulo: 'Archivos', accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,image/*', multiple: true },
+  { id: 'camara', icono: '📷', titulo: 'Tomar foto', descripcion: 'Fotografía una lista o documento', accept: 'image/*', capture: 'environment' },
+  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', descripcion: 'Selecciona una o varias imágenes', accept: 'image/*', multiple: true },
+  { id: 'archivos', icono: '📄', titulo: 'Archivos', descripcion: 'PDF, Word, Excel o imágenes', accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.heic,.heif', multiple: true },
 ]

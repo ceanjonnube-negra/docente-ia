@@ -2,15 +2,26 @@
 
 // components/ui/MenuAdjuntos.tsx
 //
-// Menú contextual flotante ANCLADO a un botón, con opciones que abren
-// selectores de archivo nativos (cámara/galería/documentos) — RFC-CHAT-
-// ADJUNTOS-003. Mismo componente para toda la aplicación: siempre el
-// mismo look (anclado al botón, nunca un panel inferior/bottom sheet,
-// nunca el menú nativo del sistema operativo) en iPhone, Android y Web.
-// Se cierra solo al tocar fuera o al elegir una opción — @floating-ui/
-// react ya resuelve ambos casos (useDismiss, cierre explícito en cada
-// onChange) y reposiciona automáticamente si el layout cambia (por
-// ejemplo, el teclado abriéndose empuja el botón hacia arriba).
+// ÚNICO componente de menú de adjuntos de toda la aplicación — Chat IA
+// (components/Asistente/AsistentePanel.tsx) y la importación de lista
+// de alumnos (components/ImportacionInteligente.tsx) lo usan tal cual,
+// sin cada uno mantener su propia implementación. Siempre el mismo
+// resultado visual: una ventana pequeña, de esquinas redondeadas,
+// sombra ligera, anclada justo junto al botón que la abrió — nunca un
+// panel/hoja que sube desde abajo de toda la pantalla, en ningún
+// dispositivo (RFC-CHAT-ADJUNTOS-003, corrección de "dos menús").
+//
+// La causa real del "segundo menú" (con textos como "Fototeca"/"Tomar
+// foto"/"Seleccionar archivos", en español del propio sistema
+// operativo) no era un componente duplicado: era el selector nativo de
+// iOS/Android que aparece SOBRE cualquier <input type="file"> cuando su
+// `accept` mezcla el comodín "image/*" con extensiones de documento —
+// el teléfono entiende que debe preguntar "¿de dónde sacas la imagen?"
+// otra vez, encima de la opción que el maestro ya eligió en este menú.
+// La opción "Archivos" evita esa mezcla usando extensiones de imagen
+// explícitas en vez de "image/*", igual que ya lo hacía
+// ImportacionInteligente (su versión, ya en producción, nunca mostró
+// ese selector doble).
 
 import { useState } from 'react'
 import {
@@ -24,12 +35,14 @@ import {
   useRole,
   useInteractions,
   FloatingFocusManager,
+  type Placement,
 } from '@floating-ui/react'
 
 export type OpcionAdjunto = {
   id: string
   icono: string
   titulo: string
+  descripcion?: string
   accept: string
   capture?: 'environment' | 'user'
   multiple?: boolean
@@ -42,16 +55,34 @@ type Props = {
   triggerClassName: string
   triggerAriaLabel: string
   disabled?: boolean
+  // 'top-start' para un botón anclado abajo (Chat IA: el cuadro de
+  // texto vive al fondo de la pantalla, no hay espacio debajo). 'bottom-
+  // end'/'bottom-start' para un botón arriba de su contenido (Lista).
+  // flip() corrige solo si de todos modos no cabe en la dirección
+  // preferida — este valor es solo la preferencia inicial.
+  placement?: Placement
+  // Solo afecta el estado inicial (para autoAbrir al montar); el menú
+  // sigue abriéndose/cerrándose normalmente después con cada toque.
+  abiertoInicial?: boolean
 }
 
-export default function MenuAdjuntos({ opciones, onArchivos, triggerLabel, triggerClassName, triggerAriaLabel, disabled }: Props) {
-  const [abierto, setAbierto] = useState(false)
+export default function MenuAdjuntos({
+  opciones,
+  onArchivos,
+  triggerLabel,
+  triggerClassName,
+  triggerAriaLabel,
+  disabled,
+  placement = 'bottom-start',
+  abiertoInicial = false,
+}: Props) {
+  const [abierto, setAbierto] = useState(abiertoInicial)
 
   const { refs, floatingStyles, context } = useFloating({
     open: abierto,
     onOpenChange: setAbierto,
-    placement: 'top-start',
-    middleware: [offset(10), flip({ padding: 8 }), shift({ padding: 8 })],
+    placement,
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   })
 
@@ -80,7 +111,7 @@ export default function MenuAdjuntos({ opciones, onArchivos, triggerLabel, trigg
             ref={refs.setFloating}
             style={floatingStyles}
             {...getFloatingProps()}
-            className="z-50 w-60 overflow-hidden rounded-2xl bg-white/95 shadow-2xl backdrop-blur-xl border border-gray-100 divide-y divide-gray-100 py-1"
+            className="z-50 w-72 overflow-hidden rounded-2xl bg-white/95 shadow-lg backdrop-blur-xl border border-gray-100 divide-y divide-gray-100 py-1"
           >
             {opciones.map((op) => (
               <div key={op.id} className="relative flex items-center gap-3 px-4 py-2.5 active:bg-gray-50 cursor-pointer">
@@ -97,8 +128,11 @@ export default function MenuAdjuntos({ opciones, onArchivos, triggerLabel, trigg
                   }}
                   className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                 />
-                <span className="text-lg flex-shrink-0">{op.icono}</span>
-                <p className="text-sm font-semibold text-gray-900">{op.titulo}</p>
+                <span className="text-xl flex-shrink-0 w-6 text-center">{op.icono}</span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-gray-900">{op.titulo}</p>
+                  {op.descripcion && <p className="text-xs text-gray-400">{op.descripcion}</p>}
+                </div>
               </div>
             ))}
           </div>

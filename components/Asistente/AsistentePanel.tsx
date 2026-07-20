@@ -621,6 +621,7 @@ export default function AsistentePanel() {
               triggerAriaLabel="Adjuntar cámara, fotos o archivos"
               disabled={procesandoFoto}
               triggerClassName="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0"
+              placement="top-start"
             />
           )}
           <div className="relative">

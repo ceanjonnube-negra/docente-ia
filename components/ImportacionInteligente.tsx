@@ -1,18 +1,7 @@
 'use client'
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import {
-  useFloating,
-  autoUpdate,
-  offset,
-  flip,
-  shift,
-  useClick,
-  useDismiss,
-  useRole,
-  useInteractions,
-  FloatingFocusManager,
-} from '@floating-ui/react'
+import MenuAdjuntos, { type OpcionAdjunto } from '@/components/ui/MenuAdjuntos'
 import { supabase } from '@/lib/supabaseClient'
 import {
   type AlumnoPreview,
@@ -39,29 +28,19 @@ type Props = {
 const CLASE_TRIGGER_DEFECTO =
   'px-4 py-2 bg-emerald-600 rounded-full text-xs font-semibold text-white hover:bg-emerald-700 whitespace-nowrap'
 
-// true a partir del breakpoint sm de Tailwind (640px) — escritorio/tablet.
-// Empieza en false (mismo valor en servidor y en el primer render del
-// cliente, para no causar un hydration mismatch) y se corrige en un efecto:
-// este es precisamente el caso de uso legítimo de useEffect que la propia
-// regla de lint describe ("sincronizar con una API de plataforma"), no una
-// sincronización de estado derivado evitable.
-function useEsEscritorio(): boolean {
-  const [esEscritorio, setEsEscritorio] = useState(false)
-  useEffect(() => {
-    const mq = window.matchMedia('(min-width: 640px)')
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- sincroniza con window.matchMedia (API de plataforma), no con estado derivado de props.
-    setEsEscritorio(mq.matches)
-    const escuchar = (e: MediaQueryListEvent) => setEsEscritorio(e.matches)
-    mq.addEventListener('change', escuchar)
-    return () => mq.removeEventListener('change', escuchar)
-  }, [])
-  return esEscritorio
-}
+// Mismas 3 opciones y mismo componente (components/ui/MenuAdjuntos.tsx)
+// que usa el Chat IA — "Archivos" usa extensiones de imagen explícitas
+// en vez de "image/*" para no disparar el selector nativo del sistema
+// operativo encima de este menú (ver la nota completa en
+// MenuAdjuntos.tsx).
+const OPCIONES_ADJUNTO_IMPORTACION: OpcionAdjunto[] = [
+  { id: 'foto', icono: '📷', titulo: 'Tomar foto', descripcion: 'Fotografía una lista o documento', accept: 'image/*', capture: 'environment' },
+  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', descripcion: 'Selecciona una o varias imágenes', accept: 'image/*', multiple: true },
+  { id: 'archivos', icono: '📄', titulo: 'Archivos', descripcion: 'PDF, Word, Excel o imágenes', accept: '.pdf,.doc,.docx,.xlsx,.xls,.jpg,.jpeg,.png,.heic,.heif', multiple: true },
+]
 
-// Botón "Importar" + menú (Popover anclado en escritorio, Bottom Sheet en
-// móvil) + análisis automático + revisión final, todo en un solo componente.
-// El botón y el panel comparten la misma referencia de posicionamiento, así
-// que nunca hay dos implementaciones independientes que mantener.
+// Botón "Importar" (abre el menú único de adjuntos, ver MenuAdjuntos.tsx)
+// + análisis automático + revisión final, todo en un solo componente.
 export default function ImportacionInteligente({
   grupo,
   onImportacionCompleta,
@@ -69,54 +48,16 @@ export default function ImportacionInteligente({
   triggerLabel,
   autoAbrir,
 }: Props) {
-  // Si autoAbrir viene en true, el menú nace abierto desde el primer render
-  // en que grupo ya esté disponible (mientras grupo es null el componente
-  // no renderiza nada — ver "if (!grupo) return null" más abajo).
-  const [menuAbierto, setMenuAbierto] = useState(() => !!autoAbrir)
   const [estado, setEstado] = useState<Estado>('inicial')
   const [fase, setFase] = useState<Fase>('analizando')
   const [alumnos, setAlumnos] = useState<AlumnoPreview[]>([])
   const [error, setError] = useState<string | null>(null)
   const [progreso, setProgreso] = useState({ completados: 0, total: 0 })
-  const [arrastreY, setArrastreY] = useState(0)
   const primeraFilaConAtencionRef = useRef<HTMLInputElement | null>(null)
-  const arrastreInicioRef = useRef<number | null>(null)
 
-  const esEscritorio = useEsEscritorio()
-
-  const { refs, floatingStyles, context } = useFloating({
-    open: menuAbierto,
-    onOpenChange: setMenuAbierto,
-    placement: 'bottom-end',
-    middleware: [offset(7), flip({ padding: 8 }), shift({ padding: 8 })],
-    whileElementsMounted: autoUpdate,
-  })
-
-  const click = useClick(context)
-  const dismiss = useDismiss(context)
-  const role = useRole(context, { role: 'menu' })
-  const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss, role])
-
-  function iniciarArrastre(e: React.PointerEvent) {
-    arrastreInicioRef.current = e.clientY
-  }
-  function moverArrastre(e: React.PointerEvent) {
-    if (arrastreInicioRef.current === null) return
-    const delta = e.clientY - arrastreInicioRef.current
-    if (delta > 0) setArrastreY(delta)
-  }
-  function terminarArrastre() {
-    if (arrastreY > 80) setMenuAbierto(false)
-    setArrastreY(0)
-    arrastreInicioRef.current = null
-  }
-
-  async function handleArchivosDesdeSheet(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files
-    e.target.value = ''
+  async function manejarArchivosSeleccionados(_opcionId: string, files: FileList) {
     if (!files || files.length === 0) return
 
-    setMenuAbierto(false)
     setError(null)
     setEstado('analizando')
     setFase('analizando')
@@ -221,120 +162,17 @@ export default function ImportacionInteligente({
 
   if (!grupo) return null
 
-  const contenidoMenu = (
-    <div className="divide-y divide-gray-100 py-1">
-      <div className="relative flex items-center gap-3 px-4 py-2.5 active:bg-gray-50">
-        <input
-          type="file"
-          accept="image/*"
-          capture="environment"
-          multiple
-          onChange={handleArchivosDesdeSheet}
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-        />
-        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-600">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-[18px] w-[18px]">
-            <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1-2h7l1 2h2A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5v-9z" strokeLinejoin="round" />
-            <circle cx="12" cy="12.5" r="3.3" />
-          </svg>
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900">Tomar foto</p>
-          <p className="text-xs text-gray-400">Fotografía una lista o documento</p>
-        </div>
-      </div>
-
-      <div className="relative flex items-center gap-3 px-4 py-2.5 active:bg-gray-50">
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={handleArchivosDesdeSheet}
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-        />
-        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-600">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-[18px] w-[18px]">
-            <rect x="4" y="5.5" width="16" height="13" rx="1.5" strokeLinejoin="round" />
-            <circle cx="9" cy="10" r="1.4" />
-            <path d="M4.5 16.5l4.5-4.5c.6-.6 1.4-.6 2 0L15.5 16.5" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M13.5 15l1.5-1.5c.6-.6 1.4-.6 2 0l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900">Fotos</p>
-          <p className="text-xs text-gray-400">Selecciona una o varias imágenes</p>
-        </div>
-      </div>
-
-      <div className="relative flex items-center gap-3 px-4 py-2.5 active:bg-gray-50">
-        <input
-          type="file"
-          accept=".pdf,.doc,.docx,.xlsx,.xls,.jpg,.jpeg,.png,.heic,.heif"
-          multiple
-          onChange={handleArchivosDesdeSheet}
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-        />
-        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-600">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-[18px] w-[18px]">
-            <path d="M6.5 4h7l4 4v11.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V4.5a.5.5 0 0 1 .5-.5z" strokeLinejoin="round" />
-            <path d="M13.5 4v4h4" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900">Archivos</p>
-          <p className="text-xs text-gray-400">PDF, Word, Excel o imágenes</p>
-        </div>
-      </div>
-    </div>
-  )
-
   return (
     <>
-      <button
-        ref={refs.setReference}
-        type="button"
-        className={triggerClassName ?? CLASE_TRIGGER_DEFECTO}
-        {...getReferenceProps()}
-      >
-        {triggerLabel ?? '🟢 Importar'}
-      </button>
-
-      {/* Escritorio/tablet: Popover anclado al botón */}
-      {menuAbierto && esEscritorio && (
-        <FloatingFocusManager context={context} modal={false}>
-          <div
-            // eslint-disable-next-line react-hooks/refs -- patrón oficial de @floating-ui/react: refs.setFloating es un callback ref estable, no una lectura de .current.
-            ref={refs.setFloating}
-            style={floatingStyles}
-            {...getFloatingProps()}
-            className="z-50 w-72 overflow-hidden rounded-2xl bg-white/95 shadow-2xl backdrop-blur-xl"
-          >
-            {contenidoMenu}
-          </div>
-        </FloatingFocusManager>
-      )}
-
-      {/* Móvil: Bottom Sheet nativo, con deslizar hacia abajo para cerrar */}
-      {!esEscritorio && (
-        <div
-          className={`fixed inset-0 z-50 flex items-end justify-center px-4 pb-6 transition-opacity duration-200 ${menuAbierto ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
-        >
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px]" onClick={() => setMenuAbierto(false)} />
-          <div
-            // eslint-disable-next-line react-hooks/refs -- patrón oficial de @floating-ui/react: refs.setFloating es un callback ref estable, no una lectura de .current.
-            ref={refs.setFloating}
-            {...getFloatingProps()}
-            onPointerDown={iniciarArrastre}
-            onPointerMove={moverArrastre}
-            onPointerUp={terminarArrastre}
-            style={{ transform: menuAbierto ? `translateY(${arrastreY}px)` : undefined }}
-            className={`relative w-[88%] max-w-[360px] overflow-hidden rounded-3xl bg-white/95 shadow-2xl backdrop-blur-xl transition-all duration-200 ${menuAbierto ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-3 scale-95 opacity-0'}`}
-          >
-            <div className="mx-auto mb-1 mt-2 h-1.5 w-10 rounded-full bg-gray-200" />
-            {contenidoMenu}
-          </div>
-        </div>
-      )}
+      <MenuAdjuntos
+        opciones={OPCIONES_ADJUNTO_IMPORTACION}
+        onArchivos={manejarArchivosSeleccionados}
+        triggerLabel={triggerLabel ?? '🟢 Importar'}
+        triggerAriaLabel="Importar lista de alumnos"
+        triggerClassName={triggerClassName ?? CLASE_TRIGGER_DEFECTO}
+        placement="bottom-end"
+        abiertoInicial={autoAbrir}
+      />
 
       {/* Superposición de análisis y revisión — sin cambios respecto a la versión anterior */}
       {estado !== 'inicial' && (

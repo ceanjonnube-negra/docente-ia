@@ -17,7 +17,7 @@
 import { OPCIONES_ADJUNTO_CHAT } from '../lib/asistente/menuAdjuntosChat'
 
 const ESPERADO = [
-  { id: 'camara', titulo: 'Cámara' },
+  { id: 'camara', titulo: 'Tomar foto' },
   { id: 'fotos', titulo: 'Fotos' },
   { id: 'archivos', titulo: 'Archivos' },
 ]
@@ -51,6 +51,17 @@ const archivos = OPCIONES_ADJUNTO_CHAT.find((o) => o.id === 'archivos')
   verificar(!!archivos?.accept.includes(ext), `Archivos acepta ${ext}`)
 })
 
+// Causa raíz real del "segundo menú" (el selector nativo del sistema
+// operativo apareciendo encima del menú propio, con textos como
+// "Fototeca"/"Tomar foto"/"Seleccionar archivos"): mezclar el comodín
+// "image/*" con extensiones de documento en el mismo `accept` — eso es
+// justo lo que hace que iOS/Android muestren su propio selector de
+// "¿de dónde sacas la imagen?" otra vez. Nunca debe volver a pasar.
+verificar(!archivos?.accept.includes('image/*'), 'Archivos NO mezcla el comodín image/* (causa real del selector nativo duplicado)')
+;['.jpg', '.jpeg', '.png'].forEach((ext) => {
+  verificar(!!archivos?.accept.includes(ext), `Archivos acepta imágenes por extensión explícita (${ext}), no por comodín`)
+})
+
 const titulosNormalizados = OPCIONES_ADJUNTO_CHAT.map((o) => o.titulo.toLowerCase())
 PROHIBIDAS.forEach((prohibida) => {
   verificar(!titulosNormalizados.some((t) => t.includes(prohibida)), `Ninguna opción se llama "${prohibida}" (menú nativo del sistema)`)
@@ -60,4 +71,4 @@ if (fallos > 0) {
   console.error(`\n${fallos} verificación(es) fallida(s) — el menú de adjuntos del Chat IA cambió de forma inesperada.`)
   process.exit(1)
 }
-console.log('\nTodo correcto: el menú de adjuntos del Chat IA mantiene exactamente Cámara / Fotos / Archivos.')
+console.log('\nTodo correcto: el menú de adjuntos del Chat IA mantiene exactamente Tomar foto / Fotos / Archivos, sin selector nativo duplicado.')
