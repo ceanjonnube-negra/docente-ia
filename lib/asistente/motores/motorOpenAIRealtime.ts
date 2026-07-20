@@ -27,6 +27,7 @@
 
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { PERSONA_VOZ } from '../personaVoz'
+import { MARCO_CURRICULAR_VIGENTE } from '../marcoCurricular'
 import { analizarComplecionFrase, CONFIG_FIN_TURNO } from '../deteccionFinTurno'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { supabase } from '@/lib/supabaseClient'
@@ -243,7 +244,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       : ''
     const concienciaDatos = 'Eres el cerebro central de Docente IA — tienes acceso directo a los datos reales de arriba sin que el maestro te los dé. Nunca respondas con frases genéricas de chatbot como "no tengo acceso directo...", "puedes decirme los nombres...", "podemos organizar una lista desde cero..." — son falsas aquí. Si el maestro pregunta si ya tienes acceso a su lista o su grupo, confírmalo con el dato real de arriba.'
 
-    return `${PERSONA_VOZ}\n\n${fechaHoraTexto}\n\n${resumenGrupoTexto}\n\n${concienciaDatos}\n\n${construirInstrucciones(perfil, contexto)}`
+    return `${PERSONA_VOZ}\n\n${MARCO_CURRICULAR_VIGENTE}\n\n${fechaHoraTexto}\n\n${resumenGrupoTexto}\n\n${concienciaDatos}\n\n${construirInstrucciones(perfil, contexto)}`
   }
 
   // Lanza ConexionCanceladaError si, mientras se esperaba el último await,
