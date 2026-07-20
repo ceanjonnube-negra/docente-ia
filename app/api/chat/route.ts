@@ -8,6 +8,7 @@ import {
   asistenciaGrupoResumen,
   calendarioProximo,
   consultarAsistenciaAlumno,
+  construirTextoListaAlumnos,
   contextoAlumno,
   contextoGrupo,
   documentosDelDocente,
@@ -62,6 +63,18 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // Este filtro local y gratuito evita esa llamada cuando el mensaje
 // claramente no es de los que el Nivel 0 sabe enrutar.
 const REQUIERE_CLASIFICADOR_NIVEL0 = /asistenc|\bfalta(s)?\b|retardo|tardanza|pas[ae]r?\s+lista|ficha\s+descriptiva|planeaci[oó]n|apoyo|document(o|os)|almacenad|calendario|actividad(es)?|programad/i
+
+// LISTA DE ALUMNOS — detección 100% determinista (expresión regular),
+// nunca un juicio de la IA: los nombres de los alumnos son un dato
+// oficial y jamás deben pasar por Claude para ser redactados (ver
+// construirTextoListaAlumnos en lib/motorContexto.ts). "de alumnos"/
+// "del grupo" son obligatorios para no confundirse con "pasar lista"
+// (tomar asistencia, ver REQUIERE_CLASIFICADOR_NIVEL0 arriba) cuando
+// el mensaje no pide ningún archivo. Cuando SÍ se pidió un formato
+// real (tipoHerramientaSolicitado ya resuelto, ver más abajo) no hace
+// falta esa precisión — "pasar lista" nunca coincide con un formato de
+// archivo, así que ahí basta con "lista"/"listado"/"padrón" a secas.
+const SOLICITA_LISTA_ALUMNOS = /\b(lista(do)?|padr[oó]n)\s+(de\s+)?(mis\s+|los\s+)?alumnos\b|\blista(do)?\s+del\s+grupo\b/i
 
 // Envuelve un texto ya resuelto (sin pasar por el modelo grande) en el
 // mismo formato de streaming de texto plano que el cliente ya espera,
@@ -369,6 +382,51 @@ export async function POST(req: NextRequest) {
       : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
     : null
 
+  // LISTA DE ALUMNOS — igual principio que FINALIZAR ARCHIVO más arriba
+  // (y con la misma prioridad: antes del Clasificador de Nivel 0 y
+  // antes de CASO 3, para que Claude nunca llegue a redactar esto). Se
+  // excluye esEdicionDocumento por la misma razón que tipoHerramientaSolicitado
+  // más arriba: `mensaje` sería el prompt interno de construirPromptEdicion
+  // (AsistenteService.ts), que puede traer el contenido del documento
+  // activo — incluida una lista de alumnos ya generada — y coincidir
+  // con SOLICITA_LISTA_ALUMNOS sin que el maestro haya pedido nada de
+  // eso en su instrucción real.
+  const pideListaAlumnos =
+    !esEdicionDocumento &&
+    (SOLICITA_LISTA_ALUMNOS.test(mensaje || '') ||
+      (Boolean(tipoHerramientaSolicitado) && /\blista(do)?\b|\bpadr[oó]n\b/i.test(mensaje || '')))
+
+  if (supabaseUser && userId && sesion?.grupo_activo_id && pideListaAlumnos) {
+    console.log(`[LISTA_ALUMNOS] detección determinista — tipoHerramientaSolicitado=${tipoHerramientaSolicitado ?? 'ninguno'} alumnos=${sesion.alumnos_del_grupo_activo.length}`)
+    if (sesion.alumnos_del_grupo_activo.length === 0) {
+      return respuestaTexto('No encontré alumnos inscritos activos en tu grupo actual. Si acabas de dar de alta al grupo, revisa que la importación o el alta de alumnos haya quedado guardada en Lista.')
+    }
+
+    const { data: perfilLista } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+    const textoLista = construirTextoListaAlumnos(sesion.alumnos_del_grupo_activo, perfilLista?.grado, perfilLista?.grupo)
+
+    if (tipoHerramientaSolicitado) {
+      try {
+        const archivo = await conReintento(
+          () => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, textoLista, perfilLista, zonaHoraria, supabaseRAG, userId),
+          'generar-lista-alumnos'
+        )
+        const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+        console.log(`[LISTA_ALUMNOS] entrega OK — ${archivo.nombre}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
+      } catch (err) {
+        if (err instanceof HerramientaNoDisponibleError) {
+          return NextResponse.json({ error: err.message }, { status: 502 })
+        }
+        const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
+        console.error(`[LISTA_ALUMNOS] Error generando el archivo [${codigo}]:`, err)
+        return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
+      }
+    }
+
+    return respuestaTexto(textoLista)
+  }
+
   // --- Clasificador de Nivel 0 (solo si el mensaje parece pedir una
   // ACCIÓN o un dato específico — ver REQUIERE_CLASIFICADOR_NIVEL0. La
   // sesión de arriba ya está disponible siempre; esto solo decide si
@@ -594,6 +652,7 @@ Fecha: [fecha actual]
 Lugar: [municipio], [estado]
 Si el maestro NO pidió el documento como oficial, no agregues este encabezado.
 10. DOCUMENTOS NORMALES (no oficiales): cuentos, fábulas, lecturas, exámenes, actividades, guías y recursos educativos NO llevan firma, nombre del maestro ni encabezado institucional por defecto — quedan neutros y reutilizables. Esos datos solo aparecen si el maestro los pide explícitamente o si aplica la regla 9 (documento oficial).
+11. NOMBRES DE ALUMNOS SON UN DATO OFICIAL, NUNCA TEXTO LIBRE: cuando menciones el nombre de un alumno en cualquier documento (citatorio, ficha, oficio, reporte, lo que sea), cópialo EXACTAMENTE tal como aparece en "Lista de alumnos" dentro de DATOS DEL MAESTRO — carácter por carácter, en el mismo orden. Tienes PROHIBIDO invertir, reordenar, abreviar o "corregir" el orden de apellidos y nombres, y PROHIBIDO usar el formato bibliográfico "Apellido, Nombre" bajo cualquier circunstancia, aunque te parezca más formal u ordenado — el nombre real del alumno YA viene en el orden oficial correcto (apellido paterno, apellido materno, nombre(s)) y reordenarlo produce un dato falso. Si necesitas generar una LISTA completa de alumnos del grupo (no un solo alumno mencionado de paso), no la redactes tú: la aplicación ya intercepta esa petición antes de que te llegue y genera la lista directo desde la base de datos — si de todos modos te llega, es señal de que debes responder con el documento vacío de ese contenido específico en vez de inventarlo.
 
 EXCEPCION A LA REGLA 3 - DATOS TABULARES:
 Cuando generes listas de alumnos con CURP, rubricas, calificaciones, horarios, o cualquier dato con varias columnas (numero, nombre, CURP, criterio, puntaje, dia, hora, etc), SIEMPRE usa el simbolo | como separador de columnas, con este formato exacto:

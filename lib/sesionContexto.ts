@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fechaISOHoy } from './tiempo/TimeService';
+import { nombreOficialAlumno } from './rosterGrupo';
 
 export type AlumnoLigero = {
   alumno_id: string;
@@ -68,7 +69,10 @@ export async function obtenerSesionContexto(
       base.alumnos_del_grupo_activo = inscritos
         .map((row: any) => ({
           alumno_id: row.alumno_id,
-          nombre_completo: row.alumnos?.nombre ?? '',
+          // Fuente única de verdad — ver nombreOficialAlumno en
+          // lib/rosterGrupo.ts. Nunca se reconstruye ni reformatea aquí
+          // ni en ningún otro lugar de la aplicación.
+          nombre_completo: row.alumnos ? nombreOficialAlumno(row.alumnos) : '',
           sexo: row.alumnos?.sexo ?? null,
           numero_lista: row.numero_lista ?? null,
         }))

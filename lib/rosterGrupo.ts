@@ -9,6 +9,22 @@ export type AlumnoConPosicion = {
   posicion: number
 }
 
+// Fuente única de verdad para el nombre oficial de un alumno en TODA la
+// aplicación — Lista, Asistencia, Chat IA, documentos generados (Word,
+// PDF, vista previa), cualquier lugar que muestre o redacte el nombre
+// de un alumno. La base de datos ya guarda el nombre completo tal como
+// está en el acta/CURP oficial (columna alumnos.nombre) — este dato
+// NUNCA se divide, invierte, reordena ni reformatea a "Apellido,
+// Nombre" ni ninguna otra convención: se usa exactamente como está
+// guardado, siempre. Un modelo de lenguaje (la IA del Chat) puede
+// redactar texto ALREDEDOR de este nombre, pero jamás debe ser quien
+// lo escribe o reconstruye — ver construirTextoListaAlumnos en
+// lib/motorContexto.ts, que arma documentos oficiales de lista sin
+// pasar el nombre por Claude.
+export function nombreOficialAlumno(alumno: { nombre: string }): string {
+  return alumno.nombre
+}
+
 // Única fuente de verdad para el número de lista: se calcula aquí, a partir
 // de la inscripción activa de cada alumno en el grupo, y nunca se guarda en
 // la base de datos. Lista y Ficha Inteligente llaman esta misma función para

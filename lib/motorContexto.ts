@@ -261,3 +261,37 @@ export async function compartirGrupoConDocente(
   if (error) throw error;
   return data;
 }
+
+// --- Documento oficial "Lista de Alumnos" — construido 100%
+// determinista, directo desde los registros reales del grupo. NUNCA
+// pasa por Claude: los nombres son el dato oficial más sensible de la
+// aplicación, y un modelo de lenguaje, al redactar una lista, tiende a
+// "ayudar" reordenando apellido/nombre como si fuera una referencia
+// bibliográfica (ej. "Rojas, Audrey Abad" en vez del dato real, "Abad
+// Rojas Audrey"). La única forma de garantizar que esto no vuelva a
+// pasar es que la IA jamás escriba los nombres — este texto usa
+// exactamente los mismos datos, mismo orden y mismo nombre (ver
+// nombreOficialAlumno en lib/rosterGrupo.ts) que ya muestra el módulo
+// Lista, y se entrega tal cual a los generadores de Word/PDF o a la
+// vista previa del chat — ver SOLICITA_LISTA_ALUMNOS en
+// app/api/chat/route.ts, el único lugar que la invoca.
+export function construirTextoListaAlumnos(
+  alumnos: { alumno_id: string; nombre_completo: string; numero_lista: number | null }[],
+  grado: string | null | undefined,
+  grupo: string | null | undefined
+): string {
+  const ordenados = [...alumnos].sort((a, b) => {
+    if (a.numero_lista != null && b.numero_lista != null) return a.numero_lista - b.numero_lista;
+    if (a.numero_lista != null) return -1;
+    if (b.numero_lista != null) return 1;
+    return a.nombre_completo.localeCompare(b.nombre_completo, 'es');
+  });
+
+  const metadatos = [grado ? `Grado: ${grado}°` : null, grupo ? `Grupo: ${grupo}` : null, `Total: ${ordenados.length} alumno(s)`]
+    .filter(Boolean)
+    .join(' | ');
+
+  const filas = ordenados.map((a, i) => `${a.numero_lista ?? i + 1}. ${a.nombre_completo}`).join('\n');
+
+  return `📋 LISTA DE ALUMNOS\n${metadatos}\n\n${filas}`;
+}
