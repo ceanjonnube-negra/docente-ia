@@ -56,6 +56,10 @@ export default function CalendarioPage() {
   const [eventosCiclo, setEventosCiclo] = useState<Evento[]>([])
 
   const [eventoSel, setEventoSel] = useState<Evento | null>(null)
+  // Día tocado en la grilla — muestra el menú contextual anclado a esa
+  // celda (ver RFC-CALENDAR-INTERACTION-002). Solo un número de día
+  // (1-31) del mes que se está viendo; no es un Evento.
+  const [diaSeleccionado, setDiaSeleccionado] = useState<number | null>(null)
   const [mostrarForm, setMostrarForm] = useState(false)
   const [actividadEditando, setActividadEditando] = useState<Evento | null>(null)
   const [nuevo, setNuevo] = useState<FormActividad>(FORM_VACIO)
@@ -115,13 +119,46 @@ export default function CalendarioPage() {
 
   const cambiarMes = (delta: number) => {
     setTransicion(true)
+    setDiaSeleccionado(null)
     if (mes + delta < 0) { setMes(11); setAnio(a => a - 1) }
     else if (mes + delta > 11) { setMes(0); setAnio(a => a + 1) }
     else setMes(m => m + delta)
     setTimeout(() => setTransicion(false), 180)
   }
-  const irAHoy = () => { setMes(hoy.getMonth()); setAnio(hoy.getFullYear()) }
+  const irAHoy = () => { setDiaSeleccionado(null); setMes(hoy.getMonth()); setAnio(hoy.getFullYear()) }
   const viendoMesActual = mes === hoy.getMonth() && anio === hoy.getFullYear()
+
+  // RFC-CALENDAR-INTERACTION-002 — alta directa de actividades desde
+  // el día seleccionado. Solo cambia CÓMO se llega al formulario de
+  // siempre (mismo `agregar`/`actualizarActividad`/`eliminarActividad`
+  // de más abajo, sin tocar); el botón inferior sigue existiendo como
+  // acceso secundario.
+  const tocarDia = (d: number) => {
+    setDiaSeleccionado(prev => (prev === d ? null : d))
+  }
+  const cerrarSeleccionDia = () => setDiaSeleccionado(null)
+  const fechaDeSeleccion = (d: number) => `${anio}-${String(mes + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+
+  // Mismo formulario de siempre (mostrarForm/nuevo/agregar), solo que
+  // ahora nace con la fecha del día que el docente ya tocó, en vez de
+  // vacía — un paso menos que escribirla a mano.
+  const abrirFormularioConFecha = (fecha: string) => {
+    setActividadEditando(null)
+    setNuevo({ ...FORM_VACIO, fecha })
+    setMostrarForm(true)
+    setDiaSeleccionado(null)
+  }
+
+  // "Ver actividades" reutiliza EXACTAMENTE la misma tarjeta de detalle
+  // que ya mostraba un tap directo antes de este RFC (setEventoSel) —
+  // solo cambia que ahora se llega ahí desde el menú contextual, nunca
+  // se tocó cómo se muestra ni qué evento se elige cuando hay varios
+  // el mismo día (sigue siendo el primero, comportamiento preexistente).
+  const verActividadesDelDia = (d: number) => {
+    const evs = evsDia(d)
+    if (evs.length > 0) setEventoSel(evs[0])
+    setDiaSeleccionado(null)
+  }
 
   const onTouchStart = (e: React.TouchEvent) => { touchInicioX.current = e.touches[0].clientX }
   const onTouchEnd = (e: React.TouchEvent) => {
@@ -330,21 +367,56 @@ export default function CalendarioPage() {
               const d = i + 1
               const evs = evsDia(d)
               const esHoy = d === hoy.getDate() && mes === hoy.getMonth() && anio === hoy.getFullYear()
+              const seleccionado = diaSeleccionado === d
+              // Columnas 4-6 (jue/vie/sáb, 0-indexado desde domingo):
+              // el menú se ancla a la derecha de la celda para no
+              // salirse por el borde derecho de la pantalla.
+              const columna = (primerDia + i) % 7
+              const anclarDerecha = columna >= 4
               return (
-                <button
-                  key={d}
-                  onClick={() => evs.length > 0 && setEventoSel(evs[0])}
-                  className={`relative min-h-[52px] rounded-2xl flex flex-col items-center justify-start pt-1.5 transition-all active:scale-95 ${evs.length > 0 ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'}`}
-                >
-                  {esHoy ? (
-                    <span className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-blue-500 text-white text-sm font-bold flex items-center justify-center shadow-sm shadow-purple-200">{d}</span>
-                  ) : (
-                    <span className="text-sm text-gray-700 font-medium w-8 h-8 flex items-center justify-center">{d}</span>
+                <div key={d} className="relative">
+                  <button
+                    onClick={() => tocarDia(d)}
+                    className={`relative w-full min-h-[52px] rounded-2xl flex flex-col items-center justify-start pt-1.5 transition-all active:scale-95 hover:bg-gray-50 cursor-pointer ${seleccionado ? 'ring-2 ring-purple-400 bg-purple-50/60' : ''}`}
+                  >
+                    {esHoy ? (
+                      <span className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-blue-500 text-white text-sm font-bold flex items-center justify-center shadow-sm shadow-purple-200">{d}</span>
+                    ) : (
+                      <span className="text-sm text-gray-700 font-medium w-8 h-8 flex items-center justify-center">{d}</span>
+                    )}
+                    <div className="flex justify-center gap-0.5 mt-1 h-1.5">
+                      {evs.slice(0, 3).map(e => <span key={e.id} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: e.color }} />)}
+                    </div>
+                  </button>
+
+                  {/* Menú contextual anclado a la celda — nunca un panel
+                      inferior. Capa transparente (no oscura, a propósito:
+                      esto no es un modal pesado) solo para cerrar al
+                      tocar fuera. */}
+                  {seleccionado && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={cerrarSeleccionDia} />
+                      <div
+                        className={`absolute top-full mt-1.5 z-40 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden py-1 animate-[fadeIn_.12s_ease-out] ${anclarDerecha ? 'right-0' : 'left-0'}`}
+                      >
+                        {evs.length > 0 && (
+                          <button
+                            onClick={() => verActividadesDelDia(d)}
+                            className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            📋 Ver actividades
+                          </button>
+                        )}
+                        <button
+                          onClick={() => abrirFormularioConFecha(fechaDeSeleccion(d))}
+                          className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          ➕ {evs.length > 0 ? 'Agregar otra actividad' : 'Agregar actividad'}
+                        </button>
+                      </div>
+                    </>
                   )}
-                  <div className="flex justify-center gap-0.5 mt-1 h-1.5">
-                    {evs.slice(0, 3).map(e => <span key={e.id} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: e.color }} />)}
-                  </div>
-                </button>
+                </div>
               )
             })}
           </div>
