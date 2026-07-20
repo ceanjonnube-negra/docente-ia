@@ -106,3 +106,22 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
   const minuscula = texto.toLowerCase()
   return FRASES_FINALIZAR_DOCUMENTO.some((frase) => minuscula.includes(frase)) ? 'word' : null
 }
+
+// Frases que piden explícitamente que la respuesta NO repita ni vuelva a
+// explicar el documento activo — a diferencia de FRASES_FINALIZAR_
+// DOCUMENTO (piden el archivo) o una edición real (piden cambiar el
+// contenido), estas no piden nada que ejecutar: sin este chequeo caerían
+// en enviarComoEdicion (ver AsistenteService.ts), que las mandaría al
+// modelo como si "no lo repitas" fuera una instrucción de edición del
+// documento — confuso y sin sentido. Se responde con un acuse breve, sin
+// tocar el modelo ni el documento activo.
+export const FRASES_SUPRIMIR_REPETICION = [
+  'no lo repitas', 'no la repitas', 'no vuelvas a explicarlo', 'no vuelvas a explicarla',
+  'no lo expliques de nuevo', 'no la expliques de nuevo', 'no escribas nada',
+  'no repitas nada', 'no me lo repitas', 'no me lo vuelvas a explicar',
+]
+
+export function detectarSupresionRepeticion(texto: string): boolean {
+  const minuscula = texto.toLowerCase()
+  return FRASES_SUPRIMIR_REPETICION.some((frase) => minuscula.includes(frase))
+}
