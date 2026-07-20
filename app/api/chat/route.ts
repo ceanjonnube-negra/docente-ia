@@ -6,7 +6,8 @@ import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import {
   asistenciaGrupoResumen,
-  calendarioProximo,
+  calendarioCicloCompleto,
+  categoriaEventoCalendario,
   consultarAsistenciaAlumno,
   construirTextoListaAlumnos,
   contextoAlumno,
@@ -684,8 +685,24 @@ export async function POST(req: NextRequest) {
             const documentos = await documentosDelDocente(supabaseUser, userId)
             contextoEnriquecido += `\n\nDOCUMENTOS REALES YA GENERADOS POR EL MAESTRO (usa estos datos, no inventes otros):\n${JSON.stringify(documentos)}`
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
-            const eventos = await calendarioProximo(supabaseUser, userId, sesion.fecha_actual)
-            contextoEnriquecido += `\n\nPRÓXIMOS EVENTOS REALES DEL CALENDARIO ESCOLAR (usa estos datos, no inventes otros; si viene vacío, dilo con honestidad):\n${JSON.stringify(eventos)}`
+            // Ciclo completo (no solo "próximos 10") para que el Chat IA
+            // pueda responder cualquier pregunta natural sobre el
+            // calendario — de esta semana, de este mes, ya pasada, o de
+            // más adelante en el ciclo — sin depender de que el docente
+            // diga explícitamente "revisa el calendario". Mismo cálculo
+            // de ciclo escolar (agosto→julio) que ya usa
+            // app/api/calendario/analizar/route.ts.
+            const { anio, mes } = obtenerFechaHora(zonaHoraria)
+            const inicioAnioCiclo = mes >= 8 ? anio : anio - 1
+            const inicioCiclo = `${inicioAnioCiclo}-08-01`
+            const finCiclo = `${inicioAnioCiclo + 1}-07-31`
+            const eventosCiclo = await calendarioCicloCompleto(supabaseUser, userId, inicioCiclo, finCiclo)
+            const eventosConCategoria = eventosCiclo.map((e) => ({
+              titulo: e.titulo,
+              fecha: e.fecha,
+              categoria: categoriaEventoCalendario(e),
+            }))
+            contextoEnriquecido += `\n\nCALENDARIO ESCOLAR COMPLETO DEL CICLO ${inicioAnioCiclo}-${inicioAnioCiclo + 1} (usa estos datos reales para responder cualquier pregunta sobre fechas, actividades o eventos escolares — de hoy (${sesion.fecha_actual}), de esta semana, de este mes, ya pasados, o de más adelante en el ciclo; no inventes otros; si no hay eventos en el rango que se pregunta, dilo con honestidad; distingue siempre en tu respuesta entre eventos oficiales SEP y actividades propias que el maestro agregó — nunca los mezcles sin indicarlo):\n${JSON.stringify(eventosConCategoria)}`
           }
         } catch (e) {
           console.error('Error ensamblando contexto Nivel 4:', e)

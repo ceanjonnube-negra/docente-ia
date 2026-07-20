@@ -416,6 +416,24 @@ export async function calendarioCicloCompleto(
   return (data || []) as EventoCalendarioCompleto[];
 }
 
+// Misma clasificación por etiqueta que ya usa categoriaDe() en
+// app/dashboard/calendario/page.tsx (color del punto en el
+// calendario) — reimplementada aquí en texto porque esta función
+// alimenta el prompt del Chat IA, no la UI, y un componente de página
+// no se debe importar dentro de la ruta de la API. Mantener ambas en
+// sincronía si cambia la forma de clasificar un tipo de evento.
+export function categoriaEventoCalendario(e: Pick<EventoCalendarioCompleto, 'tipo' | 'es_sep'>): string {
+  const t = (e.tipo || '').toLowerCase();
+  if (!e.es_sep) return 'actividad propia del maestro';
+  if (t.includes('inicio') || t.includes('fin')) return 'inicio/fin de ciclo (oficial SEP)';
+  if (t.includes('festiv')) return 'festivo (oficial SEP)';
+  if (t.includes('cte')) return 'CTE (oficial SEP)';
+  if (t.includes('vacacion')) return 'vacaciones (oficial SEP)';
+  if (t.includes('consejo')) return 'consejo técnico (oficial SEP)';
+  if (t.includes('suspension') || t.includes('suspensión')) return 'suspensión de labores (oficial SEP)';
+  return 'evento oficial (SEP)';
+}
+
 export type ResultadoCorreccionesCalendario = {
   exito: boolean;
   error?: string;
