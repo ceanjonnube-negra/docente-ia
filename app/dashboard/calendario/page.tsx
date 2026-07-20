@@ -56,10 +56,16 @@ export default function CalendarioPage() {
   const [eventosCiclo, setEventosCiclo] = useState<Evento[]>([])
 
   const [eventoSel, setEventoSel] = useState<Evento | null>(null)
-  // Día tocado en la grilla — muestra el menú contextual anclado a esa
-  // celda (ver RFC-CALENDAR-INTERACTION-002). Solo un número de día
-  // (1-31) del mes que se está viendo; no es un Evento.
+  // Día tocado en la grilla — resalta la celda y controla el pequeño
+  // menú contextual de un día CON eventos (ver RFC de rediseño del
+  // flujo de interacción). Solo un número de día (1-31) del mes que se
+  // está viendo; no es un Evento. Como es un solo valor (no un Set),
+  // nunca puede haber más de un día seleccionado a la vez.
   const [diaSeleccionado, setDiaSeleccionado] = useState<number | null>(null)
+  // Modal "Ver actividades" de un día con eventos — lista todas las
+  // actividades de ESE día (antes solo se abría la primera). Tocar una
+  // fila reutiliza la misma tarjeta de detalle de siempre (eventoSel).
+  const [diaListaAbierta, setDiaListaAbierta] = useState<number | null>(null)
   const [mostrarForm, setMostrarForm] = useState(false)
   const [actividadEditando, setActividadEditando] = useState<Evento | null>(null)
   const [nuevo, setNuevo] = useState<FormActividad>(FORM_VACIO)
@@ -120,44 +126,64 @@ export default function CalendarioPage() {
   const cambiarMes = (delta: number) => {
     setTransicion(true)
     setDiaSeleccionado(null)
+    setDiaListaAbierta(null)
     if (mes + delta < 0) { setMes(11); setAnio(a => a - 1) }
     else if (mes + delta > 11) { setMes(0); setAnio(a => a + 1) }
     else setMes(m => m + delta)
     setTimeout(() => setTransicion(false), 180)
   }
-  const irAHoy = () => { setDiaSeleccionado(null); setMes(hoy.getMonth()); setAnio(hoy.getFullYear()) }
+  const irAHoy = () => { setDiaSeleccionado(null); setDiaListaAbierta(null); setMes(hoy.getMonth()); setAnio(hoy.getFullYear()) }
   const viendoMesActual = mes === hoy.getMonth() && anio === hoy.getFullYear()
 
-  // RFC-CALENDAR-INTERACTION-002 — alta directa de actividades desde
-  // el día seleccionado. Solo cambia CÓMO se llega al formulario de
-  // siempre (mismo `agregar`/`actualizarActividad`/`eliminarActividad`
-  // de más abajo, sin tocar); el botón inferior sigue existiendo como
-  // acceso secundario.
-  const tocarDia = (d: number) => {
-    setDiaSeleccionado(prev => (prev === d ? null : d))
-  }
-  const cerrarSeleccionDia = () => setDiaSeleccionado(null)
   const fechaDeSeleccion = (d: number) => `${anio}-${String(mes + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 
   // Mismo formulario de siempre (mostrarForm/nuevo/agregar), solo que
   // ahora nace con la fecha del día que el docente ya tocó, en vez de
-  // vacía — un paso menos que escribirla a mano.
+  // vacía — un paso menos que escribirla a mano. La fecha llega FIJA
+  // (ver el formulario más abajo: ya no es un <input type="date">
+  // editable) porque siempre proviene de un día ya seleccionado en el
+  // calendario.
   const abrirFormularioConFecha = (fecha: string) => {
     setActividadEditando(null)
     setNuevo({ ...FORM_VACIO, fecha })
     setMostrarForm(true)
-    setDiaSeleccionado(null)
   }
 
-  // "Ver actividades" reutiliza EXACTAMENTE la misma tarjeta de detalle
-  // que ya mostraba un tap directo antes de este RFC (setEventoSel) —
-  // solo cambia que ahora se llega ahí desde el menú contextual, nunca
-  // se tocó cómo se muestra ni qué evento se elige cuando hay varios
-  // el mismo día (sigue siendo el primero, comportamiento preexistente).
-  const verActividadesDelDia = (d: number) => {
+  // Rediseño del flujo de interacción del calendario — toda la lógica
+  // de guardado/lectura/sincronización de abajo (agregar,
+  // actualizarActividad, eliminarActividad, cargarEventos, cargarCiclo)
+  // sigue exactamente igual; esto solo decide CÓMO se llega a ella:
+  //
+  // CASO 1 — día sin eventos: directo al formulario, sin menú
+  // intermedio ni segundo toque.
+  // CASO 2 — día con eventos: solo alterna el menú contextual pequeño
+  // (Ver actividades / Agregar otra actividad), anclado a la celda.
+  const tocarDia = (d: number) => {
     const evs = evsDia(d)
-    if (evs.length > 0) setEventoSel(evs[0])
+    if (evs.length === 0) {
+      setDiaSeleccionado(d)
+      abrirFormularioConFecha(fechaDeSeleccion(d))
+      return
+    }
+    setDiaSeleccionado(prev => (prev === d ? null : d))
+  }
+  const cerrarSeleccionDia = () => setDiaSeleccionado(null)
+
+  // CASO 3 — "Ver actividades": lista TODAS las actividades del día
+  // (antes solo se abría la primera). Tocar una fila reutiliza la
+  // misma tarjeta de detalle de siempre (eventoSel, con Editar/
+  // Eliminar ya existentes) — no se implementa edición/eliminación
+  // nueva aquí, solo la lista para llegar a lo que ya existe.
+  const verActividadesDelDia = (d: number) => {
+    setDiaListaAbierta(d)
+  }
+  const cerrarListaDia = () => {
+    setDiaListaAbierta(null)
     setDiaSeleccionado(null)
+  }
+  const abrirDetalleDesdeLista = (e: Evento) => {
+    setEventoSel(e)
+    setDiaListaAbierta(null)
   }
 
   const onTouchStart = (e: React.TouchEvent) => { touchInicioX.current = e.touches[0].clientX }
@@ -211,6 +237,7 @@ export default function CalendarioPage() {
     setMostrarForm(false)
     setActividadEditando(null)
     setNuevo(FORM_VACIO)
+    setDiaSeleccionado(null)
   }
 
   // Categorías reales, derivadas del ciclo completo (no solo del mes
@@ -357,17 +384,36 @@ export default function CalendarioPage() {
             {DIAS.map((d, i) => <div key={i} className="text-center text-[11px] font-bold text-gray-300 py-1">{d}</div>)}
           </div>
 
+          {/* Capa transparente única para cerrar el menú contextual al
+              tocar fuera de la grilla — antes había una por celda con
+              fixed inset-0, lo que tapaba las celdas VECINAS y
+              evitaba seleccionar otro día de un solo toque. Un solo
+              overlay, con menor z-index que la grilla (ver más abajo),
+              deja que cualquier otra celda se siga tocando con
+              normalidad y solo captura el toque cuando cae fuera del
+              calendario. */}
+          {diaSeleccionado !== null && evsDia(diaSeleccionado).length > 0 && (
+            <div className="fixed inset-0 z-20" onClick={cerrarSeleccionDia} />
+          )}
+
           <div
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}
-            className={`grid grid-cols-7 gap-1.5 transition-opacity duration-150 ${transicion ? 'opacity-0' : 'opacity-100'} ${cargando ? 'opacity-40' : ''}`}
+            className={`relative z-30 grid grid-cols-7 gap-1.5 transition-opacity duration-150 ${transicion ? 'opacity-0' : 'opacity-100'} ${cargando ? 'opacity-40' : ''}`}
           >
             {Array.from({ length: primerDia }).map((_, i) => <div key={`v-${i}`} />)}
             {Array.from({ length: diasEnMes }).map((_, i) => {
               const d = i + 1
               const evs = evsDia(d)
               const esHoy = d === hoy.getDate() && mes === hoy.getMonth() && anio === hoy.getFullYear()
-              const seleccionado = diaSeleccionado === d
+              // El resaltado cubre CUALQUIER día seleccionado (vacío o
+              // no — "el día debe resaltarse claramente" sin importar
+              // qué se abra a partir de ahí). El menú contextual en
+              // cambio solo existe para CASO 2 (día con eventos); un
+              // día vacío va directo al formulario (ver tocarDia) y
+              // nunca pasa por aquí.
+              const diaResaltado = diaSeleccionado === d
+              const menuAbierto = diaResaltado && evs.length > 0
               // Columnas 4-6 (jue/vie/sáb, 0-indexado desde domingo):
               // el menú se ancla a la derecha de la celda para no
               // salirse por el borde derecho de la pantalla.
@@ -377,7 +423,7 @@ export default function CalendarioPage() {
                 <div key={d} className="relative">
                   <button
                     onClick={() => tocarDia(d)}
-                    className={`relative w-full min-h-[52px] rounded-2xl flex flex-col items-center justify-start pt-1.5 transition-all active:scale-95 hover:bg-gray-50 cursor-pointer ${seleccionado ? 'ring-2 ring-purple-400 bg-purple-50/60' : ''}`}
+                    className={`relative w-full min-h-[52px] rounded-2xl flex flex-col items-center justify-start pt-1.5 transition-all active:scale-95 hover:bg-gray-50 cursor-pointer ${diaResaltado ? 'ring-2 ring-purple-400 bg-purple-50/60' : ''}`}
                   >
                     {esHoy ? (
                       <span className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-blue-500 text-white text-sm font-bold flex items-center justify-center shadow-sm shadow-purple-200">{d}</span>
@@ -389,32 +435,26 @@ export default function CalendarioPage() {
                     </div>
                   </button>
 
-                  {/* Menú contextual anclado a la celda — nunca un panel
-                      inferior. Capa transparente (no oscura, a propósito:
-                      esto no es un modal pesado) solo para cerrar al
-                      tocar fuera. */}
-                  {seleccionado && (
-                    <>
-                      <div className="fixed inset-0 z-30" onClick={cerrarSeleccionDia} />
-                      <div
-                        className={`absolute top-full mt-1.5 z-40 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden py-1 animate-[fadeIn_.12s_ease-out] ${anclarDerecha ? 'right-0' : 'left-0'}`}
+                  {/* Menú contextual anclado a la celda — CASO 2 (día
+                      con eventos): solo estas dos opciones, nunca un
+                      panel inferior. */}
+                  {menuAbierto && (
+                    <div
+                      className={`absolute top-full mt-1.5 z-40 w-52 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden py-1 animate-[fadeIn_.12s_ease-out] ${anclarDerecha ? 'right-0' : 'left-0'}`}
+                    >
+                      <button
+                        onClick={() => verActividadesDelDia(d)}
+                        className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                       >
-                        {evs.length > 0 && (
-                          <button
-                            onClick={() => verActividadesDelDia(d)}
-                            className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                          >
-                            📋 Ver actividades
-                          </button>
-                        )}
-                        <button
-                          onClick={() => abrirFormularioConFecha(fechaDeSeleccion(d))}
-                          className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          ➕ {evs.length > 0 ? 'Agregar otra actividad' : 'Agregar actividad'}
-                        </button>
-                      </div>
-                    </>
+                        📋 Ver actividades
+                      </button>
+                      <button
+                        onClick={() => abrirFormularioConFecha(fechaDeSeleccion(d))}
+                        className="w-full text-left px-3.5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        ➕ Agregar otra actividad
+                      </button>
+                    </div>
                   )}
                 </div>
               )
@@ -449,10 +489,6 @@ export default function CalendarioPage() {
             </div>
           )}
         </div>
-
-        <button onClick={() => setMostrarForm(true)} className="w-full py-3.5 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-2xl font-bold shadow-md shadow-purple-200 hover:opacity-90 active:scale-[0.99] transition-all">
-          + Agregar actividad propia
-        </button>
       </div>
 
       {/* Botón flotante "Hoy" — solo cuando no se está viendo el mes actual */}
@@ -463,6 +499,43 @@ export default function CalendarioPage() {
         >
           📍 Hoy
         </button>
+      )}
+
+      {/* CASO 3 — "Ver actividades": lista TODAS las actividades del
+          día seleccionado (antes se abría solo la primera). Tocar una
+          fila reutiliza la tarjeta de detalle de siempre, con Editar/
+          Eliminar ya existentes — no se implementa edición/eliminación
+          nueva aquí, "Duplicar" tampoco se agrega todavía. */}
+      {diaListaAbierta !== null && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={cerrarListaDia}>
+          <div onClick={e => e.stopPropagation()} className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-[slideUp_.2s_ease-out] max-h-[75vh] overflow-y-auto">
+            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-4 sm:hidden" />
+            <h3 className="font-bold text-gray-900 mb-0.5">Actividades del día</h3>
+            <p className="text-xs text-gray-400 mb-4 capitalize">
+              {formatearFecha(fechaDeSeleccion(diaListaAbierta), obtenerZonaHorariaDispositivo(), { weekday: 'long', day: 'numeric', month: 'long' })}
+            </p>
+            <div className="space-y-1.5">
+              {evsDia(diaListaAbierta).map(e => {
+                const c = categoriaDe(e)
+                return (
+                  <button
+                    key={e.id}
+                    onClick={() => abrirDetalleDesdeLista(e)}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-gray-50 transition-colors text-left active:scale-[0.99]"
+                  >
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0" style={{ backgroundColor: `${e.color}1A` }}>{c.icono}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-gray-800 truncate">{e.titulo}</p>
+                      <p className="text-xs font-medium" style={{ color: e.color }}>{c.etiqueta}</p>
+                    </div>
+                    <span className="text-gray-300">›</span>
+                  </button>
+                )
+              })}
+            </div>
+            <button onClick={cerrarListaDia} className="mt-4 w-full py-2.5 text-gray-400 text-sm font-medium">Cerrar</button>
+          </div>
+        </div>
       )}
 
       {/* Tarjeta de detalle del día */}
@@ -520,8 +593,22 @@ export default function CalendarioPage() {
           <div onClick={e => e.stopPropagation()} className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-[slideUp_.2s_ease-out]">
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mb-4 sm:hidden" />
             <h3 className="font-bold text-gray-900 mb-4">{actividadEditando ? 'Editar actividad' : 'Nueva actividad'}</h3>
+            {/* La fecha ya viene del día que el docente seleccionó en
+                el calendario — no es un campo editable aquí (ver
+                tocarDia/abrirFormularioConFecha). No hay campo de Hora:
+                calendario_eventos no tiene esa columna todavía (ni hay
+                acceso a migraciones desde este entorno) — se agrega
+                cuando el modelo la tenga, tal como pide el RFC ("si
+                aplica"/"si existe en el modelo"). */}
+            {nuevo.fecha && (
+              <div className="bg-gray-50 rounded-2xl p-3 mb-3">
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Fecha</p>
+                <p className="text-sm font-medium text-gray-800 capitalize">
+                  {formatearFecha(nuevo.fecha, obtenerZonaHorariaDispositivo(), { day: 'numeric', month: 'long', year: 'numeric' })}
+                </p>
+              </div>
+            )}
             <input value={nuevo.titulo} onChange={e => setNuevo(p => ({ ...p, titulo: e.target.value }))} placeholder="Título" className="w-full border border-gray-200 rounded-2xl px-3.5 py-2.5 mb-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
-            <input type="date" value={nuevo.fecha} onChange={e => setNuevo(p => ({ ...p, fecha: e.target.value }))} className="w-full border border-gray-200 rounded-2xl px-3.5 py-2.5 mb-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
             <textarea value={nuevo.descripcion} onChange={e => setNuevo(p => ({ ...p, descripcion: e.target.value }))} placeholder="Descripción (opcional)" className="w-full border border-gray-200 rounded-2xl px-3.5 py-2.5 mb-4 text-sm h-20 focus:outline-none focus:ring-2 focus:ring-purple-400" />
             <div className="flex gap-2">
               <button onClick={cerrarFormulario} className="flex-1 py-2.5 bg-gray-100 rounded-2xl text-sm font-semibold text-gray-600">Cancelar</button>
