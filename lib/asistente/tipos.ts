@@ -121,7 +121,14 @@ export interface MotorConversacional {
   readonly id: string
   iniciar(contexto: ContextoAplicacion, herramientas: Herramienta[]): Promise<void>
   detener(): Promise<void>
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo): Promise<void>
+  // esEdicionDocumento: true cuando `texto` no es lo que escribió el
+  // maestro sino un prompt interno (ver construirPromptEdicion en
+  // AsistenteService.ts) que envuelve su instrucción de edición junto
+  // con el documento activo — le dice a /api/chat que NUNCA debe
+  // interpretar este mensaje como una solicitud de archivo (ver
+  // tipoHerramientaSolicitado en app/api/chat/route.ts), sin importar
+  // qué palabras traiga el texto de la plantilla.
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

@@ -98,7 +98,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean) {
     this.controlador = new AbortController()
 
     const { user, session, perfil } = await obtenerPerfilYSesion()
@@ -119,6 +119,7 @@ export class MotorTextoClaude implements MotorConversacional {
           accessToken: session?.access_token || null,
           zonaHoraria: obtenerZonaHorariaDispositivo(),
           finalizarArchivo: finalizarArchivo || null,
+          esEdicionDocumento: esEdicionDocumento || false,
         }),
         signal: this.controlador.signal,
       })

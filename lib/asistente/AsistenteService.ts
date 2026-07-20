@@ -898,7 +898,11 @@ class AsistenteServiceImpl {
       // el propio manejador de 'error' (ver manejarEventoMotor), que
       // necesita verlo todavía puesto para saber que esto fue una falla
       // de documento y mostrar el aviso breve en vez de una burbuja.
-      await this.motor?.enviarTexto(textoParaModelo, adjunto)
+      // esEdicionDocumento=true: textoParaModelo es un prompt interno
+      // (construirPromptEdicion), no algo que el maestro escribió — jamás
+      // debe interpretarse en /api/chat como una solicitud de archivo
+      // (ver esEdicionDocumento en app/api/chat/route.ts).
+      await this.motor?.enviarTexto(textoParaModelo, adjunto, undefined, true)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }

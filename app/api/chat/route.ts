@@ -185,7 +185,7 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken, zonaHoraria, finalizarArchivo } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
 
   // Turnos previos reales de la conversación (ver MotorTextoClaude.
   // establecerHistorial) — sin esto Claude solo ve el mensaje suelto de
@@ -231,8 +231,28 @@ export async function POST(req: NextRequest) {
   // calculado una sola vez aquí porque lo necesitan TANTO el camino
   // rápido de abajo (documento recuperable) COMO el CASO 3 más adelante
   // (nada que recuperar, Claude tiene que redactarlo primero).
-  const tipoHerramientaSolicitado: TipoHerramienta | null =
-    finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string'
+  //
+  // esEdicionDocumento=true (ver enviarComoEdicion en AsistenteService.ts)
+  // — CAUSA RAÍZ real confirmada con logs de producción (tipo=imagen,
+  // fuenteContenido=historial, 502 "Herramienta solicitada... falta
+  // proveedor" en solicitudes que el maestro nunca pidió como imagen):
+  // cuando el maestro edita un documento activo ("hay errores en el
+  // orden alfabético", cualquier instrucción que no nombre un formato),
+  // el `mensaje` que llega aquí NO es su texto suelto — es el prompt
+  // envuelto por construirPromptEdicion(), que incluye instrucciones
+  // fijas para Claude sobre cómo tratar íconos/ilustraciones dentro del
+  // documento. Ese texto de plantilla (ajeno al maestro) coincidía con
+  // el patrón de detección de "imagen" (PATRONES_FORMATO en
+  // lib/asistente/documentos.ts), así que la red de seguridad de abajo
+  // (pensada solo para mensajes sueltos reales del maestro, ver
+  // comentario "2." arriba) reclasificaba CUALQUIER edición como una
+  // solicitud de imagen. Una edición nunca debe pasar por
+  // detectarHerramientaDocumento — de por sí ya sabemos que no es un
+  // pedido de archivo, es exactamente lo contrario (seguir editando el
+  // mismo documento).
+  const tipoHerramientaSolicitado: TipoHerramienta | null = esEdicionDocumento
+    ? null
+    : finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string'
       ? finalizarArchivo.tipo
       : detectarHerramientaDocumento(mensaje || '')
 
