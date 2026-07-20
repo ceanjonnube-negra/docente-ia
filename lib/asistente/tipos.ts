@@ -22,11 +22,12 @@ export type MensajeConversacion = {
   texto: string
   creadoEn: number
   archivo?: ArchivoGeneradoInfo
-  // Foto que el docente adjuntó a ESTE mensaje (ej. una lista oficial
-  // fotografiada) — se guarda junto con el mensaje para que la burbuja
-  // la siga mostrando después de restaurar la conversación (ver
-  // lib/asistente/persistencia.ts), no solo mientras dura la sesión.
-  imagen?: { base64: string; tipo: string }
+  // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
+  // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
+  // que la burbuja lo siga mostrando después de restaurar la
+  // conversación (ver lib/asistente/persistencia.ts), no solo mientras
+  // dura la sesión.
+  imagen?: AdjuntoImagen
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
@@ -115,7 +116,13 @@ export type DesuscribirFn = () => void
 
 // Interfaz que implementa cada motor conversacional (un proveedor de IA
 // conectado). El resto de la aplicación solo conoce esta interfaz.
-export type AdjuntoImagen = { base64: string; tipo: string }
+//
+// A pesar del nombre (histórico — nació solo para fotos), también
+// carga documentos (PDF/Word/Excel/PowerPoint) desde el menú de
+// adjuntos del Chat IA — ver RFC-CHAT-ADJUNTOS-003. `tipo` es el MIME
+// real del archivo; `nombreArchivo` solo se usa para mostrarlo en la
+// vista previa y el historial, nunca para decidir cómo procesarlo.
+export type AdjuntoImagen = { base64: string; tipo: string; nombreArchivo?: string }
 
 // Instrucción de finalizar el documento activo como archivo real (ver
 // TipoHerramienta en lib/asistente/documentos.ts) — solo la implementa

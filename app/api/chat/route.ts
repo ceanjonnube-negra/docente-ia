@@ -20,6 +20,7 @@ import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
+import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 
 const supabaseRAG = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -252,7 +253,37 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
+
+  // Adjunto de documento (Word/Excel/PowerPoint) del menú de adjuntos
+  // del Chat IA — RFC-CHAT-ADJUNTOS-003. Claude no puede leer estos
+  // formatos directamente (a diferencia de imagen/PDF, que sí se le
+  // pasan como bloque nativo más abajo), así que el texto se extrae
+  // aquí, ANTES de construir el mensaje para Claude, y se agrega como
+  // contexto de texto plano. Si la extracción falla (archivo dañado o
+  // protegido), se responde de inmediato con un error claro — nunca se
+  // sigue adelante fingiendo que no había adjunto.
+  const LIMITE_CARACTERES_DOCUMENTO = 60_000
+  const tipoDocumentoAdjunto = clasificarTipoDocumento(imagenTipo)
+  let mensajeConDocumento: string = mensaje
+  if (tipoDocumentoAdjunto && tipoDocumentoAdjunto !== 'pdf' && imagenBase64) {
+    try {
+      const buffer = Buffer.from(imagenBase64, 'base64')
+      let texto = await extraerTextoDocumento(buffer, tipoDocumentoAdjunto)
+      if (!texto.trim()) {
+        return NextResponse.json({ error: `No encontré texto legible en "${nombreArchivo || 'el archivo'}". Verifica que no esté vacío o sea solo imágenes escaneadas.` }, { status: 502 })
+      }
+      let truncado = false
+      if (texto.length > LIMITE_CARACTERES_DOCUMENTO) {
+        texto = texto.slice(0, LIMITE_CARACTERES_DOCUMENTO)
+        truncado = true
+      }
+      mensajeConDocumento = `${mensaje}\n\n[Contenido del archivo adjunto "${nombreArchivo || 'documento'}"${truncado ? ' — se muestran solo los primeros caracteres, el archivo es más largo' : ''}]\n${texto}`
+    } catch (err) {
+      console.error('[CHAT:adjunto-documento] Falló la extracción de texto:', err)
+      return NextResponse.json({ error: `No pude leer "${nombreArchivo || 'el archivo adjunto'}". Verifica que no esté dañado o protegido con contraseña.` }, { status: 502 })
+    }
+  }
 
   // Turnos previos reales de la conversación (ver MotorTextoClaude.
   // establecerHistorial) — sin esto Claude solo ve el mensaje suelto de
@@ -909,12 +940,22 @@ Grado: [grado] | Grupo: [grupo]
       ...historialMensajes,
       {
         role: 'user' as const,
-        content: imagenBase64
+        // pdf: Claude lo lee de forma nativa como bloque binario
+        // (mejor que extraer texto — también ve tablas/diseño). imagen:
+        // sin cambios, comportamiento previo. docx/xlsx/pptx: su texto
+        // ya se extrajo arriba y quedó embebido en mensajeConDocumento
+        // (nunca se manda el binario — Claude no lo puede leer).
+        content: tipoDocumentoAdjunto === 'pdf' && imagenBase64
           ? [
-              { type: 'image', source: { type: 'base64', media_type: imagenTipo || 'image/jpeg', data: imagenBase64 } },
-              { type: 'text', text: mensaje }
+              { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: imagenBase64 } },
+              { type: 'text' as const, text: mensaje }
             ]
-          : mensaje
+          : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
+            ? [
+                { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } },
+                { type: 'text' as const, text: mensaje }
+              ]
+            : mensajeConDocumento
       },
     ],
   }

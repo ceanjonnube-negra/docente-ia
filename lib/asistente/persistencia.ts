@@ -200,16 +200,16 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
   }
 }
 
-// Aligera las fotos adjuntas antes de guardar — una sola foto de celular
-// en base64 puede pesar varios cientos de KB a unos MB, y con la cuota
-// típica de localStorage (5-10MB por origen) guardar el base64 completo
-// de cada imagen arriesga llenarla y romper el guardado de TODAS las
-// conversaciones, no solo el de esa imagen. Se guarda solo un marcador
-// ligero ("hubo una foto aquí, de este tipo"); la imagen real sigue
-// completa mientras dura la sesión (en memoria), solo no sobrevive a un
-// reinicio en frío.
+// Aligera los adjuntos (fotos y documentos) antes de guardar — un solo
+// adjunto en base64 puede pesar varios cientos de KB a unos MB, y con la
+// cuota típica de localStorage (5-10MB por origen) guardar el base64
+// completo de cada uno arriesga llenarla y romper el guardado de TODAS
+// las conversaciones, no solo la de ese adjunto. Se guarda solo un
+// marcador ligero (tipo + nombre real del archivo, ver RFC-CHAT-
+// ADJUNTOS-003); el adjunto real sigue completo mientras dura la sesión
+// (en memoria), solo no sobrevive a un reinicio en frío.
 function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversacion[] {
-  return mensajes.map((m) => (m.imagen ? { ...m, imagen: { base64: '', tipo: m.imagen.tipo } } : m))
+  return mensajes.map((m) => (m.imagen ? { ...m, imagen: { base64: '', tipo: m.imagen.tipo, nombreArchivo: m.imagen.nombreArchivo } } : m))
 }
 
 export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado?: string) {

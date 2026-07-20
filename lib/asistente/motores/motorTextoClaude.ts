@@ -180,6 +180,7 @@ export class MotorTextoClaude implements MotorConversacional {
           institucionId: perfil?.institucion_id || null,
           imagenBase64: adjunto?.base64 || null,
           imagenTipo: adjunto?.tipo || null,
+          nombreArchivo: adjunto?.nombreArchivo || null,
           userId: user?.id || null,
           accessToken: session?.access_token || null,
           zonaHoraria: obtenerZonaHorariaDispositivo(),

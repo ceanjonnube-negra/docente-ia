@@ -23,11 +23,29 @@ import { useAsistente } from '@/lib/asistente/hooks'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
+import MenuAdjuntos from '@/components/ui/MenuAdjuntos'
+import { OPCIONES_ADJUNTO_CHAT } from '@/lib/asistente/menuAdjuntosChat'
+import type { AdjuntoImagen } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
 const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
 const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
+
+// Ícono para un adjunto del Chat IA según su tipo real (RFC-CHAT-
+// ADJUNTOS-003) — imagen/PDF/Word/Excel/PowerPoint. clasificarTipoDocumento
+// ya distingue estos 3 últimos por MIME (mismo clasificador que usa
+// app/api/chat/route.ts para decidir cómo procesar el adjunto).
+function iconoAdjunto(tipo: string): string {
+  if (tipo.startsWith('image/')) return '🖼️'
+  const clasificado = clasificarTipoDocumento(tipo)
+  if (clasificado === 'pdf') return '🖨️'
+  if (clasificado === 'docx') return '📄'
+  if (clasificado === 'xlsx') return '📈'
+  if (clasificado === 'pptx') return '📊'
+  return '📎'
+}
 
 // Tarjeta de descarga — un único componente para cualquier tipo de
 // documento oficial (planeación, lista, ficha, oficio...) y cualquier
@@ -214,10 +232,8 @@ export default function AsistentePanel() {
   const [menuAbierto, setMenuAbierto] = useState(false)
   const [menuConfigAbierto, setMenuConfigAbierto] = useState(false)
 
-  const fotoInputRef = useRef<HTMLInputElement>(null)
   const [procesandoFoto] = useState(false)
-  const [imagenPendiente, setImagenPendiente] = useState<string | null>(null)
-  const [imagenTipoPendiente, setImagenTipoPendiente] = useState<string>('image/jpeg')
+  const [adjuntoPendiente, setAdjuntoPendiente] = useState<AdjuntoImagen | null>(null)
 
   // Panel temporal de diagnóstico del modo voz — solo con ?voiceDebug=1 en
   // la URL. Se lee del navegador (no de useSearchParams/Next) para no
@@ -257,27 +273,23 @@ export default function AsistentePanel() {
   }, [asistente.archivoReutilizadoId])
 
 
-  const tomarFotoChat = () => fotoInputRef.current?.click()
-
-  const manejarFotoChat = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  const manejarSeleccionAdjunto = (_opcionId: string, files: FileList) => {
+    const file = files[0]
     if (!file) return
     const reader = new FileReader()
     reader.onloadend = () => {
       const base64 = (reader.result as string).split(',')[1]
-      setImagenPendiente(base64)
-      setImagenTipoPendiente(file.type || 'image/jpeg')
+      setAdjuntoPendiente({ base64, tipo: file.type || 'application/octet-stream', nombreArchivo: file.name })
     }
     reader.readAsDataURL(file)
-    if (fotoInputRef.current) fotoInputRef.current.value = ''
   }
 
   const enviar = () => {
     const texto = input.trim()
     if (!texto) return
     setInput('')
-    const adjunto = imagenPendiente ? { base64: imagenPendiente, tipo: imagenTipoPendiente } : undefined
-    setImagenPendiente(null)
+    const adjunto = adjuntoPendiente || undefined
+    setAdjuntoPendiente(null)
     asistente.enviarMensaje(texto, adjunto)
   }
 
@@ -489,7 +501,7 @@ export default function AsistentePanel() {
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>
                   {m.imagen && (
-                    m.imagen.base64 ? (
+                    m.imagen.base64 && m.imagen.tipo.startsWith('image/') ? (
                       <img
                         src={`data:${m.imagen.tipo};base64,${m.imagen.base64}`}
                         alt="Foto adjunta"
@@ -497,7 +509,7 @@ export default function AsistentePanel() {
                       />
                     ) : (
                       <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 text-xs">
-                        📷 Foto adjunta
+                        {iconoAdjunto(m.imagen.tipo)} {m.imagen.nombreArchivo || (m.imagen.tipo.startsWith('image/') ? 'Foto adjunta' : 'Archivo adjunto')}
                       </div>
                     )
                   )}
@@ -527,18 +539,32 @@ export default function AsistentePanel() {
         <div ref={bottomRef} />
       </div>
 
-      {imagenPendiente && (
+      {adjuntoPendiente && (
         <div className="px-4 pt-2 bg-white flex items-center gap-2">
-          <div className="relative w-16 h-16">
-            <img src={`data:${imagenTipoPendiente};base64,${imagenPendiente}`} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
-            <button
-              onClick={() => setImagenPendiente(null)}
-              className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
-              aria-label="Quitar foto"
-            >
-              ×
-            </button>
-          </div>
+          {adjuntoPendiente.tipo.startsWith('image/') ? (
+            <div className="relative w-16 h-16">
+              <img src={`data:${adjuntoPendiente.tipo};base64,${adjuntoPendiente.base64}`} alt="Foto lista para enviar" className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+              <button
+                onClick={() => setAdjuntoPendiente(null)}
+                className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
+                aria-label="Quitar foto"
+              >
+                ×
+              </button>
+            </div>
+          ) : (
+            <div className="relative flex items-center gap-2 pl-3 pr-7 py-2 rounded-2xl bg-gray-100 border border-gray-200 max-w-[220px]">
+              <span className="text-lg flex-shrink-0">{iconoAdjunto(adjuntoPendiente.tipo)}</span>
+              <p className="text-xs font-medium text-gray-700 truncate">{adjuntoPendiente.nombreArchivo || 'Archivo adjunto'}</p>
+              <button
+                onClick={() => setAdjuntoPendiente(null)}
+                className="absolute top-1 right-1 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
+                aria-label="Quitar archivo"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
       )}
       {voiceDebug && (
@@ -587,9 +613,15 @@ export default function AsistentePanel() {
             placeholder="¿Qué necesitas hoy, maestro?"
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
-          <input ref={fotoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={manejarFotoChat} />
           {!asistente.modoVoz && (
-            <button type="button" onClick={tomarFotoChat} disabled={procesandoFoto} className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0">📷</button>
+            <MenuAdjuntos
+              opciones={OPCIONES_ADJUNTO_CHAT}
+              onArchivos={manejarSeleccionAdjunto}
+              triggerLabel="📷"
+              triggerAriaLabel="Adjuntar cámara, fotos o archivos"
+              disabled={procesandoFoto}
+              triggerClassName="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0"
+            />
           )}
           <div className="relative">
             {asistente.modoVoz && asistente.estadoEscucha && (
