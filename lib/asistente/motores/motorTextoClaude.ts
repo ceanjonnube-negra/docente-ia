@@ -50,6 +50,33 @@ const detectarCampoFormativo = (texto: string): string | null => {
 
 type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
 
+// CAUSA RAÍZ del chat "colgado" tras generar/descargar un documento:
+// ver el comentario grande dentro de enviarTexto(). Estos dos límites
+// garantizan que CUALQUIER await de esta función SIEMPRE termina —
+// con éxito o con un error real — en vez de quedar pendiente para
+// siempre. obtenerPerfilYSesion() (auth de Supabase) rara vez tarda
+// más de 1-2s; 12s ya es generoso. El fetch a /api/chat puede tardar
+// más (Claude redactando un documento largo), pero el servidor mismo
+// nunca deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver
+// app/api/chat/route.ts) antes de responder algo — 35s deja margen de
+// sobra para esa respuesta más la latencia de red real.
+const TIMEOUT_SESION_MS = 12_000
+const TIMEOUT_FETCH_MS = 35_000
+
+class ErrorLimiteDeTiempo extends Error {}
+
+async function conLimiteDeTiempo<T>(promesa: Promise<T>, ms: number, mensaje: string): Promise<T> {
+  let temporizador!: ReturnType<typeof setTimeout>
+  const limite = new Promise<never>((_, reject) => {
+    temporizador = setTimeout(() => reject(new ErrorLimiteDeTiempo(mensaje)), ms)
+  })
+  try {
+    return await Promise.race([promesa, limite])
+  } finally {
+    clearTimeout(temporizador)
+  }
+}
+
 export class MotorTextoClaude implements MotorConversacional {
   readonly id = 'claude-texto'
 
@@ -58,6 +85,12 @@ export class MotorTextoClaude implements MotorConversacional {
   private herramientas: Herramienta[] = []
   private controlador: AbortController | null = null
   private historial: TurnoHistorial[] = []
+  // Distingue una interrupción real (el docente tocó "detener" o cambió
+  // de turno) de un abort automático por timeout — ambos producen el
+  // mismo AbortError del lado de fetch(), pero solo el primero debe
+  // quedar en silencio; el segundo SIEMPRE debe emitir un error real,
+  // o el docente se queda viendo que "no pasa nada" sin explicación.
+  private interrumpidoManualmente = false
 
   // AsistenteService llama esto con los mensajes previos de la
   // conversación (nunca el que se está por enviar) justo antes de cada
@@ -77,6 +110,7 @@ export class MotorTextoClaude implements MotorConversacional {
   }
 
   async detener() {
+    this.interrumpidoManualmente = true
     this.controlador?.abort()
     this.emitir({ tipo: 'estado', estado: 'inactivo' })
   }
@@ -86,6 +120,7 @@ export class MotorTextoClaude implements MotorConversacional {
   }
 
   interrumpir() {
+    this.interrumpidoManualmente = true
     this.controlador?.abort()
   }
 
@@ -100,11 +135,33 @@ export class MotorTextoClaude implements MotorConversacional {
 
   async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean) {
     this.controlador = new AbortController()
+    this.interrumpidoManualmente = false
 
-    const { user, session, perfil } = await obtenerPerfilYSesion()
-    const contextoTexto = construirInstrucciones(perfil, this.contexto)
-
+    // CAUSA RAÍZ del chat "colgado" después de generar o descargar un
+    // documento: obtenerPerfilYSesion() (3 llamadas reales a Supabase
+    // Auth/DB) vivía FUERA de este try/catch, sin ningún límite de
+    // tiempo. El cliente de Supabase puede quedar esperando un candado
+    // interno de refresh de sesión (más probable justo después de una
+    // operación larga como generar un Word/PDF, y más probable todavía
+    // en una red móvil inestable) — si eso pasaba, la función nunca
+    // terminaba, nunca emitía NINGÚN evento (ni respuesta-final ni
+    // error), y generando/documentoFinalizandoId se quedaban activos
+    // para siempre: el docente veía que la app "dejó de responder" sin
+    // ningún mensaje de error, y cualquier mensaje siguiente parecía
+    // ignorado. Con conLimiteDeTiempo, esa espera SIEMPRE termina —con
+    // éxito o con un error real y accionable— y con el timeout del
+    // fetch de abajo, lo mismo aplica a la llamada a /api/chat en sí.
+    let temporizadorFetch: ReturnType<typeof setTimeout> | null = null
     try {
+      const { user, session, perfil } = await conLimiteDeTiempo(
+        obtenerPerfilYSesion(),
+        TIMEOUT_SESION_MS,
+        'Tiempo de espera agotado obteniendo la sesión del docente'
+      )
+      const contextoTexto = construirInstrucciones(perfil, this.contexto)
+
+      temporizadorFetch = setTimeout(() => this.controlador?.abort(), TIMEOUT_FETCH_MS)
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -123,6 +180,14 @@ export class MotorTextoClaude implements MotorConversacional {
         }),
         signal: this.controlador.signal,
       })
+
+      // El límite de arriba solo protege contra una conexión que nunca
+      // llega a responder nada — una vez que hay respuesta (aunque sea
+      // un error HTTP), se libera de inmediato. NO debe seguir corriendo
+      // durante la lectura del stream: un documento largo redactado por
+      // Claude puede tardar bastante más de TIMEOUT_FETCH_MS en
+      // transmitirse completo, y eso es tráfico real, no un cuelgue.
+      if (temporizadorFetch) { clearTimeout(temporizadorFetch); temporizadorFetch = null }
 
       // CLAVE de la "burbuja vacía": fetch() solo rechaza por fallas de
       // RED, nunca por un código de estado de error — un 500/502 de
@@ -168,8 +233,20 @@ export class MotorTextoClaude implements MotorConversacional {
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return // interrupción intencional
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
+        console.error('[CHAT] /api/chat no respondió dentro del tiempo límite — abortado automáticamente')
+        this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
+        return
+      }
+      if (err instanceof ErrorLimiteDeTiempo) {
+        console.error('[CHAT]', err.message)
+        this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
+        return
+      }
       this.emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
+    } finally {
+      if (temporizadorFetch) clearTimeout(temporizadorFetch)
     }
   }
 
