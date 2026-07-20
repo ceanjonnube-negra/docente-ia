@@ -24,6 +24,7 @@ import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
+import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -231,7 +232,15 @@ export default function AsistentePanel() {
   const [menuConfigAbierto, setMenuConfigAbierto] = useState(false)
 
   const [procesandoFoto] = useState(false)
-  const [adjuntoPendiente, setAdjuntoPendiente] = useState<AdjuntoImagen | null>(null)
+  // Siempre un arreglo — 0 adjuntos, 1 (foto o documento, camino
+  // idéntico al que ya existía) o varios (solo fotos, ver "Implementar
+  // soporte completo para múltiples fotografías"). Nunca dos estados
+  // paralelos para "uno" vs "varios": un solo modelo más simple de
+  // mantener.
+  const [adjuntosPendientes, setAdjuntosPendientes] = useState<AdjuntoImagen[]>([])
+  const [comprimiendo, setComprimiendo] = useState<{ completadas: number; total: number } | null>(null)
+  const [avisoAdjunto, setAvisoAdjunto] = useState<string | null>(null)
+  const avisoAdjuntoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const adjuntoInputRef = useRef<HTMLInputElement>(null)
 
   // Panel temporal de diagnóstico del modo voz — solo con ?voiceDebug=1 en
@@ -272,33 +281,100 @@ export default function AsistentePanel() {
   }, [asistente.archivoReutilizadoId])
 
 
+  const mostrarAvisoAdjunto = (texto: string) => {
+    if (avisoAdjuntoTimerRef.current) clearTimeout(avisoAdjuntoTimerRef.current)
+    setAvisoAdjunto(texto)
+    avisoAdjuntoTimerRef.current = setTimeout(() => setAvisoAdjunto(null), 5000)
+  }
+
+  const leerComoBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = () => reject(new Error('No se pudo leer el archivo'))
+      reader.readAsDataURL(file)
+    })
+
   // Un solo <input type="file"> nativo, sin menú propio antes — en
   // iPhone/Android/escritorio, el sistema operativo YA ofrece su
   // propio selector (Fototeca/Tomar foto/Elegir archivo en iOS,
   // equivalente en Android/escritorio) en cuanto se llama a
   // adjuntoInputRef.current.click(); un menú propio delante de eso
   // solo producía una segunda capa redundante que no se puede evitar
-  // desde HTML (ver commits anteriores). Decisión de UX explícita:
-  // un solo flujo, el nativo.
-  const manejarSeleccionAdjunto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  // desde HTML (ver commits anteriores). Decisión de UX explícita: un
+  // solo flujo, el nativo — ahora con `multiple` para que Fototeca
+  // permita elegir varias fotos. "Tomar foto" y "Archivos" comparten
+  // el mismo input y siguen funcionando exactamente igual: la cámara
+  // solo entrega una foto a la vez de todos modos, y elegir un único
+  // documento en Archivos no cambia (ver el camino de "un solo
+  // archivo" abajo, idéntico al que ya existía).
+  const manejarSeleccionAdjunto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
     e.target.value = ''
-    if (!file) return
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const base64 = (reader.result as string).split(',')[1]
-      setAdjuntoPendiente({ base64, tipo: file.type || 'application/octet-stream', nombreArchivo: file.name })
+    if (files.length === 0) return
+
+    // Un solo archivo (foto o documento) — camino idéntico al que ya
+    // existía antes de esta mejora, sin compresión ni presupuesto de
+    // varias imágenes de por medio.
+    if (files.length === 1) {
+      const file = files[0]
+      const base64 = await leerComoBase64(file)
+      setAdjuntosPendientes([{ base64, tipo: file.type || 'application/octet-stream', nombreArchivo: file.name }])
+      return
     }
-    reader.readAsDataURL(file)
+
+    // Varias — solo tiene sentido analizarlas juntas si son imágenes
+    // (ver el bloque de contenido nuevo en app/api/chat/route.ts). Si
+    // el docente multi-seleccionó algo que no es imagen (por ejemplo,
+    // varios documentos desde "Archivos"), se avisa con claridad en
+    // vez de adivinar cuál de todos usar — nunca se manda un mensaje
+    // sin decirle qué pasó.
+    const imagenes = files.filter((f) => f.type.startsWith('image/'))
+    if (imagenes.length === 0) {
+      mostrarAvisoAdjunto('Por ahora solo puedes enviar varias fotos juntas. Selecciona un documento a la vez.')
+      return
+    }
+
+    const limitadas = imagenes.slice(0, MAXIMO_IMAGENES_POR_MENSAJE)
+    if (imagenes.length > MAXIMO_IMAGENES_POR_MENSAJE) {
+      mostrarAvisoAdjunto(`Se seleccionaron ${imagenes.length} fotos — se usarán las primeras ${MAXIMO_IMAGENES_POR_MENSAJE}.`)
+    }
+
+    setComprimiendo({ completadas: 0, total: limitadas.length })
+    try {
+      const comprimidas = await comprimirImagenes(limitadas, (completadas, total) => setComprimiendo({ completadas, total }))
+      const { cabe } = verificarPresupuestoAdjuntos(comprimidas)
+      if (!cabe) {
+        mostrarAvisoAdjunto('Estas fotos son demasiado pesadas incluso comprimidas. Intenta con menos fotos.')
+        return
+      }
+      setAdjuntosPendientes(comprimidas.map((img) => ({ base64: img.base64, tipo: img.tipo })))
+    } catch {
+      mostrarAvisoAdjunto('No pude preparar las fotos. Intenta de nuevo.')
+    } finally {
+      setComprimiendo(null)
+    }
+  }
+
+  const eliminarAdjuntoPendiente = (indice: number) => {
+    setAdjuntosPendientes((prev) => prev.filter((_, i) => i !== indice))
   }
 
   const enviar = () => {
     const texto = input.trim()
-    if (!texto) return
+    // Mientras se están comprimiendo fotos, adjuntosPendientes todavía
+    // está vacío — enviar en ese momento mandaría el texto SIN las
+    // fotos que el docente acaba de elegir. Se bloquea el envío hasta
+    // que termine (comprimiendo se apaga solo, ver manejarSeleccionAdjunto).
+    if (!texto || comprimiendo) return
     setInput('')
-    const adjunto = adjuntoPendiente || undefined
-    setAdjuntoPendiente(null)
-    asistente.enviarMensaje(texto, adjunto)
+    const adjuntos = adjuntosPendientes
+    setAdjuntosPendientes([])
+    if (adjuntos.length > 1) {
+      asistente.enviarMensaje(texto, undefined, adjuntos)
+    } else {
+      asistente.enviarMensaje(texto, adjuntos[0] || undefined)
+    }
   }
 
   // --- Acciones sobre un documento generado ---
@@ -534,6 +610,30 @@ export default function AsistentePanel() {
                       </div>
                     )
                   )}
+                  {/* Varias fotos en un mismo mensaje — grid compacto,
+                      igual criterio que la foto sola de arriba: si la
+                      conversación se restauró y el base64 ya se
+                      aligeró para no llenar localStorage (ver
+                      lib/asistente/persistencia.ts), se muestra un
+                      chip con el conteo en vez de imágenes rotas. */}
+                  {m.imagenes && m.imagenes.length > 0 && (
+                    m.imagenes[0].base64 ? (
+                      <div className="grid grid-cols-3 gap-1.5 max-w-[280px]">
+                        {m.imagenes.map((img, i) => (
+                          <img
+                            key={i}
+                            src={`data:${img.tipo};base64,${img.base64}`}
+                            alt={`Foto ${i + 1} adjunta`}
+                            className="w-full aspect-square object-cover rounded-xl border border-gray-200 shadow-sm"
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 text-xs">
+                        🖼️ {m.imagenes.length} fotos adjuntas
+                      </div>
+                    )
+                  )}
                   <div className={
                     m.rol === 'usuario'
                       ? 'rounded-2xl px-4 py-3 text-sm leading-relaxed bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-br-sm'
@@ -595,13 +695,32 @@ export default function AsistentePanel() {
         <div ref={bottomRef} />
       </div>
 
-      {adjuntoPendiente && (
+      {comprimiendo && (
+        <div className="px-4 pt-2 bg-white">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-purple-50 text-purple-700 text-xs font-medium animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 flex-shrink-0" />
+            Preparando fotos ({comprimiendo.completadas} de {comprimiendo.total})...
+          </div>
+        </div>
+      )}
+      {avisoAdjunto && !comprimiendo && (
+        <div className="px-4 pt-2 bg-white">
+          <button
+            type="button"
+            onClick={() => setAvisoAdjunto(null)}
+            className="w-full text-left text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2"
+          >
+            {avisoAdjunto}
+          </button>
+        </div>
+      )}
+      {adjuntosPendientes.length === 1 && (
         <div className="px-4 pt-2 bg-white flex items-center gap-2">
-          {adjuntoPendiente.tipo.startsWith('image/') ? (
+          {adjuntosPendientes[0].tipo.startsWith('image/') ? (
             <div className="relative w-16 h-16">
-              <img src={`data:${adjuntoPendiente.tipo};base64,${adjuntoPendiente.base64}`} alt="Foto lista para enviar" className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+              <img src={`data:${adjuntosPendientes[0].tipo};base64,${adjuntosPendientes[0].base64}`} alt="Foto lista para enviar" className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
               <button
-                onClick={() => setAdjuntoPendiente(null)}
+                onClick={() => setAdjuntosPendientes([])}
                 className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
                 aria-label="Quitar foto"
               >
@@ -610,10 +729,10 @@ export default function AsistentePanel() {
             </div>
           ) : (
             <div className="relative flex items-center gap-2 pl-3 pr-7 py-2 rounded-2xl bg-gray-100 border border-gray-200 max-w-[220px]">
-              <span className="text-lg flex-shrink-0">{iconoAdjunto(adjuntoPendiente.tipo)}</span>
-              <p className="text-xs font-medium text-gray-700 truncate">{adjuntoPendiente.nombreArchivo || 'Archivo adjunto'}</p>
+              <span className="text-lg flex-shrink-0">{iconoAdjunto(adjuntosPendientes[0].tipo)}</span>
+              <p className="text-xs font-medium text-gray-700 truncate">{adjuntosPendientes[0].nombreArchivo || 'Archivo adjunto'}</p>
               <button
-                onClick={() => setAdjuntoPendiente(null)}
+                onClick={() => setAdjuntosPendientes([])}
                 className="absolute top-1 right-1 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
                 aria-label="Quitar archivo"
               >
@@ -621,6 +740,28 @@ export default function AsistentePanel() {
               </button>
             </div>
           )}
+        </div>
+      )}
+      {/* Tira horizontal de miniaturas — varias fotos en un mismo
+          mensaje. Cada una se puede quitar individualmente (la X),
+          conservando el resto, sin volver a abrir la galería. */}
+      {adjuntosPendientes.length > 1 && (
+        <div className="px-4 pt-2 bg-white">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {adjuntosPendientes.map((img, i) => (
+              <div key={i} className="relative w-16 h-16 flex-shrink-0">
+                <img src={`data:${img.tipo};base64,${img.base64}`} alt={`Foto ${i + 1} lista para enviar`} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+                <button
+                  onClick={() => eliminarAdjuntoPendiente(i)}
+                  className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs leading-none shadow"
+                  aria-label={`Quitar foto ${i + 1}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">{adjuntosPendientes.length} fotos seleccionadas</p>
         </div>
       )}
       {voiceDebug && (
@@ -675,13 +816,14 @@ export default function AsistentePanel() {
                 ref={adjuntoInputRef}
                 type="file"
                 accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                multiple
                 className="hidden"
                 onChange={manejarSeleccionAdjunto}
               />
               <button
                 type="button"
                 onClick={() => adjuntoInputRef.current?.click()}
-                disabled={procesandoFoto}
+                disabled={procesandoFoto || !!comprimiendo}
                 aria-label="Adjuntar cámara, fotos o archivos"
                 className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 hover:bg-gray-200 transition disabled:opacity-40 flex-shrink-0"
               >
@@ -724,7 +866,7 @@ export default function AsistentePanel() {
               </span>
             </button>
           </div>
-          <button type="button" onClick={enviar} disabled={asistente.generando} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
+          <button type="button" onClick={enviar} disabled={asistente.generando || !!comprimiendo} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
             ↑
           </button>
         </div>

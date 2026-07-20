@@ -253,7 +253,27 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
+
+  // Varias fotos en un mismo mensaje (ver "Implementar soporte
+  // completo para múltiples fotografías") — arreglo de {base64, tipo},
+  // siempre imágenes (el cliente solo llena esto desde el flujo de
+  // varias fotos, nunca junto con imagenBase64/imagenTipo). Validación
+  // mínima de forma: nunca se confía a ciegas en un payload del
+  // cliente para construir bloques de contenido hacia Claude.
+  // Tope defensivo del lado del servidor (20) independiente del límite
+  // que ya aplica el cliente (MAXIMO_IMAGENES_POR_MENSAJE en
+  // lib/asistente/comprimirImagen.ts) — nunca se confía únicamente en
+  // una validación hecha en el navegador.
+  const imagenesValidas: { base64: string; tipo: string }[] = Array.isArray(imagenesBase64)
+    ? imagenesBase64
+        .filter((img: unknown): img is { base64: string; tipo: string } => {
+          if (typeof img !== 'object' || img === null) return false
+          const { base64, tipo } = img as Record<string, unknown>
+          return typeof base64 === 'string' && typeof tipo === 'string' && tipo.startsWith('image/')
+        })
+        .slice(0, 20)
+    : []
 
   // Adjunto de documento (Word/Excel/PowerPoint) del menú de adjuntos
   // del Chat IA — RFC-CHAT-ADJUNTOS-003. Claude no puede leer estos
@@ -940,22 +960,39 @@ Grado: [grado] | Grupo: [grupo]
       ...historialMensajes,
       {
         role: 'user' as const,
-        // pdf: Claude lo lee de forma nativa como bloque binario
-        // (mejor que extraer texto — también ve tablas/diseño). imagen:
-        // sin cambios, comportamiento previo. docx/xlsx/pptx: su texto
-        // ya se extrajo arriba y quedó embebido en mensajeConDocumento
-        // (nunca se manda el binario — Claude no lo puede leer).
-        content: tipoDocumentoAdjunto === 'pdf' && imagenBase64
+        // varias imágenes: un bloque 'image' por foto (Claude las lee
+        // todas juntas, en el mismo turno) + un solo bloque de texto al
+        // final con una instrucción explícita de analizarlas EN
+        // CONJUNTO — sin esa instrucción, el modelo tiende a
+        // responder "imagen 1... imagen 2..." una por una. pdf: Claude
+        // lo lee de forma nativa como bloque binario (mejor que
+        // extraer texto — también ve tablas/diseño). imagen (una
+        // sola): sin cambios, comportamiento previo. docx/xlsx/pptx:
+        // su texto ya se extrajo arriba y quedó embebido en
+        // mensajeConDocumento (nunca se manda el binario — Claude no
+        // lo puede leer).
+        content: imagenesValidas.length > 0
           ? [
-              { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: imagenBase64 } },
-              { type: 'text' as const, text: mensaje }
+              ...imagenesValidas.map((img) => ({
+                type: 'image' as const,
+                source: { type: 'base64' as const, media_type: img.tipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: img.base64 },
+              })),
+              {
+                type: 'text' as const,
+                text: `${mensaje}\n\n[El maestro adjuntó ${imagenesValidas.length} fotografías en este mismo mensaje — analízalas EN CONJUNTO, como un solo contexto. Nunca respondas "imagen 1... imagen 2..." por separado salvo que el maestro pida explícitamente comentarios individuales.]`,
+              },
             ]
-          : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
+          : tipoDocumentoAdjunto === 'pdf' && imagenBase64
             ? [
-                { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } },
+                { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: imagenBase64 } },
                 { type: 'text' as const, text: mensaje }
               ]
-            : mensajeConDocumento
+            : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
+              ? [
+                  { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } },
+                  { type: 'text' as const, text: mensaje }
+                ]
+              : mensajeConDocumento
       },
     ],
   }

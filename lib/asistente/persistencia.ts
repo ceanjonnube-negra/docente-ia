@@ -207,9 +207,17 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
 // las conversaciones, no solo la de ese adjunto. Se guarda solo un
 // marcador ligero (tipo + nombre real del archivo, ver RFC-CHAT-
 // ADJUNTOS-003); el adjunto real sigue completo mientras dura la sesión
-// (en memoria), solo no sobrevive a un reinicio en frío.
+// (en memoria), solo no sobrevive a un reinicio en frío. `imagenes`
+// (plural, ver "Implementar soporte completo para múltiples
+// fotografías") se aligera igual, una por una — un mensaje de varias
+// fotos puede pesar varios MB de base64, mucho más que una sola.
 function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversacion[] {
-  return mensajes.map((m) => (m.imagen ? { ...m, imagen: { base64: '', tipo: m.imagen.tipo, nombreArchivo: m.imagen.nombreArchivo } } : m))
+  return mensajes.map((m) => {
+    let ligero = m
+    if (ligero.imagen) ligero = { ...ligero, imagen: { base64: '', tipo: ligero.imagen.tipo, nombreArchivo: ligero.imagen.nombreArchivo } }
+    if (ligero.imagenes) ligero = { ...ligero, imagenes: ligero.imagenes.map((img) => ({ base64: '', tipo: img.tipo })) }
+    return ligero
+  })
 }
 
 export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado?: string) {

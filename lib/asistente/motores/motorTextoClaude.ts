@@ -141,7 +141,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[]) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -168,7 +168,11 @@ export class MotorTextoClaude implements MotorConversacional {
       )
       const contextoTexto = construirInstrucciones(perfil, this.contexto)
 
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
+      // Varias imágenes también necesitan el margen largo de un
+      // documento: el servidor procesa varios MB y Claude analiza
+      // varias fotos a la vez, más lento que un turno de solo texto.
+      const esVariasImagenes = !!adjuntos && adjuntos.length > 1
+      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -181,6 +185,7 @@ export class MotorTextoClaude implements MotorConversacional {
           imagenBase64: adjunto?.base64 || null,
           imagenTipo: adjunto?.tipo || null,
           nombreArchivo: adjunto?.nombreArchivo || null,
+          imagenesBase64: esVariasImagenes ? adjuntos!.map((a) => ({ base64: a.base64, tipo: a.tipo })) : null,
           userId: user?.id || null,
           accessToken: session?.access_token || null,
           zonaHoraria: obtenerZonaHorariaDispositivo(),

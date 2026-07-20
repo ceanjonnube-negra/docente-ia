@@ -51,6 +51,15 @@ export type MensajeConversacion = {
   // conversación (ver lib/asistente/persistencia.ts), no solo mientras
   // dura la sesión.
   imagen?: AdjuntoImagen
+  // Varias fotos en ESTE mismo mensaje ("Compara estas dos listas",
+  // "revisa estas cuatro evidencias"...) — campo nuevo y aditivo, ver
+  // "Implementar soporte completo para múltiples fotografías". Nunca
+  // reemplaza a `imagen` (singular): un mensaje con una sola foto
+  // sigue usando exactamente el mismo camino que ya existía (ver
+  // AsistenteService.enviarMensaje) para no arriesgar ningún flujo ya
+  // probado — `imagenes` solo se llena cuando el docente selecciona
+  // 2 o más fotos a la vez.
+  imagenes?: AdjuntoImagen[]
   // Botones de confirmación sobre este mensaje (ver AccionMensaje) y,
   // una vez que el docente toca uno, qué id eligió — con esto la
   // burbuja deja de mostrar los botones y nunca se puede confirmar dos
@@ -177,7 +186,12 @@ export interface MotorConversacional {
   // interpretar este mensaje como una solicitud de archivo (ver
   // tipoHerramientaSolicitado en app/api/chat/route.ts), sin importar
   // qué palabras traiga el texto de la plantilla.
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean): Promise<void>
+  // adjuntos: varias fotos en un mismo mensaje (ver
+  // MensajeConversacion.imagenes) — parámetro nuevo, al final y
+  // opcional, para que ningún motor existente tenga que cambiar su
+  // firma salvo para ignorarlo (ver MotorOpenAIRealtime, que hace lo
+  // mismo con `adjunto` desde antes).
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[]): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

@@ -941,7 +941,7 @@ class AsistenteServiceImpl {
   // --- Enviar un mensaje (texto ya resuelto, venga de teclado o de voz
   // ya transcrita) ---
 
-  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen) {
+  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[]) {
     const limpio = texto.trim()
     if (!limpio || this.generando) return
 
@@ -960,8 +960,24 @@ class AsistenteServiceImpl {
     // determinista (ver esVerificacionCalendarioConImagen), no una
     // decisión de IA — igual que detectarHerramientaDocumento más
     // abajo. No toca documentoActivo ni ninguna otra rama existente.
+    // Solo aplica a una foto sola (adjunto) — comparar VARIAS fotos de
+    // calendario cae en la rama de varias imágenes de abajo, como
+    // análisis conversacional normal, no en el flujo de botones/
+    // respaldo/escritura (ese sigue siendo específico de una sola
+    // foto, ver RFC del calendario).
     if (esVerificacionCalendarioConImagen(limpio, adjunto) && adjunto) {
       await this.analizarCalendarioDesdeImagen(limpio, adjunto)
+      return
+    }
+
+    // Varias fotos en un mismo mensaje ("compara estas dos listas",
+    // "revisa estas cuatro evidencias"...) — igual que la verificación
+    // de calendario arriba, nunca se interpreta como edición del
+    // documento activo: es una solicitud de análisis nueva, sin
+    // importar qué se esté redactando en ese momento. Ver "Implementar
+    // soporte completo para múltiples fotografías".
+    if (adjuntos && adjuntos.length > 1) {
+      await this.enviarConMultiplesImagenes(limpio, adjuntos)
       return
     }
 
@@ -1016,6 +1032,31 @@ class AsistenteServiceImpl {
 
     try {
       await this.motor?.enviarTexto(limpio, adjunto)
+    } catch {
+      this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    }
+  }
+
+  // Mismo camino que el envío normal de arriba (asegurarMotor,
+  // sincronizarHistorialTexto, empujar el mensaje, notificar, motor.
+  // enviarTexto con manejo de error idéntico) — la única diferencia es
+  // que el mensaje lleva `imagenes` (plural) en vez de `imagen`, y el
+  // motor recibe el arreglo completo como quinto argumento para que
+  // /api/chat construya varios bloques de imagen en una sola llamada a
+  // Claude (ver motorTextoClaude.ts y app/api/chat/route.ts). Pasa por
+  // el MISMO MotorConversacional que el chat de siempre — respuesta en
+  // streaming, reintentos, límites de tiempo, todo igual — no es un
+  // canal aparte.
+  private async enviarConMultiplesImagenes(texto: string, adjuntos: AdjuntoImagen[]) {
+    await this.asegurarMotor()
+    this.sincronizarHistorialTexto()
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagenes: adjuntos }]
+    this.turnoAbierto = null
+    this.notificar()
+
+    try {
+      await this.motor?.enviarTexto(texto, undefined, undefined, false, adjuntos)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

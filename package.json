@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "verificar:adjuntos-nativos": "tsx scripts/verificar-adjuntos-nativos.ts",
-    "verificar:calendario": "tsx scripts/verificar-analisis-calendario.ts"
+    "verificar:calendario": "tsx scripts/verificar-analisis-calendario.ts",
+    "verificar:multiples-imagenes": "tsx scripts/verificar-multiples-imagenes.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

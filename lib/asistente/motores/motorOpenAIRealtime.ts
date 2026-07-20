@@ -37,6 +37,7 @@ import type {
   ContextoAplicacion,
   DesuscribirFn,
   EventoMotor,
+  FinalizarArchivoInfo,
   Herramienta,
   MotorConversacional,
 } from '../tipos'
@@ -874,7 +875,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
 
   // Permite seguir escribiendo (o mandar una foto ya resuelta como texto)
   // aunque el modo de voz esté activo — no rompe la entrada por teclado.
-  async enviarTexto(texto: string, _adjunto?: AdjuntoImagen) {
+  async enviarTexto(texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[]) {
     this.enviarEventoCliente({
       type: 'conversation.item.create',
       item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: texto }] },

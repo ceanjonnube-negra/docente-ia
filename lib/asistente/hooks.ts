@@ -19,7 +19,7 @@ export function useAsistente() {
 
   return {
     ...estado,
-    enviarMensaje: (texto: string, adjunto?: AdjuntoImagen) => AsistenteService.enviarMensaje(texto, adjunto),
+    enviarMensaje: (texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[]) => AsistenteService.enviarMensaje(texto, adjunto, adjuntos),
     abrirPanel: () => AsistenteService.abrirPanel(),
     cerrarPanel: () => AsistenteService.cerrarPanel(),
     togglePanel: () => AsistenteService.togglePanel(),
