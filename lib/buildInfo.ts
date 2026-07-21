@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'fuentes-disponibles-turno-v58-6b8eef2'
+export const BUILD_ID = 'fix-pipeline-imagenes-v59-d6f510a'
