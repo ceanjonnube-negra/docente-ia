@@ -129,7 +129,7 @@ REGLAS:
 2.1. Si el mensaje pide marcar/registrar/poner falta, retardo o presente a UN alumno mencionado por nombre → intencion_principal="marcar_asistencia_individual", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "ponle falta a [nombre]", "[nombre] no vino, márcalo", "[nombre] llegó tarde", "registra la falta de [nombre]", "[nombre] faltó hoy", "márcala presente". Esto es DISTINTO de 2 (que nunca menciona un alumno específico) y de 1 (que es una PREGUNTA, no una instrucción de cambiar algo). estado_asistencia_solicitado: "falta" si no vino/faltó/no asistió/está ausente; "retardo" si llegó tarde/con retardo; "presente" si sí vino/asistió/está presente. Si no puedes determinar el estado con claridad, agrega "estado_asistencia" a datos_faltantes.
 3. Si pide una ficha descriptiva de un alumno → intencion_principal="ficha_descriptiva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 4. Si pide una planeación → intencion_principal="planeacion_nueva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. entidades_resueltas.alumno_id queda null en este caso.
-5. Si pregunta por asistencia a nivel de TODO el grupo, no de un alumno específico — "¿quién faltó hoy?", "¿quién tiene más faltas?", "¿cuál fue la última asistencia registrada?", "¿quién no ha llegado?", "¿cuántas faltas hay hoy?", "¿quiénes asistieron?", "¿cuántos presentes hay?", "¿quién llegó tarde?", "¿cuántos retardos hay?", "¿quiénes faltaron?" — → intencion_principal="consultar_asistencia_grupo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true, entidades_resueltas.alumno_id=null.
+5. Si pregunta por asistencia a nivel de TODO el grupo, no de un alumno específico — "¿quién faltó hoy?", "¿quién tiene más faltas?", "¿cuál fue la última asistencia registrada?", "¿quién no ha llegado?", "¿cuántas faltas hay hoy?", "¿quiénes asistieron?", "¿cuántos presentes hay?", "¿quién llegó tarde?", "¿cuántos retardos hay?", "¿quiénes faltaron?", "¿quién está ausente?", "muéstrame las faltas de hoy", "muéstrame/revisa/consulta la asistencia (de hoy/la lista)", "¿cómo quedó la asistencia?" — cualquier forma de pedir el estado de asistencia del grupo, aunque no use ninguna de estas palabras exactas → intencion_principal="consultar_asistencia_grupo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true, entidades_resueltas.alumno_id=null.
 6. Si pregunta qué alumnos requieren apoyo, tienen necesidades especiales, o van rezagados/con dificultades → intencion_principal="consultar_apoyo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 7. Si pregunta qué documentos tiene generados/guardados/almacenados en la aplicación (planeaciones, fichas, exámenes, citatorios que ya generó antes) → intencion_principal="consultar_documentos", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 8. Si pregunta por actividades, eventos o fechas programadas en el calendario escolar, o por cualquier cosa relacionada con tiempo/fechas de la escuela — aunque no diga la palabra "calendario" ni lo pida explícitamente — → intencion_principal="consultar_calendario", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué sigue esta semana?", "¿cuándo regresamos?", "¿qué tengo mañana?", "¿hay CTE este mes?", "¿qué actividades tengo el viernes?", "¿cuándo son las vacaciones?", "¿qué día es la junta?", "¿qué eventos hay este mes?", "¿cuántos eventos tengo esta semana?", "¿qué días están libres?", "¿qué actividades son oficiales?", "¿qué actividades agregué yo?", "¿cuándo es el próximo consejo técnico?", "¿ya empezaron las vacaciones?".
@@ -152,14 +152,13 @@ REGLAS:
 // generar un documento: esta era la ÚNICA llamada a Claude en todo el
 // proyecto sin límite de tiempo explícito (compárese con las otras dos
 // en app/api/chat/route.ts, que sí usan { timeout: TIMEOUT_ANTHROPIC_MS
-// }). Cualquier edición de un documento activo ("Haz equipos de 6"
-// después de generar un Word) pasa por aquí casi siempre — el prompt
-// interno de edición (construirPromptEdicion en AsistenteService.ts)
-// contiene la palabra "documento" varias veces, así que dispara el gate
-// REQUIERE_CLASIFICADOR_NIVEL0 en prácticamente cualquier edición. Si
-// esta llamada se quedaba esperando, la ruta completa de /api/chat
-// nunca terminaba — el try/catch de abajo ya existía, pero nunca se
-// disparaba porque nada la delataba como colgada.
+// }). El Clasificador de Nivel 0 se llama en CADA mensaje con sesión
+// real (ver app/api/chat/route.ts — ya no hay ningún filtro de
+// palabras clave delante), así que este límite protege absolutamente
+// todo el flujo, no solo un caso particular. Si esta llamada se quedaba
+// esperando, la ruta completa de /api/chat nunca terminaba — el
+// try/catch de quien la llama ya existía, pero nunca se disparaba
+// porque nada la delataba como colgada.
 const TIMEOUT_NIVEL0_MS = 12_000;
 
 export async function clasificarNivel0(

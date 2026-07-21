@@ -68,38 +68,45 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-// El Clasificador de Nivel 0 (ver lib/clasificadorNivel0.ts) es una
-// llamada completa y bloqueante a Claude, aparte de la respuesta real —
-// necesaria para enrutar asistencia/ficha/planeación sin pasar por el
-// modelo grande, pero un costo de latencia innecesario para el resto de
-// los mensajes (un cuento, un examen, una pregunta cualquiera), que de
-// todos modos terminan cayendo en "conversacion_general" sin hacer nada.
-// Este filtro local y gratuito evita esa llamada cuando el mensaje
-// claramente no es de los que el Nivel 0 sabe enrutar.
+// ARQUITECTURA — REGLA OBLIGATORIA: si existe una herramienta capaz de
+// responder la intención del maestro, el modelo NUNCA responde
+// directamente sin haberla consultado primero. El Clasificador de
+// Nivel 0 (ver lib/clasificadorNivel0.ts) es lo único que decide eso,
+// así que se llama SIEMPRE que hay sesión real — nunca detrás de un
+// filtro de palabras clave.
 //
-// CAUSA RAÍZ (bug real, no solo un caso raro) de "el Chat responde
-// 'no tengo acceso a la lista' a preguntas de asistencia": esta regex
-// solo reconocía las formas SUSTANTIVO de "falta"/"asistencia"
-// (\bfalta(s)?\b, "asistenc...") y "pasar/pasa/pase lista" — nunca las
-// conjugaciones verbales reales con las que un maestro pregunta de
-// verdad ("faltó", "faltaron", "asistieron", "pasé lista"), ni
-// sinónimos obvios ("presentes", "llegó tarde"). \w en JavaScript es
-// SOLO ASCII (no incluye acentos), así que ni siquiera un intento de
-// "pas[ae]r?" cubría "pasé" con acento. Cuando el mensaje no matcheaba
-// aquí, clasificarNivel0() JAMÁS se llamaba — el mensaje caía directo
-// al modelo grande sin ningún dato real de asistencia inyectado, y
-// Claude, sin nada que usar, respondía honestamente que no tenía
-// acceso (correcto dado lo que recibía, pero el mensaje nunca debió
-// llegar así). Verificado con los 5 ejemplos reportados: 4 de 5
-// fallaban esta regex antes de este cambio.
-const REQUIERE_CLASIFICADOR_NIVEL0 = /asistenc|\basisti(o|ó|eron|r|endo)\b|\bfalt\w*|retardo|tardanza|lleg\S*\s+tarde|\bpresente(s)?\b|pas[aeé]r?\s+lista|ficha\s+descriptiva|planeaci[oó]n|apoyo|document(o|os)|almacenad|calendario|actividad(es)?|programad/i
+// Antes existía aquí un filtro local (REQUIERE_CLASIFICADOR_NIVEL0,
+// una regex) que decidía si valía la pena la llamada extra a Claude
+// antes de gastarla — pura optimización de latencia. Se retiró por
+// completo, no se amplió una vez más: es estructuralmente imposible
+// que una lista de palabras clave cubra cada forma real en que un
+// maestro pregunta algo en español ("¿quién faltó?" vs "¿quién está
+// ausente?" vs cualquier otra frase no anticipada) — cada vez que el
+// mensaje no matcheaba, clasificarNivel0() JAMÁS se llamaba y el
+// mensaje caía directo al modelo grande sin ningún dato real, que
+// entonces respondía (con razón, dado lo que recibía) que no tenía
+// acceso. Esto ya causó dos rondas de "parchar la regex" con el mismo
+// bug reapareciendo con una frase distinta cada vez — la causa raíz
+// real era la existencia misma del filtro, no las palabras que le
+// faltaban.
+//
+// Por qué es seguro llamarlo siempre: es una llamada compacta
+// (max_tokens: 500, JSON de clasificación, no generación de
+// contenido), con timeout propio (TIMEOUT_NIVEL0_MS) y ya envuelta en
+// try/catch — si falla o tarda, cae exactamente al mismo flujo normal
+// de conversación que ya existía, nunca a un error nuevo. El costo real
+// es un poco más de latencia en mensajes que de todos modos van a
+// "conversacion_general" (un cuento, un saludo) — se acepta ese costo
+// a cambio de la garantía estructural de que ninguna consulta real a
+// un módulo se pierda jamás por una palabra que no estaba en una
+// lista.
 
 // LISTA DE ALUMNOS — detección 100% determinista (expresión regular),
 // nunca un juicio de la IA: los nombres de los alumnos son un dato
 // oficial y jamás deben pasar por Claude para ser redactados (ver
 // construirTextoListaAlumnos en lib/motorContexto.ts). "de alumnos"/
 // "del grupo" son obligatorios para no confundirse con "pasar lista"
-// (tomar asistencia, ver REQUIERE_CLASIFICADOR_NIVEL0 arriba) cuando
+// (tomar asistencia, ver el Clasificador de Nivel 0 más abajo) cuando
 // el mensaje no pide ningún archivo. Cuando SÍ se pidió un formato
 // real (tipoHerramientaSolicitado ya resuelto, ver más abajo) no hace
 // falta esa precisión — "pasar lista" nunca coincide con un formato de
@@ -551,12 +558,14 @@ export async function POST(req: NextRequest) {
     return respuestaTexto(textoLista)
   }
 
-  // --- Clasificador de Nivel 0 (solo si el mensaje parece pedir una
-  // ACCIÓN o un dato específico — ver REQUIERE_CLASIFICADOR_NIVEL0. La
-  // sesión de arriba ya está disponible siempre; esto solo decide si
-  // vale la pena la llamada extra a Claude para clasificar la intención) ---
+  // --- Clasificador de Nivel 0 — se llama SIEMPRE que hay sesión real,
+  // sin ningún filtro de palabras clave delante (ver la nota de
+  // arquitectura junto a los imports: ningún filtro local puede
+  // garantizar que cubre cada forma de preguntar algo). Si el mensaje
+  // no tiene nada que clasificar, el propio clasificador devuelve
+  // "conversacion_general" y el flujo sigue exactamente igual. ---
   let contextoEnriquecido = [contexto || '', resumenGrupoTexto || ''].filter(Boolean).join('\n\n')
-  if (supabaseUser && userId && sesion && REQUIERE_CLASIFICADOR_NIVEL0.test(mensaje)) {
+  if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
       // resolver una confirmación breve ("sí") como continuación de su
