@@ -54,6 +54,22 @@ export function contarEstadosAsistencia(estados: EstadoAsistenciaOficial[]): Con
   return conteo;
 }
 
+// Única función de todo el proyecto que calcula el % de asistencia
+// diaria de un grupo — un retardo cuenta como asistencia (el alumno
+// llegó, solo tarde), nunca resta del porcentaje. Fórmula:
+// (presentes + retardos) / total. "sin registrar" cuenta para el
+// total de alumnos pero no suma ni resta del porcentaje. Cualquier
+// pantalla o consulta que muestre este porcentaje (resumen del Chat
+// IA, estadísticas, indicadores, reportes, exportaciones) debe pasar
+// por aquí — nunca recalcularlo con su propia fórmula (ver "Corregir
+// el cálculo de asistencia utilizado por el Chat IA": antes
+// asistenciaGrupoResumen usaba presentes/total, sin contar los
+// retardos como asistencia).
+export function calcularPorcentajeAsistencia(conteo: ConteoAsistencia): number {
+  if (conteo.total === 0) return 0;
+  return ((conteo.presentes + conteo.retardos) / conteo.total) * 100;
+}
+
 // --- Funciones agregadas a nivel de grupo (no hay RPC para esto — se
 // arma con consultas directas a las tablas, respetando RLS vía el
 // cliente de sesión del docente que se recibe como parámetro). Todas

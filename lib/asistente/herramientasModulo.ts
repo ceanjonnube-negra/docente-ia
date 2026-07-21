@@ -36,10 +36,12 @@ import type { ClasificacionNivel0 } from '../clasificadorNivel0'
 import type { SesionContexto } from '../sesionContexto'
 import {
   asistenciaGrupoResumen,
+  calcularPorcentajeAsistencia,
   consultarAsistenciaAlumno,
   documentosDelDocente,
   incidenciasAlumno,
   necesidadesApoyoGrupo,
+  type ConteoAsistencia,
 } from '../motorContexto'
 import { formatearFecha } from '../tiempo/TimeService'
 
@@ -116,10 +118,20 @@ const herramientaConsultarAsistenciaGrupo = definir({
     const fechaLegible = formatearFecha(datos.fecha, ctx.zonaHoraria, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     // Total = los 4 estados oficiales (ver clasificarEstadoAsistencia
     // en lib/motorContexto.ts) — "sin registrar" cuenta para el total
-    // de alumnos, nunca para el % de asistencia. % = presentes/total,
-    // igual que ya calcula app/dashboard/lista/page.tsx.
-    const total = datos.presentes.length + datos.faltas.length + datos.retardos.length + datos.sinRegistrarHoy.length
-    const porcentajeAsistencia = total > 0 ? ((datos.presentes.length / total) * 100).toFixed(1) : '0.0'
+    // de alumnos, nunca para el % de asistencia. calcularPorcentajeAsistencia
+    // (lib/motorContexto.ts) es la ÚNICA función de todo el proyecto
+    // que calcula este %: un retardo SÍ cuenta como asistencia, nunca
+    // solo los presentes (ver "Corregir el cálculo de asistencia
+    // utilizado por el Chat IA").
+    const conteo: ConteoAsistencia = {
+      presentes: datos.presentes.length,
+      faltas: datos.faltas.length,
+      retardos: datos.retardos.length,
+      sinRegistrar: datos.sinRegistrarHoy.length,
+      total: datos.presentes.length + datos.faltas.length + datos.retardos.length + datos.sinRegistrarHoy.length,
+    }
+    const total = conteo.total
+    const porcentajeAsistencia = calcularPorcentajeAsistencia(conteo).toFixed(1)
     const lineas = [
       `Hoy, ${fechaLegible}.`,
       '',
