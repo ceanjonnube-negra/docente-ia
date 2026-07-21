@@ -617,6 +617,23 @@ class AsistenteServiceImpl {
     this.motor = await this.asegurarMotorTexto()
   }
 
+  // Único punto que decide QUÉ motor genera el contenido real de una
+  // respuesta. NUNCA this.motor a secas cuando modoVoz está activo:
+  // this.motor apunta a MotorOpenAIRealtime en ese caso (solo capta y
+  // transcribe audio ahora, ver motorOpenAIRealtime.ts), pero el
+  // contenido siempre debe salir del mismo pipeline que un mensaje
+  // escrito (MotorTextoClaude / /api/chat), sin excepción — ver
+  // "Unificar el flujo de voz con el pipeline de texto". Esto cubre
+  // TODOS los caminos que antes llamaban a this.motor?.enviarTexto
+  // directamente (mensaje normal, varias fotos, edición de documento):
+  // si el docente escribe o edita un documento mientras el modo voz
+  // sigue conectado, también debe pasar por Claude, nunca por el
+  // razonamiento propio de OpenAI Realtime.
+  private async motorDeContenido(): Promise<MotorConversacional | null> {
+    if (this.modoVoz) return await this.asegurarMotorTexto()
+    return this.motor
+  }
+
   // --- Modo conversación por voz ---
   // Sustituye QUÉ motor está detrás de this.motor sin que enviarMensaje,
   // interrumpir ni actualizarContexto sepan que cambió nada — siguen
@@ -660,6 +677,19 @@ class AsistenteServiceImpl {
 
       const motor = new MotorOpenAIRealtime()
       motor.suscribir(evento => this.manejarEventoMotor(evento))
+      // Único puente real hacia el pipeline de texto (ver
+      // "Unificar el flujo de voz con el pipeline de texto") — es
+      // literalmente this.enviarMensaje, la misma función que llama el
+      // botón Enviar. motorOpenAIRealtime.ts nunca vuelve a generar su
+      // propia respuesta; solo capta/transcribe audio y entrega el
+      // texto reconocido aquí.
+      motor.establecerCanalDeTexto((texto) => this.enviarMensaje(texto))
+      // Si el docente vuelve a hablar mientras la respuesta del turno
+      // anterior todavía está en camino, esto la cancela — sin esto,
+      // enviarMensaje() ignoraría en silencio el turno nuevo mientras
+      // "generando" siga en true (ver interrumpirTexto en
+      // motorOpenAIRealtime.ts).
+      motor.establecerInterruptorTexto(() => this.motorTexto?.interrumpir())
       // Expuesto para que cancelarConexionVoz() pueda cortarlo incluso
       // ANTES de que este await resuelva (motorVoz solo se asigna si la
       // conexión llega a completarse).
@@ -725,6 +755,7 @@ class AsistenteServiceImpl {
 
   async desactivarModoVoz() {
     if (!this.modoVoz) return
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
     await this.motorVoz?.detener()
     this.motorVoz = null
     this.modoVoz = false
@@ -974,6 +1005,18 @@ class AsistenteServiceImpl {
             }
           }
         }
+        // Modo voz: lee en voz alta la respuesta REAL que acaba de
+        // llegar (el mismo evento.texto que ya se muestra en la
+        // burbuja) — ver "Unificar el flujo de voz con el pipeline de
+        // texto". Nunca es OpenAI Realtime componiendo su propia
+        // respuesta; es el navegador leyendo, palabra por palabra, lo
+        // mismo que respondería el Chat IA por escrito.
+        if (this.modoVoz && typeof window !== 'undefined' && window.speechSynthesis) {
+          window.speechSynthesis.cancel()
+          const utterance = new SpeechSynthesisUtterance(evento.texto)
+          utterance.lang = 'es-MX'
+          window.speechSynthesis.speak(utterance)
+        }
         this.notificar()
         break
       }
@@ -1100,7 +1143,7 @@ class AsistenteServiceImpl {
     this.notificar()
 
     try {
-      await this.motor?.enviarTexto(limpio, adjunto)
+      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
@@ -1125,7 +1168,7 @@ class AsistenteServiceImpl {
     this.notificar()
 
     try {
-      await this.motor?.enviarTexto(texto, undefined, undefined, false, adjuntos)
+      await (await this.motorDeContenido())?.enviarTexto(texto, undefined, undefined, false, adjuntos)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
@@ -1421,7 +1464,7 @@ ${instruccion}`
       // (construirPromptEdicion), no algo que el maestro escribió — jamás
       // debe interpretarse en /api/chat como una solicitud de archivo
       // (ver esEdicionDocumento en app/api/chat/route.ts).
-      await this.motor?.enviarTexto(textoParaModelo, adjunto, undefined, true)
+      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }

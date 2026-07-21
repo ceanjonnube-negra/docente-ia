@@ -125,6 +125,25 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   private listeners = new Set<(evento: EventoMotor) => void>()
   private contexto: ContextoAplicacion = { pantalla: 'inicio' }
   private herramientas: Herramienta[] = []
+  // Único puente hacia el pipeline de texto real — AsistenteService lo
+  // asigna con establecerCanalDeTexto() al construir este motor (ver
+  // activarModoVoz). Es literalmente this.enviarMensaje del panel de
+  // texto: cuando un turno de voz termina de transcribirse, el texto
+  // reconocido se manda AQUÍ, nunca se le pide una respuesta a OpenAI
+  // Realtime (ver "Unificar el flujo de voz con el pipeline de texto" —
+  // antes, este motor generaba su propia respuesta razonando
+  // directamente sobre el audio, con sus propias instrucciones y sin
+  // las Herramientas del Chat IA, por lo que consultas como "¿cuántos
+  // alumnos vinieron hoy?" no tenían forma de responderse correctamente
+  // por voz aunque sí funcionaran por texto).
+  private enviarComoMensaje: ((texto: string) => Promise<void>) | null = null
+  // Segundo puente, también asignado por establecerCanalDeTexto: si el
+  // docente vuelve a hablar mientras la respuesta REAL del turno
+  // anterior sigue en camino (motorTexto todavía esperando /api/chat),
+  // esto la cancela — sin esto, ese segundo turno podía perderse en
+  // silencio (enviarMensaje() ignora cualquier mensaje nuevo mientras
+  // "generando" siga en true).
+  private interrumpirTexto: (() => void) | null = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private perfil: any = null
   // Grupo activo + lista de alumnos reales — se obtiene una vez al
@@ -283,6 +302,19 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.limpiarConexionParcial()
     this.stream?.getTracks().forEach(pista => pista.stop())
     this.stream = null
+  }
+
+  // Llamado por AsistenteService justo después de construir este motor,
+  // antes de iniciar() — ver activarModoVoz(). No forma parte de
+  // MotorConversacional (lib/asistente/tipos.ts): es específico de este
+  // motor, igual que enviarAudio.
+  establecerCanalDeTexto(fn: (texto: string) => Promise<void>) {
+    this.enviarComoMensaje = fn
+  }
+
+  // Ver comentario junto a interrumpirTexto (campo privado).
+  establecerInterruptorTexto(fn: () => void) {
+    this.interrumpirTexto = fn
   }
 
   async iniciar(contexto: ContextoAplicacion, herramientas: Herramienta[]) {
@@ -685,7 +717,13 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   }
 
   interrumpir() {
+    // response.cancel ya casi nunca aplica: este motor ya no le pide
+    // respuestas a OpenAI Realtime (ver finalizarTurno). El audio real
+    // ahora lo reproduce el navegador (speechSynthesis, ver
+    // AsistenteService) — interrumpirlo es lo que de verdad corta la
+    // respuesta que se está escuchando.
     if (this.respondiendoActivo) this.enviarEventoCliente({ type: 'response.cancel' })
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
   }
 
   private reiniciarTemporizadorSilencio() {
@@ -753,20 +791,29 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // Cierra el turno actual: confirma cualquier audio que el VAD todavía
   // no hubiera comiteado por su cuenta y pide la respuesta de inmediato
   // — sin esperar a que Whisper termine de transcribir ese fragmento
-  // para nosotros. El modelo ya recibió el audio crudo por RTP en tiempo
-  // real; nuestra transcripción es solo para el texto de la burbuja del
-  // docente, un proceso paralelo e independiente. La transcripción final
-  // se sigue esperando (mismo techo de siempre) para poder mostrar ESE
-  // texto, pero ya no bloquea el response.create — eso es lo que elimina
-  // de la latencia percibida el viaje redondo completo de Whisper antes
-  // de siquiera empezar a generar la respuesta.
+  // para nosotros.
   //
-  // El orden visual del chat sigue garantizado sin tocar nada de eso:
-  // turnoUsuarioPendiente (ver AsistenteService, activo desde
-  // 'inicio-turno-usuario') sigue reteniendo cualquier fragmento de
-  // respuesta que llegue antes de que exista el texto final del
-  // docente — se muestra recién después de 'mensaje-usuario', nunca
-  // antes, exactamente como ya funcionaba.
+  // CAMBIO (ver "Unificar el flujo de voz con el pipeline de texto"):
+  // este motor YA NO le pide una respuesta a OpenAI Realtime. Antes se
+  // mandaba response.create de inmediato (antes incluso de tener el
+  // texto transcrito) para no pagar la vuelta completa de Whisper como
+  // latencia percibida — pero eso significaba que la respuesta la
+  // generaba el propio modelo de OpenAI razonando directamente sobre el
+  // audio, con SUS PROPIAS instrucciones y sin las Herramientas reales
+  // del Chat IA (sin acceso a asistencia de hoy, sin el Clasificador de
+  // Nivel 0, sin nada de app/api/chat/route.ts) — causa real confirmada
+  // de que "¿cuántos alumnos vinieron hoy?" por voz respondía "no me
+  // has compartido la lista" mientras la MISMA pregunta por escrito sí
+  // contestaba bien.
+  //
+  // Ahora se espera a tener el texto final y se manda a
+  // enviarComoMensaje (= this.enviarMensaje del panel de texto,
+  // inyectado por AsistenteService.activarModoVoz) — exactamente el
+  // mismo camino que un mensaje escrito: mismo clasificador, mismas
+  // Herramientas, mismo historial, mismo prompt, misma respuesta. El
+  // costo real de esto es la latencia que antes se evitaba: la
+  // respuesta ya no puede empezar a generarse hasta tener la
+  // transcripción completa Y la vuelta completa de /api/chat.
   async finalizarTurno(origen: 'manual' | 'automatico' = 'manual') {
     // Ya hay un finalizarTurno() en vuelo (segundo toque disparado antes
     // de que el primero terminara de esperar su commit/transcripción) —
@@ -789,7 +836,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       let promesaTranscripcion: Promise<void> = Promise.resolve()
       if (this.huboAudioSinConfirmar) {
         this.enviarEventoCliente({ type: 'input_audio_buffer.commit' })
-        this.debug('turno-fin-captura', 'ok', 'commit enviado, esperando transcripción en paralelo')
+        this.debug('turno-fin-captura', 'ok', 'commit enviado, esperando transcripción')
         promesaTranscripcion = new Promise<void>((resolve) => {
           this.resolverCommitFinal = resolve
           setTimeout(resolve, ESPERA_MAXIMA_COMMIT_MS)
@@ -798,18 +845,6 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         this.debug('turno-fin-captura', 'ok', 'sin audio nuevo que comitear')
       }
 
-      // Refresca la hora justo antes de responder — un session.update no
-      // agrega ninguna vuelta de red (mismo canal ya abierto, sin
-      // esperar respuesta antes de mandar response.create a continuación)
-      // pero evita que la hora quede vieja en una llamada de voz larga.
-      this.enviarEventoCliente({
-        type: 'session.update',
-        session: { type: 'realtime', instructions: this.construirInstruccionesCompletas(this.perfil, this.contexto) },
-      })
-
-      // Pedir la respuesta YA — no esperar la transcripción para esto.
-      this.enviarEventoCliente({ type: 'response.create' })
-      this.debug('turno-response-create-enviado', 'ok')
       this.emitir({ tipo: 'estado-escucha', estado: 'pensando' })
 
       await promesaTranscripcion
@@ -819,17 +854,28 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       this.transcripcionUsuarioAcumulada = ''
       if (!textoFinal) {
         // Caso raro: el VAD marcó actividad pero no hubo texto
-        // transcribible (ruido, falsa alarma) — ya mandamos
-        // response.create, así que hay que cancelar esa respuesta en
-        // vez de dejar que conteste sin burbuja del docente que la
-        // preceda.
-        this.debug('turno-transcripcion-final', 'error', 'vacío — cancelando respuesta')
-        this.enviarEventoCliente({ type: 'response.cancel' })
+        // transcribible (ruido, falsa alarma) — no hay nada que enviar.
+        this.debug('turno-transcripcion-final', 'error', 'vacío — nada que enviar')
+        this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
         return
       }
       this.debug('turno-transcripcion-final', 'ok', textoFinal.slice(0, 60))
-      this.emitir({ tipo: 'mensaje-usuario', texto: textoFinal })
-      this.debug('turno-mensaje-renderizado', 'ok')
+
+      if (!this.enviarComoMensaje) {
+        console.error('[VOZ] No hay canal de texto configurado (establecerCanalDeTexto) — no se pudo enviar el turno reconocido.')
+        this.emitir({ tipo: 'error', mensaje: 'No se pudo procesar lo que dijiste. Intenta de nuevo.' })
+        this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
+        return
+      }
+      // Único punto real de entrega: mismo enviarMensaje() que usa el
+      // botón Enviar — agrega la burbuja del docente, pasa por el
+      // Clasificador de Nivel 0, las Herramientas y /api/chat, y deja
+      // la respuesta real en el historial exactamente igual que un
+      // mensaje escrito (ver 'respuesta-final' en AsistenteService,
+      // que además la lee en voz alta cuando modoVoz está activo).
+      await this.enviarComoMensaje(textoFinal)
+      this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
+      this.debug('turno-mensaje-enviado-a-texto', 'ok')
     } finally {
       this.finalizandoTurno = false
     }
@@ -847,7 +893,12 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     // Un finalizarTurno() anterior sigue en vuelo — este toque ya no
     // tiene nada nuevo que hacer (ver finalizandoTurno).
     if (this.finalizandoTurno) return 'finalizado'
-    if (this.respondiendoActivo) {
+    // "La IA está hablando" ahora se detecta por speechSynthesis (el
+    // navegador leyendo en voz alta la respuesta real de Claude, ver
+    // AsistenteService), no por respondiendoActivo — este motor ya no
+    // genera su propia respuesta hablada (ver finalizarTurno).
+    const leyendoRespuesta = typeof window !== 'undefined' && !!window.speechSynthesis?.speaking
+    if (this.respondiendoActivo || leyendoRespuesta) {
       this.interrumpir()
       return 'interrumpido'
     }
@@ -873,8 +924,14 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     if (this.canal?.readyState === 'open') this.canal.send(JSON.stringify(evento))
   }
 
-  // Permite seguir escribiendo (o mandar una foto ya resuelta como texto)
-  // aunque el modo de voz esté activo — no rompe la entrada por teclado.
+  // Parte de la interfaz MotorConversacional (todo motor debe
+  // implementarlo), pero ya no debería ejecutarse en la práctica: ver
+  // "Unificar el flujo de voz con el pipeline de texto" —
+  // AsistenteService.motorDeContenido() manda SIEMPRE por motorTexto
+  // (nunca por este motor) mientras modoVoz esté activo, para que
+  // escribir con el teclado durante una llamada de voz también pase
+  // por Claude/Herramientas en vez de por el razonamiento propio de
+  // OpenAI Realtime.
   async enviarTexto(texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[]) {
     this.enviarEventoCliente({
       type: 'conversation.item.create',
@@ -894,11 +951,27 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   private manejarEventoServidor(evento: EventoServidor) {
     switch (evento.type) {
       case 'input_audio_buffer.speech_started':
-        // Señal más temprana posible de que el docente empezó a hablar —
-        // llega antes que la transcripción y antes que la respuesta del
-        // modelo. AsistenteService la usa para nunca mostrar la
-        // respuesta del asistente antes de la burbuja del docente.
-        this.emitir({ tipo: 'inicio-turno-usuario' })
+        // Señal más temprana posible de que el docente empezó a hablar.
+        // Ya NO emite 'inicio-turno-usuario' (ver "Unificar el flujo de
+        // voz con el pipeline de texto"): ese evento existía solo para
+        // que AsistenteService retuviera una respuesta de OpenAI
+        // Realtime que podía llegar ANTES que la burbuja del docente
+        // (turnoUsuarioPendiente) — con la respuesta real viniendo
+        // siempre de enviarMensaje() (bubble del docente primero,
+        // respuesta después, igual que un mensaje escrito), esa
+        // condición de carrera ya no puede ocurrir.
+        //
+        // Si el docente vuelve a hablar mientras el navegador está
+        // leyendo en voz alta la respuesta anterior (speechSynthesis),
+        // corta esa lectura de inmediato — es el barge-in real ahora
+        // que el audio de salida ya no lo genera ni lo controla OpenAI
+        // Realtime.
+        if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
+        // Si el turno anterior todavía sigue esperando la respuesta
+        // real (motorTexto/api/chat en vuelo), cancelarlo — así el
+        // turno nuevo nunca se pierde en silencio (ver
+        // interrumpirTexto).
+        this.interrumpirTexto?.()
         this.huboAudioSinConfirmar = true
         this.reiniciarTemporizadorSilencio()
         this.debug('turno-ultimo-fragmento-audio', 'info')
