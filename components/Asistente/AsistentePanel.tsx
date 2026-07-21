@@ -26,6 +26,7 @@ import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseConteni
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
+import { limpiarTextoParaVoz, seleccionarVozEspanol } from '@/lib/asistente/lecturaVoz'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 import type { TipoHerramienta } from '@/lib/asistente/documentos'
 
@@ -301,6 +302,101 @@ export default function AsistentePanel() {
   const [avisoAdjunto, setAvisoAdjunto] = useState<string | null>(null)
   const avisoAdjuntoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const adjuntoInputRef = useRef<HTMLInputElement>(null)
+
+  // --- Botón de altavoz manual por mensaje (ver "Implementar solución
+  // estable para la lectura en voz en Safari/iOS") — la vía confiable
+  // para escuchar una respuesta: el toque del docente ES el gesto
+  // directo que Safari/iOS exige para permitir audio, a diferencia de
+  // la lectura automática (AsistenteService), que llega después de una
+  // espera async y puede fallar en silencio ahí.
+  // id del mensaje que se está leyendo ahora mismo — null si ninguno.
+  const [idMensajeHablando, setIdMensajeHablando] = useState<string | null>(null)
+  // Aviso breve y no invasivo SOLO sobre el mensaje donde falló la
+  // lectura — nunca un error global ni repetitivo.
+  const [avisoTts, setAvisoTts] = useState<{ id: string; mensaje: string } | null>(null)
+  const avisoTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Se incrementa en cada toque real — permite que un onend/onerror
+  // tardío de una lectura YA reemplazada por otra más nueva se ignore,
+  // en vez de pisar el estado de la lectura actual.
+  const intentoVozRef = useRef(0)
+  // El truco de desbloqueo (utterance silenciosa antes de la real) solo
+  // debe ocurrir en el PRIMER toque real de la sesión.
+  const desbloqueoIntentadoRef = useRef(false)
+  const [vocesDisponibles, setVocesDisponibles] = useState<SpeechSynthesisVoice[]>([])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+    // getVoices() no siempre trae la lista completa de inmediato (varía
+    // por navegador) — se vuelve a leer cuando el navegador avisa que
+    // ya están listas, sin asumir que estarán disponibles al montar.
+    const cargarVoces = () => setVocesDisponibles(window.speechSynthesis.getVoices())
+    cargarVoces()
+    window.speechSynthesis.onvoiceschanged = cargarVoces
+    return () => {
+      if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null
+    }
+  }, [])
+
+  // Único punto que llama a speechSynthesis.speak() para el botón
+  // manual — se invoca DIRECTO desde el onClick del botón (nunca desde
+  // un efecto, promesa ni setTimeout), para que Safari/iOS lo reconozca
+  // como originado por un gesto real del usuario.
+  const leerRespuesta = (id: string, textoOriginal: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+
+    // Segundo toque sobre el mismo mensaje mientras habla = "Detener".
+    if (idMensajeHablando === id) {
+      window.speechSynthesis.cancel()
+      setIdMensajeHablando(null)
+      return
+    }
+
+    // Corta cualquier lectura anterior (de otro mensaje, o la
+    // automática de AsistenteService) — nunca deben sonar dos
+    // respuestas a la vez.
+    window.speechSynthesis.cancel()
+    setAvisoTts(null)
+
+    const idIntento = ++intentoVozRef.current
+
+    // Desbloqueo de Safari/iOS: SOLO en el primer toque real de toda la
+    // sesión, una utterance silenciosa/muy corta, síncrona, ANTES de la
+    // real — ambas dentro del mismo evento de click/touch.
+    if (!desbloqueoIntentadoRef.current) {
+      desbloqueoIntentadoRef.current = true
+      const utteranceDesbloqueo = new SpeechSynthesisUtterance(' ')
+      utteranceDesbloqueo.volume = 0
+      window.speechSynthesis.speak(utteranceDesbloqueo)
+    }
+
+    const textoLimpio = limpiarTextoParaVoz(textoOriginal)
+    if (!textoLimpio) return
+
+    const utterance = new SpeechSynthesisUtterance(textoLimpio)
+    const voz = seleccionarVozEspanol(vocesDisponibles)
+    if (voz) utterance.voice = voz
+    utterance.lang = voz?.lang || 'es-MX'
+
+    utterance.onend = () => {
+      if (intentoVozRef.current !== idIntento) return
+      setIdMensajeHablando(null)
+      // Lectura manual confirmada de principio a fin — a partir de
+      // aquí AsistenteService puede intentar la lectura automática en
+      // respuestas futuras (ver marcarVozDesbloqueada).
+      AsistenteService.marcarVozDesbloqueada()
+    }
+    utterance.onerror = (e) => {
+      console.error('[VOZ][TTS] Botón manual — speechSynthesis.speak falló:', e.error)
+      if (intentoVozRef.current !== idIntento) return
+      setIdMensajeHablando(null)
+      setAvisoTts({ id, mensaje: 'No fue posible reproducir el audio. Toca nuevamente el altavoz.' })
+      if (avisoTtsTimerRef.current) clearTimeout(avisoTtsTimerRef.current)
+      avisoTtsTimerRef.current = setTimeout(() => setAvisoTts(null), 4000)
+    }
+
+    setIdMensajeHablando(id)
+    window.speechSynthesis.speak(utterance)
+  }
 
   // Panel temporal de diagnóstico del modo voz — solo con ?voiceDebug=1 en
   // la URL. Se lee del navegador (no de useSearchParams/Next) para no
@@ -684,6 +780,21 @@ export default function AsistentePanel() {
                       <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
+                      <div className="flex justify-end mt-1">
+                        <button
+                          type="button"
+                          onClick={() => leerRespuesta(m.id, m.texto)}
+                          aria-label={idMensajeHablando === m.id ? 'Detener lectura' : 'Escuchar respuesta'}
+                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition flex-shrink-0 ${
+                            idMensajeHablando === m.id ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                          }`}
+                        >
+                          {idMensajeHablando === m.id ? '⏹️' : '🔊'}
+                        </button>
+                      </div>
+                      {avisoTts?.id === m.id && (
+                        <p className="text-[11px] text-amber-600 mt-1 text-right">{avisoTts.mensaje}</p>
+                      )}
                     </div>
                   )}
                   {/* Última condición del flujo: independientemente de si
@@ -753,7 +864,24 @@ export default function AsistentePanel() {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
                     ) : m.texto}
+                    {m.rol === 'asistente' && m.texto && (
+                      <div className="flex justify-end mt-1">
+                        <button
+                          type="button"
+                          onClick={() => leerRespuesta(m.id, m.texto)}
+                          aria-label={idMensajeHablando === m.id ? 'Detener lectura' : 'Escuchar respuesta'}
+                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition flex-shrink-0 ${
+                            idMensajeHablando === m.id ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                          }`}
+                        >
+                          {idMensajeHablando === m.id ? '⏹️' : '🔊'}
+                        </button>
+                      </div>
+                    )}
                   </div>
+                  {m.rol === 'asistente' && avisoTts?.id === m.id && (
+                    <p className="text-[11px] text-amber-600 mt-1 text-right w-full">{avisoTts.mensaje}</p>
+                  )}
                   {/* Botones de confirmación (ver AccionMensaje) — se
                       esconden en cuanto el docente elige uno
                       (accionElegida ya viene marcado, ver

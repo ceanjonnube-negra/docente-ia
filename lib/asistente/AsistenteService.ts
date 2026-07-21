@@ -14,6 +14,7 @@ import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoForm
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
+import { limpiarTextoParaVoz, seleccionarVozEspanol } from './lecturaVoz'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -185,6 +186,19 @@ class AsistenteServiceImpl {
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private debugVoz: PasoDebugVoz[] = []
   private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | null = null
+  // true solo después de que el docente haya tocado el botón de
+  // altavoz manual de un mensaje (ver AsistentePanel.tsx) Y esa
+  // lectura haya terminado con éxito al menos una vez en esta sesión
+  // — ver marcarVozDesbloqueada(). La lectura automática (más abajo,
+  // en manejarEventoMotor caso 'respuesta-final') NUNCA se intenta
+  // antes de esto: en Safari/iOS, speechSynthesis.speak() llamado
+  // fuera de un gesto directo del usuario (como una respuesta que
+  // llega después de una espera async) puede fallar en silencio, así
+  // que el botón manual es la vía confiable y la automática queda como
+  // mejora secundaria una vez comprobado que sí funciona en ese
+  // dispositivo (ver "Implementar solución estable para la lectura en
+  // voz en Safari/iOS").
+  private ttsDesbloqueado = false
   private avisoGeneracion: string | null = null
   private avisoGeneracionTimer: ReturnType<typeof setTimeout> | null = null
   private documentoFinalizandoId: string | null = null
@@ -1011,38 +1025,42 @@ class AsistenteServiceImpl {
             }
           }
         }
-        // Modo voz: lee en voz alta la respuesta REAL que acaba de
-        // llegar (el mismo evento.texto que ya se muestra en la
-        // burbuja) — ver "Corregir la integración entre el Chat IA y la
-        // lectura en voz de las respuestas". Nunca es OpenAI Realtime
-        // componiendo su propia respuesta; es el navegador leyendo,
-        // palabra por palabra, lo mismo que respondería el Chat IA por
-        // escrito. estadoEscucha pasa a 'hablando' mientras dura (antes
-        // motorOpenAIRealtime.ts volvía a poner 'escuchando' de
-        // inmediato al terminar de enviar el mensaje, pisando este
-        // estado — ver finalizarTurno() — por eso el indicador se veía
-        // "atorado" en Escuchando aunque si hubiera audio) y solo
-        // regresa a 'escuchando' cuando la lectura termina de verdad
-        // (onend/onerror), nunca antes.
-        if (this.modoVoz && typeof window !== 'undefined' && window.speechSynthesis) {
+        // Modo voz: intenta leer en voz alta la respuesta REAL que
+        // acaba de llegar (el mismo evento.texto que ya se muestra en
+        // la burbuja) — pero SOLO como mejora secundaria, nunca como
+        // único camino: ver "Implementar solución estable para la
+        // lectura en voz en Safari/iOS". En Safari/iOS,
+        // speechSynthesis.speak() llamado fuera de un gesto directo del
+        // usuario (como aquí, después de esperar /api/chat) puede
+        // fallar en silencio — por eso esto NUNCA se intenta hasta que
+        // ttsDesbloqueado sea true (el docente ya usó con éxito el
+        // botón de altavoz manual de algún mensaje, ver
+        // marcarVozDesbloqueada() y AsistentePanel.tsx). Si no está
+        // desbloqueado, no se hace nada aquí y no se muestra ningún
+        // error — el botón manual de esa misma burbuja sigue
+        // disponible siempre.
+        if (this.modoVoz && this.ttsDesbloqueado && typeof window !== 'undefined' && window.speechSynthesis) {
           window.speechSynthesis.cancel()
-          const utterance = new SpeechSynthesisUtterance(evento.texto)
-          utterance.lang = 'es-MX'
-          this.estadoEscucha = 'hablando'
-          const volverAEscuchar = () => {
-            if (!this.modoVoz) return
-            this.estadoEscucha = 'escuchando'
-            this.notificar()
+          const textoLimpio = limpiarTextoParaVoz(evento.texto)
+          if (textoLimpio) {
+            const utterance = new SpeechSynthesisUtterance(textoLimpio)
+            const voz = seleccionarVozEspanol(window.speechSynthesis.getVoices())
+            if (voz) utterance.voice = voz
+            utterance.lang = voz?.lang || 'es-MX'
+            this.estadoEscucha = 'hablando'
+            const volverAEscuchar = () => {
+              if (!this.modoVoz) return
+              this.estadoEscucha = 'escuchando'
+              this.notificar()
+            }
+            utterance.onstart = () => console.log('[VOZ][TTS] lectura automática: comenzó')
+            utterance.onend = () => { console.log('[VOZ][TTS] lectura automática: terminó'); volverAEscuchar() }
+            // Silencioso a propósito (ver comentario arriba): un fallo
+            // aquí solo regresa el estado a 'escuchando', nunca muestra
+            // un error — el botón manual de la burbuja sigue ahí.
+            utterance.onerror = (e) => { console.error('[VOZ][TTS] lectura automática falló:', e.error); volverAEscuchar() }
+            window.speechSynthesis.speak(utterance)
           }
-          utterance.onstart = () => console.log('[VOZ][TTS] speechSynthesis: comenzó a leer la respuesta en voz alta')
-          utterance.onend = () => { console.log('[VOZ][TTS] speechSynthesis: terminó de leer la respuesta'); volverAEscuchar() }
-          utterance.onerror = (e) => { console.error('[VOZ][TTS] speechSynthesis.speak falló:', e.error); volverAEscuchar() }
-          // Log temporal de diagnóstico — confirma que la llamada
-          // realmente se ejecuta y cuántas voces tiene disponibles el
-          // navegador (una lista vacía es la causa típica de que no
-          // suene nada en algunos navegadores/dispositivos).
-          console.log(`[VOZ][TTS] speechSynthesis.speak() invocado — ${evento.texto.length} caracteres, voces disponibles=${window.speechSynthesis.getVoices().length}`)
-          window.speechSynthesis.speak(utterance)
         }
         this.notificar()
         break
@@ -1581,6 +1599,14 @@ ${instruccion}`
 
   interrumpir() {
     this.motor?.interrumpir()
+  }
+
+  // Llamado por AsistentePanel cuando el botón de altavoz manual de un
+  // mensaje termina de leerlo con éxito (utterance.onend real) — ver
+  // ttsDesbloqueado (campo privado). A partir de aquí, y solo a partir
+  // de aquí, la lectura automática puede intentarse.
+  marcarVozDesbloqueada() {
+    this.ttsDesbloqueado = true
   }
 }
 
