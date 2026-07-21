@@ -404,6 +404,11 @@ export default function AsistentePanel() {
     if (files.length === 1) {
       const file = files[0]
       const base64 = await leerComoBase64(file)
+      // [IMAGEN][FRONTEND] log temporal de auditoría (ver "Revisar
+      // pipeline completo de imágenes del Chat IA") — confirma que el
+      // archivo elegido de verdad terminó como base64 real en el
+      // estado, no solo como referencia de archivo.
+      console.log(`[IMAGEN][FRONTEND] imagen seleccionada — tipo=${file.type || 'desconocido'} tamaño=${Math.round(file.size / 1024)}KB base64Listo=${base64.length > 0}`)
       setAdjuntosPendientes([{ base64, tipo: file.type || 'application/octet-stream', nombreArchivo: file.name }])
       return
     }
@@ -455,6 +460,12 @@ export default function AsistentePanel() {
     setInput('')
     const adjuntos = adjuntosPendientes
     setAdjuntosPendientes([])
+    // [IMAGEN][FRONTEND] log temporal de auditoría — confirma cuántas
+    // imágenes de verdad van dentro del mensaje que se manda, y por
+    // cuál parámetro (adjunto único vs. adjuntos[]).
+    if (adjuntos.length > 0) {
+      console.log(`[IMAGEN][FRONTEND] imagen(es) enviada(s) — cantidad=${adjuntos.length} via=${adjuntos.length > 1 ? 'adjuntos[]' : 'adjunto'}`)
+    }
     if (adjuntos.length > 1) {
       asistente.enviarMensaje(texto, undefined, adjuntos)
     } else {

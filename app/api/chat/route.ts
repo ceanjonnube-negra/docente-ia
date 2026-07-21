@@ -277,6 +277,21 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 export async function POST(req: NextRequest) {
   const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
 
+  // [IMAGEN][API] — log temporal de auditoría del pipeline de imágenes
+  // (ver "Revisar pipeline completo de imágenes del Chat IA"): confirma
+  // que lo que salió del cliente de verdad llegó aquí, con tamaño real
+  // en KB para detectar payloads truncados o vacíos silenciosamente.
+  if (imagenBase64 || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0)) {
+    if (imagenBase64) {
+      console.log(`[IMAGEN][API] imagen recibida — tipo=${imagenTipo || 'desconocido'} tamañoBase64=${Math.round((imagenBase64.length * 3) / 4 / 1024)}KB nombreArchivo=${nombreArchivo || '(sin nombre)'}`)
+    }
+    if (Array.isArray(imagenesBase64) && imagenesBase64.length > 0) {
+      console.log(
+        `[IMAGEN][API] ${imagenesBase64.length} imágenes recibidas — ${imagenesBase64.map((img: { tipo?: string; base64?: string }, i: number) => `#${i + 1}:${img.tipo || '?'}(${Math.round(((img.base64?.length || 0) * 3) / 4 / 1024)}KB)`).join(', ')}`
+      )
+    }
+  }
+
   // Varias fotos en un mismo mensaje (ver "Implementar soporte
   // completo para múltiples fotografías") — arreglo de {base64, tipo},
   // siempre imágenes (el cliente solo llena esto desde el flujo de
@@ -554,6 +569,16 @@ export async function POST(req: NextRequest) {
     return respuestaTexto(textoLista)
   }
 
+  // CAUSA RAÍZ de "el Chat responde como si nunca hubiera recibido la
+  // imagen" (ver "Revisar pipeline completo de imágenes del Chat IA"):
+  // calculado aquí, ANTES del Clasificador de Nivel 0, para poder
+  // usarse como guardia de ejecutarHerramientaDeModulo más abajo — ver
+  // esa nota junto al dispatcher. También alimenta el bloque FUENTES
+  // DISPONIBLES más adelante (una sola fuente de verdad para "¿hay
+  // imagen este turno?", nunca calculado dos veces).
+  const tieneImagenAdjunta = Boolean(imagenBase64) || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0)
+  const cantidadImagenesAdjuntas = Array.isArray(imagenesBase64) ? imagenesBase64.length : (imagenBase64 ? 1 : 0)
+
   // --- Clasificador de Nivel 0 — se llama SIEMPRE que hay sesión real,
   // sin ningún filtro de palabras clave delante (ver la nota de
   // arquitectura junto a los imports: ningún filtro local puede
@@ -607,7 +632,26 @@ export async function POST(req: NextRequest) {
         userId,
         zonaHoraria,
       })
-      if (respuestaDeModulo !== null) return respuestaTexto(respuestaDeModulo)
+      if (respuestaDeModulo !== null) {
+        if (tieneImagenAdjunta) {
+          // CAUSA RAÍZ real del bug de imágenes: este dispatcher no
+          // sabe nada de imágenes (clasificarNivel0 solo recibe texto)
+          // y antes regresaba su respuesta de inmediato sin importar
+          // si el maestro había adjuntado una foto — el modelo grande
+          // (el único que puede ver imágenes) nunca llegaba a
+          // ejecutarse ese turno. Con imagen adjunta, los datos reales
+          // ya obtenidos se inyectan como contexto en vez de
+          // devolverse como respuesta final, para que el modelo grande
+          // SIEMPRE vea la imagen (ver punto 6: nunca debe requerir
+          // que el maestro la vuelva a describir) sin perder la
+          // garantía de que la parte de datos del módulo sigue viniendo
+          // de la Herramienta real, nunca inventada.
+          console.log(`[IMAGEN][DISPATCHER] ${clasificacion.intencion_principal} coincidió con una Herramienta, pero hay ${cantidadImagenesAdjuntas} imagen(es) este turno — se inyecta como contexto real y se deja pasar al modelo grande en vez de responder directo`)
+          contextoEnriquecido += `\n\nDATOS REALES YA CONSULTADOS PARA ESTE TURNO (usa esto junto con la imagen adjunta — nunca inventes ni ignores ninguno de los dos):\n${respuestaDeModulo}`
+        } else {
+          return respuestaTexto(respuestaDeModulo)
+        }
+      }
 
       // Nivel 1: registrar_asistencia ("pasa lista", "toma asistencia", etc.
       // — todas la misma acción real) — marca a todo el grupo activo como
@@ -816,9 +860,10 @@ export async function POST(req: NextRequest) {
   // pantalla, sensores) se declaran una sola vez, siempre, como un
   // hecho permanente de la aplicación — no como una lista de frases a
   // evitar que hay que seguir ampliando cada vez que aparece una
-  // nueva forma de decirlo.
-  const tieneImagenAdjunta = Boolean(imagenBase64) || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0)
-  const cantidadImagenesAdjuntas = Array.isArray(imagenesBase64) ? imagenesBase64.length : (imagenBase64 ? 1 : 0)
+  // nueva forma de decirlo. tieneImagenAdjunta/cantidadImagenesAdjuntas
+  // ya se calcularon arriba, antes del Clasificador de Nivel 0 (los
+  // necesita como guardia de ejecutarHerramientaDeModulo) — una sola
+  // fuente de verdad, no se vuelven a calcular aquí.
   const tieneDatosDeModuloInyectados = Boolean(contextoEnriquecido && contextoEnriquecido.trim())
   const fuentesDisponiblesTexto = `
 FUENTES REALES DE INFORMACIÓN EN ESTE TURNO — declaración exacta del estado real de esta conversación, no una sugerencia de estilo. Cualquier afirmación que hagas sobre lo que "ves", "observas", "detectas" o "tienes acceso a" debe corresponder EXACTAMENTE a una fuente marcada como disponible abajo. Si algo no aparece aquí como disponible, no existe para ti en este turno — no lo asumas, no lo actúes, no lo insinúes.
@@ -1129,6 +1174,21 @@ Grado: [grado] | Grupo: [grupo]
               : mensajeConDocumento
       },
     ],
+  }
+
+  // [IMAGEN][MODELO] — log temporal de auditoría del pipeline de
+  // imágenes: cuántos bloques 'image' de verdad quedaron en el mensaje
+  // que se le manda a Claude, justo antes de cualquiera de las
+  // llamadas reales a client.messages.create() que reutilizan
+  // parametrosClaude — el punto final para confirmar que la imagen
+  // sobrevivió las etapas anteriores.
+  {
+    const bloqueUsuario = parametrosClaude.messages[parametrosClaude.messages.length - 1]
+    const contenido = Array.isArray(bloqueUsuario?.content) ? bloqueUsuario.content : []
+    const cantidadImagenesEnMensaje = contenido.filter((b: { type?: string }) => b?.type === 'image').length
+    if (cantidadImagenesEnMensaje > 0 || tieneImagenAdjunta) {
+      console.log(`[IMAGEN][MODELO] ${cantidadImagenesEnMensaje} bloque(s) de imagen incluido(s) en el mensaje enviado a Claude (tieneImagenAdjunta=${tieneImagenAdjunta})`)
+    }
   }
 
   // CASO 3 de FINALIZAR ARCHIVO — el maestro pidió el archivo real
