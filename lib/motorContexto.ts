@@ -102,6 +102,24 @@ export async function asistenciaGrupoResumen(
     .sort((a, b) => b.faltas - a.faltas)
     .slice(0, 10);
 
+  // Validación obligatoria (ver "Fuente única de verdad — motor de
+  // datos"): cada inscripción activa cae en EXACTAMENTE uno de los 4
+  // arreglos (línea 76-82, un único if/else-if/else por inscripción),
+  // así que esta suma no debería poder fallar nunca hoy — es una red
+  // de seguridad ante un futuro cambio en ese bloque que rompa esa
+  // garantía por accidente, no un recálculo real (no hay nada que
+  // "reconsultar": los datos ya están completos en memoria). Se
+  // registra y se responde de todas formas — bloquear la respuesta del
+  // docente por una alarma que no aporta ningún dato adicional sería
+  // peor que mostrarle la cifra real con el problema ya registrado
+  // para investigarlo aparte.
+  const totalClasificados = vacio.presentes.length + vacio.faltas.length + vacio.retardos.length + vacio.sinRegistrarHoy.length;
+  if (totalClasificados !== inscripciones.length) {
+    console.error(
+      `[VALIDACION] asistenciaGrupoResumen: inconsistencia — ${totalClasificados} alumnos clasificados vs ${inscripciones.length} inscripciones activas (grupo ${grupoId}, fecha ${fecha})`
+    );
+  }
+
   return vacio;
 }
 
