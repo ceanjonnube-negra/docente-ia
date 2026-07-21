@@ -92,12 +92,16 @@ export type EstadoAsistente = {
   // Estado discreto del turno de voz (ver motorOpenAIRealtime.ts) —
   // null cuando no aplica (modo voz inactivo). 'hablando': el navegador
   // está leyendo la respuesta en voz alta (speechSynthesis, ver case
-  // 'respuesta-final' en manejarEventoMotor) — 'confirmando' quedó sin
-  // emisor real desde que se eliminó el cierre automático de turno por
-  // pausa (ver "Corregir envío prematuro de mensajes durante el
-  // dictado por voz"), se conserva en el tipo por si un futuro motor
-  // lo vuelve a usar.
-  estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | null
+  // 'respuesta-final' en manejarEventoMotor). 'pausado': el docente
+  // dejó de hablar pero el micrófono sigue abierto (push-to-toggle) —
+  // señal puramente visual para que nunca parezca que la app se
+  // congeló mientras espera el segundo toque a propósito (ver
+  // "Corregir la comunicación visual del dictado por voz"); NUNCA
+  // dispara un envío por sí sola. 'confirmando' quedó sin emisor real
+  // desde que se eliminó el cierre automático de turno por pausa (ver
+  // "Corregir envío prematuro de mensajes durante el dictado por voz"),
+  // se conserva en el tipo por si un futuro motor lo vuelve a usar.
+  estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | 'pausado' | null
   // Aviso breve y temporal para fallas GENERANDO O EDITANDO UN DOCUMENTO
   // (nunca se guarda como mensaje del asistente — no es una respuesta,
   // es un estado transitorio de la interfaz, igual que avisoVoz). Se
@@ -185,7 +189,7 @@ class AsistenteServiceImpl {
   private avisoVoz: string | null = null
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private debugVoz: PasoDebugVoz[] = []
-  private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | null = null
+  private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | 'pausado' | null = null
   // true solo después de que el docente haya tocado el botón de
   // altavoz manual de un mensaje (ver AsistentePanel.tsx) Y esa
   // lectura haya terminado con éxito al menos una vez en esta sesión

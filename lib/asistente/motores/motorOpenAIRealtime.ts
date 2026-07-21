@@ -917,6 +917,9 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         this.interrumpirTexto?.()
         this.huboAudioSinConfirmar = true
         this.debug('turno-ultimo-fragmento-audio', 'info')
+        // También revierte la señal visual 'pausado' (ver
+        // 'conversation.item.input_audio_transcription.completed'): el
+        // docente retomó la palabra.
         this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
         break
 
@@ -965,6 +968,16 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           // inmediato, sin esperar al próximo delta (que puede tardar
           // si el docente hace una pausa larga antes de seguir).
           this.emitir({ tipo: 'transcripcion-parcial', texto: this.textoReconocidoHastaAhora() })
+          // Señal SOLO visual (ver "Corregir la comunicación visual del
+          // dictado por voz") — el VAD acaba de confirmar que hubo una
+          // pausa real (por eso este evento existe). Nunca dispara un
+          // envío ni ningún otro efecto: únicamente le dice a la
+          // interfaz "el docente puede seguir hablando o tocar el botón
+          // para enviar", para que nunca parezca que la app se quedó
+          // colgada mientras espera el segundo toque a propósito. Se
+          // revierte a 'escuchando' en cuanto vuelve a detectarse voz
+          // (ver 'input_audio_buffer.speech_started').
+          this.emitir({ tipo: 'estado-escucha', estado: 'pausado' })
         }
         if (this.resolverCommitFinal) {
           const resolver = this.resolverCommitFinal

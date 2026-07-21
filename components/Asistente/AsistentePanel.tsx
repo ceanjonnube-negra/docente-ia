@@ -1209,14 +1209,21 @@ export default function AsistentePanel() {
           )}
           <div className="relative">
             {asistente.modoVoz && asistente.estadoEscucha && (
-              <span className="absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-gray-500 bg-white/95 px-2 py-0.5 rounded-full shadow-sm">
+              // max-w + text-center (en vez de whitespace-nowrap fijo):
+              // "pausado" trae un texto más largo que el resto de los
+              // estados y necesita poder partirse en dos líneas sin
+              // desbordar la burbuja — ver "Corregir la comunicación
+              // visual del dictado por voz".
+              <span className="absolute -top-8 left-1/2 -translate-x-1/2 max-w-[180px] text-center text-[10px] font-medium text-gray-500 bg-white/95 px-2 py-1 rounded-xl shadow-sm leading-tight">
                 {asistente.estadoEscucha === 'escuchando'
                   ? 'Escuchando'
-                  : asistente.estadoEscucha === 'confirmando'
-                    ? 'Confirmando…'
-                    : asistente.estadoEscucha === 'hablando'
-                      ? 'Hablando…'
-                      : 'Pensando…'}
+                  : asistente.estadoEscucha === 'pausado'
+                    ? 'Puedes seguir hablando o pulsa para enviar'
+                    : asistente.estadoEscucha === 'confirmando'
+                      ? 'Confirmando…'
+                      : asistente.estadoEscucha === 'hablando'
+                        ? 'Hablando…'
+                        : 'Pensando…'}
               </span>
             )}
             <button
@@ -1231,7 +1238,9 @@ export default function AsistentePanel() {
                       ? 'bg-purple-500 text-white'
                       : asistente.estadoEscucha === 'hablando'
                         ? 'bg-blue-500 text-white'
-                        : 'bg-red-500 text-white'
+                        : asistente.estadoEscucha === 'pausado'
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-red-500 text-white'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
@@ -1244,7 +1253,9 @@ export default function AsistentePanel() {
                         ? 'bg-purple-400'
                         : asistente.estadoEscucha === 'hablando'
                           ? 'bg-blue-400'
-                          : 'bg-red-400'
+                          : asistente.estadoEscucha === 'pausado'
+                            ? 'bg-emerald-400'
+                            : 'bg-red-400'
                   }`}
                   aria-hidden="true"
                 />
