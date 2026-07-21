@@ -14,6 +14,7 @@ import {
   contextoGrupo,
   documentosDelDocente,
   escribirAsistencia,
+  incidenciasAlumno,
   necesidadesApoyoGrupo,
   registrarAsistenciaMasiva,
 } from '@/lib/motorContexto'
@@ -704,6 +705,46 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Nivel 1: consultar_incidencias_alumno — misma cifra directa que
+      // consultar_asistencia (regla 1), sin pasar por el modelo grande.
+      if (clasificacion.intencion_principal === 'consultar_incidencias_alumno' && clasificacion.nivel_ejecucion === 1) {
+        if (!clasificacion.entidades_resueltas.alumno_id) {
+          console.log('[NIVEL0] consultar_incidencias_alumno sin alumno_id resuelto — cae al flujo normal')
+        } else {
+          try {
+            const datos = await incidenciasAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id)
+            const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+            const texto =
+              datos.total === 0
+                ? `${nombre} no tiene incidencias registradas.`
+                : `${nombre} tiene ${datos.total} incidencia(s) registrada(s)${datos.incidencias[0] ? `; la más reciente es del ${datos.incidencias[0].fecha} (${datos.incidencias[0].tipo}).` : '.'}`
+            console.log(`[NIVEL0] consultar_incidencias_alumno OK — alumno_id=${clasificacion.entidades_resueltas.alumno_id} total=${datos.total}`)
+            return respuestaTexto(texto)
+          } catch (e) {
+            console.error('[NIVEL0] Error consultando incidencias (incidenciasAlumno):', e)
+            // Si falla la consulta directa, seguimos al flujo normal como respaldo.
+          }
+        }
+      }
+
+      // Nivel 1: navegar_lista_filtrada — igual que navegar_alumno_lista
+      // pero a nivel de módulo completo (sin alumnoId), con un filtro
+      // ya aplicado (ver AccionNavegacion.filtros — declarado desde la
+      // etapa de navegación pero sin ningún productor real hasta ahora).
+      if (clasificacion.intencion_principal === 'navegar_lista_filtrada' && clasificacion.nivel_ejecucion === 1) {
+        const filtro = clasificacion.filtro_lista ?? 'todos'
+        const accionNavegacion: AccionNavegacion = {
+          modulo: 'lista',
+          accion: 'abrir_modulo',
+          filtros: { filtro },
+          automatica: true,
+        }
+        const marcador = `[[NAVEGACION:${Buffer.from(JSON.stringify(accionNavegacion), 'utf-8').toString('base64')}]]`
+        const etiquetaFiltro: Record<string, string> = { ausentes: 'los ausentes', presentes: 'los presentes', ninas: 'las niñas', ninos: 'los niños', todos: 'toda la lista' }
+        console.log(`[NIVEL0] navegar_lista_filtrada OK — filtro=${filtro}`)
+        return respuestaTexto(`Mostrando ${etiquetaFiltro[filtro] ?? 'la lista'}.\n${marcador}`)
+      }
+
       // Nivel 4: ficha_descriptiva / planeacion_nueva / consultas
       // agregadas de grupo — se enriquece el contexto con datos reales
       // antes de la llamada grande a Claude, para que conteste con la
@@ -718,7 +759,10 @@ export async function POST(req: NextRequest) {
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL GRUPO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxGrupo)}`
           } else if (clasificacion.intencion_principal === 'consultar_asistencia_grupo' && sesion.grupo_activo_id) {
             const resumen = await asistenciaGrupoResumen(supabaseUser, sesion.grupo_activo_id, sesion.fecha_actual)
-            contextoEnriquecido += `\n\nASISTENCIA REAL DEL GRUPO HOY (${resumen.fecha}) Y RANKING DE FALTAS DEL CICLO (usa estos datos, no inventes otros; si una lista viene vacía, dilo con honestidad en vez de inventar nombres):\n${JSON.stringify(resumen)}`
+            // Cifras ya calculadas (no le pidas al modelo que cuente los
+            // arreglos): "¿cuántas faltas hay hoy?" debe responderse con
+            // el número real, nunca "no tengo acceso a esa información".
+            contextoEnriquecido += `\n\nASISTENCIA REAL DEL GRUPO HOY (${resumen.fecha}): ${resumen.presentes.length} presentes, ${resumen.faltas.length} faltas, ${resumen.retardos.length} retardos, ${resumen.sinRegistrarHoy.length} sin registrar. LISTAS COMPLETAS Y RANKING DE FALTAS DEL CICLO (usa estos datos, no inventes otros; si una lista viene vacía, dilo con honestidad en vez de inventar nombres):\n${JSON.stringify(resumen)}`
           } else if (clasificacion.intencion_principal === 'consultar_apoyo' && sesion.grupo_activo_id) {
             const apoyos = await necesidadesApoyoGrupo(supabaseUser, sesion.grupo_activo_id)
             contextoEnriquecido += `\n\nALUMNOS CON NECESIDAD DE APOYO REGISTRADA (usa estos datos; si la lista viene vacía, significa que no hay ninguna registrada todavía — dilo con honestidad):\n${JSON.stringify(apoyos)}`

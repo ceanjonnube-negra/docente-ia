@@ -222,6 +222,25 @@ export async function consultarAsistenciaAlumno(sb: SupabaseClient, alumnoId: st
   return data as { faltas: number; retardos: number; justificadas: number; dias_registrados: number };
 }
 
+export type IncidenciaResumen = { fecha: string; tipo: string; descripcion: string };
+export type IncidenciasAlumnoResumen = { total: number; incidencias: IncidenciaResumen[] };
+
+// Consultas inteligentes entre módulos — "¿cuántas incidencias tiene
+// [alumno]?" no tenía ninguna fuente real hasta ahora (la única lectura
+// de incidencias en todo el proyecto era client-side, en
+// app/dashboard/lista/page.tsx, para pintar el badge "Incidencias: N"
+// de cada fila — invisible para el Chat IA). Misma tabla, mismas
+// columnas, solo ahora también consultable desde el servidor.
+export async function incidenciasAlumno(sb: SupabaseClient, alumnoId: string): Promise<IncidenciasAlumnoResumen> {
+  const { data } = await sb
+    .from('incidencias')
+    .select('fecha, tipo, descripcion')
+    .eq('alumno_id', alumnoId)
+    .order('fecha', { ascending: false });
+  const incidencias = (data || []) as IncidenciaResumen[];
+  return { total: incidencias.length, incidencias };
+}
+
 export type RegistroAsistencia = { alumno_id: string; estado: 'presente' | 'falta' | 'retardo' };
 export type ResultadoEscrituraAsistencia = { exito: boolean; error?: string; guardados: number };
 

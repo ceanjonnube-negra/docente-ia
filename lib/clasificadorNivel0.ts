@@ -29,6 +29,8 @@ export type ClasificacionNivel0 = {
     | 'planeacion_nueva'
     | 'consultar_alumno_lista'
     | 'navegar_alumno_lista'
+    | 'consultar_incidencias_alumno'
+    | 'navegar_lista_filtrada'
     | 'conversacion_general'
     | 'intencion_no_reconocida';
   nivel_ejecucion: 1 | 2 | 3 | 4;
@@ -49,6 +51,10 @@ export type ClasificacionNivel0 = {
   // en app/dashboard/lista/[alumnoId]/page.tsx), o null si solo pidió
   // ver/abrir al alumno en general (pestaña "resumen" por default).
   pestana_lista: 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas' | 'historial' | null;
+  // Solo para navegar_lista_filtrada — qué subconjunto de la Lista
+  // pidió ver el maestro (ver el mismo estado `filtro` que ya existe
+  // en app/dashboard/lista/page.tsx). null en cualquier otra intención.
+  filtro_lista: 'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes' | null;
   datos_faltantes: string[];
   nivel_confianza: number;
   requiere_confirmacion: boolean;
@@ -68,6 +74,7 @@ const FALLBACK: ClasificacionNivel0 = {
   },
   estado_asistencia_solicitado: null,
   pestana_lista: null,
+  filtro_lista: null,
   datos_faltantes: [],
   nivel_confianza: 0,
   requiere_confirmacion: false,
@@ -89,7 +96,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida:
 {
-  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_nueva" | "consultar_alumno_lista" | "navegar_alumno_lista" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_nueva" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "navegar_lista_filtrada" | "conversacion_general" | "intencion_no_reconocida",
   "nivel_ejecucion": 1 | 2 | 3 | 4,
   "requiere_ia": boolean,
   "requiere_contexto_memoria": boolean,
@@ -101,6 +108,7 @@ Formato exacto de salida:
   },
   "estado_asistencia_solicitado": "presente" | "falta" | "retardo" | null,
   "pestana_lista": "resumen" | "datos" | "asistencia" | "incidencias" | "evaluaciones" | "evidencias" | "fichas" | "historial" | null,
+  "filtro_lista": "todos" | "ninas" | "ninos" | "presentes" | "ausentes" | null,
   "datos_faltantes": string[],
   "nivel_confianza": number entre 0 y 1,
   "requiere_confirmacion": boolean,
@@ -125,9 +133,9 @@ REGLAS:
 6. Si pregunta qué alumnos requieren apoyo, tienen necesidades especiales, o van rezagados/con dificultades → intencion_principal="consultar_apoyo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 7. Si pregunta qué documentos tiene generados/guardados/almacenados en la aplicación (planeaciones, fichas, exámenes, citatorios que ya generó antes) → intencion_principal="consultar_documentos", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 8. Si pregunta por actividades, eventos o fechas programadas en el calendario escolar, o por cualquier cosa relacionada con tiempo/fechas de la escuela — aunque no diga la palabra "calendario" ni lo pida explícitamente — → intencion_principal="consultar_calendario", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué sigue esta semana?", "¿cuándo regresamos?", "¿qué tengo mañana?", "¿hay CTE este mes?", "¿qué actividades tengo el viernes?", "¿cuándo son las vacaciones?", "¿qué día es la junta?", "¿qué eventos hay este mes?", "¿cuántos eventos tengo esta semana?", "¿qué días están libres?", "¿qué actividades son oficiales?", "¿qué actividades agregué yo?", "¿cuándo es el próximo consejo técnico?", "¿ya empezaron las vacaciones?".
-9. Para 1, 2.1, 3, 14 y 14.1: busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" — tolerante a mayúsculas, acentos, nombre parcial, Y a errores de transcripción de voz (el nombre puede llegar distorsionado fonéticamente, ej. "Outrid" por "Audrey", "Erik" por "Eric" — considera una coincidencia por semejanza FONÉTICA como candidato válido, no solo coincidencia de texto exacta).
+9. Para 1, 2.1, 3, 14, 14.1 y 15: busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" — tolerante a mayúsculas, acentos, nombre parcial, Y a errores de transcripción de voz (el nombre puede llegar distorsionado fonéticamente, ej. "Outrid" por "Audrey", "Erik" por "Eric" — considera una coincidencia por semejanza FONÉTICA como candidato válido, no solo coincidencia de texto exacta).
    - Si hay exactamente una coincidencia EXACTA o casi exacta (mismo nombre, tolerando acentos/mayúsculas/nombre parcial claro): entidades_resueltas.alumno_id = su alumno_id, entidades_resueltas.alumno_nombre_detectado = su nombre_completo REAL tal como aparece en alumnos_del_grupo_activo (nunca el texto que dijo el maestro), alumno_ambiguo=false, datos_faltantes=[].
-   - Si hay exactamente una coincidencia pero SOLO por semejanza FONÉTICA (el texto que escribió/dijo el maestro no se parece por escrito al nombre real, típico de dictado por voz mal transcrito): mismo llenado de alumno_id/alumno_nombre_detectado que arriba, PERO además, SOLO para marcar_asistencia_individual (2.1), pon requiere_confirmacion=true y motivo_confirmacion="nombre_fonetico" — la aplicación le va a preguntar al maestro antes de escribir nada. Para 1, 3, 14 y 14.1 (son consultas o navegación, no escrituras) no hace falta esta confirmación extra.
+   - Si hay exactamente una coincidencia pero SOLO por semejanza FONÉTICA (el texto que escribió/dijo el maestro no se parece por escrito al nombre real, típico de dictado por voz mal transcrito): mismo llenado de alumno_id/alumno_nombre_detectado que arriba, PERO además, SOLO para marcar_asistencia_individual (2.1), pon requiere_confirmacion=true y motivo_confirmacion="nombre_fonetico" — la aplicación le va a preguntar al maestro antes de escribir nada. Para 1, 3, 14, 14.1 y 15 (son consultas o navegación, no escrituras) no hace falta esta confirmación extra.
    - Si no se menciona ningún alumno o no hay coincidencia razonable: alumno_id=null, agrega "alumno" a datos_faltantes, nivel_confianza baja (<0.5).
    - Si hay más de una coincidencia razonable: alumno_ambiguo=true, opciones_alumno_ambiguo con los nombres, agrega "alumno" a datos_faltantes.
 10. Si no puedes identificar ninguna de las intenciones anteriores con confianza razonable, usa intencion_principal="conversacion_general", nivel_ejecucion=3, requiere_ia=true, requiere_contexto_memoria=false, datos_faltantes=[], requiere_confirmacion=false.
@@ -135,7 +143,9 @@ REGLAS:
 12. Nunca inventes un alumno_id que no exista literalmente en alumnos_del_grupo_activo.
 13. CONFIRMACIÓN DE SEGUIMIENTO: si el mensaje actual es una respuesta afirmativa breve ("sí", "sí es correcto", "así es", "correcto", "exacto", "confirmado", "sí, regístralo") Y el ÚLTIMO turno del ASISTENTE en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN" es una pregunta del tipo "¿Te refieres a [nombre]?" sobre asistencia, entonces: intencion_principal="marcar_asistencia_individual", resuelve entidades_resueltas contra ese mismo [nombre] (búscalo en alumnos_del_grupo_activo), toma estado_asistencia_solicitado del turno del MAESTRO anterior a esa pregunta, y esta vez requiere_confirmacion=false (ya se confirmó explícitamente).
 14. Si pide VER/CONSULTAR a un alumno específico en la Lista (sin pedir asistencia/ficha/apoyo con su propio formato de documento, ver 1/3/6) → intencion_principal="consultar_alumno_lista", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Frases que indican CONSULTA (no cambiar de pantalla todavía, solo mostrar y ofrecer abrir): "muéstrame a [nombre]", "muéstrame a [nombre] en la lista", "enséñame a [nombre]", "enséñame las faltas/incidencias/evaluaciones de [nombre]", "busca a [nombre]", "dime de [nombre]", "cómo va [nombre]". Si la frase nombra claramente una de estas áreas, resuelve pestana_lista: faltas/asistencias→"asistencia", ficha/ficha descriptiva→"fichas", incidencias→"incidencias", evaluaciones/calificaciones→"evaluaciones"; si no nombra ninguna, pestana_lista=null (pestaña "resumen" por default).
-14.1. Si pide ABRIR/NAVEGAR directamente a un alumno específico en la Lista → intencion_principal="navegar_alumno_lista", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Frases que indican NAVEGACIÓN EXPLÍCITA (sí cambiar de pantalla): "abre a [nombre]", "abre a [nombre] en la lista", "llévame a [nombre]", "ve a [nombre]", "entra a [nombre]", "ábreme la ficha de [nombre]". Mismo cálculo de pestana_lista que en 14. La diferencia entre 14 y 14.1 es EXCLUSIVAMENTE el verbo usado (mostrar/consultar vs. abrir/navegar) — nunca lo decidas por otra señal.`;
+14.1. Si pide ABRIR/NAVEGAR directamente a un alumno específico en la Lista → intencion_principal="navegar_alumno_lista", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Frases que indican NAVEGACIÓN EXPLÍCITA (sí cambiar de pantalla): "abre a [nombre]", "abre a [nombre] en la lista", "llévame a [nombre]", "ve a [nombre]", "entra a [nombre]", "ábreme la ficha de [nombre]". Mismo cálculo de pestana_lista que en 14. La diferencia entre 14 y 14.1 es EXCLUSIVAMENTE el verbo usado (mostrar/consultar vs. abrir/navegar) — nunca lo decidas por otra señal.
+15. Si pregunta CUÁNTAS/CUÁNTOS incidencias/reportes/actas tiene un alumno específico, o pide un número/resumen de sus incidencias (no pide VER la pestaña, pide la CIFRA) → intencion_principal="consultar_incidencias_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "¿cuántas incidencias tiene [nombre]?", "¿[nombre] tiene reportes?", "¿cuántos reportes lleva [nombre]?". Distinto de 14 (que es "muéstrame/enséñame las incidencias de [nombre]", pide VER la pestaña, no una cifra) — igual que la distinción entre 1 (cifra de faltas) y 14 con pestana_lista="asistencia" (ver la pestaña).
+16. Si pide ver la Lista mostrando SOLO un subconjunto, sin nombrar a un alumno específico → intencion_principal="navegar_lista_filtrada", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, entidades_resueltas.alumno_id=null. Ejemplos: "muéstrame únicamente los ausentes", "muéstrame solo los presentes", "ver solo las niñas", "enséñame nada más los niños", "filtra la lista por ausentes". filtro_lista: "ausentes" si pide solo ausentes/faltantes/quién faltó, "presentes" si pide solo presentes/quién sí vino, "ninas" si pide solo niñas/mujeres/alumnas, "ninos" si pide solo niños/hombres/alumnos, "todos" si pide ver la lista completa sin filtro específico pero de todas formas con un verbo de navegación (abre/muéstrame/ve a la lista, sin más). Nunca actives esta regla si el mensaje ya nombra a un alumno específico (eso es 14/14.1).`;
 }
 
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras

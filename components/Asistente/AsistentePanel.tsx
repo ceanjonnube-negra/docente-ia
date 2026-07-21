@@ -336,7 +336,12 @@ export default function AsistentePanel() {
       const ruta = accion.pestana ? `/dashboard/lista/${accion.alumnoId}?tab=${accion.pestana}` : `/dashboard/lista/${accion.alumnoId}`
       router.push(ruta)
     } else if (accion.modulo === 'lista') {
-      router.push('/dashboard/lista')
+      // Navegación a nivel de módulo, sin alumnoId — "muéstrame
+      // únicamente los ausentes" (ver navegar_lista_filtrada en
+      // app/api/chat/route.ts). filtros.filtro coincide con el mismo
+      // estado `filtro` que ya existe en app/dashboard/lista/page.tsx.
+      const filtro = accion.filtros?.filtro
+      router.push(filtro ? `/dashboard/lista?filtro=${filtro}` : '/dashboard/lista')
     }
     AsistenteService.limpiarNavegacionPendiente()
   }, [asistente.accionNavegacionPendiente, router])

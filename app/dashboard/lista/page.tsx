@@ -60,7 +60,16 @@ function ListaPageContent() {
   const [cargando, setCargando] = useState(true)
   const [mensaje, setMensaje] = useState('')
   const [busqueda, setBusqueda] = useState('')
-  const [filtro, setFiltro] = useState<'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes'>('todos')
+  // Filtro inicial desde ?filtro=... (ver "Nueva capacidad: consultas
+  // inteligentes entre módulos" — AsistentePanel navega aquí con
+  // router.push incluyendo este parámetro para "muéstrame únicamente
+  // los ausentes"). searchParams ya existe en esta pantalla (líneas
+  // 54-55), así que no hace falta ningún workaround de Suspense nuevo.
+  const FILTROS_VALIDOS = ['todos', 'ninas', 'ninos', 'presentes', 'ausentes'] as const
+  const [filtro, setFiltro] = useState<'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes'>(() => {
+    const f = searchParams.get('filtro')
+    return (FILTROS_VALIDOS as readonly string[]).includes(f ?? '') ? (f as typeof FILTROS_VALIDOS[number]) : 'todos'
+  })
 
   const [estados, setEstados] = useState<Record<string, EstadoAsistencia>>({})
   const [guardandoAsistencia, setGuardandoAsistencia] = useState(false)
