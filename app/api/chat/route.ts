@@ -600,7 +600,7 @@ export async function POST(req: NextRequest) {
         if (!clasificacion.entidades_resueltas.alumno_id) {
           console.log('[NIVEL0] consultar_asistencia sin alumno_id resuelto — cae al flujo normal (Claude sin el dato real)')
         } else if (!sesion.ciclo_escolar_id) {
-          console.log('[NIVEL0] consultar_asistencia con alumno_id pero sesion.ciclo_escolar_id es null — docente_contexto_activo no tiene ciclo escolar configurado, cae al flujo normal')
+          console.log('[NIVEL0] consultar_asistencia con alumno_id pero sesion.ciclo_escolar_id es null — sin grupo activo con ciclo escolar activo para este docente (ver obtenerSesionContexto), cae al flujo normal')
         } else {
           try {
             const datos = await consultarAsistenciaAlumno(
@@ -813,6 +813,22 @@ export async function POST(req: NextRequest) {
               categoria: categoriaEventoCalendario(e),
             }))
             contextoEnriquecido += `\n\nCALENDARIO ESCOLAR COMPLETO DEL CICLO ${inicioAnioCiclo}-${inicioAnioCiclo + 1} (usa estos datos reales para responder cualquier pregunta sobre fechas, actividades o eventos escolares — de hoy (${sesion.fecha_actual}), de esta semana, de este mes, ya pasados, o de más adelante en el ciclo; no inventes otros; si no hay eventos en el rango que se pregunta, dilo con honestidad; distingue siempre en tu respuesta entre eventos oficiales SEP y actividades propias que el maestro agregó — nunca los mezcles sin indicarlo):\n${JSON.stringify(eventosConCategoria)}`
+          } else {
+            // Diagnóstico obligatorio (ver "Corrección de arquitectura —
+            // lectura real del módulo de Asistencias"): antes, si la
+            // intención se clasificaba bien pero la condición extra de
+            // la rama (sesion.grupo_activo_id, sesion.ciclo_escolar_id,
+            // userId, alumno_id) venía falsa, ninguna rama del if/else-if
+            // de arriba coincidía y el enriquecimiento se saltaba EN
+            // SILENCIO — nada en los logs distinguía "no era este
+            // intent" de "era este intent pero faltó un dato". Con esto,
+            // cualquier caso futuro similar (Incidencias, Evaluaciones,
+            // Fichas, Historial, lo que sea) queda diagnosticable de
+            // inmediato en vercel logs en vez de otra ronda de reportar
+            // "el Chat dice que no tiene acceso" a ciegas.
+            console.log(
+              `[NIVEL4] ${clasificacion.intencion_principal} clasificado pero SIN enriquecer — grupo_activo_id=${sesion.grupo_activo_id ?? 'null'} ciclo_escolar_id=${sesion.ciclo_escolar_id ?? 'null'} userId=${userId ? 'presente' : 'null'} alumno_id=${clasificacion.entidades_resueltas.alumno_id ?? 'null'}`
+            )
           }
         } catch (e) {
           console.error('Error ensamblando contexto Nivel 4:', e)

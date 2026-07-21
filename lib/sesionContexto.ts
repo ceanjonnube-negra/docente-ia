@@ -42,42 +42,56 @@ export async function obtenerSesionContexto(
     alumnos_del_grupo_activo: [],
   };
 
-  const { data: activo } = await sb
-    .from('docente_contexto_activo')
-    .select('institucion_id, ciclo_escolar_id, grupo_id')
+  // CAUSA RAÍZ real de "el Chat IA dice que no tiene acceso" en
+  // cualquier módulo (no solo asistencia): esta función resolvía el
+  // "grupo activo" leyendo un puntero aparte, docente_contexto_activo,
+  // que SOLO se escribe una vez al crear un grupo nuevo (ver
+  // app/dashboard/grupos/nuevo/page.tsx) y nunca se vuelve a actualizar
+  // después — ni hay ninguna pantalla para cambiarlo. Si ese puntero
+  // quedaba ausente o apuntando a un ciclo escolar ya no activo,
+  // grupo_activo_id salía null (o apuntaba al grupo equivocado) para
+  // el Chat, mientras que app/dashboard/lista/page.tsx (cargarTodo)
+  // sigue mostrando datos reales porque calcula el grupo activo DE
+  // CERO cada vez, sin depender de ningún puntero guardado. Fuente
+  // única de verdad real: la misma consulta que ya usa Lista, no un
+  // caché aparte que puede desincronizarse en silencio.
+  const { data: grupos } = await sb
+    .from('grupos')
+    .select('id, institucion_id, ciclo_escolar_id, ciclos_escolares!inner(activo)')
     .eq('docente_id', docenteId)
-    .maybeSingle();
+    .eq('ciclos_escolares.activo', true)
+    .order('creado_en', { ascending: false })
+    .limit(1);
 
-  if (!activo) return base;
+  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null } | undefined;
+  if (!grupoActivo) return base;
 
-  base.institucion_id = activo.institucion_id;
-  base.ciclo_escolar_id = activo.ciclo_escolar_id;
-  base.grupo_activo_id = activo.grupo_id;
+  base.institucion_id = grupoActivo.institucion_id;
+  base.ciclo_escolar_id = grupoActivo.ciclo_escolar_id;
+  base.grupo_activo_id = grupoActivo.id;
 
-  if (activo.grupo_id) {
-    // sexo y numero_lista van aquí (no solo el nombre) para que el Chat
-    // IA pueda contestar "¿cuántas niñas y niños hay?" o dar el número
-    // de lista real de un alumno sin inventarlo — antes esos datos no
-    // llegaban nunca al modelo y los adivinaba.
-    const { data: inscritos } = await sb
-      .from('inscripciones')
-      .select('alumno_id, numero_lista, alumnos(nombre, sexo)')
-      .eq('grupo_id', activo.grupo_id)
-      .eq('estatus', 'activo');
+  // sexo y numero_lista van aquí (no solo el nombre) para que el Chat
+  // IA pueda contestar "¿cuántas niñas y niños hay?" o dar el número
+  // de lista real de un alumno sin inventarlo — antes esos datos no
+  // llegaban nunca al modelo y los adivinaba.
+  const { data: inscritos } = await sb
+    .from('inscripciones')
+    .select('alumno_id, numero_lista, alumnos(nombre, sexo)')
+    .eq('grupo_id', grupoActivo.id)
+    .eq('estatus', 'activo');
 
-    if (inscritos) {
-      base.alumnos_del_grupo_activo = inscritos
-        .map((row: any) => ({
-          alumno_id: row.alumno_id,
-          // Fuente única de verdad — ver nombreOficialAlumno en
-          // lib/rosterGrupo.ts. Nunca se reconstruye ni reformatea aquí
-          // ni en ningún otro lugar de la aplicación.
-          nombre_completo: row.alumnos ? nombreOficialAlumno(row.alumnos) : '',
-          sexo: row.alumnos?.sexo ?? null,
-          numero_lista: row.numero_lista ?? null,
-        }))
-        .filter((a: AlumnoLigero) => a.nombre_completo);
-    }
+  if (inscritos) {
+    base.alumnos_del_grupo_activo = inscritos
+      .map((row: any) => ({
+        alumno_id: row.alumno_id,
+        // Fuente única de verdad — ver nombreOficialAlumno en
+        // lib/rosterGrupo.ts. Nunca se reconstruye ni reformatea aquí
+        // ni en ningún otro lugar de la aplicación.
+        nombre_completo: row.alumnos ? nombreOficialAlumno(row.alumnos) : '',
+        sexo: row.alumnos?.sexo ?? null,
+        numero_lista: row.numero_lista ?? null,
+      }))
+      .filter((a: AlumnoLigero) => a.nombre_completo);
   }
 
   return base;
