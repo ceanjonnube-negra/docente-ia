@@ -526,9 +526,14 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     document.body.appendChild(audioEl)
     this.audioEl = audioEl
     pc.ontrack = (evento) => {
-      this.registrar('4-pista-remota', 'Audio del modelo recibido')
+      const pista = evento.streams[0]?.getAudioTracks()[0]
+      this.debug('5-audio-track-recibido', 'ok', `streamId=${evento.streams[0]?.id || 'sin-id'} trackState=${pista?.readyState || 'sin-track'}`)
       audioEl.srcObject = evento.streams[0]
-      audioEl.play().catch(err => this.registrar('4-pista-remota-play-error', describirError(err)))
+      this.debug('6-play-invocado', 'info', 'llamando audioEl.play()')
+      audioEl.play().then(
+        () => this.debug('7-play-resultado', 'ok', 'play() resuelto correctamente'),
+        err => this.debug('8-play-error', 'error', describirError(err))
+      )
     }
 
     const pistasAudio = this.stream!.getAudioTracks()
@@ -889,7 +894,15 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         content: [{ type: 'input_text', text: `${MARCADOR_LECTURA_EXACTA}\n${textoLimpio}` }],
       },
     })
-    this.enviarEventoCliente({ type: 'response.create', response: { modalities: ['audio'] } })
+    // output_modalities — NO "modalities" (ese nombre es de la API beta
+    // vieja / de RealtimeSession, no de RealtimeResponseCreateParams en
+    // esta versión GA del SDK, la misma que ya usa la forma anidada
+    // audio.output/audio.input en /api/realtime-token). Enviar
+    // "modalities" aquí hace que el servidor rechace response.create
+    // con un evento 'error' — la causa raíz real de "Ocurrió un
+    // problema con la voz": el reconocimiento y el Chat IA nunca
+    // pasaban por este método, solo la reproducción.
+    this.enviarEventoCliente({ type: 'response.create', response: { output_modalities: ['audio'] } })
   }
 
   suscribir(callback: (evento: EventoMotor) => void): DesuscribirFn {
@@ -1095,6 +1108,10 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       case 'error': {
         this.registrar('8-error-servidor', evento)
         const detalle = String(evento.error?.message || evento.error?.code || describirError(evento))
+        // Antes este detalle solo llegaba a console.log (registrar) —
+        // invisible en un iPhone real sin Mac conectado por cable. debug()
+        // sí llega al panel ?voiceDebug=1 en el propio dispositivo.
+        this.debug('8-error-servidor-detalle', 'error', `type=${evento.error?.type || 'sin-tipo'} code=${evento.error?.code || 'sin-code'} · ${detalle}`)
 
         // "buffer too small" / "Expected at least Xms of audio": con la
         // validación de huboAudioSinConfirmar en finalizarTurno() esto ya
@@ -1112,10 +1129,10 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           break
         }
 
-        // El detalle técnico real ya quedó registrado arriba (ver
-        // registrar, línea de este mismo bloque) para el panel
-        // ?voiceDebug=1 — el docente solo debe ver un mensaje simple,
-        // ver ARQUITECTURA MAESTRA, principio de ERRORES.
+        // El detalle técnico real ya quedó registrado arriba (8-error-
+        // servidor-detalle, visible en ?voiceDebug=1) — el docente solo
+        // debe ver un mensaje simple, ver ARQUITECTURA MAESTRA, principio
+        // de ERRORES.
         this.emitir({ tipo: 'error', mensaje: 'Ocurrió un problema con la voz. Toca para reintentar.' })
         break
       }
