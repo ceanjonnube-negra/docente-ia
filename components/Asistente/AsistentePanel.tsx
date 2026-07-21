@@ -16,10 +16,12 @@
 // motor; aquí solo se ve la conversación.
 
 import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { AsistenteService } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
@@ -223,6 +225,7 @@ const nombrePila = (nombreCompleto: string | undefined): string => {
 
 export default function AsistentePanel() {
   const asistente = useAsistente()
+  const router = useRouter()
   const [input, setInput] = useState('')
   const [perfil, setPerfil] = useState<any>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -260,6 +263,25 @@ export default function AsistentePanel() {
     }
     cargarPerfil()
   }, [])
+
+  // Navegación automática pedida por voz/texto ("Abre a Sergio en la
+  // lista") — AsistentePanel es la única pieza con useRouter, así que
+  // aquí (y solo aquí) se convierte una AccionNavegacion en un
+  // router.push real. Se limpia llamando directo a AsistenteService
+  // (no a través de asistente, que es un objeto nuevo cada render —
+  // ver useAsistente) para que nunca se repita si el snapshot se
+  // vuelve a leer. Hoy solo cubre "lista" — ver ModuloNavegable.
+  useEffect(() => {
+    const accion = asistente.accionNavegacionPendiente
+    if (!accion) return
+    if (accion.modulo === 'lista' && accion.alumnoId) {
+      const ruta = accion.pestana ? `/dashboard/lista/${accion.alumnoId}?tab=${accion.pestana}` : `/dashboard/lista/${accion.alumnoId}`
+      router.push(ruta)
+    } else if (accion.modulo === 'lista') {
+      router.push('/dashboard/lista')
+    }
+    AsistenteService.limpiarNavegacionPendiente()
+  }, [asistente.accionNavegacionPendiente, router])
 
   useEffect(() => {
     if (asistente.panelAbierto) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -656,7 +678,7 @@ export default function AsistentePanel() {
                         <button
                           key={accion.id}
                           type="button"
-                          onClick={() => asistente.confirmarAccionCalendario(m.id, accion.id)}
+                          onClick={() => m.datosAccionNavegacion ? asistente.confirmarNavegacion(m.id) : asistente.confirmarAccionCalendario(m.id, accion.id)}
                           disabled={asistente.generando}
                           className={
                             accion.estilo === 'primario'

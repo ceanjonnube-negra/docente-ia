@@ -27,6 +27,7 @@ import {
 } from './persistencia'
 import type {
   AccionMensaje,
+  AccionNavegacion,
   AdjuntoImagen,
   ArchivoGeneradoInfo,
   ContextoAplicacion,
@@ -123,6 +124,12 @@ export type EstadoAsistente = {
   // tocó, para que AsistentePanel sepa en qué burbuja mostrar la
   // animación en vez de un estado global ambiguo.
   accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null
+  // Acción de navegación automática pendiente de ejecutar — null el
+  // resto del tiempo. Solo AsistentePanel (única pieza con useRouter)
+  // la consume: al verla distinta de null, hace router.push y llama a
+  // limpiarNavegacionPendiente(). Ver "Integración de comandos
+  // verbales con navegación y consulta interna".
+  accionNavegacionPendiente: AccionNavegacion | null
 }
 
 export type PasoDebugVoz = {
@@ -236,6 +243,7 @@ class AsistenteServiceImpl {
   // /api/calendario/aplicar, este temporizador solo va avanzando el
   // texto que se muestra mientras esa llamada está en curso.
   private accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null = null
+  private accionNavegacionPendiente: AccionNavegacion | null = null
   private accionCalendarioTimer: ReturnType<typeof setInterval> | null = null
   private readonly ETAPAS_ACCION_CALENDARIO = [
     'Analizando cambios...',
@@ -284,6 +292,7 @@ class AsistenteServiceImpl {
       listaConversaciones: this.listaConversaciones,
       archivoReutilizadoId: this.archivoReutilizadoId,
       accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
+      accionNavegacionPendiente: this.accionNavegacionPendiente,
     }
   }
 
@@ -431,6 +440,7 @@ class AsistenteServiceImpl {
     if (this.archivoReutilizadoTimer) { clearTimeout(this.archivoReutilizadoTimer); this.archivoReutilizadoTimer = null }
     this.detenerProgresoAccionCalendario()
     this.archivoReutilizadoId = null
+    this.accionNavegacionPendiente = null
     this.turnoAbierto = null
     this.editandoDocumentoId = null
     this.documentoFinalizandoId = null
@@ -892,6 +902,24 @@ class AsistenteServiceImpl {
             this.actualizarDocumentoActivo(msg.id, evento.contenidoOriginal ?? msg.texto, evento.archivo)
           } else if (msg && esDocumentoFormal(msg.texto)) {
             this.actualizarDocumentoActivo(msg.id, msg.texto)
+          } else if (msg && evento.accionNavegacion) {
+            // Navegación automática ("Abre a Sergio en la lista"): se
+            // deja como señal pendiente para que AsistentePanel (única
+            // pieza con acceso a useRouter) haga router.push y la
+            // limpie — ver limpiarNavegacionPendiente(). Consulta
+            // ("Muéstrame a Sergio en la lista"): se ofrece el botón
+            // "Abrir en Lista" sobre el mismo mensaje, reutilizando
+            // AccionMensaje/acciones igual que la confirmación de
+            // calendario — ver confirmarNavegacion().
+            if (evento.accionNavegacion.automatica) {
+              this.accionNavegacionPendiente = evento.accionNavegacion
+            } else {
+              this.mensajes = [
+                ...this.mensajes.slice(0, idx),
+                { ...msg, datosAccionNavegacion: evento.accionNavegacion, acciones: [{ id: 'abrir_en_lista', etiqueta: 'Abrir en Lista', estilo: 'primario' }] },
+                ...this.mensajes.slice(idx + 1),
+              ]
+            }
           }
         }
         this.notificar()
@@ -1212,6 +1240,29 @@ class AsistenteServiceImpl {
       this.notificar()
       this.persistirConversacion()
     }
+  }
+
+  // El docente tocó "Abrir en Lista" sobre una consulta (ver
+  // manejarEventoMotor, caso 'respuesta-final' con accionNavegacion no
+  // automática) — mismo patrón que confirmarAccionCalendario: se marca
+  // accionElegida de inmediato para que el botón no se pueda tocar dos
+  // veces, y se deja la acción como pendiente para que AsistentePanel
+  // (única pieza con useRouter) haga el router.push real.
+  confirmarNavegacion(mensajeId: string) {
+    const mensaje = this.mensajes.find((m) => m.id === mensajeId)
+    if (!mensaje || mensaje.accionElegida || !mensaje.datosAccionNavegacion) return
+    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, accionElegida: 'abrir_en_lista' } : m))
+    this.accionNavegacionPendiente = mensaje.datosAccionNavegacion
+    this.notificar()
+    this.persistirConversacion()
+  }
+
+  // AsistentePanel llama esto justo después de hacer router.push, para
+  // que la navegación nunca se repita si el snapshot se vuelve a leer
+  // (ej. al volver a montar el efecto).
+  limpiarNavegacionPendiente() {
+    this.accionNavegacionPendiente = null
+    this.notificar()
   }
 
   // Fuente única para "fijar" documentoActivo — un borrador nuevo, una

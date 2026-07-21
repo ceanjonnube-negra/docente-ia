@@ -20,6 +20,7 @@ import {
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
+import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 
@@ -660,6 +661,46 @@ export async function POST(req: NextRequest) {
             console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}:`, e)
             return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
           }
+        }
+      }
+
+      // Nivel 1: consultar_alumno_lista / navegar_alumno_lista — "no
+      // debe cambiar automáticamente de pantalla" vs. "sí debe
+      // navegar" (ver DIFERENCIA ENTRE CONSULTAR Y NAVEGAR del RFC de
+      // navegación). Ninguna de las dos escribe nada — un mensaje de
+      // texto real + un marcador técnico con la AccionNavegacion, que
+      // el cliente (motorTextoClaude.ts) extrae y AsistentePanel
+      // ejecuta con router.push. `automatica` es lo único que decide
+      // si el docente ve un botón "Abrir en Lista" o si ya navegó.
+      if (
+        (clasificacion.intencion_principal === 'consultar_alumno_lista' || clasificacion.intencion_principal === 'navegar_alumno_lista') &&
+        clasificacion.nivel_ejecucion === 1
+      ) {
+        const alumnoId = clasificacion.entidades_resueltas.alumno_id
+        const nombreReal = clasificacion.entidades_resueltas.alumno_nombre_detectado
+
+        if (clasificacion.entidades_resueltas.alumno_ambiguo && clasificacion.entidades_resueltas.opciones_alumno_ambiguo.length > 0) {
+          console.log(`[NIVEL0] ${clasificacion.intencion_principal} — alumno ambiguo: ${clasificacion.entidades_resueltas.opciones_alumno_ambiguo.join(', ')}`)
+          return respuestaTexto(`¿Te refieres a ${clasificacion.entidades_resueltas.opciones_alumno_ambiguo.join(' o a ')}?`)
+        }
+
+        if (!alumnoId || !nombreReal) {
+          console.log(`[NIVEL0] ${clasificacion.intencion_principal} sin alumno_id resuelto — cae al flujo normal`)
+        } else {
+          const esNavegar = clasificacion.intencion_principal === 'navegar_alumno_lista'
+          const accionNavegacion: AccionNavegacion = {
+            modulo: 'lista',
+            accion: 'abrir_registro',
+            alumnoId,
+            pestana: clasificacion.pestana_lista ?? undefined,
+            automatica: esNavegar,
+          }
+          const marcador = `[[NAVEGACION:${Buffer.from(JSON.stringify(accionNavegacion), 'utf-8').toString('base64')}]]`
+          const texto = esNavegar
+            ? `Abriendo a ${nombreReal} en Lista.`
+            : `${nombreReal} está en tu grupo activo.`
+          console.log(`[NIVEL0] ${clasificacion.intencion_principal} OK — alumno_id=${alumnoId} pestana=${clasificacion.pestana_lista ?? '(ninguna)'}`)
+          return respuestaTexto(`${texto}\n${marcador}`)
         }
       }
 

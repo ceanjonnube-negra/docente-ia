@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import type {
+  AccionNavegacion,
   AdjuntoImagen,
   ArchivoGeneradoInfo,
   ContextoAplicacion,
@@ -242,9 +243,10 @@ export class MotorTextoClaude implements MotorConversacional {
 
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
       const { texto: sinArchivo, archivo } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
-      const { texto: respuestaLimpia, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
+      const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
+      const { texto: respuestaLimpia, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal, accionNavegacion })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -296,6 +298,23 @@ export class MotorTextoClaude implements MotorConversacional {
       const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
       const contenidoOriginal = new TextDecoder('utf-8').decode(bytes)
       return { texto: respuesta.replace(match[0], '').trim(), contenidoOriginal }
+    } catch {
+      return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico con la acción de navegación resuelta por el
+  // Clasificador de Nivel 0 (ver "consultar_alumno_lista" /
+  // "navegar_alumno_lista" en app/api/chat/route.ts) — mismo patrón
+  // que procesarMarcadorDeArchivo: el docente nunca ve esta línea.
+  private procesarMarcadorDeNavegacion(respuesta: string): { texto: string; accionNavegacion?: AccionNavegacion } {
+    const match = respuesta.match(/\[\[NAVEGACION:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const accionNavegacion = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as AccionNavegacion
+      return { texto: respuesta.replace(match[0], '').trim(), accionNavegacion }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
     }

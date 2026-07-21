@@ -178,7 +178,19 @@ export default function FichaAlumnoPage() {
     clase: 'bg-gray-100 text-gray-500',
   })
 
-  const [pestana, setPestana] = useState<Pestana>('resumen')
+  // Pestaña inicial desde ?tab=... (ver "Integración de comandos
+  // verbales con navegación y consulta interna" — AsistentePanel
+  // navega aquí con router.push incluyendo este parámetro). Leído
+  // directo de window.location.search en vez de useSearchParams() para
+  // no exigirle un límite de Suspense a toda esta pantalla por un
+  // parámetro opcional — mismo patrón que voiceDebug en
+  // AsistentePanel.tsx.
+  const [pestana, setPestana] = useState<Pestana>(() => {
+    if (typeof window === 'undefined') return 'resumen'
+    const tab = new URLSearchParams(window.location.search).get('tab')
+    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas', 'historial']
+    return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
+  })
   const [cargando, setCargando] = useState(true)
   const [guardando, setGuardando] = useState(false)
   const [mensaje, setMensaje] = useState('')

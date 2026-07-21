@@ -25,6 +25,29 @@ export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string }
 // este mismo tipo en vez de inventar otro.
 export type AccionMensaje = { id: string; etiqueta: string; estilo: 'primario' | 'secundario' }
 
+// Acción de navegación que el Chat IA puede proponer o ejecutar sobre
+// otro módulo de la aplicación (ver "Integración de comandos verbales
+// con navegación y consulta interna") — hoy solo cubre lo que
+// realmente existe como pantalla navegable: Lista (con sus pestañas
+// reales, ver Pestana en app/dashboard/lista/[alumnoId]/page.tsx —
+// tipado aquí como string suelto para no importar un tipo de un
+// archivo "page.tsx", nunca idiomático en Next.js). Calendario e
+// Historial quedan para una siguiente etapa.
+export type ModuloNavegable = 'lista'
+export type TipoAccionNavegacion = 'abrir_modulo' | 'abrir_registro' | 'resaltar_registro'
+export type AccionNavegacion = {
+  modulo: ModuloNavegable
+  accion: TipoAccionNavegacion
+  alumnoId?: string
+  pestana?: string
+  filtros?: Record<string, string>
+  // true = navegar de inmediato ("Abre a Sergio en la lista"); false =
+  // solo ofrecer el botón "Abrir en Lista" sin cambiar de pantalla
+  // ("Muéstrame a Sergio en la lista") — ver DIFERENCIA ENTRE
+  // CONSULTAR Y NAVEGAR del RFC.
+  automatica: boolean
+}
+
 export type TipoAccionCalendario = 'agregar' | 'corregir' | 'eliminar'
 
 // Una diferencia detectada entre la foto del calendario oficial y
@@ -73,6 +96,11 @@ export type MensajeConversacion = {
   // mecanismo genérico de "proceso activo en curso" que ya usa la
   // generación de documentos largos.
   datosAccionCalendario?: DiferenciaCalendario[]
+  // Acción de navegación pendiente de confirmar con el botón "Abrir en
+  // Lista" — presente solo cuando la consulta NO fue automática (ver
+  // AccionNavegacion.automatica). Igual que datosAccionCalendario,
+  // viaja pegada al mensaje.
+  datosAccionNavegacion?: AccionNavegacion
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
@@ -147,7 +175,7 @@ export type EventoMotor =
   // nunca se muestra en pantalla, para que AsistenteService pueda
   // seguir usándolo como fuente si el docente pide otro formato
   // después ("ahora en PDF").
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[] }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
