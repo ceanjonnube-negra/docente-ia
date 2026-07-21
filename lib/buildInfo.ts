@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'sincronizar-perfil-docente-v63-04ae744'
+export const BUILD_ID = 'fix-inconsistencia-asistencia-lista-chat-v64-2f3b227'

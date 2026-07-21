@@ -57,18 +57,33 @@ export async function obtenerSesionContexto(
   // caché aparte que puede desincronizarse en silencio.
   const { data: grupos } = await sb
     .from('grupos')
-    .select('id, institucion_id, ciclo_escolar_id, ciclos_escolares!inner(activo)')
+    .select('id, institucion_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
     .eq('docente_id', docenteId)
     .eq('ciclos_escolares.activo', true)
     .order('creado_en', { ascending: false })
     .limit(1);
 
-  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null } | undefined;
-  if (!grupoActivo) return base;
+  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string } | undefined;
+  if (!grupoActivo) {
+    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
+    return base;
+  }
 
   base.institucion_id = grupoActivo.institucion_id;
   base.ciclo_escolar_id = grupoActivo.ciclo_escolar_id;
   base.grupo_activo_id = grupoActivo.id;
+
+  // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
+  // Lista y Chat IA en el resumen de asistencia") — mismo formato que
+  // el log equivalente de app/dashboard/lista/page.tsx (consola del
+  // navegador). grupo_creado_en es la marca de tiempo REAL que
+  // desempata "cuál grupo es el activo" cuando el docente tiene más de
+  // una fila en `grupos`; si Lista y Chat alguna vez muestran un
+  // grupo_id distinto para el mismo docente, este valor es lo primero
+  // que hay que comparar. Quitar una vez confirmado en producción.
+  console.log(
+    `[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} ciclo=${grupoActivo.ciclo_escolar_id} origen=obtenerSesionContexto`
+  );
 
   // sexo y numero_lista van aquí (no solo el nombre) para que el Chat
   // IA pueda contestar "¿cuántas niñas y niños hay?" o dar el número

@@ -32,6 +32,28 @@ export function clasificarEstadoAsistencia(estatus: string | null | undefined): 
   return 'sin_registrar';
 }
 
+export type ConteoAsistencia = { presentes: number; faltas: number; retardos: number; sinRegistrar: number; total: number };
+
+// Única función que convierte una lista de estados oficiales (uno por
+// alumno) en los 4 totales que se muestran tanto en
+// app/dashboard/lista/page.tsx (tarjeta de resumen) como en la
+// respuesta del Chat IA (asistenciaGrupoResumen más abajo). Con el
+// mismo conjunto de alumnos y los mismos estados de entrada, esta
+// función GARANTIZA el mismo resultado en ambos lados — si alguna vez
+// difieren, la causa nunca puede estar aquí, solo en qué alumnos o qué
+// estatus se leyeron antes de llegar a esta función (ver "Corregir
+// inconsistencia entre Lista y Chat IA en el resumen de asistencia").
+export function contarEstadosAsistencia(estados: EstadoAsistenciaOficial[]): ConteoAsistencia {
+  const conteo: ConteoAsistencia = { presentes: 0, faltas: 0, retardos: 0, sinRegistrar: 0, total: estados.length };
+  for (const estado of estados) {
+    if (estado === 'presente') conteo.presentes++;
+    else if (estado === 'falta') conteo.faltas++;
+    else if (estado === 'retardo') conteo.retardos++;
+    else conteo.sinRegistrar++;
+  }
+  return conteo;
+}
+
 // --- Funciones agregadas a nivel de grupo (no hay RPC para esto — se
 // arma con consultas directas a las tablas, respetando RLS vía el
 // cliente de sesión del docente que se recibe como parámetro). Todas
@@ -54,6 +76,13 @@ export async function asistenciaGrupoResumen(
   grupoId: string,
   fecha: string
 ): Promise<AsistenciaGrupoResumen> {
+  // Marca temporal de ESTA consulta (no del renglón guardado en la
+  // base — asistencia_registro no tiene columna de auditoría propia).
+  // Sirve para probar en los logs que cada llamada vuelve a golpear la
+  // base de datos en el momento real de la pregunta, nunca reutiliza
+  // un resultado de un turno anterior (ver "Corregir inconsistencia
+  // entre Lista y Chat IA en el resumen de asistencia").
+  const timestampConsulta = new Date().toISOString();
   const vacio: AsistenciaGrupoResumen = {
     fecha,
     presentes: [],
@@ -69,16 +98,34 @@ export async function asistenciaGrupoResumen(
     .select('id, alumno_id, alumnos(nombre)')
     .eq('grupo_id', grupoId)
     .eq('estatus', 'activo');
-  if (!inscripciones || inscripciones.length === 0) return vacio;
+  if (!inscripciones || inscripciones.length === 0) {
+    console.log(`[ASISTENCIA][chat] ts=${timestampConsulta} fecha=${fecha} grupo=${grupoId} presentes=0 faltas=0 retardos=0 sinRegistrar=0 origen=asistenciaGrupoResumen — sin inscripciones activas`);
+    return vacio;
+  }
 
   type FilaInscripcion = { id: string; alumno_id: string; alumnos: { nombre: string | null } | { nombre: string | null }[] | null };
-  const nombrePorInscripcion = new Map(
-    (inscripciones as FilaInscripcion[]).map((i) => {
-      const rel = Array.isArray(i.alumnos) ? i.alumnos[0] : i.alumnos;
-      return [i.id, rel?.nombre || 'Alumno'];
-    })
-  );
+  // Mismo criterio que obtenerRosterConPosicion (lib/rosterGrupo.ts —
+  // lo que usa Lista para su roster): una inscripción activa cuyo
+  // alumno ya no existe (fila huérfana) se descarta por completo,
+  // nunca se cuenta con un nombre de repuesto ("Alumno"). Antes esta
+  // función SÍ la contaba — causa real confirmada de que el Chat IA
+  // reportara más alumnos en total que Lista para el mismo grupo y la
+  // misma fecha.
+  const nombrePorInscripcion = new Map<string, string>();
+  let huerfanas = 0;
+  for (const i of inscripciones as FilaInscripcion[]) {
+    const rel = Array.isArray(i.alumnos) ? i.alumnos[0] : i.alumnos;
+    if (!rel?.nombre) { huerfanas++; continue; }
+    nombrePorInscripcion.set(i.id, rel.nombre);
+  }
+  if (huerfanas > 0) {
+    console.warn(`[ASISTENCIA] asistenciaGrupoResumen: ${huerfanas} inscripción(es) activa(s) sin alumno enlazado, excluida(s) del conteo (grupo ${grupoId})`);
+  }
   const inscripcionIds = Array.from(nombrePorInscripcion.keys());
+  if (inscripcionIds.length === 0) {
+    console.log(`[ASISTENCIA][chat] ts=${timestampConsulta} fecha=${fecha} grupo=${grupoId} presentes=0 faltas=0 retardos=0 sinRegistrar=0 origen=asistenciaGrupoResumen — todas las inscripciones eran huérfanas`);
+    return vacio;
+  }
 
   // Registros de HOY — quién está presente/falta/retardo, y quién de
   // plano no tiene registro todavía.
@@ -132,11 +179,21 @@ export async function asistenciaGrupoResumen(
   // peor que mostrarle la cifra real con el problema ya registrado
   // para investigarlo aparte.
   const totalClasificados = vacio.presentes.length + vacio.faltas.length + vacio.retardos.length + vacio.sinRegistrarHoy.length;
-  if (totalClasificados !== inscripciones.length) {
+  if (totalClasificados !== inscripcionIds.length) {
     console.error(
-      `[VALIDACION] asistenciaGrupoResumen: inconsistencia — ${totalClasificados} alumnos clasificados vs ${inscripciones.length} inscripciones activas (grupo ${grupoId}, fecha ${fecha})`
+      `[VALIDACION] asistenciaGrupoResumen: inconsistencia — ${totalClasificados} alumnos clasificados vs ${inscripcionIds.length} inscripciones activas válidas (grupo ${grupoId}, fecha ${fecha})`
     );
   }
+
+  // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
+  // Lista y Chat IA en el resumen de asistencia") — comparar esta
+  // línea contra el log equivalente de app/dashboard/lista/page.tsx
+  // (mismo grupo, misma fecha) es la forma directa de confirmar que
+  // ambos lados están leyendo exactamente el mismo registro. Quitar
+  // una vez confirmado en producción.
+  console.log(
+    `[ASISTENCIA][chat] ts=${timestampConsulta} fecha=${fecha} grupo=${grupoId} presentes=${vacio.presentes.length} faltas=${vacio.faltas.length} retardos=${vacio.retardos.length} sinRegistrar=${vacio.sinRegistrarHoy.length} total=${totalClasificados} origen=asistenciaGrupoResumen`
+  );
 
   return vacio;
 }
@@ -347,11 +404,16 @@ export async function escribirAsistencia(
   // ya quedó guardada correctamente (mismo criterio que ya usaba
   // app/api/asistencia-guardar/route.ts).
   const alumnoIds = registros.map((r) => r.alumno_id);
-  const { data: inscripcionesActivas } = await sb
-    .from('inscripciones')
-    .select('id, alumno_id')
-    .in('alumno_id', alumnoIds)
-    .eq('estatus', 'activo');
+  // Acotar por grupoId cuando se conoce (siempre que quien llama tenga
+  // un grupo activo resuelto) evita que un alumno con más de una
+  // inscripción activa (excepcional, pero posible entre ciclos) reciba
+  // el registro en el grupo equivocado — la misma clase de divergencia
+  // que causaba que Lista y el Chat IA mostraran totales distintos
+  // para "el mismo grupo" (ver "Corregir inconsistencia entre Lista y
+  // Chat IA en el resumen de asistencia").
+  let consultaInscripciones = sb.from('inscripciones').select('id, alumno_id').in('alumno_id', alumnoIds).eq('estatus', 'activo');
+  if (grupoId) consultaInscripciones = consultaInscripciones.eq('grupo_id', grupoId);
+  const { data: inscripcionesActivas } = await consultaInscripciones;
 
   const inscripcionPorAlumno = new Map(
     ((inscripcionesActivas || []) as { id: string; alumno_id: string }[]).map((i) => [i.alumno_id, i.id])

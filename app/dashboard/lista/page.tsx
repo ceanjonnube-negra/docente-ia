@@ -8,7 +8,7 @@ import type { GrupoParaImportar } from '@/lib/importacionInteligente'
 import { useAsistente, useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
 import { fechaISOHoy, formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
-import { clasificarEstadoAsistencia, type EstadoAsistenciaOficial } from '@/lib/motorContexto'
+import { clasificarEstadoAsistencia, contarEstadosAsistencia, type EstadoAsistenciaOficial } from '@/lib/motorContexto'
 
 type Alumno = AlumnoConPosicion
 // Único origen de verdad: los 4 estados oficiales y su clasificación
@@ -92,7 +92,7 @@ function ListaPageContent() {
 
     const { data: grupos, error: errorGrupo } = await supabase
       .from('grupos')
-      .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, ciclos_escolares!inner(activo)')
+      .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
       .eq('docente_id', user.id)
       .eq('ciclos_escolares.activo', true)
       .order('creado_en', { ascending: false })
@@ -174,6 +174,20 @@ function ListaPageContent() {
     })
     setEstados(nuevosEstados)
 
+    // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
+    // Lista y Chat IA en el resumen de asistencia") — mismo formato
+    // que el log del servidor en lib/motorContexto.ts
+    // (asistenciaGrupoResumen) y lib/sesionContexto.ts
+    // (obtenerSesionContexto). Compararlos (grupo, grupo_creado_en,
+    // fecha, conteos) para el mismo instante es la forma directa de
+    // confirmar si Lista y el Chat IA están leyendo el mismo registro.
+    // Se ve en la consola del navegador (F12), no en los logs del
+    // servidor. Quitar una vez confirmado en producción.
+    const conteoHoy = contarEstadosAsistencia(Object.values(nuevosEstados))
+    console.log(
+      `[ASISTENCIA][lista] ts=${new Date().toISOString()} fecha=${hoy} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} presentes=${conteoHoy.presentes} faltas=${conteoHoy.faltas} retardos=${conteoHoy.retardos} sinRegistrar=${conteoHoy.sinRegistrar} total=${conteoHoy.total} origen=lista:cargarTodo`
+    )
+
     setCargando(false)
   }
 
@@ -233,7 +247,7 @@ function ListaPageContent() {
       const res = await fetch('/api/asistencia-guardar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ registros, access_token: session.access_token, zonaHoraria: obtenerZonaHorariaDispositivo() }),
+        body: JSON.stringify({ registros, grupo_id: grupo?.id ?? null, access_token: session.access_token, zonaHoraria: obtenerZonaHorariaDispositivo() }),
       })
       const data = await res.json()
       if (res.ok) {
@@ -251,14 +265,19 @@ function ListaPageContent() {
   const totalNinas = alumnos.filter(a => a.sexo === 'M').length
   const totalNinos = alumnos.filter(a => a.sexo === 'H').length
 
-  // Sin fallback a 'presente': estados[a.id] ya viene sembrado con un
+  // contarEstadosAsistencia (lib/motorContexto.ts): misma función que
+  // usa el Chat IA (asistenciaGrupoResumen) para convertir estados en
+  // totales — con el mismo conjunto de alumnos y los mismos estados,
+  // ambos lados quedan matemáticamente obligados a coincidir. Sin
+  // fallback a 'presente': estados[a.id] ya viene sembrado con un
   // valor real de los 4 oficiales (ver cargarTodo) para cada alumno
   // del grupo — un alumno sin captura cuenta en totalSinRegistrar,
   // nunca en totalPresentes.
-  const totalPresentes = alumnos.filter(a => estados[a.id] === 'presente').length
-  const totalFaltas = alumnos.filter(a => estados[a.id] === 'falta').length
-  const totalRetardos = alumnos.filter(a => estados[a.id] === 'retardo').length
-  const totalSinRegistrar = alumnos.filter(a => estados[a.id] === 'sin_registrar').length
+  const conteoAsistenciaHoy = contarEstadosAsistencia(alumnos.map(a => estados[a.id] ?? 'sin_registrar'))
+  const totalPresentes = conteoAsistenciaHoy.presentes
+  const totalFaltas = conteoAsistenciaHoy.faltas
+  const totalRetardos = conteoAsistenciaHoy.retardos
+  const totalSinRegistrar = conteoAsistenciaHoy.sinRegistrar
 
   const alumnosFiltrados = alumnos.filter(a => {
     if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
