@@ -533,8 +533,23 @@ export async function POST(req: NextRequest) {
   // activo — incluida una lista de alumnos ya generada — y coincidir
   // con SOLICITA_LISTA_ALUMNOS sin que el maestro haya pedido nada de
   // eso en su instrucción real.
+  // CAUSA RAÍZ real de "consultar_asistencia_grupo no devuelve el
+  // resumen de asistencia" (ver "Depuración de la herramienta de
+  // asistencia — único origen de verdad"): esta detección corre ANTES
+  // del Clasificador de Nivel 0, así que un mensaje como "revisa la
+  // lista del grupo" o "consulta la lista de asistencia" — frases que
+  // la propia regla 5 de clasificadorNivel0.ts ya reconoce como
+  // consultar_asistencia_grupo — nunca llegaba a esa herramienta: se
+  // interceptaba aquí primero y se devolvía la lista de NOMBRES en vez
+  // del resumen de presentes/faltas/retardos. Si el mensaje ya suena a
+  // consulta de estado de asistencia (no de nombres), nunca se
+  // intercepta aquí — se deja pasar al Clasificador de Nivel 0, que sí
+  // sabe enrutarlo a la Herramienta real (ver
+  // lib/asistente/herramientasModulo.ts).
+  const PARECE_CONSULTA_DE_ASISTENCIA = /asistenc|\bfalt(a|as|ó|aron)\b|retardo|presente(s)?|ausente(s)?/i
   const pideListaAlumnos =
     !esEdicionDocumento &&
+    !PARECE_CONSULTA_DE_ASISTENCIA.test(mensaje || '') &&
     (SOLICITA_LISTA_ALUMNOS.test(mensaje || '') ||
       (Boolean(tipoHerramientaSolicitado) && /\blista(do)?\b|\bpadr[oó]n\b/i.test(mensaje || '')))
 
