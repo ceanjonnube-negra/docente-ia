@@ -333,7 +333,11 @@ export default function AsistentePanel() {
   // Solo estado espejo del ref de abajo, para poder mostrarlo en el
   // panel — leer un ref durante el render no está permitido.
   const [desbloqueado, setDesbloqueado] = useState(false)
-  const registrarTts = useCallback((paso: string, resultado: 'ok' | 'error' | 'info', detalle?: string) => {
+  // Ya no es solo "TTS": también registra los puntos de la máquina de
+  // estados del dictado (voice:start/final/ready/send_clicked,
+  // chat:send/response, voice:reset — ver "Revisar la máquina de
+  // estados completa del modo voz") en la misma consola visible.
+  const registrarDebugVoz = useCallback((paso: string, resultado: 'ok' | 'error' | 'info', detalle?: string) => {
     const hora = new Date().toISOString().slice(11, 23)
     setTtsDebugLog((prev) => [...prev, { hora, paso, resultado, detalle }])
     console.log(`[TTS-DEBUG] ${paso} · ${resultado}${detalle ? ` · ${detalle}` : ''}`)
@@ -356,15 +360,48 @@ export default function AsistentePanel() {
       const synth = window.speechSynthesis
       const actual = { speaking: synth.speaking, pending: synth.pending, paused: synth.paused }
       const anterior = ultimoEstadoSynthRef.current
-      if (!anterior || anterior.speaking !== actual.speaking) registrarTts('11-speechSynthesis.speaking', 'info', String(actual.speaking))
-      if (!anterior || anterior.pending !== actual.pending) registrarTts('12-speechSynthesis.pending', 'info', String(actual.pending))
-      if (!anterior || anterior.paused !== actual.paused) registrarTts('13-speechSynthesis.paused', 'info', String(actual.paused))
+      if (!anterior || anterior.speaking !== actual.speaking) registrarDebugVoz('11-speechSynthesis.speaking', 'info', String(actual.speaking))
+      if (!anterior || anterior.pending !== actual.pending) registrarDebugVoz('12-speechSynthesis.pending', 'info', String(actual.pending))
+      if (!anterior || anterior.paused !== actual.paused) registrarDebugVoz('13-speechSynthesis.paused', 'info', String(actual.paused))
       ultimoEstadoSynthRef.current = actual
       // Techo de seguridad: nunca dejar el intervalo corriendo para
       // siempre si algo nunca dispara onend/onerror.
       if (Date.now() - inicio > 15000) detenerPollingEstadoSynth()
     }, 150)
-  }, [detenerPollingEstadoSynth, registrarTts])
+  }, [detenerPollingEstadoSynth, registrarDebugVoz])
+
+  // Puntos pedidos de la máquina de estados del dictado (ver "Revisar
+  // la máquina de estados completa del modo voz") — se infieren de los
+  // cambios reales del snapshot de AsistenteService en vez de
+  // instrumentar motorOpenAIRealtime.ts/AsistenteService.ts a mano:
+  // son logs TEMPORALES de diagnóstico, no arquitectura permanente.
+  // voice:send_clicked se registra aparte, directo en el onClick (ver
+  // toggleModoVoz) — es el único de los siete que sí corresponde a un
+  // evento real del usuario, no a una transición de estado.
+  const estadoVozAnteriorRef = useRef({ modoVoz: false, estadoEscucha: null as typeof asistente.estadoEscucha, generando: false })
+  useEffect(() => {
+    const anterior = estadoVozAnteriorRef.current
+    const actual = { modoVoz: asistente.modoVoz, estadoEscucha: asistente.estadoEscucha, generando: asistente.generando }
+
+    if (!anterior.modoVoz && actual.modoVoz) {
+      registrarDebugVoz('voice:start', 'ok', 'micrófono escuchando')
+    }
+    if (anterior.estadoEscucha !== 'pausado' && actual.estadoEscucha === 'pausado') {
+      registrarDebugVoz('voice:final', 'ok', 'segmento final acumulado')
+      registrarDebugVoz('voice:ready', 'ok', 'listo para enviar — esperando segundo toque')
+    }
+    if (actual.modoVoz && !anterior.generando && actual.generando) {
+      registrarDebugVoz('chat:send', 'ok', 'enviado a /api/chat (enviarMensaje)')
+    }
+    if (actual.modoVoz && anterior.generando && !actual.generando) {
+      registrarDebugVoz('chat:response', 'ok', 'respuesta recibida, generando=false')
+    }
+    if (anterior.modoVoz && !actual.modoVoz) {
+      registrarDebugVoz('voice:reset', 'ok', 'modo voz desactivado — vuelta a IDLE')
+    }
+
+    estadoVozAnteriorRef.current = actual
+  }, [asistente.modoVoz, asistente.estadoEscucha, asistente.generando, registrarDebugVoz])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return
@@ -386,12 +423,12 @@ export default function AsistentePanel() {
   const leerRespuesta = (id: string, textoOriginal: string) => {
     // 1. ¿speechSynthesis existe?
     const existeSynth = typeof window !== 'undefined' && !!window.speechSynthesis
-    registrarTts('1-speechSynthesis-existe', existeSynth ? 'ok' : 'error', existeSynth ? undefined : 'window.speechSynthesis no existe en este navegador')
+    registrarDebugVoz('1-speechSynthesis-existe', existeSynth ? 'ok' : 'error', existeSynth ? undefined : 'window.speechSynthesis no existe en este navegador')
     if (!existeSynth) return
 
     // Segundo toque sobre el mismo mensaje mientras habla = "Detener".
     if (idMensajeHablando === id) {
-      registrarTts('toggle-detener-manual', 'info', `mensaje ${id}`)
+      registrarDebugVoz('toggle-detener-manual', 'info', `mensaje ${id}`)
       window.speechSynthesis.cancel()
       setIdMensajeHablando(null)
       detenerPollingEstadoSynth()
@@ -417,9 +454,9 @@ export default function AsistentePanel() {
         const utteranceDesbloqueo = new SpeechSynthesisUtterance(' ')
         utteranceDesbloqueo.volume = 0
         window.speechSynthesis.speak(utteranceDesbloqueo)
-        registrarTts('0-desbloqueo-utterance-silenciosa', 'ok', 'primer toque de la sesión')
+        registrarDebugVoz('0-desbloqueo-utterance-silenciosa', 'ok', 'primer toque de la sesión')
       } catch (err) {
-        registrarTts('0-desbloqueo-utterance-silenciosa', 'error', String(err))
+        registrarDebugVoz('0-desbloqueo-utterance-silenciosa', 'error', String(err))
       }
     }
 
@@ -427,17 +464,17 @@ export default function AsistentePanel() {
     // directa al navegador solo para el diagnóstico (la selección real
     // de voz sigue usando vocesDisponibles, sin cambios de comportamiento).
     const vocesCrudas = window.speechSynthesis.getVoices()
-    registrarTts('2-getVoices', vocesCrudas.length > 0 ? 'ok' : 'error', `${vocesCrudas.length} voces (estado del componente: ${vocesDisponibles.length})`)
+    registrarDebugVoz('2-getVoices', vocesCrudas.length > 0 ? 'ok' : 'error', `${vocesCrudas.length} voces (estado del componente: ${vocesDisponibles.length})`)
 
     const textoLimpio = limpiarTextoParaVoz(textoOriginal)
     if (!textoLimpio) {
-      registrarTts('texto-limpio-vacio', 'error', 'nada que leer después de limpiar Markdown')
+      registrarDebugVoz('texto-limpio-vacio', 'error', 'nada que leer después de limpiar Markdown')
       return
     }
 
     // 3. ¿Qué voz fue seleccionada?
     const voz = seleccionarVozEspanol(vocesDisponibles)
-    registrarTts('3-voz-seleccionada', voz ? 'ok' : 'info', voz ? `${voz.name} (${voz.lang})` : 'ninguna es-* disponible — usará la voz por defecto del sistema')
+    registrarDebugVoz('3-voz-seleccionada', voz ? 'ok' : 'info', voz ? `${voz.name} (${voz.lang})` : 'ninguna es-* disponible — usará la voz por defecto del sistema')
 
     // 4. ¿Se creó correctamente SpeechSynthesisUtterance?
     let utterance: SpeechSynthesisUtterance
@@ -445,25 +482,25 @@ export default function AsistentePanel() {
       utterance = new SpeechSynthesisUtterance(textoLimpio)
       if (voz) utterance.voice = voz
       utterance.lang = voz?.lang || 'es-MX'
-      registrarTts('4-utterance-creado', 'ok', `${textoLimpio.length} caracteres, lang=${utterance.lang}`)
+      registrarDebugVoz('4-utterance-creado', 'ok', `${textoLimpio.length} caracteres, lang=${utterance.lang}`)
     } catch (err) {
-      registrarTts('4-utterance-creado', 'error', String(err))
+      registrarDebugVoz('4-utterance-creado', 'error', String(err))
       return
     }
 
     // 6. ¿Se disparó onstart?
-    utterance.onstart = () => registrarTts('6-onstart', 'ok', 'el navegador empezó a reproducir')
+    utterance.onstart = () => registrarDebugVoz('6-onstart', 'ok', 'el navegador empezó a reproducir')
     // 7. ¿Se disparó onboundary? (se registra solo la primera vez para
     // no saturar el panel — un texto largo dispara decenas).
     utterance.onboundary = (e) => {
       boundaryContadoRef.current++
       if (boundaryContadoRef.current === 1) {
-        registrarTts('7-onboundary', 'ok', `primer límite de palabra, charIndex=${e.charIndex} (los siguientes no se listan uno a uno)`)
+        registrarDebugVoz('7-onboundary', 'ok', `primer límite de palabra, charIndex=${e.charIndex} (los siguientes no se listan uno a uno)`)
       }
     }
     // 8. ¿Se disparó onend?
     utterance.onend = () => {
-      registrarTts('8-onend', 'ok', `total onboundary recibidos=${boundaryContadoRef.current}`)
+      registrarDebugVoz('8-onend', 'ok', `total onboundary recibidos=${boundaryContadoRef.current}`)
       detenerPollingEstadoSynth()
       if (intentoVozRef.current !== idIntento) return
       setIdMensajeHablando(null)
@@ -474,8 +511,8 @@ export default function AsistentePanel() {
     }
     // 9 y 10. ¿Se disparó onerror? Código y mensaje exacto.
     utterance.onerror = (e) => {
-      registrarTts('9-onerror', 'error', 'sí se disparó')
-      registrarTts('10-error-codigo-y-mensaje', 'error', `error="${e.error}"${(e as unknown as { message?: string }).message ? ` · message="${(e as unknown as { message?: string }).message}"` : ''}`)
+      registrarDebugVoz('9-onerror', 'error', 'sí se disparó')
+      registrarDebugVoz('10-error-codigo-y-mensaje', 'error', `error="${e.error}"${(e as unknown as { message?: string }).message ? ` · message="${(e as unknown as { message?: string }).message}"` : ''}`)
       console.error('[VOZ][TTS] Botón manual — speechSynthesis.speak falló:', e.error, e)
       detenerPollingEstadoSynth()
       if (intentoVozRef.current !== idIntento) return
@@ -490,9 +527,9 @@ export default function AsistentePanel() {
     // 5. ¿Se llamó realmente a speechSynthesis.speak()?
     try {
       window.speechSynthesis.speak(utterance)
-      registrarTts('5-speak-invocado', 'ok', 'sin excepción síncrona')
+      registrarDebugVoz('5-speak-invocado', 'ok', 'sin excepción síncrona')
     } catch (err) {
-      registrarTts('5-speak-invocado', 'error', String(err))
+      registrarDebugVoz('5-speak-invocado', 'error', String(err))
       detenerPollingEstadoSynth()
     }
   }
@@ -675,21 +712,29 @@ export default function AsistentePanel() {
   //   algo?) — ver MotorOpenAIRealtime.alternarTurno(). Si no hay nada
   //   que enviar, se interpreta como salir del modo voz.
   const toggleModoVoz = () => {
-    // "Desbloquea" speechSynthesis para el resto de la sesión: varios
-    // navegadores (sobre todo iOS Safari — ver la nota de getUserMedia
-    // más abajo, mismo tipo de restricción) solo permiten reproducir
-    // audio sintetizado si el PRIMER speak() de la página ocurrió
-    // síncronamente dentro de un gesto real del usuario (un tap). Como
-    // la respuesta real llega mucho después (transcripción + /api/chat
-    // de por medio), ese speak() real ya no cuenta como "dentro" del
-    // gesto — sin este toque en vacío aquí, el navegador puede
-    // descartar en silencio cualquier speak() posterior (ver "Corregir
-    // la integración entre el Chat IA y la lectura en voz de las
-    // respuestas"). Texto vacío: no se escucha nada, solo registra la
-    // activación.
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(''))
-    }
+    registrarDebugVoz('voice:send_clicked', 'info', `modoVoz=${asistente.modoVoz} estadoMotor=${asistente.estadoMotor}`)
+    // CAUSA RAÍZ real de "el botón verde se queda pegado, el Chat nunca
+    // recibe el mensaje" (ver "Revisar la máquina de estados completa
+    // del modo voz"): este método antes llamaba a
+    // speechSynthesis.speak() en CADA toque, incluido el segundo toque
+    // que debía cerrar el dictado y enviar. Eso ponía
+    // speechSynthesis.speaking en true un instante — y
+    // MotorOpenAIRealtime.alternarTurno() usa EXACTAMENTE esa bandera
+    // para decidir "la IA está hablando, este toque es una
+    // interrupción" en vez de "cerrar el turno y enviar". El resultado:
+    // el segundo toque se interpretaba siempre como barge-in contra su
+    // propia utterance vacía, nunca llamaba a finalizarTurno(), y
+    // como nada volvía a emitir estado-escucha, el indicador se quedaba
+    // pegado en 'pausado' para siempre — cada toque siguiente repetía
+    // la misma trampa.
+    //
+    // La llamada nunca cumplía su propósito real, además: el botón de
+    // altavoz manual de cada mensaje (ver leerRespuesta) es el ÚNICO
+    // lugar que de verdad desbloquea speechSynthesis para Safari/iOS —
+    // AsistenteService solo intenta la lectura automática después de
+    // que ESE botón confirme éxito real (ver marcarVozDesbloqueada),
+    // nunca por un intento suelto aquí. Se elimina por completo, no se
+    // reemplaza por nada.
     if (asistente.estadoMotor === 'conectando') asistente.cancelarConexionVoz()
     else if (asistente.modoVoz) asistente.alternarTurnoVoz()
     else asistente.activarModoVoz()
