@@ -163,18 +163,15 @@ export type EventoMotor =
   // independientes en la Realtime API, y el segundo puede terminar
   // primero.
   | { tipo: 'inicio-turno-usuario' }
-  // Solo lo emite MotorOpenAIRealtime, para que el botón de voz muestre
-  // un estado discreto en vez de solo parpadear sin explicar qué pasa.
-  // "pensando" cubre desde el segundo toque (fin del dictado) hasta que
-  // llega la respuesta real de /api/chat. "pausado": el VAD detectó que
-  // el docente dejó de hablar pero el micrófono sigue abierto (push-to-
-  // toggle, ver "Corregir la comunicación visual del dictado por voz")
-  // — puramente informativo, nunca dispara un envío; se revierte a
-  // "escuchando" en cuanto vuelve a detectarse voz. El estado 'hablando'
-  // (mientras speechSynthesis lee la respuesta) no viaja por aquí — lo
-  // pone AsistenteService directamente al reaccionar a 'respuesta-final',
-  // ver EstadoAsistente.estadoEscucha.
-  | { tipo: 'estado-escucha'; estado: 'escuchando' | 'confirmando' | 'pensando' | 'pausado' }
+  // Solo lo emite MotorOpenAIRealtime — dos únicos valores reales (ver
+  // "Rediseñar el modo voz como conversación continua": la máquina de
+  // estados expuesta a la interfaz se simplificó a propósito, toda la
+  // detección de turnos/pausas queda encapsulada dentro del motor).
+  // 'escuchando': la sesión está captando audio, sin importar si el
+  // docente está hablando en este instante o en una pausa natural
+  // entre frases — nunca se distingue eso visualmente. 'hablando': se
+  // está reproduciendo la respuesta (ver reproducirRespuestaEnVoz).
+  | { tipo: 'estado-escucha'; estado: 'escuchando' | 'hablando' }
   | { tipo: 'transcripcion-parcial'; texto: string }
   | { tipo: 'mensaje-usuario'; texto: string }
   | { tipo: 'respuesta-parcial'; texto: string }

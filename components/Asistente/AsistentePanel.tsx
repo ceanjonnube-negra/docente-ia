@@ -15,7 +15,7 @@
 // "Escuchando...", no hay texto de estado: esa lógica es interna al
 // motor; aquí solo se ve la conversación.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -26,7 +26,6 @@ import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseConteni
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
-import { limpiarTextoParaVoz, seleccionarVozEspanol } from '@/lib/asistente/lecturaVoz'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 import type { TipoHerramienta } from '@/lib/asistente/documentos'
 
@@ -303,237 +302,6 @@ export default function AsistentePanel() {
   const avisoAdjuntoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const adjuntoInputRef = useRef<HTMLInputElement>(null)
 
-  // --- Botón de altavoz manual por mensaje (ver "Implementar solución
-  // estable para la lectura en voz en Safari/iOS") — la vía confiable
-  // para escuchar una respuesta: el toque del docente ES el gesto
-  // directo que Safari/iOS exige para permitir audio, a diferencia de
-  // la lectura automática (AsistenteService), que llega después de una
-  // espera async y puede fallar en silencio ahí.
-  // id del mensaje que se está leyendo ahora mismo — null si ninguno.
-  const [idMensajeHablando, setIdMensajeHablando] = useState<string | null>(null)
-  // Aviso breve y no invasivo SOLO sobre el mensaje donde falló la
-  // lectura — nunca un error global ni repetitivo.
-  const [avisoTts, setAvisoTts] = useState<{ id: string; mensaje: string } | null>(null)
-  const avisoTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Se incrementa en cada toque real — permite que un onend/onerror
-  // tardío de una lectura YA reemplazada por otra más nueva se ignore,
-  // en vez de pisar el estado de la lectura actual.
-  const intentoVozRef = useRef(0)
-  // El truco de desbloqueo (utterance silenciosa antes de la real) solo
-  // debe ocurrir en el PRIMER toque real de la sesión.
-  const desbloqueoIntentadoRef = useRef(false)
-  const [vocesDisponibles, setVocesDisponibles] = useState<SpeechSynthesisVoice[]>([])
-
-  // --- DEBUG TEMPORAL del pipeline de TTS (ver "Diagnóstico técnico
-  // del sistema de Text-to-Speech") — SOLO instrumentación de lectura,
-  // no cambia ningún comportamiento real de leerRespuesta(). Se ve con
-  // ?voiceDebug=1 (mismo flag que ya usa el panel del reconocimiento de
-  // voz). Quitar junto con ese panel cuando ya no haga falta.
-  const [ttsDebugLog, setTtsDebugLog] = useState<{ hora: string; paso: string; resultado: 'ok' | 'error' | 'info'; detalle?: string }[]>([])
-  // Solo estado espejo del ref de abajo, para poder mostrarlo en el
-  // panel — leer un ref durante el render no está permitido.
-  const [desbloqueado, setDesbloqueado] = useState(false)
-  // Ya no es solo "TTS": también registra los puntos de la máquina de
-  // estados del dictado (voice:start/final/ready/send_clicked,
-  // chat:send/response, voice:reset — ver "Revisar la máquina de
-  // estados completa del modo voz") en la misma consola visible.
-  const registrarDebugVoz = useCallback((paso: string, resultado: 'ok' | 'error' | 'info', detalle?: string) => {
-    const hora = new Date().toISOString().slice(11, 23)
-    setTtsDebugLog((prev) => [...prev, { hora, paso, resultado, detalle }])
-    console.log(`[TTS-DEBUG] ${paso} · ${resultado}${detalle ? ` · ${detalle}` : ''}`)
-  }, [])
-  // speaking/pending/paused no disparan ningún evento del navegador —
-  // la única forma de "ver" cuándo cambian es sondearlos mientras dura
-  // el intento de lectura (puntos 11, 12 y 13 del diagnóstico pedido).
-  const pollTtsRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const ultimoEstadoSynthRef = useRef<{ speaking: boolean; pending: boolean; paused: boolean } | null>(null)
-  const boundaryContadoRef = useRef(0)
-  const detenerPollingEstadoSynth = useCallback(() => {
-    if (pollTtsRef.current) { clearInterval(pollTtsRef.current); pollTtsRef.current = null }
-  }, [])
-  const iniciarPollingEstadoSynth = useCallback(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return
-    detenerPollingEstadoSynth()
-    ultimoEstadoSynthRef.current = null
-    const inicio = Date.now()
-    pollTtsRef.current = setInterval(() => {
-      const synth = window.speechSynthesis
-      const actual = { speaking: synth.speaking, pending: synth.pending, paused: synth.paused }
-      const anterior = ultimoEstadoSynthRef.current
-      if (!anterior || anterior.speaking !== actual.speaking) registrarDebugVoz('11-speechSynthesis.speaking', 'info', String(actual.speaking))
-      if (!anterior || anterior.pending !== actual.pending) registrarDebugVoz('12-speechSynthesis.pending', 'info', String(actual.pending))
-      if (!anterior || anterior.paused !== actual.paused) registrarDebugVoz('13-speechSynthesis.paused', 'info', String(actual.paused))
-      ultimoEstadoSynthRef.current = actual
-      // Techo de seguridad: nunca dejar el intervalo corriendo para
-      // siempre si algo nunca dispara onend/onerror.
-      if (Date.now() - inicio > 15000) detenerPollingEstadoSynth()
-    }, 150)
-  }, [detenerPollingEstadoSynth, registrarDebugVoz])
-
-  // Puntos pedidos de la máquina de estados del dictado (ver "Revisar
-  // la máquina de estados completa del modo voz") — se infieren de los
-  // cambios reales del snapshot de AsistenteService en vez de
-  // instrumentar motorOpenAIRealtime.ts/AsistenteService.ts a mano:
-  // son logs TEMPORALES de diagnóstico, no arquitectura permanente.
-  // voice:send_clicked se registra aparte, directo en el onClick (ver
-  // toggleModoVoz) — es el único de los siete que sí corresponde a un
-  // evento real del usuario, no a una transición de estado.
-  const estadoVozAnteriorRef = useRef({ modoVoz: false, estadoEscucha: null as typeof asistente.estadoEscucha, generando: false })
-  useEffect(() => {
-    const anterior = estadoVozAnteriorRef.current
-    const actual = { modoVoz: asistente.modoVoz, estadoEscucha: asistente.estadoEscucha, generando: asistente.generando }
-
-    if (!anterior.modoVoz && actual.modoVoz) {
-      registrarDebugVoz('voice:start', 'ok', 'micrófono escuchando')
-    }
-    if (anterior.estadoEscucha !== 'pausado' && actual.estadoEscucha === 'pausado') {
-      registrarDebugVoz('voice:final', 'ok', 'segmento final acumulado')
-      registrarDebugVoz('voice:ready', 'ok', 'listo para enviar — esperando segundo toque')
-    }
-    if (actual.modoVoz && !anterior.generando && actual.generando) {
-      registrarDebugVoz('chat:send', 'ok', 'enviado a /api/chat (enviarMensaje)')
-    }
-    if (actual.modoVoz && anterior.generando && !actual.generando) {
-      registrarDebugVoz('chat:response', 'ok', 'respuesta recibida, generando=false')
-    }
-    if (anterior.modoVoz && !actual.modoVoz) {
-      registrarDebugVoz('voice:reset', 'ok', 'modo voz desactivado — vuelta a IDLE')
-    }
-
-    estadoVozAnteriorRef.current = actual
-  }, [asistente.modoVoz, asistente.estadoEscucha, asistente.generando, registrarDebugVoz])
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return
-    // getVoices() no siempre trae la lista completa de inmediato (varía
-    // por navegador) — se vuelve a leer cuando el navegador avisa que
-    // ya están listas, sin asumir que estarán disponibles al montar.
-    const cargarVoces = () => setVocesDisponibles(window.speechSynthesis.getVoices())
-    cargarVoces()
-    window.speechSynthesis.onvoiceschanged = cargarVoces
-    return () => {
-      if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null
-    }
-  }, [])
-
-  // Único punto que llama a speechSynthesis.speak() para el botón
-  // manual — se invoca DIRECTO desde el onClick del botón (nunca desde
-  // un efecto, promesa ni setTimeout), para que Safari/iOS lo reconozca
-  // como originado por un gesto real del usuario.
-  const leerRespuesta = (id: string, textoOriginal: string) => {
-    // 1. ¿speechSynthesis existe?
-    const existeSynth = typeof window !== 'undefined' && !!window.speechSynthesis
-    registrarDebugVoz('1-speechSynthesis-existe', existeSynth ? 'ok' : 'error', existeSynth ? undefined : 'window.speechSynthesis no existe en este navegador')
-    if (!existeSynth) return
-
-    // Segundo toque sobre el mismo mensaje mientras habla = "Detener".
-    if (idMensajeHablando === id) {
-      registrarDebugVoz('toggle-detener-manual', 'info', `mensaje ${id}`)
-      window.speechSynthesis.cancel()
-      setIdMensajeHablando(null)
-      detenerPollingEstadoSynth()
-      return
-    }
-
-    // Corta cualquier lectura anterior (de otro mensaje, o la
-    // automática de AsistenteService) — nunca deben sonar dos
-    // respuestas a la vez.
-    window.speechSynthesis.cancel()
-    setAvisoTts(null)
-
-    const idIntento = ++intentoVozRef.current
-    boundaryContadoRef.current = 0
-
-    // Desbloqueo de Safari/iOS: SOLO en el primer toque real de toda la
-    // sesión, una utterance silenciosa/muy corta, síncrona, ANTES de la
-    // real — ambas dentro del mismo evento de click/touch.
-    if (!desbloqueoIntentadoRef.current) {
-      desbloqueoIntentadoRef.current = true
-      setDesbloqueado(true)
-      try {
-        const utteranceDesbloqueo = new SpeechSynthesisUtterance(' ')
-        utteranceDesbloqueo.volume = 0
-        window.speechSynthesis.speak(utteranceDesbloqueo)
-        registrarDebugVoz('0-desbloqueo-utterance-silenciosa', 'ok', 'primer toque de la sesión')
-      } catch (err) {
-        registrarDebugVoz('0-desbloqueo-utterance-silenciosa', 'error', String(err))
-      }
-    }
-
-    // 2. ¿Cuántas voces devuelve speechSynthesis.getVoices()? — consulta
-    // directa al navegador solo para el diagnóstico (la selección real
-    // de voz sigue usando vocesDisponibles, sin cambios de comportamiento).
-    const vocesCrudas = window.speechSynthesis.getVoices()
-    registrarDebugVoz('2-getVoices', vocesCrudas.length > 0 ? 'ok' : 'error', `${vocesCrudas.length} voces (estado del componente: ${vocesDisponibles.length})`)
-
-    const textoLimpio = limpiarTextoParaVoz(textoOriginal)
-    if (!textoLimpio) {
-      registrarDebugVoz('texto-limpio-vacio', 'error', 'nada que leer después de limpiar Markdown')
-      return
-    }
-
-    // 3. ¿Qué voz fue seleccionada?
-    const voz = seleccionarVozEspanol(vocesDisponibles)
-    registrarDebugVoz('3-voz-seleccionada', voz ? 'ok' : 'info', voz ? `${voz.name} (${voz.lang})` : 'ninguna es-* disponible — usará la voz por defecto del sistema')
-
-    // 4. ¿Se creó correctamente SpeechSynthesisUtterance?
-    let utterance: SpeechSynthesisUtterance
-    try {
-      utterance = new SpeechSynthesisUtterance(textoLimpio)
-      if (voz) utterance.voice = voz
-      utterance.lang = voz?.lang || 'es-MX'
-      registrarDebugVoz('4-utterance-creado', 'ok', `${textoLimpio.length} caracteres, lang=${utterance.lang}`)
-    } catch (err) {
-      registrarDebugVoz('4-utterance-creado', 'error', String(err))
-      return
-    }
-
-    // 6. ¿Se disparó onstart?
-    utterance.onstart = () => registrarDebugVoz('6-onstart', 'ok', 'el navegador empezó a reproducir')
-    // 7. ¿Se disparó onboundary? (se registra solo la primera vez para
-    // no saturar el panel — un texto largo dispara decenas).
-    utterance.onboundary = (e) => {
-      boundaryContadoRef.current++
-      if (boundaryContadoRef.current === 1) {
-        registrarDebugVoz('7-onboundary', 'ok', `primer límite de palabra, charIndex=${e.charIndex} (los siguientes no se listan uno a uno)`)
-      }
-    }
-    // 8. ¿Se disparó onend?
-    utterance.onend = () => {
-      registrarDebugVoz('8-onend', 'ok', `total onboundary recibidos=${boundaryContadoRef.current}`)
-      detenerPollingEstadoSynth()
-      if (intentoVozRef.current !== idIntento) return
-      setIdMensajeHablando(null)
-      // Lectura manual confirmada de principio a fin — a partir de
-      // aquí AsistenteService puede intentar la lectura automática en
-      // respuestas futuras (ver marcarVozDesbloqueada).
-      AsistenteService.marcarVozDesbloqueada()
-    }
-    // 9 y 10. ¿Se disparó onerror? Código y mensaje exacto.
-    utterance.onerror = (e) => {
-      registrarDebugVoz('9-onerror', 'error', 'sí se disparó')
-      registrarDebugVoz('10-error-codigo-y-mensaje', 'error', `error="${e.error}"${(e as unknown as { message?: string }).message ? ` · message="${(e as unknown as { message?: string }).message}"` : ''}`)
-      console.error('[VOZ][TTS] Botón manual — speechSynthesis.speak falló:', e.error, e)
-      detenerPollingEstadoSynth()
-      if (intentoVozRef.current !== idIntento) return
-      setIdMensajeHablando(null)
-      setAvisoTts({ id, mensaje: 'No fue posible reproducir el audio. Toca nuevamente el altavoz.' })
-      if (avisoTtsTimerRef.current) clearTimeout(avisoTtsTimerRef.current)
-      avisoTtsTimerRef.current = setTimeout(() => setAvisoTts(null), 4000)
-    }
-
-    setIdMensajeHablando(id)
-    iniciarPollingEstadoSynth() // arranca el sondeo de 11/12/13 antes de speak()
-    // 5. ¿Se llamó realmente a speechSynthesis.speak()?
-    try {
-      window.speechSynthesis.speak(utterance)
-      registrarDebugVoz('5-speak-invocado', 'ok', 'sin excepción síncrona')
-    } catch (err) {
-      registrarDebugVoz('5-speak-invocado', 'error', String(err))
-      detenerPollingEstadoSynth()
-    }
-  }
-
   // Panel temporal de diagnóstico del modo voz — solo con ?voiceDebug=1 en
   // la URL. Se lee del navegador (no de useSearchParams/Next) para no
   // exigirle un límite de Suspense a esta pantalla por un flag que casi
@@ -702,41 +470,20 @@ export default function AsistentePanel() {
   // más abajo), el maestro controla todo escribiendo o hablando.
 
   // --- Modo conversación por voz ---
-  // Un solo botón, sin estados nuevos en la interfaz:
-  // - Primer toque (modoVoz aún false, no conectando): conecta y empieza
-  //   a escuchar.
+  // Un solo botón, sin estados intermedios en la interfaz — ver
+  // "Rediseñar el modo voz como conversación continua": IDLE ↔
+  // VOICE_SESSION_ACTIVA, nada más.
+  // - Primer toque (modoVoz aún false, no conectando): conecta y abre
+  //   una sesión persistente que escucha, detecta el fin de cada turno
+  //   y responde por voz automáticamente, sin más toques.
   // - Toque MIENTRAS conecta: cancela ese intento en vez de esperar a que
   //   falle o se quede colgado — nunca queda deshabilitado esperando.
-  // - Toques siguientes (ya conectado): el motor decide qué significan
-  //   según su propio estado (¿está hablando la IA? ¿el docente ya dijo
-  //   algo?) — ver MotorOpenAIRealtime.alternarTurno(). Si no hay nada
-  //   que enviar, se interpreta como salir del modo voz.
+  // - Toque siguiente (ya conectado): solo puede significar una cosa —
+  //   terminar toda la sesión. Los turnos internos ya no dependen de
+  //   ningún toque (ver MotorOpenAIRealtime.programarEvaluacionFinTurno).
   const toggleModoVoz = () => {
-    registrarDebugVoz('voice:send_clicked', 'info', `modoVoz=${asistente.modoVoz} estadoMotor=${asistente.estadoMotor}`)
-    // CAUSA RAÍZ real de "el botón verde se queda pegado, el Chat nunca
-    // recibe el mensaje" (ver "Revisar la máquina de estados completa
-    // del modo voz"): este método antes llamaba a
-    // speechSynthesis.speak() en CADA toque, incluido el segundo toque
-    // que debía cerrar el dictado y enviar. Eso ponía
-    // speechSynthesis.speaking en true un instante — y
-    // MotorOpenAIRealtime.alternarTurno() usa EXACTAMENTE esa bandera
-    // para decidir "la IA está hablando, este toque es una
-    // interrupción" en vez de "cerrar el turno y enviar". El resultado:
-    // el segundo toque se interpretaba siempre como barge-in contra su
-    // propia utterance vacía, nunca llamaba a finalizarTurno(), y
-    // como nada volvía a emitir estado-escucha, el indicador se quedaba
-    // pegado en 'pausado' para siempre — cada toque siguiente repetía
-    // la misma trampa.
-    //
-    // La llamada nunca cumplía su propósito real, además: el botón de
-    // altavoz manual de cada mensaje (ver leerRespuesta) es el ÚNICO
-    // lugar que de verdad desbloquea speechSynthesis para Safari/iOS —
-    // AsistenteService solo intenta la lectura automática después de
-    // que ESE botón confirme éxito real (ver marcarVozDesbloqueada),
-    // nunca por un intento suelto aquí. Se elimina por completo, no se
-    // reemplaza por nada.
     if (asistente.estadoMotor === 'conectando') asistente.cancelarConexionVoz()
-    else if (asistente.modoVoz) asistente.alternarTurnoVoz()
+    else if (asistente.modoVoz) asistente.desactivarModoVoz()
     else asistente.activarModoVoz()
   }
 
@@ -924,21 +671,6 @@ export default function AsistentePanel() {
                       <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
-                      <div className="flex justify-end mt-1">
-                        <button
-                          type="button"
-                          onClick={() => leerRespuesta(m.id, m.texto)}
-                          aria-label={idMensajeHablando === m.id ? 'Detener lectura' : 'Escuchar respuesta'}
-                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition flex-shrink-0 ${
-                            idMensajeHablando === m.id ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                          }`}
-                        >
-                          {idMensajeHablando === m.id ? '⏹️' : '🔊'}
-                        </button>
-                      </div>
-                      {avisoTts?.id === m.id && (
-                        <p className="text-[11px] text-amber-600 mt-1 text-right">{avisoTts.mensaje}</p>
-                      )}
                     </div>
                   )}
                   {/* Última condición del flujo: independientemente de si
@@ -1008,24 +740,7 @@ export default function AsistentePanel() {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
                     ) : m.texto}
-                    {m.rol === 'asistente' && m.texto && (
-                      <div className="flex justify-end mt-1">
-                        <button
-                          type="button"
-                          onClick={() => leerRespuesta(m.id, m.texto)}
-                          aria-label={idMensajeHablando === m.id ? 'Detener lectura' : 'Escuchar respuesta'}
-                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition flex-shrink-0 ${
-                            idMensajeHablando === m.id ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                          }`}
-                        >
-                          {idMensajeHablando === m.id ? '⏹️' : '🔊'}
-                        </button>
-                      </div>
-                    )}
                   </div>
-                  {m.rol === 'asistente' && avisoTts?.id === m.id && (
-                    <p className="text-[11px] text-amber-600 mt-1 text-right w-full">{avisoTts.mensaje}</p>
-                  )}
                   {/* Botones de confirmación (ver AccionMensaje) — se
                       esconden en cuanto el docente elige uno
                       (accionElegida ya viene marcado, ver
@@ -1163,36 +878,6 @@ export default function AsistentePanel() {
           )}
         </div>
       )}
-      {/* Consola de diagnóstico TEMPORAL del pipeline de TTS — ver
-          "Diagnóstico técnico del sistema de Text-to-Speech". Muestra
-          en tiempo real los 13 puntos pedidos (existencia de
-          speechSynthesis, voces, voz elegida, creación del utterance,
-          llamada a speak(), los 4 eventos del utterance, código/mensaje
-          de error, y los 3 flags speaking/pending/paused sondeados
-          mientras dura el intento). Solo diagnóstico — no cambia nada
-          del comportamiento real de leerRespuesta(). Quitar cuando ya
-          no haga falta. */}
-      {voiceDebug && (
-        <div className="px-4 py-2 bg-black text-white text-[10px] font-mono max-h-56 overflow-y-auto border-t border-gray-700">
-          <p className="text-yellow-400 font-bold mb-1">
-            🔊 ttsDebug — hablando: {String(idMensajeHablando !== null)} · voces cargadas: {vocesDisponibles.length} · desbloqueado: {String(desbloqueado)}
-          </p>
-          {ttsDebugLog.length === 0 ? (
-            <p className="text-gray-400">Sin pasos todavía. Toca el altavoz de una respuesta.</p>
-          ) : (
-            ttsDebugLog.map((p, i) => (
-              <p key={i} className={p.resultado === 'error' ? 'text-red-400' : p.resultado === 'ok' ? 'text-green-400' : 'text-gray-300'}>
-                {p.hora} · {p.paso} · {p.resultado}{p.detalle ? ` · ${p.detalle}` : ''}
-              </p>
-            ))
-          )}
-          {ttsDebugLog.length > 0 && (
-            <button type="button" onClick={() => setTtsDebugLog([])} className="mt-1 text-gray-400 underline">
-              Limpiar
-            </button>
-          )}
-        </div>
-      )}
       <div className="px-4 py-3 bg-white border-t border-gray-100">
         {asistente.avisoVoz && (
           <button
@@ -1219,11 +904,10 @@ export default function AsistentePanel() {
             // de todo lo reconocido hasta ahora (transcripcionParcial ya
             // incluye los segmentos confirmados entre pausas, no solo el
             // último) — de solo lectura mientras se dicta, para que el
-            // docente vea que nada se pierde entre silencios sin poder
-            // corromper el texto a medio dictar (ver "Corregir envío
-            // prematuro de mensajes durante el dictado por voz"). Nunca
-            // se envía desde aquí: solo el segundo toque del micrófono
-            // dispara sendMessage.
+            // docente vea que nada se pierde entre silencios. El envío
+            // ya no depende de ningún toque: la sesión de voz detecta
+            // sola el fin del turno y lo manda al mismo pipeline que un
+            // mensaje escrito (ver MotorOpenAIRealtime.finalizarTurno).
             value={asistente.modoVoz ? asistente.transcripcionParcial : input}
             onChange={e => { if (!asistente.modoVoz) setInput(e.target.value) }}
             readOnly={asistente.modoVoz}
@@ -1252,66 +936,30 @@ export default function AsistentePanel() {
               </button>
             </>
           )}
-          <div className="relative">
-            {asistente.modoVoz && asistente.estadoEscucha && (
-              // max-w + text-center (en vez de whitespace-nowrap fijo):
-              // "pausado" trae un texto más largo que el resto de los
-              // estados y necesita poder partirse en dos líneas sin
-              // desbordar la burbuja — ver "Corregir la comunicación
-              // visual del dictado por voz".
-              <span className="absolute -top-8 left-1/2 -translate-x-1/2 max-w-[180px] text-center text-[10px] font-medium text-gray-500 bg-white/95 px-2 py-1 rounded-xl shadow-sm leading-tight">
-                {asistente.estadoEscucha === 'escuchando'
-                  ? 'Escuchando'
-                  : asistente.estadoEscucha === 'pausado'
-                    ? 'Puedes seguir hablando o pulsa para enviar'
-                    : asistente.estadoEscucha === 'confirmando'
-                      ? 'Confirmando…'
-                      : asistente.estadoEscucha === 'hablando'
-                        ? 'Hablando…'
-                        : 'Pensando…'}
-              </span>
+          {/* Dos estados únicamente — IDLE / sesión de voz activa (ver
+              "Rediseñar el modo voz como conversación continua"). Sin
+              etiqueta flotante ni color que cambie según escuchando vs.
+              hablando: esos matices son internos a la sesión, no algo
+              que el docente deba estar leyendo en cada instante. */}
+          <button
+            type="button"
+            onClick={toggleModoVoz}
+            aria-label={asistente.modoVoz ? 'Finalizar conversación por voz' : asistente.estadoMotor === 'conectando' ? 'Cancelar conexión de voz' : 'Iniciar conversación por voz'}
+            className={`relative w-10 h-10 rounded-full flex items-center justify-center transition flex-shrink-0 ${
+              asistente.modoVoz
+                ? 'bg-gradient-to-r from-purple-600 to-blue-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {asistente.modoVoz && (
+              <span className="absolute inset-0 rounded-full bg-purple-400 animate-pulse opacity-40" aria-hidden="true" />
             )}
-            <button
-              type="button"
-              onClick={toggleModoVoz}
-              aria-label={asistente.modoVoz ? 'Finalizar conversación' : asistente.estadoMotor === 'conectando' ? 'Cancelar conexión de voz' : 'Iniciar conversación por voz'}
-              className={`relative w-10 h-10 rounded-full flex items-center justify-center transition flex-shrink-0 ${
-                asistente.modoVoz
-                  ? asistente.estadoEscucha === 'confirmando'
-                    ? 'bg-amber-500 text-white'
-                    : asistente.estadoEscucha === 'pensando'
-                      ? 'bg-purple-500 text-white'
-                      : asistente.estadoEscucha === 'hablando'
-                        ? 'bg-blue-500 text-white'
-                        : asistente.estadoEscucha === 'pausado'
-                          ? 'bg-emerald-500 text-white'
-                          : 'bg-red-500 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {asistente.modoVoz && (
-                <span
-                  className={`absolute inset-0 rounded-full animate-ping opacity-75 ${
-                    asistente.estadoEscucha === 'confirmando'
-                      ? 'bg-amber-400'
-                      : asistente.estadoEscucha === 'pensando'
-                        ? 'bg-purple-400'
-                        : asistente.estadoEscucha === 'hablando'
-                          ? 'bg-blue-400'
-                          : asistente.estadoEscucha === 'pausado'
-                            ? 'bg-emerald-400'
-                            : 'bg-red-400'
-                  }`}
-                  aria-hidden="true"
-                />
-              )}
-              <span className="relative">
-                {asistente.estadoMotor === 'conectando'
-                  ? <span className="block w-4 h-4 rounded-full border-2 border-purple-200 border-t-purple-600 animate-spin" />
-                  : asistente.modoVoz ? '🛑' : '🎤'}
-              </span>
-            </button>
-          </div>
+            <span className="relative">
+              {asistente.estadoMotor === 'conectando'
+                ? <span className="block w-4 h-4 rounded-full border-2 border-purple-200 border-t-purple-600 animate-spin" />
+                : asistente.modoVoz ? '🛑' : '🎤'}
+            </span>
+          </button>
           <button type="button" onClick={enviar} disabled={asistente.generando || !!comprimiendo} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
             ↑
           </button>

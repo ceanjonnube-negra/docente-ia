@@ -28,7 +28,6 @@ export function useAsistente() {
     activarModoVoz: () => AsistenteService.activarModoVoz(),
     desactivarModoVoz: () => AsistenteService.desactivarModoVoz(),
     cancelarConexionVoz: () => AsistenteService.cancelarConexionVoz(),
-    alternarTurnoVoz: () => AsistenteService.alternarTurnoVoz(),
     actualizarMensaje: (id: string, nuevoTexto: string) => AsistenteService.actualizarMensaje(id, nuevoTexto),
     reintentarGeneracion: () => AsistenteService.reintentarGeneracion(),
     nuevaConversacion: () => AsistenteService.nuevaConversacion(),

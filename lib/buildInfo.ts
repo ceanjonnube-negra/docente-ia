@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'fix-reset-ui-post-respuesta-voz-v73-66ad08b'
+export const BUILD_ID = 'modo-voz-conversacion-continua-v74-e9e0e04'

@@ -1,16 +1,14 @@
 // lib/asistente/lecturaVoz.ts
 //
-// Utilidades puras para la lectura en voz de las respuestas del Chat
-// IA — compartidas entre el botón de altavoz manual de cada mensaje
-// (ver components/Asistente/AsistentePanel.tsx) y la lectura
-// automática opcional (ver AsistenteService.ts). Nunca deciden CUÁNDO
-// leer ni manejan el ciclo de vida de un SpeechSynthesisUtterance —
-// solo transforman datos, para que ambos caminos limpien el texto y
-// elijan la voz exactamente igual.
+// Utilidad pura para preparar el texto de una respuesta del Chat IA
+// antes de pedirle a OpenAI Realtime que lo lea en voz alta (ver
+// MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el modo
+// voz como conversación continua"). Nunca decide CUÁNDO leer ni
+// gestiona el ciclo de vida de la sesión — solo transforma texto.
 
-// Limpia el texto de una respuesta para que speechSynthesis no lea en
-// voz alta símbolos de formato — conserva números, nombres, acentos y
-// la puntuación real del contenido, solo quita la sintaxis de marcado
+// Limpia el texto de una respuesta para que no se lea en voz alta
+// símbolos de formato — conserva números, nombres, acentos y la
+// puntuación real del contenido, solo quita la sintaxis de marcado
 // (Markdown, emoji decorativos, marcadores técnicos) que no aporta
 // nada hablado.
 export function limpiarTextoParaVoz(texto: string): string {
@@ -41,14 +39,4 @@ export function limpiarTextoParaVoz(texto: string): string {
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
-}
-
-// Prioridad exacta pedida: es-MX > cualquier lang que empiece con
-// "es" > lo que decida el navegador por defecto (undefined = no fijar
-// utterance.voice, el sistema usa su voz predeterminada).
-export function seleccionarVozEspanol(voces: SpeechSynthesisVoice[]): SpeechSynthesisVoice | undefined {
-  if (voces.length === 0) return undefined
-  const exacta = voces.find((v) => v.lang?.toLowerCase() === 'es-mx')
-  if (exacta) return exacta
-  return voces.find((v) => v.lang?.toLowerCase().startsWith('es'))
 }

@@ -14,7 +14,6 @@ import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoForm
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
-import { limpiarTextoParaVoz, seleccionarVozEspanol } from './lecturaVoz'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -90,18 +89,14 @@ export type EstadoAsistente = {
   // debug está activo o no.
   debugVoz: PasoDebugVoz[]
   // Estado discreto del turno de voz (ver motorOpenAIRealtime.ts) —
-  // null cuando no aplica (modo voz inactivo). 'hablando': el navegador
-  // está leyendo la respuesta en voz alta (speechSynthesis, ver case
-  // 'respuesta-final' en manejarEventoMotor). 'pausado': el docente
-  // dejó de hablar pero el micrófono sigue abierto (push-to-toggle) —
-  // señal puramente visual para que nunca parezca que la app se
-  // congeló mientras espera el segundo toque a propósito (ver
-  // "Corregir la comunicación visual del dictado por voz"); NUNCA
-  // dispara un envío por sí sola. 'confirmando' quedó sin emisor real
-  // desde que se eliminó el cierre automático de turno por pausa (ver
-  // "Corregir envío prematuro de mensajes durante el dictado por voz"),
-  // se conserva en el tipo por si un futuro motor lo vuelve a usar.
-  estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | 'pausado' | null
+  // null cuando no aplica (modo voz inactivo). Solo dos valores reales:
+  // 'escuchando' (la sesión está captando audio) y 'hablando' (se está
+  // reproduciendo la respuesta, ver reproducirRespuestaEnVoz). Toda la
+  // detección de turnos/pausas queda encapsulada dentro del motor — ver
+  // "Rediseñar el modo voz como conversación continua": la interfaz ya
+  // no distingue "escuchando activamente" de "en una pausa natural
+  // entre frases", ni muestra ningún estado intermedio de envío.
+  estadoEscucha: 'escuchando' | 'hablando' | null
   // Aviso breve y temporal para fallas GENERANDO O EDITANDO UN DOCUMENTO
   // (nunca se guarda como mensaje del asistente — no es una respuesta,
   // es un estado transitorio de la interfaz, igual que avisoVoz). Se
@@ -189,27 +184,7 @@ class AsistenteServiceImpl {
   private avisoVoz: string | null = null
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private debugVoz: PasoDebugVoz[] = []
-  private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | 'pausado' | null = null
-  // true solo después de que el docente haya tocado el botón de
-  // altavoz manual de un mensaje (ver AsistentePanel.tsx) Y esa
-  // lectura haya terminado con éxito al menos una vez en esta sesión
-  // — ver marcarVozDesbloqueada(). La lectura automática (más abajo,
-  // en manejarEventoMotor caso 'respuesta-final') NUNCA se intenta
-  // antes de esto: en Safari/iOS, speechSynthesis.speak() llamado
-  // fuera de un gesto directo del usuario (como una respuesta que
-  // llega después de una espera async) puede fallar en silencio, así
-  // que el botón manual es la vía confiable y la automática queda como
-  // mejora secundaria una vez comprobado que sí funciona en ese
-  // dispositivo (ver "Implementar solución estable para la lectura en
-  // voz en Safari/iOS").
-  private ttsDesbloqueado = false
-  // Techo de seguridad para la lectura automática de una respuesta de
-  // voz (ver case 'respuesta-final') — garantiza que RESET_UI ocurra
-  // incluso si el navegador nunca dispara onend NI onerror de la
-  // utterance (falla silenciosa real, no solo teórica: ver "Revisar la
-  // máquina completa de estados del modo voz"). Se limpia en cuanto la
-  // lectura termina por su cuenta, o al desactivar el modo voz.
-  private techoSeguridadVoz: ReturnType<typeof setTimeout> | null = null
+  private estadoEscucha: 'escuchando' | 'hablando' | null = null
   private avisoGeneracion: string | null = null
   private avisoGeneracionTimer: ReturnType<typeof setTimeout> | null = null
   private documentoFinalizandoId: string | null = null
@@ -784,10 +759,13 @@ class AsistenteServiceImpl {
     this.motorVozEnCurso?.cancelarConexion()
   }
 
+  // Único significado posible de un toque mientras el modo voz ya está
+  // conectado: terminar la sesión completa — ver "Rediseñar el modo voz
+  // como conversación continua". Ya no existe un segundo significado
+  // ("cerrar este turno") porque los turnos se cierran solos
+  // (detección automática de fin de turno, ver motorOpenAIRealtime.ts).
   async desactivarModoVoz() {
     if (!this.modoVoz) return
-    if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
-    if (this.techoSeguridadVoz) { clearTimeout(this.techoSeguridadVoz); this.techoSeguridadVoz = null }
     await this.motorVoz?.detener()
     this.motorVoz = null
     this.modoVoz = false
@@ -797,21 +775,6 @@ class AsistenteServiceImpl {
     this.estadoEscucha = null
     this.motor = await this.asegurarMotorTexto()
     this.notificar()
-  }
-
-  // Único método que el botón del micrófono llama en cada toque mientras
-  // el modo voz ya está conectado (el primer toque, cuando modoVoz aún
-  // es false, sigue siendo activarModoVoz — ver AsistentePanel). El
-  // motor decide qué significa el toque según su propio estado real
-  // (hablando / con algo dicho / sin nada dicho); aquí solo se traduce
-  // "sin nada dicho" en salir del modo voz, ya que no hay nada que
-  // enviar y un toque en ese momento solo puede significar "ya terminé".
-  async alternarTurnoVoz() {
-    if (!this.modoVoz || !this.motorVoz) return
-    const resultado = await this.motorVoz.alternarTurno()
-    if (resultado === 'vacio') {
-      await this.desactivarModoVoz()
-    }
   }
 
   private manejarEventoMotor(evento: EventoMotor) {
@@ -1037,64 +1000,14 @@ class AsistenteServiceImpl {
             }
           }
         }
-        // RESET_UI incondicional del turno de voz (ver "Revisar la
-        // máquina completa de estados del modo voz"): sin importar el
-        // camino, en cuanto la respuesta real ya llegó, estadoEscucha
-        // SIEMPRE termina en 'escuchando' — listo para un turno nuevo,
-        // nunca se queda pegado en 'pensando' (el estado que dejó
-        // finalizarTurno() antes de esperar esta respuesta). Antes,
-        // si ttsDesbloqueado era false (el caso normal: nadie ha usado
-        // todavía con éxito el botón de altavoz manual) o no había
-        // texto que leer, NADA volvía a tocar estadoEscucha aquí — se
-        // quedaba en 'pensando' hasta el próximo sonido que captara el
-        // micrófono (micrófono que sigue abierto: modo push-to-toggle),
-        // incluido ruido de fondo o el eco de la propia respuesta
-        // hablada por la bocina del dispositivo, que lo reescribía con
-        // 'pausado' otra vez — dando la impresión de que la sesión de
-        // dictado nunca terminó aunque la respuesta ya hubiera llegado.
-        if (this.modoVoz) {
-          const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined
-          // La lectura automática sigue siendo SOLO mejora secundaria
-          // (ver "Implementar solución estable para la lectura en voz
-          // en Safari/iOS") — nunca se intenta hasta que ttsDesbloqueado
-          // sea true (el botón de altavoz manual de algún mensaje ya
-          // confirmó éxito real, ver marcarVozDesbloqueada()).
-          const textoLimpio = this.ttsDesbloqueado && synth ? limpiarTextoParaVoz(evento.texto) : ''
-          if (synth && textoLimpio) {
-            synth.cancel()
-            const utterance = new SpeechSynthesisUtterance(textoLimpio)
-            const voz = seleccionarVozEspanol(synth.getVoices())
-            if (voz) utterance.voice = voz
-            utterance.lang = voz?.lang || 'es-MX'
-            this.estadoEscucha = 'hablando'
-            let yaVolvio = false
-            const volverAEscuchar = () => {
-              if (yaVolvio) return
-              yaVolvio = true
-              if (this.techoSeguridadVoz) { clearTimeout(this.techoSeguridadVoz); this.techoSeguridadVoz = null }
-              if (!this.modoVoz) return
-              this.estadoEscucha = 'escuchando'
-              this.notificar()
-            }
-            utterance.onstart = () => console.log('[VOZ][TTS] lectura automática: comenzó')
-            utterance.onend = () => { console.log('[VOZ][TTS] lectura automática: terminó'); volverAEscuchar() }
-            // Silencioso a propósito (ver comentario arriba): un fallo
-            // aquí solo regresa el estado a 'escuchando', nunca muestra
-            // un error — el botón manual de la burbuja sigue ahí.
-            utterance.onerror = (e) => { console.error('[VOZ][TTS] lectura automática falló:', e.error); volverAEscuchar() }
-            // Techo de seguridad real (no solo teórico): si el
-            // navegador nunca dispara ni onend ni onerror, esto
-            // garantiza que RESET_UI ocurra de todas formas — nunca
-            // debe quedar una sesión de voz esperando un evento que tal
-            // vez nunca llegue.
-            this.techoSeguridadVoz = setTimeout(volverAEscuchar, 20000)
-            synth.speak(utterance)
-          } else {
-            // Sin lectura que esperar — RESET_UI inmediato, no hay
-            // ninguna Promise ni evento pendiente que esperar.
-            this.estadoEscucha = 'escuchando'
-          }
-        }
+        // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
+        // alta la respuesta real que acaba de llegar (ver
+        // MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el
+        // modo voz como conversación continua"). Todo el ciclo de vida
+        // de esa lectura (estado 'hablando', barge-in, vuelta a
+        // 'escuchando' al terminar) lo maneja el propio motor a través
+        // de response.done — este método no necesita saber nada más.
+        if (this.modoVoz) this.motorVoz?.reproducirRespuestaEnVoz(evento.texto)
         this.notificar()
         break
       }
@@ -1123,17 +1036,11 @@ class AsistenteServiceImpl {
         } else {
           this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: Date.now() }]
         }
-        // RESET_UI incondicional también aquí (ver "Revisar la máquina
-        // completa de estados del modo voz"): un turno de voz que
-        // termina en error es OTRO camino que antes dejaba
-        // estadoEscucha pegado en 'pensando' para siempre — un error
-        // real de /api/chat (red, timeout, HTTP) es precisamente el
-        // tipo de excepción que puede impedir que el flujo normal
-        // llegue a 'respuesta-final'.
-        if (this.modoVoz) {
-          if (this.techoSeguridadVoz) { clearTimeout(this.techoSeguridadVoz); this.techoSeguridadVoz = null }
-          this.estadoEscucha = 'escuchando'
-        }
+        // Un turno de voz que termina en error (red, timeout, HTTP de
+        // /api/chat) nunca llega a 'respuesta-final' — sin esto, el
+        // motor se quedaría esperando una respuesta que nunca va a
+        // pedirle que lea, y estadoEscucha quedaría pegado.
+        if (this.modoVoz) this.estadoEscucha = 'escuchando'
         this.notificar()
         break
       }
@@ -1643,14 +1550,6 @@ ${instruccion}`
 
   interrumpir() {
     this.motor?.interrumpir()
-  }
-
-  // Llamado por AsistentePanel cuando el botón de altavoz manual de un
-  // mensaje termina de leerlo con éxito (utterance.onend real) — ver
-  // ttsDesbloqueado (campo privado). A partir de aquí, y solo a partir
-  // de aquí, la lectura automática puede intentarse.
-  marcarVozDesbloqueada() {
-    this.ttsDesbloqueado = true
   }
 }
 
