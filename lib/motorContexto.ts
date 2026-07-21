@@ -14,6 +14,24 @@ export type ExcepcionAsistencia = {
   estatus: 'presente' | 'falta' | 'retardo' | 'justificada';
 };
 
+// Único origen de verdad para los 4 estados oficiales de asistencia
+// (ver "Unificar los estados de asistencia — único origen de verdad").
+// Un alumno sin fila en asistencia_registro para la fecha consultada
+// es "sin_registrar" — NUNCA se cuenta como presente por default, en
+// NINGÚN lugar de la aplicación. Tanto app/dashboard/lista/page.tsx
+// (los contadores y el estado editable de cada fila) como
+// asistenciaGrupoResumen (lo que consulta el Chat IA) llaman
+// exactamente a esta misma función — nunca reimplementan su propia
+// clasificación por separado, para que ambos lados no puedan divergir.
+export type EstadoAsistenciaOficial = 'presente' | 'falta' | 'retardo' | 'sin_registrar';
+
+export function clasificarEstadoAsistencia(estatus: string | null | undefined): EstadoAsistenciaOficial {
+  if (estatus === 'presente') return 'presente';
+  if (estatus === 'falta') return 'falta';
+  if (estatus === 'retardo') return 'retardo';
+  return 'sin_registrar';
+}
+
 // --- Funciones agregadas a nivel de grupo (no hay RPC para esto — se
 // arma con consultas directas a las tablas, respetando RLS vía el
 // cliente de sesión del docente que se recibe como parámetro). Todas
@@ -74,10 +92,10 @@ export async function asistenciaGrupoResumen(
     (registrosHoy || []).map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
   );
   for (const [inscripcionId, nombre] of nombrePorInscripcion) {
-    const estatus = estatusHoyPorInscripcion.get(inscripcionId);
-    if (estatus === 'presente') vacio.presentes.push(nombre);
-    else if (estatus === 'falta') vacio.faltas.push(nombre);
-    else if (estatus === 'retardo') vacio.retardos.push(nombre);
+    const estadoOficial = clasificarEstadoAsistencia(estatusHoyPorInscripcion.get(inscripcionId));
+    if (estadoOficial === 'presente') vacio.presentes.push(nombre);
+    else if (estadoOficial === 'falta') vacio.faltas.push(nombre);
+    else if (estadoOficial === 'retardo') vacio.retardos.push(nombre);
     else vacio.sinRegistrarHoy.push(nombre);
   }
 

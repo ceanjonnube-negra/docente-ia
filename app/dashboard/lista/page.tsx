@@ -8,18 +8,24 @@ import type { GrupoParaImportar } from '@/lib/importacionInteligente'
 import { useAsistente, useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
 import { fechaISOHoy, formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { clasificarEstadoAsistencia, type EstadoAsistenciaOficial } from '@/lib/motorContexto'
 
 type Alumno = AlumnoConPosicion
-type EstadoAsistencia = 'presente' | 'falta' | 'retardo'
+// Único origen de verdad: los 4 estados oficiales y su clasificación
+// viven en lib/motorContexto.ts (clasificarEstadoAsistencia), la misma
+// función que usa asistenciaGrupoResumen (lo que consulta el Chat IA)
+// — ver "Unificar los estados de asistencia — único origen de
+// verdad". Un alumno sin captura NUNCA cuenta como presente aquí.
+type EstadoAsistencia = EstadoAsistenciaOficial
 
-const ESTADOS_ASISTENCIA: { valor: EstadoAsistencia; icono: string; etiqueta: string }[] = [
+const ESTADOS_ASISTENCIA: { valor: 'presente' | 'falta' | 'retardo'; icono: string; etiqueta: string }[] = [
   { valor: 'presente', icono: '🟢', etiqueta: 'Presente' },
   { valor: 'falta', icono: '🔴', etiqueta: 'Falta' },
   { valor: 'retardo', icono: '🟠', etiqueta: 'Retardo' },
 ]
 
 type Resumen = {
-  estadoHoy: EstadoAsistencia | null
+  estadoHoy: EstadoAsistencia
   totalAsistencias: number
   totalFaltas: number
   incidencias: number
@@ -143,7 +149,7 @@ function ListaPageContent() {
       : { data: [] as { inscripcion_id: string; estatus: string }[] }
 
     const estatusPorInscripcion = new Map(
-      (registrosHoy || []).map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus as EstadoAsistencia])
+      (registrosHoy || []).map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
     )
 
     const nuevosResumenes: Record<string, Resumen> = {}
@@ -151,7 +157,10 @@ function ListaPageContent() {
       const registros = (asistenciasTodas || []).filter(r => r.alumno_id === a.id)
       const inscripcionId = inscripcionPorAlumno.get(a.id)
       nuevosResumenes[a.id] = {
-        estadoHoy: (inscripcionId && estatusPorInscripcion.get(inscripcionId)) || null,
+        // clasificarEstadoAsistencia (lib/motorContexto.ts): sin fila
+        // hoy -> 'sin_registrar', NUNCA 'presente' por default. Misma
+        // función que usa asistenciaGrupoResumen para el Chat IA.
+        estadoHoy: clasificarEstadoAsistencia(inscripcionId ? estatusPorInscripcion.get(inscripcionId) : null),
         totalAsistencias: registros.filter(r => r.presente).length,
         totalFaltas: registros.filter(r => !r.presente).length,
         incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
@@ -161,7 +170,7 @@ function ListaPageContent() {
 
     const nuevosEstados: Record<string, EstadoAsistencia> = {}
     alumnosDelGrupo.forEach(a => {
-      nuevosEstados[a.id] = nuevosResumenes[a.id]?.estadoHoy ?? 'presente'
+      nuevosEstados[a.id] = nuevosResumenes[a.id]?.estadoHoy ?? 'sin_registrar'
     })
     setEstados(nuevosEstados)
 
@@ -196,7 +205,19 @@ function ListaPageContent() {
   }
 
   const guardarAsistenciaHoy = async () => {
-    const registros = alumnos.map(a => ({ alumno_id: a.id, estado: estados[a.id] ?? 'presente' }))
+    // Un alumno que se quedó en "sin_registrar" NUNCA se guarda como
+    // presente por default (ver "Unificar los estados de asistencia —
+    // único origen de verdad") — simplemente no se manda su fila; sin
+    // fila en asistencia_registro es, por definición, "sin_registrar"
+    // (misma regla que ya usa asistenciaGrupoResumen para leerlo).
+    const registros = alumnos
+      .filter(a => estados[a.id] === 'presente' || estados[a.id] === 'falta' || estados[a.id] === 'retardo')
+      .map(a => ({ alumno_id: a.id, estado: estados[a.id] as 'presente' | 'falta' | 'retardo' }))
+
+    if (registros.length === 0) {
+      setMensaje('Marca al menos un alumno como presente, falta o retardo antes de guardar.')
+      return
+    }
 
     setGuardandoAsistencia(true)
     setMensaje('')
@@ -230,16 +251,21 @@ function ListaPageContent() {
   const totalNinas = alumnos.filter(a => a.sexo === 'M').length
   const totalNinos = alumnos.filter(a => a.sexo === 'H').length
 
-  const totalPresentes = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'presente').length
-  const totalFaltas = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'falta').length
-  const totalRetardos = alumnos.filter(a => (estados[a.id] ?? 'presente') === 'retardo').length
+  // Sin fallback a 'presente': estados[a.id] ya viene sembrado con un
+  // valor real de los 4 oficiales (ver cargarTodo) para cada alumno
+  // del grupo — un alumno sin captura cuenta en totalSinRegistrar,
+  // nunca en totalPresentes.
+  const totalPresentes = alumnos.filter(a => estados[a.id] === 'presente').length
+  const totalFaltas = alumnos.filter(a => estados[a.id] === 'falta').length
+  const totalRetardos = alumnos.filter(a => estados[a.id] === 'retardo').length
+  const totalSinRegistrar = alumnos.filter(a => estados[a.id] === 'sin_registrar').length
 
   const alumnosFiltrados = alumnos.filter(a => {
     if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
     if (filtro === 'ninas' && a.sexo !== 'M') return false
     if (filtro === 'ninos' && a.sexo !== 'H') return false
-    if (filtro === 'presentes' && (estados[a.id] ?? 'presente') !== 'presente') return false
-    if (filtro === 'ausentes' && (estados[a.id] ?? 'presente') !== 'falta') return false
+    if (filtro === 'presentes' && estados[a.id] !== 'presente') return false
+    if (filtro === 'ausentes' && estados[a.id] !== 'falta') return false
     return true
   })
 
@@ -298,18 +324,22 @@ function ListaPageContent() {
       </header>
 
       {alumnos.length > 0 && (
-        <div className="grid grid-cols-3 gap-2 px-4 py-3 bg-white border-b border-gray-100">
+        <div className="grid grid-cols-4 gap-1.5 px-4 py-3 bg-white border-b border-gray-100">
           <div className="rounded-xl bg-green-50 border border-green-200 py-2 text-center">
             <p className="text-lg font-bold text-green-700">{totalPresentes}</p>
-            <p className="text-[11px] font-medium text-green-600">🟢 Presentes</p>
+            <p className="text-[10px] font-medium text-green-600">🟢 Presentes</p>
           </div>
           <div className="rounded-xl bg-red-50 border border-red-200 py-2 text-center">
             <p className="text-lg font-bold text-red-700">{totalFaltas}</p>
-            <p className="text-[11px] font-medium text-red-600">🔴 Faltas</p>
+            <p className="text-[10px] font-medium text-red-600">🔴 Faltas</p>
           </div>
           <div className="rounded-xl bg-orange-50 border border-orange-200 py-2 text-center">
             <p className="text-lg font-bold text-orange-700">{totalRetardos}</p>
-            <p className="text-[11px] font-medium text-orange-600">🟠 Retardos</p>
+            <p className="text-[10px] font-medium text-orange-600">🟠 Retardos</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 border border-gray-200 py-2 text-center">
+            <p className="text-lg font-bold text-gray-500">{totalSinRegistrar}</p>
+            <p className="text-[10px] font-medium text-gray-400">⚪ Sin registrar</p>
           </div>
         </div>
       )}
@@ -353,7 +383,10 @@ function ListaPageContent() {
         {alumnosFiltrados.map(a => {
           const r = resumenes[a.id]
           const esNina = a.sexo === 'M'
-          const estadoLocal = estados[a.id] ?? 'presente'
+          // Sin fallback a 'presente': si no hay valor todavía, es
+          // 'sin_registrar' — ninguno de los 3 botones se resalta,
+          // reflejando visualmente que no se ha capturado nada hoy.
+          const estadoLocal = estados[a.id] ?? 'sin_registrar'
           return (
             <div
               key={a.id}
