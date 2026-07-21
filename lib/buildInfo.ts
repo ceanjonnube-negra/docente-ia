@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'fix-grupo-activo-fuente-unica-v56-a2e4410'
+export const BUILD_ID = 'separacion-modulos-vs-llm-v57-79edfe5'
