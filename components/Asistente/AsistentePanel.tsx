@@ -17,7 +17,6 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabaseClient'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
@@ -285,7 +284,6 @@ export default function AsistentePanel() {
   const asistente = useAsistente()
   const router = useRouter()
   const [input, setInput] = useState('')
-  const [perfil, setPerfil] = useState<any>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -311,16 +309,6 @@ export default function AsistentePanel() {
   const [voiceDebug] = useState(() =>
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('voiceDebug') === '1'
   )
-
-  useEffect(() => {
-    const cargarPerfil = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()
-      if (data) setPerfil(data)
-    }
-    cargarPerfil()
-  }, [])
 
   // Navegación automática pedida por voz/texto ("Abre a Sergio en la
   // lista") — AsistentePanel es la única pieza con useRouter, así que
@@ -564,8 +552,8 @@ export default function AsistentePanel() {
           <div className="mx-3 mb-3 bg-gray-50 rounded-xl p-3 flex items-center gap-2">
             <div className="w-10 h-10 rounded-full bg-green-100 border-2 border-green-400 flex items-center justify-center text-lg flex-shrink-0">👨‍🏫</div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-gray-800 truncate">{perfil?.nombre || 'Cargando...'}</p>
-              <p className="text-xs text-gray-500 truncate">{perfil?.escuela || ''} {perfil?.grado ? `· ${perfil.grado}° ${perfil.grupo || ''}` : ''}</p>
+              <p className="text-sm font-bold text-gray-800 truncate">{asistente.perfil?.nombre || 'Cargando...'}</p>
+              <p className="text-xs text-gray-500 truncate">{asistente.perfil?.escuela || ''} {asistente.perfil?.grado ? `· ${asistente.perfil.grado} ${asistente.perfil.grupo || ''}` : ''}</p>
             </div>
           </div>
 
@@ -649,7 +637,7 @@ export default function AsistentePanel() {
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 flex flex-col">
         {asistente.mensajes.length === 0 && !asistente.generando && (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-            <p className="text-lg font-semibold text-gray-800">{saludoPorHora()}{perfil?.nombre ? `, ${nombrePila(perfil.nombre)}` : ''}.</p>
+            <p className="text-lg font-semibold text-gray-800">{saludoPorHora()}{asistente.perfil?.nombre ? `, ${nombrePila(asistente.perfil.nombre)}` : ''}.</p>
             <p className="text-sm text-gray-500 mt-1">¿En qué te puedo echar la mano hoy?</p>
           </div>
         )}

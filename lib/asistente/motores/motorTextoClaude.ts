@@ -244,9 +244,10 @@ export class MotorTextoClaude implements MotorConversacional {
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
       const { texto: sinArchivo, archivo } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
-      const { texto: respuestaLimpia, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
+      const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
+      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal, accionNavegacion })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal, accionNavegacion, perfilActualizado })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -318,6 +319,19 @@ export class MotorTextoClaude implements MotorConversacional {
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
     }
+  }
+
+  // Marcador técnico sin datos propios (ver actualizar_perfil_docente en
+  // app/api/chat/route.ts) — su sola presencia es la señal de que
+  // perfiles_docentes cambió. El valor real nunca viaja en el marcador:
+  // AsistenteService vuelve a leer la MISMA fuente única
+  // (obtenerPerfilYSesion, ver lib/asistente/perfilDocente.ts) en vez de
+  // confiar en una copia serializada aquí, para que nunca puedan
+  // divergir dos representaciones del mismo perfil.
+  private procesarMarcadorDePerfilActualizado(respuesta: string): { texto: string; perfilActualizado: boolean } {
+    const match = respuesta.match(/\[\[PERFIL_ACTUALIZADO\]\]/)
+    if (!match) return { texto: respuesta, perfilActualizado: false }
+    return { texto: respuesta.replace(match[0], '').trim(), perfilActualizado: true }
   }
 
   // El modelo grande puede pedir continuar una tarea larga (varias fichas,

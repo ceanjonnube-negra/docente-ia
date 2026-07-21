@@ -1,14 +1,22 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import { useAsistente } from '@/lib/asistente/hooks'
 
 
 const toTitle = (s: string) => s ? s.toLowerCase().replace(/\w/g, c => c.toUpperCase()) : ''
 
 export default function Dashboard() {
   const router = useRouter()
-  const [perfil, setPerfil] = useState<any>(null)
+  // Nombre/escuela/grado/grupo vienen de AsistenteService — la única
+  // fuente que lee perfiles_docentes en toda la interfaz (ver
+  // EstadoAsistente.perfil). Sin esto, esta pantalla tenía su propia
+  // copia local desactualizada tras un cambio de grado/grupo hecho
+  // desde el Chat IA (ver "Corregir sincronización del perfil docente
+  // en la interfaz").
+  const asistente = useAsistente()
+  const perfil = asistente.perfil
 
   // NOTA: Inicio NO cierra el panel del Chat IA al montar. /dashboard/chat
   // abre el panel y luego hace router.replace('/dashboard/inicio') como
@@ -19,14 +27,12 @@ export default function Dashboard() {
   // el propio docente lo decide.
 
   useEffect(() => {
-    const cargar = async () => {
+    const verificarSesion = async () => {
       const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.push('/login'); return }
-      const { data } = await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()
-      if (data) setPerfil(data)
+      if (!user) router.push('/login')
     }
-    cargar()
-  }, [])
+    verificarSesion()
+  }, [router])
 
   // "/" ahora es la raíz del Chat IA (ver RFC-0002) — tras cerrar
   // sesión el docente debe caer en la página de bienvenida/login, no en
@@ -58,7 +64,7 @@ export default function Dashboard() {
                 <p className="font-bold text-gray-800 text-xs leading-tight">{(perfil?.escuela || '...').split(' ').map((w:string)=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')}</p>
               </div>
             </div>
-            <p className="text-xs text-gray-400 mt-1">🎓 {perfil?.grado ? `${perfil.grado}° ${perfil.grupo || ''}` : '...'}</p>
+            <p className="text-xs text-gray-400 mt-1">🎓 {perfil?.grado ? `${perfil.grado} ${perfil.grupo || ''}` : '...'}</p>
             <p className="text-xs text-gray-400">📍 {(perfil?.municipio||'').split(' ').map((w:string)=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')}{perfil?.estado ? `, ${(perfil.estado).split(' ').map((w:string)=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')}` : ''}</p>
           </div>
         </div>

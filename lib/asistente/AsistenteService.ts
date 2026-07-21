@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
-import { obtenerPerfilYSesion } from './perfilDocente'
+import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import {
@@ -138,6 +138,14 @@ export type EstadoAsistente = {
   // documento — ver "Ajustes sobre el sistema de generación y manejo
   // de documentos".
   documentoActivoId: string | null
+  // Única fuente de verdad para nombre/escuela/grado/grupo en TODA la
+  // interfaz — menú lateral (AsistentePanel), /dashboard/inicio, y
+  // cualquier otra pantalla que necesite mostrarlo. null mientras carga
+  // o si no hay sesión. Ningún componente debe volver a leer
+  // perfiles_docentes por su cuenta con su propio useState — todos
+  // consumen esto vía useAsistente() (ver "Corregir sincronización del
+  // perfil docente en la interfaz").
+  perfil: PerfilDocente | null
 }
 
 export type PasoDebugVoz = {
@@ -213,8 +221,16 @@ class AsistenteServiceImpl {
   // el docente canceló ANTES de que termine de conectar.
   private motorVozEnCurso: MotorOpenAIRealtime | null = null
   private herramientas: Herramienta[] = []
+  private perfil: PerfilDocente | null = null
   private listeners = new Set<Listener>()
   private snapshot: EstadoAsistente = this.construirSnapshot()
+
+  constructor() {
+    // Carga inicial — cubre tanto un login recién hecho como una
+    // recarga dura de la página con sesión ya activa (el listener de
+    // abajo, en 'SIGNED_IN'/'INITIAL_SESSION', cubre los demás casos).
+    this.recargarPerfil()
+  }
 
   // Burbuja del asistente que sigue "abierta" para el turno actual — se
   // mantiene igual aunque una respuesta se genere en varios ciclos
@@ -302,6 +318,25 @@ class AsistenteServiceImpl {
       accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
       accionNavegacionPendiente: this.accionNavegacionPendiente,
       documentoActivoId: this.documentoActivo?.id ?? null,
+      perfil: this.perfil,
+    }
+  }
+
+  // Único punto que escribe this.perfil — reutiliza obtenerPerfilYSesion
+  // (misma función que ya usan los motores conversacionales para el
+  // contexto de cada turno, ver lib/asistente/perfilDocente.ts) en vez
+  // de una consulta propia a Supabase, para que nunca puedan divergir
+  // dos lecturas del mismo registro. Se llama al iniciar el singleton,
+  // en cada cambio de sesión, y cuando el propio Chat IA confirma haber
+  // escrito un cambio (ver manejarEventoMotor, caso 'respuesta-final'
+  // con evento.perfilActualizado).
+  async recargarPerfil() {
+    try {
+      const { perfil } = await obtenerPerfilYSesion()
+      this.perfil = perfil
+      this.notificar()
+    } catch (e) {
+      console.error('No fue posible cargar el perfil del docente:', e)
     }
   }
 
@@ -819,6 +854,14 @@ class AsistenteServiceImpl {
         break
       }
       case 'respuesta-final': {
+        // El Chat IA acaba de confirmar un cambio real en
+        // perfiles_docentes (ver actualizar_perfil_docente en
+        // app/api/chat/route.ts) — se dispara sin esperar a los
+        // chequeos de abajo (turnoUsuarioPendiente, etc.) porque es
+        // independiente de cómo se termine mostrando esta respuesta.
+        // recargarPerfil() notifica por su cuenta cuando termina.
+        if (evento.perfilActualizado) this.recargarPerfil()
+
         // Igual que arriba: si aún no aparece la burbuja del docente,
         // solo se marca que ya está lista para volcarse en cuanto llegue.
         if (this.turnoUsuarioPendiente) {
@@ -1469,13 +1512,6 @@ ${instruccion}`
   interrumpir() {
     this.motor?.interrumpir()
   }
-
-  async obtenerPerfilDocente() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return null
-    const { data } = await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()
-    return data
-  }
 }
 
 // Instancia única de todo el proceso del navegador — se crea una sola vez
@@ -1502,4 +1538,8 @@ if (typeof document !== 'undefined') {
 // que el singleton sigue vivo en memoria a menos que se limpie aquí.
 supabase.auth.onAuthStateChange((evento) => {
   if (evento === 'SIGNED_OUT') AsistenteService.limpiarConversacionGuardada()
+  // Cubre el login real y la restauración de sesión desde storage al
+  // recargar la pestaña — ambos casos pueden dejar EstadoAsistente.perfil
+  // en null (sesión aún no existía cuando el constructor la pidió).
+  if (evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION' || evento === 'TOKEN_REFRESHED') AsistenteService.recargarPerfil()
 })

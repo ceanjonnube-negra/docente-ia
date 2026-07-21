@@ -178,7 +178,12 @@ export type EventoMotor =
   // nunca se muestra en pantalla, para que AsistenteService pueda
   // seguir usándolo como fuente si el docente pide otro formato
   // después ("ahora en PDF").
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion }
+  // perfilActualizado: true cuando el turno escribió en
+  // perfiles_docentes (ver actualizar_perfil_docente en
+  // app/api/chat/route.ts) — AsistenteService lo usa como señal para
+  // recargar EstadoAsistente.perfil, la única fuente que consumen el
+  // menú lateral, /dashboard/inicio y el resto de la interfaz.
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

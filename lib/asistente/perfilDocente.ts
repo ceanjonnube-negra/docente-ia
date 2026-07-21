@@ -9,11 +9,34 @@
 import { supabase } from '@/lib/supabaseClient'
 import type { ContextoAplicacion } from './tipos'
 
+// Forma mínima que usa el resto de la aplicación (menú lateral,
+// encabezados de documentos, instrucciones del modelo). `select('*')`
+// trae más columnas de las que cualquier pantalla necesita — el índice
+// de firma cubre esas sin obligar a declarar cada una aquí.
+export type PerfilDocente = {
+  id: string
+  nombre: string | null
+  escuela: string | null
+  grado: string | null
+  grupo: string | null
+  municipio: string | null
+  estado: string | null
+  [clave: string]: unknown
+}
+
+// ÚNICA función que lee perfiles_docentes desde el cliente — tanto
+// AsistenteService (fuente de verdad reactiva para toda la interfaz,
+// ver EstadoAsistente.perfil) como los motores conversacionales
+// (contexto de cada turno) pasan por aquí. Nunca la reimplementes con
+// una consulta suelta a Supabase — eso es exactamente lo que producía
+// copias locales del grado/grupo que se quedaban desactualizadas tras
+// un cambio hecho desde el Chat IA (ver "Corregir sincronización del
+// perfil docente en la interfaz").
 export async function obtenerPerfilYSesion() {
   const { data: { user } } = await supabase.auth.getUser()
   const { data: { session } } = await supabase.auth.getSession()
   const perfil = user
-    ? (await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()).data
+    ? ((await supabase.from('perfiles_docentes').select('*').eq('id', user.id).single()).data as PerfilDocente | null)
     : null
   return { user, session, perfil }
 }
@@ -30,8 +53,7 @@ export function contextoAplicacionATexto(contexto: ContextoAplicacion): string {
   return partes.join('\n')
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function construirInstrucciones(perfil: any, contexto: ContextoAplicacion): string {
+export function construirInstrucciones(perfil: PerfilDocente | null, contexto: ContextoAplicacion): string {
   const perfilTexto = perfil
     ? `Nombre: ${perfil.nombre}\nEscuela: ${perfil.escuela}\nGrado: ${perfil.grado}\nGrupo: ${perfil.grupo}\nMunicipio: ${perfil.municipio}\nEstado: ${perfil.estado}`
     : ''

@@ -775,7 +775,14 @@ export async function POST(req: NextRequest) {
             const grupoFinal = grupoSolicitado ?? resultado.anterior.grupo
             const etiqueta = gradoFinal && grupoFinal ? `${gradoFinal} ${grupoFinal}` : gradoFinal || grupoFinal || 'actualizado'
             console.log(`[NIVEL0] actualizar_perfil_docente OK — grado=${gradoFinal ?? '(sin cambio)'} grupo=${grupoFinal ?? '(sin cambio)'} (anterior: grado=${resultado.anterior.grado ?? 'ninguno'} grupo=${resultado.anterior.grupo ?? 'ninguno'})`)
-            return respuestaTexto(`Listo. El grupo activo ahora es ${etiqueta}. A partir de este momento toda la información y los documentos se generarán utilizando ese grado.`)
+            // [[PERFIL_ACTUALIZADO]]: señal (sin datos propios) para que
+            // el cliente vuelva a leer perfiles_docentes — ver
+            // procesarMarcadorDePerfilActualizado en motorTextoClaude.ts
+            // y EstadoAsistente.perfil en AsistenteService.ts. Así el
+            // menú lateral, /dashboard/inicio y cualquier otra pantalla
+            // dejan de mostrar el grado/grupo anterior sin recargar la
+            // página.
+            return respuestaTexto(`Listo. El grupo activo ahora es ${etiqueta}. A partir de este momento toda la información y los documentos se generarán utilizando ese grado.\n[[PERFIL_ACTUALIZADO]]`)
           } catch (e) {
             console.error('[NIVEL0] actualizar_perfil_docente — excepción escribiendo:', e)
             return respuestaTexto('No fue posible actualizar tu grado o grupo en este momento. Intenta de nuevo en unos segundos.')
