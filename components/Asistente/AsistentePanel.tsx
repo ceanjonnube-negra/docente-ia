@@ -480,6 +480,21 @@ export default function AsistentePanel() {
   //   algo?) — ver MotorOpenAIRealtime.alternarTurno(). Si no hay nada
   //   que enviar, se interpreta como salir del modo voz.
   const toggleModoVoz = () => {
+    // "Desbloquea" speechSynthesis para el resto de la sesión: varios
+    // navegadores (sobre todo iOS Safari — ver la nota de getUserMedia
+    // más abajo, mismo tipo de restricción) solo permiten reproducir
+    // audio sintetizado si el PRIMER speak() de la página ocurrió
+    // síncronamente dentro de un gesto real del usuario (un tap). Como
+    // la respuesta real llega mucho después (transcripción + /api/chat
+    // de por medio), ese speak() real ya no cuenta como "dentro" del
+    // gesto — sin este toque en vacío aquí, el navegador puede
+    // descartar en silencio cualquier speak() posterior (ver "Corregir
+    // la integración entre el Chat IA y la lectura en voz de las
+    // respuestas"). Texto vacío: no se escucha nada, solo registra la
+    // activación.
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(''))
+    }
     if (asistente.estadoMotor === 'conectando') asistente.cancelarConexionVoz()
     else if (asistente.modoVoz) asistente.alternarTurnoVoz()
     else asistente.activarModoVoz()
@@ -938,7 +953,13 @@ export default function AsistentePanel() {
           <div className="relative">
             {asistente.modoVoz && asistente.estadoEscucha && (
               <span className="absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-gray-500 bg-white/95 px-2 py-0.5 rounded-full shadow-sm">
-                {asistente.estadoEscucha === 'escuchando' ? 'Escuchando' : asistente.estadoEscucha === 'confirmando' ? 'Confirmando…' : 'Pensando…'}
+                {asistente.estadoEscucha === 'escuchando'
+                  ? 'Escuchando'
+                  : asistente.estadoEscucha === 'confirmando'
+                    ? 'Confirmando…'
+                    : asistente.estadoEscucha === 'hablando'
+                      ? 'Hablando…'
+                      : 'Pensando…'}
               </span>
             )}
             <button
@@ -951,14 +972,22 @@ export default function AsistentePanel() {
                     ? 'bg-amber-500 text-white'
                     : asistente.estadoEscucha === 'pensando'
                       ? 'bg-purple-500 text-white'
-                      : 'bg-red-500 text-white'
+                      : asistente.estadoEscucha === 'hablando'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-red-500 text-white'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
               {asistente.modoVoz && (
                 <span
                   className={`absolute inset-0 rounded-full animate-ping opacity-75 ${
-                    asistente.estadoEscucha === 'confirmando' ? 'bg-amber-400' : asistente.estadoEscucha === 'pensando' ? 'bg-purple-400' : 'bg-red-400'
+                    asistente.estadoEscucha === 'confirmando'
+                      ? 'bg-amber-400'
+                      : asistente.estadoEscucha === 'pensando'
+                        ? 'bg-purple-400'
+                        : asistente.estadoEscucha === 'hablando'
+                          ? 'bg-blue-400'
+                          : 'bg-red-400'
                   }`}
                   aria-hidden="true"
                 />

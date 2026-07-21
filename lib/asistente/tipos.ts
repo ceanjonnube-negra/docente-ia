@@ -164,10 +164,12 @@ export type EventoMotor =
   // primero.
   | { tipo: 'inicio-turno-usuario' }
   // Solo lo emite MotorOpenAIRealtime, para que el botón de voz muestre
-  // un estado discreto en vez de solo parpadear sin explicar qué pasa —
-  // ver deteccionFinTurno.ts. "confirmando" debe durar muy poco (unos
-  // cientos de ms a 2-3s como mucho); "pensando" cubre desde que se pidió
-  // la respuesta hasta que empieza a llegar el primer contenido.
+  // un estado discreto en vez de solo parpadear sin explicar qué pasa.
+  // "pensando" cubre desde el segundo toque (fin del dictado) hasta que
+  // llega la respuesta real de /api/chat. El estado 'hablando' (mientras
+  // speechSynthesis lee la respuesta) no viaja por aquí — lo pone
+  // AsistenteService directamente al reaccionar a 'respuesta-final', ver
+  // EstadoAsistente.estadoEscucha.
   | { tipo: 'estado-escucha'; estado: 'escuchando' | 'confirmando' | 'pensando' }
   | { tipo: 'transcripcion-parcial'; texto: string }
   | { tipo: 'mensaje-usuario'; texto: string }

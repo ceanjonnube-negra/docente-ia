@@ -88,9 +88,15 @@ export type EstadoAsistente = {
   // Siempre se llena (barato), independientemente de si el panel de
   // debug está activo o no.
   debugVoz: PasoDebugVoz[]
-  // Estado discreto del turno de voz (ver motorOpenAIRealtime.ts /
-  // deteccionFinTurno.ts) — null cuando no aplica (modo voz inactivo).
-  estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | null
+  // Estado discreto del turno de voz (ver motorOpenAIRealtime.ts) —
+  // null cuando no aplica (modo voz inactivo). 'hablando': el navegador
+  // está leyendo la respuesta en voz alta (speechSynthesis, ver case
+  // 'respuesta-final' en manejarEventoMotor) — 'confirmando' quedó sin
+  // emisor real desde que se eliminó el cierre automático de turno por
+  // pausa (ver "Corregir envío prematuro de mensajes durante el
+  // dictado por voz"), se conserva en el tipo por si un futuro motor
+  // lo vuelve a usar.
+  estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | null
   // Aviso breve y temporal para fallas GENERANDO O EDITANDO UN DOCUMENTO
   // (nunca se guarda como mensaje del asistente — no es una respuesta,
   // es un estado transitorio de la interfaz, igual que avisoVoz). Se
@@ -178,7 +184,7 @@ class AsistenteServiceImpl {
   private avisoVoz: string | null = null
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private debugVoz: PasoDebugVoz[] = []
-  private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | null = null
+  private estadoEscucha: 'escuchando' | 'confirmando' | 'pensando' | 'hablando' | null = null
   private avisoGeneracion: string | null = null
   private avisoGeneracionTimer: ReturnType<typeof setTimeout> | null = null
   private documentoFinalizandoId: string | null = null
@@ -1007,14 +1013,35 @@ class AsistenteServiceImpl {
         }
         // Modo voz: lee en voz alta la respuesta REAL que acaba de
         // llegar (el mismo evento.texto que ya se muestra en la
-        // burbuja) — ver "Unificar el flujo de voz con el pipeline de
-        // texto". Nunca es OpenAI Realtime componiendo su propia
-        // respuesta; es el navegador leyendo, palabra por palabra, lo
-        // mismo que respondería el Chat IA por escrito.
+        // burbuja) — ver "Corregir la integración entre el Chat IA y la
+        // lectura en voz de las respuestas". Nunca es OpenAI Realtime
+        // componiendo su propia respuesta; es el navegador leyendo,
+        // palabra por palabra, lo mismo que respondería el Chat IA por
+        // escrito. estadoEscucha pasa a 'hablando' mientras dura (antes
+        // motorOpenAIRealtime.ts volvía a poner 'escuchando' de
+        // inmediato al terminar de enviar el mensaje, pisando este
+        // estado — ver finalizarTurno() — por eso el indicador se veía
+        // "atorado" en Escuchando aunque si hubiera audio) y solo
+        // regresa a 'escuchando' cuando la lectura termina de verdad
+        // (onend/onerror), nunca antes.
         if (this.modoVoz && typeof window !== 'undefined' && window.speechSynthesis) {
           window.speechSynthesis.cancel()
           const utterance = new SpeechSynthesisUtterance(evento.texto)
           utterance.lang = 'es-MX'
+          this.estadoEscucha = 'hablando'
+          const volverAEscuchar = () => {
+            if (!this.modoVoz) return
+            this.estadoEscucha = 'escuchando'
+            this.notificar()
+          }
+          utterance.onstart = () => console.log('[VOZ][TTS] speechSynthesis: comenzó a leer la respuesta en voz alta')
+          utterance.onend = () => { console.log('[VOZ][TTS] speechSynthesis: terminó de leer la respuesta'); volverAEscuchar() }
+          utterance.onerror = (e) => { console.error('[VOZ][TTS] speechSynthesis.speak falló:', e.error); volverAEscuchar() }
+          // Log temporal de diagnóstico — confirma que la llamada
+          // realmente se ejecuta y cuántas voces tiene disponibles el
+          // navegador (una lista vacía es la causa típica de que no
+          // suene nada en algunos navegadores/dispositivos).
+          console.log(`[VOZ][TTS] speechSynthesis.speak() invocado — ${evento.texto.length} caracteres, voces disponibles=${window.speechSynthesis.getVoices().length}`)
           window.speechSynthesis.speak(utterance)
         }
         this.notificar()

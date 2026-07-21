@@ -806,10 +806,16 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       // botón Enviar — agrega la burbuja del docente, pasa por el
       // Clasificador de Nivel 0, las Herramientas y /api/chat, y deja
       // la respuesta real en el historial exactamente igual que un
-      // mensaje escrito (ver 'respuesta-final' en AsistenteService,
-      // que además la lee en voz alta cuando modoVoz está activo).
+      // mensaje escrito. Para cuando este await resuelve, AsistenteService
+      // (case 'respuesta-final') YA puso estado-escucha en 'hablando' y
+      // ya mandó la respuesta a speechSynthesis — este método NUNCA debe
+      // volver a poner 'escuchando' aquí: eso le pisaba el estado
+      // 'hablando' de inmediato (bug real confirmado — ver "Corregir la
+      // integración entre el Chat IA y la lectura en voz de las
+      // respuestas"). El regreso a 'escuchando' ahora lo hace
+      // AsistenteService cuando la lectura en voz alta termina de verdad
+      // (utterance.onend/onerror).
       await this.enviarComoMensaje(textoFinal)
-      this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
       this.debug('turno-mensaje-enviado-a-texto', 'ok')
     } finally {
       this.finalizandoTurno = false
