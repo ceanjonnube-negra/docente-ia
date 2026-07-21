@@ -1320,8 +1320,25 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
+  // Ampliado (ver "Motor de interpretación de intención y edición del
+  // Documento Activo") con dos párrafos nuevos: completado profesional
+  // ante instrucciones vagas, e interpretación de una foto adjunta
+  // como el mismo documento en vez de un tema nuevo. El resto del
+  // prompt (formato de salida, MODO DOCUMENTO) queda intacto a
+  // propósito — sigue siendo el mismo camino de edición que ya
+  // funciona, solo con más criterio para decidir QUÉ escribir.
   private construirPromptEdicion(documentoTexto: string, instruccion: string): string {
-    return `El maestro pidió modificar/convertir el siguiente documento que ya se venía trabajando en esta conversación (aunque todavía no estuviera en el formato final de documento). Devuelve el documento COMPLETO ya actualizado, empezando DIRECTAMENTE con su título en mayúsculas y emoji (MODO DOCUMENTO) — nunca antes con una frase de confirmación, ni narrando de nuevo el contenido en prosa conversacional, ni explicando qué vas a hacer: la respuesta ES el documento, de principio a fin, sin nada más. Si la instrucción pide imágenes o ilustraciones, usa íconos y emoji relevantes para dar esa sensación visual dentro del texto — nunca respondas que no puedes generar imágenes.\n\nDOCUMENTO/CONTENIDO ACTUAL:\n${documentoTexto}\n\nINSTRUCCIÓN DEL MAESTRO:\n${instruccion}`
+    return `El maestro pidió modificar/convertir el siguiente documento que ya se venía trabajando en esta conversación (aunque todavía no estuviera en el formato final de documento). Devuelve el documento COMPLETO ya actualizado, empezando DIRECTAMENTE con su título en mayúsculas y emoji (MODO DOCUMENTO) — nunca antes con una frase de confirmación, ni narrando de nuevo el contenido en prosa conversacional, ni explicando qué vas a hacer: la respuesta ES el documento, de principio a fin, sin nada más. Si la instrucción pide imágenes o ilustraciones, usa íconos y emoji relevantes para dar esa sensación visual dentro del texto — nunca respondas que no puedes generar imágenes.
+
+Si la instrucción es vaga o pide completar/mejorar el documento en general ("complétalo", "llénalo", "hazlo formal", "termínalo", "arréglalo", "redáctalo", "pon lo que falta", "hazlo mejor", "corrígelo", "ponlo bonito", "perfecciónalo", "actualízalo", "modifícalo", o equivalentes): redacta tú mismo cualquier campo institucional que siga vacío o incompleto (observaciones, acuerdos, comentarios, seguimiento, conclusiones, recomendaciones, fundamento legal, etc.), con estilo profesional/institucional, coherente con el resto del documento (mismo alumno, incidente, fecha, materia y hechos ya presentes — nunca inventes datos que no estén ahí ni en la conversación). Nunca dejes marcadores genéricos como "Pendiente", "Opcional", "Escriba aquí" o similar, y nunca preguntes qué escribir — el maestro espera que completes esas partes con tu propio criterio profesional, no que se lo devuelvas sin terminar.
+
+Si el mensaje trae una foto adjunta, en la gran mayoría de los casos esa foto ES este mismo documento (una captura de pantalla, una foto del papel ya impreso o firmado, una foto de lo que el maestro escribió a mano) — a menos que el maestro claramente esté pidiendo comparar o analizar algo distinto, interprétala como parte de este documento (para copiar datos que aparecen en ella, verificar que coincide, o completar/corregir con base en lo que se ve) y no como un tema nuevo e independiente.
+
+DOCUMENTO/CONTENIDO ACTUAL:
+${documentoTexto}
+
+INSTRUCCIÓN DEL MAESTRO:
+${instruccion}`
   }
 
   // El motor de texto necesita ver la conversación real (turnos previos)
