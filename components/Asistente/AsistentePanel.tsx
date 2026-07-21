@@ -898,10 +898,20 @@ export default function AsistentePanel() {
         <div className="flex gap-2 items-center">
           <input
             ref={inputRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && enviar()}
-            placeholder="¿Qué necesitas hoy, maestro?"
+            // Modo voz: el input se convierte en la vista previa en vivo
+            // de todo lo reconocido hasta ahora (transcripcionParcial ya
+            // incluye los segmentos confirmados entre pausas, no solo el
+            // último) — de solo lectura mientras se dicta, para que el
+            // docente vea que nada se pierde entre silencios sin poder
+            // corromper el texto a medio dictar (ver "Corregir envío
+            // prematuro de mensajes durante el dictado por voz"). Nunca
+            // se envía desde aquí: solo el segundo toque del micrófono
+            // dispara sendMessage.
+            value={asistente.modoVoz ? asistente.transcripcionParcial : input}
+            onChange={e => { if (!asistente.modoVoz) setInput(e.target.value) }}
+            readOnly={asistente.modoVoz}
+            onKeyDown={e => e.key === 'Enter' && !asistente.modoVoz && enviar()}
+            placeholder={asistente.modoVoz ? 'Escuchando…' : '¿Qué necesitas hoy, maestro?'}
             className="flex-1 bg-gray-100 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
           />
           {!asistente.modoVoz && (

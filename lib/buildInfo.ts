@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'unificar-voz-con-pipeline-texto-v66-88afaf2'
+export const BUILD_ID = 'push-to-toggle-dictado-voz-v67-6cabcc7'

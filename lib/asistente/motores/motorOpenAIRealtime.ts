@@ -28,7 +28,6 @@
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { PERSONA_VOZ } from '../personaVoz'
 import { MARCO_CURRICULAR_VIGENTE } from '../marcoCurricular'
-import { analizarComplecionFrase, CONFIG_FIN_TURNO } from '../deteccionFinTurno'
 import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerSesionContexto, type SesionContexto } from '@/lib/sesionContexto'
@@ -59,14 +58,6 @@ const VOZ = 'marin'
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ]
-// Respaldo final (CASO D, ver deteccionFinTurno.ts) — NO el mecanismo
-// principal. Los mecanismos principales son, en orden: el botón manual
-// (ver alternarTurno) y la detección adaptativa de fin de turno (ver
-// programarEvaluacionFinTurno). Este techo largo solo actúa si ninguno
-// de los dos cerró el turno — para no dejar la conversación colgada
-// indefinidamente en el caso raro de que la transcripción nunca dé una
-// señal clara ni el docente vuelva a tocar el botón.
-const SILENCIO_MAXIMO_MS = 20000
 // Techo de seguridad SOLO para el caso raro de que se pierda el evento
 // de transcripción o de error (red, etc.) — el caso "no había audio
 // nuevo" ya no pasa por aquí: el error 'buffer too small' lo resuelve
@@ -200,10 +191,6 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // tercer grado" quede como un solo mensaje en vez de tres respuestas.
   private transcripcionUsuarioAcumulada = ''
   private resolverCommitFinal: (() => void) | null = null
-  private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null
-  // Ventana adaptativa de cierre de turno (CASO A/B/C, ver
-  // deteccionFinTurno.ts) — independiente del techo largo de arriba.
-  private temporizadorFinTurno: ReturnType<typeof setTimeout> | null = null
   // Última vez que llegó un delta de transcripción parcial — no se loguea
   // cada uno (saturaría el panel de diagnóstico), solo se usa para medir
   // cuánto tardó la transcripción final desde el último fragmento parcial.
@@ -682,9 +669,6 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     // seguridad por si quedó un motor de voz vivo sin cerrar).
     this.idIntentoActual++
     this.controladorAbort?.abort()
-    if (this.temporizadorSilencio) clearTimeout(this.temporizadorSilencio)
-    this.temporizadorSilencio = null
-    this.cancelarTemporizadorFinTurno()
     this.resolverCommitFinal = null
     this.huboAudioSinConfirmar = false
     this.finalizandoTurno = false
@@ -716,6 +700,21 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     })
   }
 
+  // Texto completo reconocido HASTA AHORA en esta sesión de dictado:
+  // todos los segmentos ya finalizados (transcripcionUsuarioAcumulada)
+  // más lo que se está transcribiendo en este momento
+  // (transcripcionUsuarioParcial). Se emite como 'transcripcion-parcial'
+  // en cada cambio para que AsistentePanel muestre la vista previa
+  // completa (ver "Corregir envío prematuro de mensajes durante el
+  // dictado por voz") — nunca solo el último fragmento, que perdía de
+  // vista todo lo dicho antes de la pausa más reciente.
+  private textoReconocidoHastaAhora(): string {
+    if (!this.transcripcionUsuarioParcial) return this.transcripcionUsuarioAcumulada
+    return this.transcripcionUsuarioAcumulada
+      ? `${this.transcripcionUsuarioAcumulada} ${this.transcripcionUsuarioParcial}`
+      : this.transcripcionUsuarioParcial
+  }
+
   interrumpir() {
     // response.cancel ya casi nunca aplica: este motor ya no le pide
     // respuestas a OpenAI Realtime (ver finalizarTurno). El audio real
@@ -724,68 +723,6 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     // respuesta que se está escuchando.
     if (this.respondiendoActivo) this.enviarEventoCliente({ type: 'response.cancel' })
     if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
-  }
-
-  private reiniciarTemporizadorSilencio() {
-    if (this.temporizadorSilencio) clearTimeout(this.temporizadorSilencio)
-    // Respaldo, no el método principal (ver alternarTurno): si el
-    // docente dijo algo y luego se queda callado este tiempo sin volver
-    // a tocar el botón, el turno se cierra solo para no dejar la
-    // conversación colgada.
-    this.temporizadorSilencio = setTimeout(() => {
-      if (this.transcripcionUsuarioAcumulada.trim() && !this.respondiendoActivo) {
-        this.registrar('silencio-prolongado', 'Cerrando turno automáticamente como respaldo')
-        this.finalizarTurno('automatico')
-      }
-    }, SILENCIO_MAXIMO_MS)
-  }
-
-  private cancelarTemporizadorFinTurno() {
-    if (this.temporizadorFinTurno) {
-      clearTimeout(this.temporizadorFinTurno)
-      this.temporizadorFinTurno = null
-    }
-  }
-
-  // Detección adaptativa de fin de turno (CASO A/B/C, ver
-  // deteccionFinTurno.ts): se llama cada vez que un fragmento de
-  // transcripción se confirma, con la transcripción ACUMULADA completa
-  // hasta ese momento (no solo el fragmento nuevo) — así una instrucción
-  // de varias partes con pausas ("Hazme cinco problemas de resta...
-  // para tercer grado... con dificultad progresiva") se evalúa completa
-  // cada vez, no fragmento por fragmento.
-  private programarEvaluacionFinTurno() {
-    this.cancelarTemporizadorFinTurno()
-
-    // Una respuesta en curso significa que esto es una interrupción
-    // (barge-in), no un turno nuevo pendiente de cerrar — el barge-in ya
-    // se maneja del lado del servidor (interrupt_response:true). Cuando
-    // esa respuesta cancelada termine de asentarse, el próximo fragmento
-    // de transcripción vuelve a llamar a este método normalmente.
-    if (this.respondiendoActivo) return
-
-    const texto = this.transcripcionUsuarioAcumulada.trim()
-    if (!texto) return
-
-    const estado = analizarComplecionFrase(texto)
-    this.debug('turno-analisis-complecion', 'info', estado)
-
-    if (estado === 'espera_explicita') {
-      // No se programa cierre automático — el docente literalmente pidió
-      // una pausa. Solo el botón manual o el techo de silencio
-      // prolongado (CASO D) cierran el turno desde aquí.
-      this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
-      return
-    }
-
-    const espera = estado === 'completa'
-      ? CONFIG_FIN_TURNO.silencioFraseCompletaMs
-      : CONFIG_FIN_TURNO.silencioFraseIncompletaMs
-    this.emitir({ tipo: 'estado-escucha', estado: 'confirmando' })
-    this.temporizadorFinTurno = setTimeout(() => {
-      this.registrar('fin-turno-adaptativo', `estado=${estado}, espera=${espera}ms`)
-      this.finalizarTurno('automatico')
-    }, espera)
   }
 
   // Cierra el turno actual: confirma cualquier audio que el VAD todavía
@@ -814,20 +751,18 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // costo real de esto es la latencia que antes se evitaba: la
   // respuesta ya no puede empezar a generarse hasta tener la
   // transcripción completa Y la vuelta completa de /api/chat.
-  async finalizarTurno(origen: 'manual' | 'automatico' = 'manual') {
+  // Solo se llama desde alternarTurno() — el segundo toque MANUAL del
+  // botón (ver "Corregir envío prematuro de mensajes durante el
+  // dictado por voz"). Ya no existe ningún camino automático: ni pausa,
+  // ni silencio, ni tiempo transcurrido cierran el turno por su cuenta.
+  async finalizarTurno() {
     // Ya hay un finalizarTurno() en vuelo (segundo toque disparado antes
     // de que el primero terminara de esperar su commit/transcripción) —
     // ignorar esta llamada extra en vez de duplicar el turno.
     if (this.finalizandoTurno) return
     this.finalizandoTurno = true
     try {
-      if (this.temporizadorSilencio) {
-        clearTimeout(this.temporizadorSilencio)
-        this.temporizadorSilencio = null
-      }
-      this.cancelarTemporizadorFinTurno()
-      this.debug('turno-fin-turno-decidido', 'ok', origen)
-      if (origen === 'manual') this.debug('turno-2do-toque', 'ok')
+      this.debug('turno-2do-toque', 'ok')
 
       // Solo comitear (y esperar su transcripción) si de verdad hay
       // audio nuevo sin confirmar. El caso normal es que el VAD ya haya
@@ -903,9 +838,11 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       return 'interrumpido'
     }
     if (this.transcripcionUsuarioAcumulada.trim()) {
-      // El botón manual siempre gana: cierra de inmediato sin esperar
-      // ningún análisis automático (ver programarEvaluacionFinTurno).
-      await this.finalizarTurno('manual')
+      // Único disparador real de un envío: el segundo toque manual del
+      // botón. No existe ningún cierre automático por pausa, silencio
+      // ni tiempo transcurrido (ver "Corregir envío prematuro de
+      // mensajes durante el dictado por voz").
+      await this.finalizarTurno()
       return 'finalizado'
     }
     return 'vacio'
@@ -973,13 +910,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         // interrumpirTexto).
         this.interrumpirTexto?.()
         this.huboAudioSinConfirmar = true
-        this.reiniciarTemporizadorSilencio()
         this.debug('turno-ultimo-fragmento-audio', 'info')
-        // El docente volvió a hablar antes de que se cerrara el turno —
-        // cancela cualquier cierre automático que estuviera contando
-        // (CASO A/B en pausa) y vuelve a "escuchando". Se reevalúa desde
-        // cero en cuanto este nuevo fragmento termine de transcribirse.
-        this.cancelarTemporizadorFinTurno()
         this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
         break
 
@@ -996,16 +927,17 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       case 'conversation.item.input_audio_transcription.delta':
         this.transcripcionUsuarioParcial += evento.delta || ''
         this.ultimoDeltaTranscripcionMs = Date.now()
-        this.emitir({ tipo: 'transcripcion-parcial', texto: this.transcripcionUsuarioParcial })
+        this.emitir({ tipo: 'transcripcion-parcial', texto: this.textoReconocidoHastaAhora() })
         break
 
       case 'conversation.item.input_audio_transcription.completed': {
         // Con create_response:false, cada pausa natural genera SU PROPIO
-        // evento de transcripción — se van juntando aquí en vez de
-        // mostrarse cada una como un mensaje aparte. La detección
-        // adaptativa (ver programarEvaluacionFinTurno) decide, con el
-        // texto acumulado completo, si ya es momento de cerrar el turno;
-        // el botón manual siempre puede cerrarlo antes.
+        // evento de transcripción — se van juntando aquí en un solo
+        // texto acumulado (transcripcionUsuarioAcumulada), sin importar
+        // cuántas pausas haya. NUNCA se cierra el turno desde aquí — el
+        // ÚNICO disparador de un envío es el segundo toque manual del
+        // botón (ver alternarTurno/finalizarTurno y "Corregir envío
+        // prematuro de mensajes durante el dictado por voz").
         this.transcripcionUsuarioParcial = ''
         // Este evento solo llega DESPUÉS de un commit ya resuelto (auto o
         // manual) — el fragmento que acaba de transcribirse ya quedó
@@ -1023,8 +955,10 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           this.transcripcionUsuarioAcumulada = this.transcripcionUsuarioAcumulada
             ? `${this.transcripcionUsuarioAcumulada} ${texto}`
             : texto
-          this.reiniciarTemporizadorSilencio()
-          this.programarEvaluacionFinTurno()
+          // Vista previa: refleja el segmento recién confirmado de
+          // inmediato, sin esperar al próximo delta (que puede tardar
+          // si el docente hace una pausa larga antes de seguir).
+          this.emitir({ tipo: 'transcripcion-parcial', texto: this.textoReconocidoHastaAhora() })
         }
         if (this.resolverCommitFinal) {
           const resolver = this.resolverCommitFinal
