@@ -76,7 +76,23 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // todos modos terminan cayendo en "conversacion_general" sin hacer nada.
 // Este filtro local y gratuito evita esa llamada cuando el mensaje
 // claramente no es de los que el Nivel 0 sabe enrutar.
-const REQUIERE_CLASIFICADOR_NIVEL0 = /asistenc|\bfalta(s)?\b|retardo|tardanza|pas[ae]r?\s+lista|ficha\s+descriptiva|planeaci[oó]n|apoyo|document(o|os)|almacenad|calendario|actividad(es)?|programad/i
+//
+// CAUSA RAÍZ (bug real, no solo un caso raro) de "el Chat responde
+// 'no tengo acceso a la lista' a preguntas de asistencia": esta regex
+// solo reconocía las formas SUSTANTIVO de "falta"/"asistencia"
+// (\bfalta(s)?\b, "asistenc...") y "pasar/pasa/pase lista" — nunca las
+// conjugaciones verbales reales con las que un maestro pregunta de
+// verdad ("faltó", "faltaron", "asistieron", "pasé lista"), ni
+// sinónimos obvios ("presentes", "llegó tarde"). \w en JavaScript es
+// SOLO ASCII (no incluye acentos), así que ni siquiera un intento de
+// "pas[ae]r?" cubría "pasé" con acento. Cuando el mensaje no matcheaba
+// aquí, clasificarNivel0() JAMÁS se llamaba — el mensaje caía directo
+// al modelo grande sin ningún dato real de asistencia inyectado, y
+// Claude, sin nada que usar, respondía honestamente que no tenía
+// acceso (correcto dado lo que recibía, pero el mensaje nunca debió
+// llegar así). Verificado con los 5 ejemplos reportados: 4 de 5
+// fallaban esta regex antes de este cambio.
+const REQUIERE_CLASIFICADOR_NIVEL0 = /asistenc|\basisti(o|ó|eron|r|endo)\b|\bfalt\w*|retardo|tardanza|lleg\S*\s+tarde|\bpresente(s)?\b|pas[aeé]r?\s+lista|ficha\s+descriptiva|planeaci[oó]n|apoyo|document(o|os)|almacenad|calendario|actividad(es)?|programad/i
 
 // LISTA DE ALUMNOS — detección 100% determinista (expresión regular),
 // nunca un juicio de la IA: los nombres de los alumnos son un dato
