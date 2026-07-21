@@ -24,15 +24,31 @@ import { useAsistente } from '@/lib/asistente/hooks'
 import { AsistenteService } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
-import { obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
-import type { AdjuntoImagen } from '@/lib/asistente/tipos'
+import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import type { TipoHerramienta } from '@/lib/asistente/documentos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
 const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
 const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
+// Extensión real del archivo — el botón principal dice "Descargar
+// (.docx)" en vez de "Descargar Word": con varios formatos posibles a
+// la vez, la extensión es lo que de verdad distingue un archivo de
+// otro (ver "Tarjeta universal de documentos").
+const EXTENSION_FORMATO: Record<string, string> = { word: '.docx', pdf: '.pdf', powerpoint: '.pptx', excel: '.xlsx' }
+// Los 4 formatos convertibles hoy (ver TipoHerramienta) — usado para
+// ofrecer "Convertir a..." con los que NO sea ya el formato actual.
+const FORMATOS_CONVERTIBLES = ['word', 'pdf', 'powerpoint', 'excel'] as const
+
+function formatearTamano(bytes?: number): string | null {
+  if (!bytes || bytes <= 0) return null
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 
 // Ícono para un adjunto del Chat IA según su tipo real (RFC-CHAT-
 // ADJUNTOS-003) — imagen/PDF/Word/Excel/PowerPoint. clasificarTipoDocumento
@@ -92,7 +108,23 @@ async function compartirArchivo(archivo: { tipo: string; nombre: string; url: st
   }
 }
 
-function TarjetaDescarga({ archivo, creadoEn, className = '', resaltado = false }: { archivo: { tipo: string; nombre: string; url: string }; creadoEn: number; className?: string; resaltado?: boolean }) {
+function TarjetaDescarga({
+  archivo, creadoEn, mensajeId, esActivo, generando, onConvertir, className = '', resaltado = false,
+}: {
+  archivo: ArchivoGeneradoInfo
+  creadoEn: number
+  // mensajeId/esActivo/generando/onConvertir: solo hacen falta para
+  // ofrecer "Convertir a..." (ver "Memoria del documento activo") —
+  // llegan como props en vez de que la tarjeta llame useAsistente()
+  // por su cuenta, para no duplicar la suscripción que ya tiene
+  // AsistentePanel.
+  mensajeId: string
+  esActivo: boolean
+  generando: boolean
+  onConvertir: (mensajeId: string, tipo: TipoHerramienta) => void
+  className?: string
+  resaltado?: boolean
+}) {
   const [enlaceCopiado, setEnlaceCopiado] = useState(false)
   // Date.now() no puede llamarse en el cuerpo del render (impuro para
   // el linter de React) — se calcula una sola vez al montar/cambiar
@@ -105,7 +137,10 @@ function TarjetaDescarga({ archivo, creadoEn, className = '', resaltado = false 
     // eslint-disable-next-line react-hooks/set-state-in-effect -- valor derivado de Date.now() (impuro por definición); solo se necesita una vez al montar, no reactividad continua.
     setVencido(Date.now() - creadoEn > VENCIMIENTO_URL_MS)
   }, [creadoEn])
-  const nombreFormato = NOMBRE_FORMATO[archivo.tipo] ? ` ${NOMBRE_FORMATO[archivo.tipo]}` : ''
+  const extension = EXTENSION_FORMATO[archivo.tipo] || ''
+  const tamano = formatearTamano(archivo.tamanoBytes)
+  const fecha = formatearFecha(new Date(creadoEn), obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short' })
+  const otrosFormatos = FORMATOS_CONVERTIBLES.filter((t) => t !== archivo.tipo)
 
   return (
     <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
@@ -113,15 +148,20 @@ function TarjetaDescarga({ archivo, creadoEn, className = '', resaltado = false 
         <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[archivo.tipo] || '📄'}</span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-gray-900 truncate">{archivo.nombre}</p>
+          <p className="text-[11px] text-gray-400 flex items-center gap-1 flex-wrap">
+            <span>{fecha}</span>
+            {tamano && <span>· {tamano}</span>}
+            {esActivo && <span className="text-purple-600 font-semibold">· Documento activo</span>}
+          </p>
           <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
-            {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Documento oficial listo'}
+            {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
           </p>
         </div>
       </div>
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
           <button onClick={() => window.open(archivo.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
-            ⬇️ Descargar{nombreFormato}
+            ⬇️ Descargar ({extension})
           </button>
           <div className="flex gap-1.5">
             <button onClick={() => window.open(archivo.url, '_blank')} className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50">
@@ -134,6 +174,24 @@ function TarjetaDescarga({ archivo, creadoEn, className = '', resaltado = false 
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
             </button>
           </div>
+          {/* Convertir a otro formato: solo sobre el Documento Activo —
+              convertir una tarjeta vieja convertiría por error lo que
+              esté activo AHORA, no el documento que se está mirando
+              (ver convertirDocumentoActivo en AsistenteService.ts). */}
+          {esActivo && otrosFormatos.length > 0 && (
+            <div className="flex gap-1.5 flex-wrap pt-0.5">
+              {otrosFormatos.map((tipo) => (
+                <button
+                  key={tipo}
+                  onClick={() => onConvertir(mensajeId, tipo)}
+                  disabled={generando}
+                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50 disabled:opacity-40"
+                >
+                  🔄 {NOMBRE_FORMATO[tipo]}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -615,7 +673,17 @@ export default function AsistentePanel() {
                       el mensaje trae una URL firmada real del archivo, la
                       tarjeta oficial de descarga se renderiza — la vista
                       previa nunca la sustituye. */}
-                  {m.archivo?.url && <TarjetaDescarga archivo={m.archivo} creadoEn={m.creadoEn} resaltado={asistente.archivoReutilizadoId === m.id} />}
+                  {m.archivo?.url && (
+                    <TarjetaDescarga
+                      archivo={m.archivo}
+                      creadoEn={m.creadoEn}
+                      mensajeId={m.id}
+                      esActivo={asistente.documentoActivoId === m.id}
+                      generando={asistente.generando}
+                      onConvertir={asistente.convertirDocumentoActivo}
+                      resaltado={asistente.archivoReutilizadoId === m.id}
+                    />
+                  )}
                 </div>
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>

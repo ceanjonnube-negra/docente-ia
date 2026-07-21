@@ -39,6 +39,12 @@ export type ArchivoGenerado = {
   tipo: TipoArchivoGenerado
   nombre: string
   url: string
+  // Tamaño real del archivo en bytes — opcional porque subirArchivoGenerado
+  // (usado por el flujo de reintento/subida directa) no siempre lo tiene
+  // a mano; ejecutarHerramientaDocumento en herramientas.ts sí lo calcula
+  // gratis (ya mide buffer.length para verificar la firma binaria) y lo
+  // incluye siempre. La tarjeta universal del Chat IA lo muestra si viene.
+  tamanoBytes?: number
 }
 
 export function rutaArchivo(userId: string, nombreArchivo: string): string {
@@ -83,5 +89,5 @@ export async function subirArchivoGenerado(
   const ruta = rutaArchivo(userId, nombreArchivo)
   await subirBuffer(sb, ruta, buffer, contentType)
   const url = await crearUrlFirmada(sb, ruta, nombreArchivo)
-  return { tipo, nombre: nombreArchivo, url }
+  return { tipo, nombre: nombreArchivo, url, tamanoBytes: buffer.length }
 }

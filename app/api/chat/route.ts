@@ -412,7 +412,7 @@ export async function POST(req: NextRequest) {
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
-        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
           // No es una falla real — el maestro pidió algo que a propósito
@@ -520,7 +520,7 @@ export async function POST(req: NextRequest) {
         )
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[LISTA_ALUMNOS] entrega OK — ${archivo.nombre}`)
-        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
           return NextResponse.json({ error: err.message }, { status: 502 })
@@ -1090,7 +1090,7 @@ Grado: [grado] | Grupo: [grupo]
         // para conversiones futuras), nunca se muestra en pantalla.
         const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(texto, 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
-        return respuestaTexto(`Listo, maestro.\n\nPreparé el documento oficial con formato institucional. Ya puedes descargarlo.\n${marcador}\n${marcadorContenido}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcador}\n${marcadorContenido}`)
       }
       console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)
       // Claude no produjo un documento formal (era más bien una consulta

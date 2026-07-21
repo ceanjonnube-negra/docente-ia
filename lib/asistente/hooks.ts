@@ -9,6 +9,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { AsistenteService } from './AsistenteService'
 import type { AdjuntoImagen, ContextoAplicacion, Herramienta } from './tipos'
+import type { TipoHerramienta } from './documentos'
 
 export function useAsistente() {
   const estado = useSyncExternalStore(
@@ -35,6 +36,7 @@ export function useAsistente() {
     eliminarConversacion: (id: string) => AsistenteService.eliminarConversacion(id),
     confirmarAccionCalendario: (mensajeId: string, accionId: string) => AsistenteService.confirmarAccionCalendario(mensajeId, accionId),
     confirmarNavegacion: (mensajeId: string) => AsistenteService.confirmarNavegacion(mensajeId),
+    convertirDocumentoActivo: (idDocumento: string, tipo: TipoHerramienta) => AsistenteService.convertirDocumentoActivo(idDocumento, tipo),
   }
 }
 

@@ -130,6 +130,14 @@ export type EstadoAsistente = {
   // limpiarNavegacionPendiente(). Ver "Integración de comandos
   // verbales con navegación y consulta interna".
   accionNavegacionPendiente: AccionNavegacion | null
+  // Id del mensaje que sostiene el Documento Activo — null cuando no
+  // hay ninguno. Solo el id (no el objeto completo): la tarjeta
+  // universal (TarjetaDescarga) lo usa únicamente para saber si SU
+  // mensaje es el activo (mostrar el distintivo "Documento activo" y
+  // habilitar "Convertir a..."), nunca para leer el texto del
+  // documento — ver "Ajustes sobre el sistema de generación y manejo
+  // de documentos".
+  documentoActivoId: string | null
 }
 
 export type PasoDebugVoz = {
@@ -293,6 +301,7 @@ class AsistenteServiceImpl {
       archivoReutilizadoId: this.archivoReutilizadoId,
       accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
       accionNavegacionPendiente: this.accionNavegacionPendiente,
+      documentoActivoId: this.documentoActivo?.id ?? null,
     }
   }
 
@@ -1033,18 +1042,7 @@ class AsistenteServiceImpl {
         // del archivo referenciado").
         const formatoExplicito = detectarFormatoExplicito(limpio)
         const tipoResuelto = formatoExplicito ?? (this.documentoActivo.ultimoFormatoGenerado as TipoHerramienta | undefined) ?? tipoFinalizar
-
-        // No regenerar archivos existentes: mismo documento (mismo id,
-        // mismo texto — ver actualizarDocumentoActivo) y ese formato ya
-        // se generó antes → se reutiliza tal cual, sin tocar la red, sin
-        // volver a llamar al modelo ni al pipeline de documentos.
-        const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
-        if (archivoExistente) {
-          this.reutilizarArchivoExistente(limpio, archivoExistente)
-          return
-        }
-
-        await this.enviarComoFinalizacion(this.documentoActivo.id, limpio, tipoResuelto, this.documentoActivo.texto)
+        await this.ejecutarConversionFormato(tipoResuelto, limpio)
         return
       }
       await this.enviarComoEdicion(this.documentoActivo.id, limpio, this.construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
@@ -1265,6 +1263,38 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
+  // Resolución del archivo referenciado (ver "no regenerar archivos
+  // existentes") extraída como pieza única — la usan tanto el mensaje
+  // de texto normal ("conviértelo a PDF") como convertirDocumentoActivo
+  // (botón "Convertir a..." de la tarjeta universal), para que ambos
+  // caminos compartan exactamente la misma lógica de caché/finalización
+  // en vez de duplicarla.
+  private async ejecutarConversionFormato(tipoResuelto: TipoHerramienta, textoVisible: string) {
+    if (!this.documentoActivo) return
+    const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
+    if (archivoExistente) {
+      this.reutilizarArchivoExistente(textoVisible, archivoExistente)
+      return
+    }
+    await this.enviarComoFinalizacion(this.documentoActivo.id, textoVisible, tipoResuelto, this.documentoActivo.texto)
+  }
+
+  // El docente tocó "Convertir a X" en la tarjeta universal del
+  // documento (ver TarjetaDescarga en AsistentePanel.tsx) — misma
+  // acción que escribir "conviértelo a X" en el chat, solo que el
+  // formato ya viene resuelto desde el botón. Solo actúa si idDocumento
+  // sigue siendo el Documento Activo: evita convertir el documento
+  // equivocado si el docente generó otro distinto entre que vio la
+  // tarjeta y tocó el botón (doble toque tardío, tarjeta vieja en
+  // pantalla mientras se hace scroll hacia arriba, etc.).
+  private static readonly ETIQUETA_FORMATO: Record<TipoHerramienta, string> = {
+    word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel', imagen: 'imagen', audio: 'audio', video: 'video',
+  }
+  async convertirDocumentoActivo(idDocumento: string, tipo: TipoHerramienta) {
+    if (!this.documentoActivo || this.documentoActivo.id !== idDocumento || this.generando) return
+    await this.ejecutarConversionFormato(tipo, `Conviértelo a ${AsistenteServiceImpl.ETIQUETA_FORMATO[tipo]}.`)
+  }
+
   // Fuente única para "fijar" documentoActivo — un borrador nuevo, una
   // finalización a archivo, una edición de contenido por IA, o una
   // edición manual (ver los 4 lugares que la llaman) todas pasan por
@@ -1347,7 +1377,7 @@ class AsistenteServiceImpl {
     this.mensajes = [
       ...this.mensajes,
       { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
-      { id: idMensaje, rol: 'asistente', texto: 'El documento ya está listo. Puedes descargarlo aquí.', creadoEn: Date.now(), archivo },
+      { id: idMensaje, rol: 'asistente', texto: 'Ya puedes abrirlo, compartirlo o descargarlo.', creadoEn: Date.now(), archivo },
     ]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje

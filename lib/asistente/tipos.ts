@@ -14,7 +14,10 @@ export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 // lib/asistente/documentos.ts TipoHerramienta y lib/documentGen/
 // herramientas.ts) — cuando está presente, la burbuja del mensaje
 // muestra un botón de descarga real en vez de la tarjeta de borrador.
-export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string }
+// tamanoBytes es opcional: los archivos generados antes de este campo
+// (ya guardados en conversaciones existentes) siguen restaurándose sin
+// él — la tarjeta universal simplemente no muestra el tamaño si falta.
+export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string; tamanoBytes?: number }
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
 // inteligente de actualización del Calendario Escolar") — el docente

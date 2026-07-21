@@ -207,8 +207,11 @@ export async function ejecutarHerramientaDocumento(
 
   // ETAPA 8 (entrega al usuario) ocurre en app/api/chat/route.ts, al
   // devolver este resultado envuelto en el marcador
-  // [[DOCUMENTO_ARCHIVO:...]] — se registra ahí mismo.
-  return { tipo, nombre, url }
+  // [[DOCUMENTO_ARCHIVO:...]] — se registra ahí mismo. tamanoBytes sale
+  // gratis (buffer.length ya se calculó arriba para la verificación de
+  // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
+  // tamaño real sin pedirle nada más a Storage.
+  return { tipo, nombre, url, tamanoBytes: buffer.length }
 }
 
 function medirEtapaSync<T>(etiqueta: string, fn: () => T): T {
