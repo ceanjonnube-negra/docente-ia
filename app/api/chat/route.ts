@@ -5,19 +5,15 @@ import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import {
-  asistenciaGrupoResumen,
   calendarioCicloCompleto,
   categoriaEventoCalendario,
-  consultarAsistenciaAlumno,
   construirTextoListaAlumnos,
   contextoAlumno,
   contextoGrupo,
-  documentosDelDocente,
   escribirAsistencia,
-  incidenciasAlumno,
-  necesidadesApoyoGrupo,
   registrarAsistenciaMasiva,
 } from '@/lib/motorContexto'
+import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -595,29 +591,23 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Nivel 1: consultar_asistencia — respuesta directa, sin pasar por el modelo grande.
-      if (clasificacion.intencion_principal === 'consultar_asistencia' && clasificacion.nivel_ejecucion === 1) {
-        if (!clasificacion.entidades_resueltas.alumno_id) {
-          console.log('[NIVEL0] consultar_asistencia sin alumno_id resuelto — cae al flujo normal (Claude sin el dato real)')
-        } else if (!sesion.ciclo_escolar_id) {
-          console.log('[NIVEL0] consultar_asistencia con alumno_id pero sesion.ciclo_escolar_id es null — sin grupo activo con ciclo escolar activo para este docente (ver obtenerSesionContexto), cae al flujo normal')
-        } else {
-          try {
-            const datos = await consultarAsistenciaAlumno(
-              supabaseUser,
-              clasificacion.entidades_resueltas.alumno_id,
-              sesion.ciclo_escolar_id
-            )
-            const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
-            return respuestaTexto(
-              `${nombre} lleva ${datos.faltas} falta(s), ${datos.retardos} retardo(s) y ${datos.justificadas} justificada(s) de ${datos.dias_registrados} días registrados este ciclo escolar.`
-            )
-          } catch (e) {
-            console.error('[NIVEL0] Error consultando asistencia (consultarAsistenciaAlumno):', e)
-            // Si falla la consulta directa, seguimos al flujo normal como respaldo.
-          }
-        }
-      }
+      // Separación estricta entre conversación libre y consultas de
+      // módulos internos (ver lib/asistente/herramientasModulo.ts): si
+      // la intención clasificada pertenece a un módulo con Herramienta
+      // registrada (Asistencias, Incidencias, Apoyo, Documentos, y
+      // cualquier futura que se registre ahí), la respuesta sale
+      // ÚNICAMENTE de esa Herramienta — nunca del modelo grande. Único
+      // punto de entrada para todas ellas; ver ese archivo para la
+      // lista completa y por qué ficha_descriptiva/planeacion_nueva/
+      // consultar_calendario NO están ahí (generación/razonamiento
+      // real, no una cifra fija).
+      const respuestaDeModulo = await ejecutarHerramientaDeModulo(clasificacion, {
+        sb: supabaseUser,
+        sesion,
+        userId,
+        zonaHoraria,
+      })
+      if (respuestaDeModulo !== null) return respuestaTexto(respuestaDeModulo)
 
       // Nivel 1: registrar_asistencia ("pasa lista", "toma asistencia", etc.
       // — todas la misma acción real) — marca a todo el grupo activo como
@@ -730,27 +720,8 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Nivel 1: consultar_incidencias_alumno — misma cifra directa que
-      // consultar_asistencia (regla 1), sin pasar por el modelo grande.
-      if (clasificacion.intencion_principal === 'consultar_incidencias_alumno' && clasificacion.nivel_ejecucion === 1) {
-        if (!clasificacion.entidades_resueltas.alumno_id) {
-          console.log('[NIVEL0] consultar_incidencias_alumno sin alumno_id resuelto — cae al flujo normal')
-        } else {
-          try {
-            const datos = await incidenciasAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id)
-            const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
-            const texto =
-              datos.total === 0
-                ? `${nombre} no tiene incidencias registradas.`
-                : `${nombre} tiene ${datos.total} incidencia(s) registrada(s)${datos.incidencias[0] ? `; la más reciente es del ${datos.incidencias[0].fecha} (${datos.incidencias[0].tipo}).` : '.'}`
-            console.log(`[NIVEL0] consultar_incidencias_alumno OK — alumno_id=${clasificacion.entidades_resueltas.alumno_id} total=${datos.total}`)
-            return respuestaTexto(texto)
-          } catch (e) {
-            console.error('[NIVEL0] Error consultando incidencias (incidenciasAlumno):', e)
-            // Si falla la consulta directa, seguimos al flujo normal como respaldo.
-          }
-        }
-      }
+      // consultar_incidencias_alumno ya se resolvió arriba, en
+      // ejecutarHerramientaDeModulo — ver lib/asistente/herramientasModulo.ts.
 
       // Nivel 1: navegar_lista_filtrada — igual que navegar_alumno_lista
       // pero a nivel de módulo completo (sin alumnoId), con un filtro
@@ -770,10 +741,15 @@ export async function POST(req: NextRequest) {
         return respuestaTexto(`Mostrando ${etiquetaFiltro[filtro] ?? 'la lista'}.\n${marcador}`)
       }
 
-      // Nivel 4: ficha_descriptiva / planeacion_nueva / consultas
-      // agregadas de grupo — se enriquece el contexto con datos reales
-      // antes de la llamada grande a Claude, para que conteste con la
-      // cifra o el nombre real en vez de decir que no tiene acceso.
+      // Nivel 4: ficha_descriptiva / planeacion_nueva / consultar_calendario
+      // — estos tres siguen pasando por Claude a propósito (generación
+      // real de un documento, o razonamiento sobre un rango de fechas
+      // en lenguaje natural), pero SIEMPRE con datos reales ya
+      // inyectados, nunca a ciegas. Las consultas de cifra fija
+      // (asistencia, incidencias, apoyo, documentos) ya NO viven aquí
+      // — se resuelven arriba, en ejecutarHerramientaDeModulo, sin
+      // pasar nunca por el modelo grande (ver
+      // lib/asistente/herramientasModulo.ts).
       if (clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) {
         try {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
@@ -782,18 +758,6 @@ export async function POST(req: NextRequest) {
           } else if (clasificacion.intencion_principal === 'planeacion_nueva' && sesion.grupo_activo_id) {
             const ctxGrupo = await contextoGrupo(supabaseUser, sesion.grupo_activo_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL GRUPO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxGrupo)}`
-          } else if (clasificacion.intencion_principal === 'consultar_asistencia_grupo' && sesion.grupo_activo_id) {
-            const resumen = await asistenciaGrupoResumen(supabaseUser, sesion.grupo_activo_id, sesion.fecha_actual)
-            // Cifras ya calculadas (no le pidas al modelo que cuente los
-            // arreglos): "¿cuántas faltas hay hoy?" debe responderse con
-            // el número real, nunca "no tengo acceso a esa información".
-            contextoEnriquecido += `\n\nASISTENCIA REAL DEL GRUPO HOY (${resumen.fecha}): ${resumen.presentes.length} presentes, ${resumen.faltas.length} faltas, ${resumen.retardos.length} retardos, ${resumen.sinRegistrarHoy.length} sin registrar. LISTAS COMPLETAS Y RANKING DE FALTAS DEL CICLO (usa estos datos, no inventes otros; si una lista viene vacía, dilo con honestidad en vez de inventar nombres):\n${JSON.stringify(resumen)}`
-          } else if (clasificacion.intencion_principal === 'consultar_apoyo' && sesion.grupo_activo_id) {
-            const apoyos = await necesidadesApoyoGrupo(supabaseUser, sesion.grupo_activo_id)
-            contextoEnriquecido += `\n\nALUMNOS CON NECESIDAD DE APOYO REGISTRADA (usa estos datos; si la lista viene vacía, significa que no hay ninguna registrada todavía — dilo con honestidad):\n${JSON.stringify(apoyos)}`
-          } else if (clasificacion.intencion_principal === 'consultar_documentos' && userId) {
-            const documentos = await documentosDelDocente(supabaseUser, userId)
-            contextoEnriquecido += `\n\nDOCUMENTOS REALES YA GENERADOS POR EL MAESTRO (usa estos datos, no inventes otros):\n${JSON.stringify(documentos)}`
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el
