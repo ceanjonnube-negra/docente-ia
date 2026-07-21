@@ -277,6 +277,38 @@ export async function incidenciasAlumno(sb: SupabaseClient, alumnoId: string): P
   return { total: incidencias.length, incidencias };
 }
 
+// Único origen de verdad para el grado/grupo que usa TODO el pipeline
+// de documentos (encabezados, PDA/contenidos vía MARCO_CURRICULAR_
+// VIGENTE, planeaciones) — ver lib/documentGen/encabezadoDocumento.ts
+// y lib/asistente/perfilDocente.ts. Deliberadamente escribe SOLO en
+// perfiles_docentes, nunca en la tabla grupos (grupos de Lista/
+// asistencia): un docente puede tener varias filas en grupos a la vez
+// (una por grado/grupo distinto en el mismo ciclo escolar), así que no
+// hay forma segura de adivinar cuál de ellas "actualizar" desde una
+// frase de chat sin arriesgar corromper la asistencia/roster de un
+// grupo equivocado — ver "Correcciones del módulo Chat IA".
+// grado/grupo en perfiles_docentes son texto libre validado solo por
+// el selector de onboarding (app/onboarding/page.tsx): grado incluye
+// el símbolo ("4°"), grupo es una letra sola ("B").
+export type CambiosPerfilDocente = { grado?: string; grupo?: string };
+export type ResultadoActualizarPerfil = { exito: boolean; error?: string; anterior: { grado: string | null; grupo: string | null } };
+
+export async function actualizarPerfilDocente(
+  sb: SupabaseClient,
+  userId: string,
+  cambios: CambiosPerfilDocente
+): Promise<ResultadoActualizarPerfil> {
+  const { data: perfilAnterior } = await sb.from('perfiles_docentes').select('grado, grupo').eq('id', userId).single();
+  const anterior = { grado: perfilAnterior?.grado ?? null, grupo: perfilAnterior?.grupo ?? null };
+
+  if (!cambios.grado && !cambios.grupo) return { exito: true, anterior };
+
+  const { error } = await sb.from('perfiles_docentes').update(cambios).eq('id', userId);
+  if (error) return { exito: false, error: error.message, anterior };
+
+  return { exito: true, anterior };
+}
+
 export type RegistroAsistencia = { alumno_id: string; estado: 'presente' | 'falta' | 'retardo' };
 export type ResultadoEscrituraAsistencia = { exito: boolean; error?: string; guardados: number };
 

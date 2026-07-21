@@ -5,6 +5,7 @@ import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import {
+  actualizarPerfilDocente,
   calendarioCicloCompleto,
   categoriaEventoCalendario,
   construirTextoListaAlumnos,
@@ -735,6 +736,49 @@ export async function POST(req: NextRequest) {
           } catch (e) {
             console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}:`, e)
             return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
+          }
+        }
+      }
+
+      // Nivel 1: actualizar_perfil_docente — "Ya somos cuarto.", "Cambia
+      // el grado.", "Ahora es 4° B." Escribe DIRECTO en
+      // perfiles_docentes.grado/grupo (ver actualizarPerfilDocente en
+      // lib/motorContexto.ts): es la ÚNICA fuente que usa TODO el
+      // pipeline de documentos (encabezados, PDA/contenidos vía
+      // MARCO_CURRICULAR_VIGENTE, planeaciones), así que este cambio
+      // por sí solo hace que Word/PDF, el contenido pedagógico y el
+      // resto de la conversación (no hay caché — cada llamada a
+      // /api/chat vuelve a leer perfiles_docentes) usen el grado/grupo
+      // nuevo sin ningún paso adicional. Deliberadamente NO toca la
+      // tabla `grupos` (grupo activo de Lista/asistencia) — un docente
+      // puede tener varias filas ahí (una por grado/grupo distinto en
+      // el mismo ciclo), y no hay forma segura de adivinar cuál
+      // "actualizar" desde una frase de chat sin arriesgar corromper el
+      // roster/asistencia de un grupo equivocado.
+      if (clasificacion.intencion_principal === 'actualizar_perfil_docente' && clasificacion.nivel_ejecucion === 1) {
+        const gradoSolicitado = clasificacion.grado_solicitado
+        const grupoSolicitado = clasificacion.grupo_solicitado
+
+        if (!gradoSolicitado && !grupoSolicitado) {
+          console.log('[NIVEL0] actualizar_perfil_docente sin grado ni grupo resuelto — cae al flujo normal')
+        } else {
+          try {
+            const resultado = await actualizarPerfilDocente(supabaseUser, userId, {
+              grado: gradoSolicitado ?? undefined,
+              grupo: grupoSolicitado ?? undefined,
+            })
+            if (!resultado.exito) {
+              console.error('[NIVEL0] actualizar_perfil_docente — Supabase rechazó la escritura:', resultado.error)
+              return respuestaTexto('No fue posible actualizar tu grado o grupo en este momento. Intenta de nuevo en unos segundos.')
+            }
+            const gradoFinal = gradoSolicitado ?? resultado.anterior.grado
+            const grupoFinal = grupoSolicitado ?? resultado.anterior.grupo
+            const etiqueta = gradoFinal && grupoFinal ? `${gradoFinal} ${grupoFinal}` : gradoFinal || grupoFinal || 'actualizado'
+            console.log(`[NIVEL0] actualizar_perfil_docente OK — grado=${gradoFinal ?? '(sin cambio)'} grupo=${grupoFinal ?? '(sin cambio)'} (anterior: grado=${resultado.anterior.grado ?? 'ninguno'} grupo=${resultado.anterior.grupo ?? 'ninguno'})`)
+            return respuestaTexto(`Listo. El grupo activo ahora es ${etiqueta}. A partir de este momento toda la información y los documentos se generarán utilizando ese grado.`)
+          } catch (e) {
+            console.error('[NIVEL0] actualizar_perfil_docente — excepción escribiendo:', e)
+            return respuestaTexto('No fue posible actualizar tu grado o grupo en este momento. Intenta de nuevo en unos segundos.')
           }
         }
       }

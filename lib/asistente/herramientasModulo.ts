@@ -114,13 +114,23 @@ const herramientaConsultarAsistenciaGrupo = definir({
     ctx
   ) => {
     const fechaLegible = formatearFecha(datos.fecha, ctx.zonaHoraria, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    // Total = los 4 estados oficiales (ver clasificarEstadoAsistencia
+    // en lib/motorContexto.ts) — "sin registrar" cuenta para el total
+    // de alumnos, nunca para el % de asistencia. % = presentes/total,
+    // igual que ya calcula app/dashboard/lista/page.tsx.
+    const total = datos.presentes.length + datos.faltas.length + datos.retardos.length + datos.sinRegistrarHoy.length
+    const porcentajeAsistencia = total > 0 ? ((datos.presentes.length / total) * 100).toFixed(1) : '0.0'
     const lineas = [
-      `Hoy, ${fechaLegible}:`,
-      `• ${datos.presentes.length} presentes`,
-      `• ${datos.faltas.length} ausentes`,
-      `• ${datos.retardos.length} retardos`,
+      `Hoy, ${fechaLegible}.`,
+      '',
+      `Total de alumnos: ${total}`,
+      '',
+      `✅ Presentes: ${datos.presentes.length}`,
+      `❌ Ausentes: ${datos.faltas.length}`,
+      `🟡 Retardos: ${datos.retardos.length}`,
     ]
-    if (datos.sinRegistrarHoy.length > 0) lineas.push(`• ${datos.sinRegistrarHoy.length} sin registrar todavía`)
+    if (datos.sinRegistrarHoy.length > 0) lineas.push(`⚪ Sin registrar: ${datos.sinRegistrarHoy.length}`)
+    lineas.push('', `Asistencia: ${porcentajeAsistencia}%`)
     if (datos.faltas.length > 0) {
       lineas.push('', 'Alumnos ausentes:')
       datos.faltas.forEach((n) => lineas.push(`• ${n}`))
