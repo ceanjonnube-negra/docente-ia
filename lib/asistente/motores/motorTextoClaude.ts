@@ -142,7 +142,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz') {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -197,6 +197,12 @@ export class MotorTextoClaude implements MotorConversacional {
           // esta respuesta para lectura en voz alta, sin tocar el
           // Motor de intención, el Tool Registry ni ninguna herramienta.
           channel: canal === 'voz' ? 'voice' : undefined,
+          // Telemetría temporal (ver "Medir con precisión el pipeline de
+          // voz antes de optimizar") — turnId solo correlaciona logs,
+          // voiceDebug es la bandera que activa el console.log detallado
+          // en el servidor; ambos undefined en el chat escrito.
+          turnId: turnId || undefined,
+          voiceDebug: voiceDebug === true ? true : undefined,
         }),
         signal: this.controlador.signal,
       })

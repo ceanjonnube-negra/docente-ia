@@ -700,7 +700,7 @@ class AsistenteServiceImpl {
       // botón Enviar. motorOpenAIRealtime.ts nunca vuelve a generar su
       // propia respuesta; solo capta/transcribe audio y entrega el
       // texto reconocido aquí.
-      motor.establecerCanalDeTexto((texto) => this.enviarMensaje(texto, undefined, undefined, 'voz'))
+      motor.establecerCanalDeTexto((texto, turnId, voiceDebug) => this.enviarMensaje(texto, undefined, undefined, 'voz', turnId, voiceDebug))
       // Si el docente vuelve a hablar mientras la respuesta del turno
       // anterior todavía está en camino, esto la cancela — sin esto,
       // enviarMensaje() ignoraría en silencio el turno nuevo mientras
@@ -1130,7 +1130,7 @@ class AsistenteServiceImpl {
   // --- Enviar un mensaje (texto ya resuelto, venga de teclado o de voz
   // ya transcrita) ---
 
-  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz') {
+  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
     const limpio = texto.trim()
     if (!limpio || this.generando) return
 
@@ -1209,7 +1209,7 @@ class AsistenteServiceImpl {
     this.notificar()
 
     try {
-      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal)
+      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

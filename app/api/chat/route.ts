@@ -276,7 +276,26 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+
+  // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
+  // precisión el pipeline de voz antes de optimizar" — no cambia
+  // NINGÚN comportamiento, solo mide). Bandera de diagnóstico explícita
+  // (voiceDebug, la misma que ya usa ?voiceDebug=1 en el cliente):
+  // apagada en uso normal, nunca corre este console.log de más. Nunca
+  // registra API keys, tokens, ni contenido de mensajes/documentos —
+  // solo nombres de etapa y milisegundos.
+  const telemetriaVozActiva = channel === 'voice' && voiceDebug === true
+  const marcasServidor: Record<string, number> = {}
+  function marcarTelemetria(etapa: string) {
+    if (!telemetriaVozActiva) return
+    const ahora = Date.now()
+    const previas = Object.values(marcasServidor)
+    const anterior = previas.length > 0 ? Math.max(...previas) : null
+    marcasServidor[etapa] = ahora
+    console.log(`[VOZ-TELEMETRIA][${turnId || 'sin-turnId'}] ${etapa} · +${anterior !== null ? ahora - anterior : 0}ms`)
+  }
+  marcarTelemetria('chat:request_received')
 
   // [IMAGEN][API] — log temporal de auditoría del pipeline de imágenes
   // (ver "Revisar pipeline completo de imágenes del Chat IA"): confirma
@@ -610,6 +629,7 @@ export async function POST(req: NextRequest) {
       // regla 13 en clasificadorNivel0.ts). No es historial "de
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
       const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+      marcarTelemetria('intent:classification_finished')
       // Diagnóstico — nunca visible al maestro. Con esto se puede ver en
       // vercel logs EXACTAMENTE por qué una consulta como "¿cuántas
       // faltas tiene Audrey?" no llegó a responder con el dato real: si
@@ -642,12 +662,14 @@ export async function POST(req: NextRequest) {
       // lista completa y por qué ficha_descriptiva/planeacion_nueva/
       // consultar_calendario NO están ahí (generación/razonamiento
       // real, no una cifra fija).
+      marcarTelemetria('tool:execution_started')
       const respuestaDeModulo = await ejecutarHerramientaDeModulo(clasificacion, {
         sb: supabaseUser,
         sesion,
         userId,
         zonaHoraria,
       })
+      marcarTelemetria('tool:execution_finished')
       if (respuestaDeModulo !== null) {
         if (tieneImagenAdjunta) {
           // CAUSA RAÍZ real del bug de imágenes: este dispatcher no
@@ -1334,6 +1356,7 @@ Grado: [grado] | Grupo: [grupo]
     }
   }
 
+  marcarTelemetria('claude:request_started')
   let stream
   try {
     stream = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: true }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'conversacion')
@@ -1351,14 +1374,20 @@ Grado: [grado] | Grupo: [grupo]
   }
 
   const encoder = new TextEncoder()
+  let primerDeltaTelemetria = false
   const readable = new ReadableStream({
     async start(controller) {
       try {
         for await (const event of stream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            if (!primerDeltaTelemetria) {
+              primerDeltaTelemetria = true
+              marcarTelemetria('claude:first_text_received')
+            }
             controller.enqueue(encoder.encode(event.delta.text))
           }
         }
+        marcarTelemetria('claude:response_finished')
       } catch (err) {
         // Ya se había empezado a mandar texto plano — no se puede
         // convertir esto en un JSON de error a estas alturas. Se registra

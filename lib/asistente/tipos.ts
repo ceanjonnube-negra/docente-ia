@@ -259,7 +259,12 @@ export interface MotorConversacional {
   // estilo de la respuesta SOLO ese turno, sin tocar el prompt general
   // del chat escrito. Opcional y al final: ningún motor ni llamador
   // existente tiene que cambiar, salvo para ignorarlo.
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz'): Promise<void>
+  // turnId/voiceDebug: ver "Medir con precisión el pipeline de voz antes
+  // de optimizar" — se reenvían a /api/chat solo para correlacionar los
+  // logs de telemetría temporal del servidor con los del cliente
+  // (?voiceDebug=1). turnId nunca contiene datos del docente ni del
+  // alumno, es un identificador corto generado localmente.
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

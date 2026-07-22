@@ -160,7 +160,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // las Herramientas del Chat IA, por lo que consultas como "¿cuántos
   // alumnos vinieron hoy?" no tenían forma de responderse correctamente
   // por voz aunque sí funcionaran por texto).
-  private enviarComoMensaje: ((texto: string) => Promise<void>) | null = null
+  private enviarComoMensaje: ((texto: string, turnId?: string, voiceDebug?: boolean) => Promise<void>) | null = null
   // Segundo puente, también asignado por establecerCanalDeTexto: si el
   // docente vuelve a hablar mientras la respuesta REAL del turno
   // anterior sigue en camino (motorTexto todavía esperando /api/chat),
@@ -260,19 +260,53 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // conectarWebRTC() (ver capturarErrorArranque).
   private ultimoCheckpoint: { paso: string; resultado: string; detalle?: string } | null = null
 
-  // Marcas de tiempo del turno en curso (ver "Corregir la conversación
-  // de voz — turnos cortados y respuestas excesivas", sección LATENCIA)
-  // — SOLO medición sobre eventos que ya existen, cero esperas/timeouts/
-  // polling nuevos. Se reinicia en cada turno nuevo (ver
-  // 'input_audio_buffer.speech_started').
+  // Marcas de tiempo del turno en curso (ver "Medir con precisión el
+  // pipeline de voz antes de optimizar") — SOLO medición sobre eventos
+  // que ya existen, cero esperas/timeouts/polling nuevos. Se reinicia
+  // en cada turno nuevo (ver 'input_audio_buffer.speech_started').
   private marcasTurno: Record<string, number> = {}
+  // Identificador corto del turno en curso — solo para correlacionar
+  // los logs de este cliente con los de /api/chat (turnId viaja en el
+  // body, ver enviarComoMensaje) en ?voiceDebug=1 y en vercel logs.
+  // Nunca contiene datos del docente ni del alumno.
+  private turnoId: string | null = null
+  // Bandera de diagnóstico — misma que ?voiceDebug=1 del cliente,
+  // reenviada a /api/chat para activar su telemetría detallada. Se lee
+  // una sola vez al conectar; false en uso normal (nunca corre
+  // console.log de más).
+  private voiceDebugActivo = false
+
+  // Reporte final del turno (ver "Medir con precisión el pipeline de
+  // voz antes de optimizar") — SOLO con voiceDebugActivo, para no
+  // agregar ruido en uso normal. El desglose de intención/herramienta/
+  // Claude vive en los logs del SERVIDOR (mismo turnId, buscar en
+  // vercel logs [VOZ-TELEMETRIA]) — desde el cliente solo se puede medir
+  // el tramo completo de ida y vuelta a /api/chat, no sus etapas
+  // internas.
+  private reportarTelemetriaTurno() {
+    if (!this.voiceDebugActivo) return
+    const m = this.marcasTurno
+    const tramo = (desde: string, hasta: string) => (m[desde] && m[hasta] ? `${m[hasta] - m[desde]}ms` : 'n/d')
+    const resumen = [
+      `TURN ID: ${this.turnoId}`,
+      `VAD cierre: ${tramo('voice:speech_started', 'voice:turn_committed')}`,
+      `Transcripción: ${tramo('voice:turn_committed', 'voice:transcript_final')}`,
+      `Ida y vuelta a /api/chat (intención+herramienta+Claude+red — ver [VOZ-TELEMETRIA] en vercel logs con este mismo turnId): ${tramo('chat:request_started', 'chat:response_received_by_client')}`,
+      `TTS solicitado: ${tramo('chat:response_received_by_client', 'tts:request_started')}`,
+      `Primer audio: ${tramo('tts:request_started', 'playback:started')}`,
+      `TOTAL HASTA PRIMER SONIDO: ${tramo('voice:speech_started', 'playback:started')}`,
+      `Duración de la reproducción: ${tramo('playback:started', 'playback:finished')}`,
+    ].join('\n')
+    this.debug('telemetria:resumen_turno', 'info', resumen)
+    this.registrar('telemetria-resumen', resumen)
+  }
 
   private marcarLatencia(nombre: string) {
     const ahora = Date.now()
     const previas = Object.values(this.marcasTurno)
     const anterior = previas.length > 0 ? Math.max(...previas) : null
     this.marcasTurno[nombre] = ahora
-    this.debug(`latencia:${nombre}`, 'info', anterior !== null ? `+${ahora - anterior}ms` : 'inicio del turno')
+    this.debug(nombre, 'info', anterior !== null ? `turno=${this.turnoId} · +${ahora - anterior}ms` : `turno=${this.turnoId} · inicio del turno`)
   }
 
   // Un paso del diagnóstico ?voiceDebug=1 (ver AsistentePanel). Siempre
@@ -383,7 +417,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // antes de iniciar() — ver activarModoVoz(). No forma parte de
   // MotorConversacional (lib/asistente/tipos.ts): es específico de este
   // motor, igual que enviarAudio.
-  establecerCanalDeTexto(fn: (texto: string) => Promise<void>) {
+  establecerCanalDeTexto(fn: (texto: string, turnId?: string, voiceDebug?: boolean) => Promise<void>) {
     this.enviarComoMensaje = fn
   }
 
@@ -400,6 +434,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     const idIntento = ++this.idIntentoActual
     this.contexto = contexto
     this.ultimoCheckpoint = null
+    this.voiceDebugActivo = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('voiceDebug') === '1'
     this.emitir({ tipo: 'estado', estado: 'conectando' })
     this.registrar('0-inicio', 'Activando modo voz')
 
@@ -982,7 +1017,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.finalizandoTurno = true
     this.cancelarTemporizadorFinTurno()
     if (this.temporizadorSilencio) { clearTimeout(this.temporizadorSilencio); this.temporizadorSilencio = null }
-    this.marcarLatencia('turn_committed')
+    this.marcarLatencia('voice:turn_committed')
     try {
       this.debug('turno-fin-detectado', 'ok')
 
@@ -1007,7 +1042,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
 
       const textoFinal = this.transcripcionUsuarioAcumulada.trim()
       this.transcripcionUsuarioAcumulada = ''
-      this.marcarLatencia('transcript_final')
+      this.marcarLatencia('voice:transcript_final')
       if (!textoFinal) {
         // Caso raro: el VAD marcó actividad pero no hubo texto
         // transcribible (ruido, falsa alarma) — no hay nada que enviar.
@@ -1028,8 +1063,8 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       // mensaje escrito. Cuando la respuesta llegue, AsistenteService
       // (case 'respuesta-final') llama a reproducirRespuestaEnVoz() —
       // este método no necesita saber nada de eso.
-      this.marcarLatencia('chat_request_started')
-      await this.enviarComoMensaje(textoFinal)
+      this.marcarLatencia('chat:request_started')
+      await this.enviarComoMensaje(textoFinal, this.turnoId || undefined, this.voiceDebugActivo)
       this.debug('turno-mensaje-enviado-a-texto', 'ok')
     } finally {
       this.finalizandoTurno = false
@@ -1046,7 +1081,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // navegador, que exige un gesto nuevo por cada llamada (ver
   // "Rediseñar el modo voz como conversación continua").
   reproducirRespuestaEnVoz(texto: string) {
-    this.marcarLatencia('first_text_received')
+    this.marcarLatencia('chat:response_received_by_client')
     this.debug('voice:output_requested', 'info', `${texto.length} caracteres recibidos de /api/chat`)
     const textoLimpio = limpiarTextoParaVoz(texto)
     if (!textoLimpio) {
@@ -1083,7 +1118,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         content: [{ type: 'input_text', text: `${MARCADOR_LECTURA_EXACTA}\n${textoLimpio}` }],
       },
     })
-    this.marcarLatencia('tts_started')
+    this.marcarLatencia('tts:request_started')
     // output_modalities — NO "modalities" (ese nombre es de la API beta
     // vieja / de RealtimeSession, no de RealtimeResponseCreateParams en
     // esta versión GA del SDK, la misma que ya usa la forma anidada
@@ -1120,7 +1155,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // esa marca no tiene un resultado bien definido y podría hacer que
   // "razone" algo por su cuenta, justo lo que esta arquitectura
   // prohíbe (ver "Rediseñar el modo voz como conversación continua").
-  async enviarTexto(_texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[], _canal?: 'texto' | 'voz') {
+  async enviarTexto(_texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[], _canal?: 'texto' | 'voz', _turnId?: string, _voiceDebug?: boolean) {
     console.error('[VOZ] enviarTexto() llamado sobre MotorOpenAIRealtime — no debería pasar nunca (ver motorDeContenido en AsistenteService.ts).')
   }
 
@@ -1156,10 +1191,13 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         this.cancelarTemporizadorFinTurno()
         this.huboAudioSinConfirmar = true
         // Turno nuevo (no una interrupción a medio turno acumulado) —
-        // reinicia las marcas de latencia para no arrastrar tiempos del
-        // turno anterior.
-        if (!this.transcripcionUsuarioAcumulada) this.marcasTurno = {}
-        this.marcarLatencia('speech_started')
+        // reinicia las marcas de latencia y genera un turnId nuevo, para
+        // no arrastrar tiempos ni identificador del turno anterior.
+        if (!this.transcripcionUsuarioAcumulada) {
+          this.marcasTurno = {}
+          this.turnoId = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+        }
+        this.marcarLatencia('voice:speech_started')
         this.debug('turno-ultimo-fragmento-audio', 'info')
         this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
         break
@@ -1193,7 +1231,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         // confirmado del lado del servidor, así que ya no hay nada
         // pendiente de comitear para él.
         this.huboAudioSinConfirmar = false
-        this.marcarLatencia('last_audio_detected')
+        this.marcarLatencia('voice:last_audio_detected')
         const texto = evento.transcript ? String(evento.transcript).trim() : ''
         const msDesdeUltimoParcial = this.ultimoDeltaTranscripcionMs ? Date.now() - this.ultimoDeltaTranscripcionMs : null
         this.debug(
@@ -1259,7 +1297,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         if (this.primerAudioDeEstaRespuesta) {
           this.primerAudioDeEstaRespuesta = false
           this.debug('voice:audio_event_received', 'ok')
-          this.marcarLatencia('first_audio_played')
+          this.marcarLatencia('playback:started')
           // Resumen completo del turno — desglose de dónde se fue el
           // tiempo (silencio/transcripción/clasificación+herramienta+
           // Claude/TTS), visible en ?voiceDebug=1 sin agregar ninguna
@@ -1292,6 +1330,8 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           this.registrar('respuesta-no-completada', `status=${status}`)
         }
         this.debug('voice:playback_finished', status === 'completed' || !status ? 'ok' : 'info', status)
+        const eraLecturaDeUnaRespuestaReal = this.leyendoRespuestaClaude && (status === 'completed' || !status)
+        if (eraLecturaDeUnaRespuestaReal) this.marcarLatencia('playback:finished')
         // Diagnóstico temporal: compara lo que se le pidió leer contra
         // lo que Realtime realmente dijo (ver reproducirRespuestaEnVoz)
         // — si algún día difieren, esto lo hace visible de inmediato en
@@ -1308,6 +1348,10 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         this.transcripcionRespuesta = ''
         this.idRespuestaActual = null
         this.emitir({ tipo: 'estado-escucha', estado: 'escuchando' })
+        if (eraLecturaDeUnaRespuestaReal) {
+          this.marcarLatencia('voice:listening_resumed')
+          this.reportarTelemetriaTurno()
+        }
         break
       }
 
