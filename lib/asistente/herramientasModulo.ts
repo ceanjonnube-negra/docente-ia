@@ -112,10 +112,9 @@ const herramientaConsultarAsistenciaGrupo = definir({
   },
   formatearRespuesta: (
     datos: { fecha: string; presentes: string[]; faltas: string[]; retardos: string[]; sinRegistrarHoy: string[] },
-    _clasificacion,
+    clasificacion,
     ctx
   ) => {
-    const fechaLegible = formatearFecha(datos.fecha, ctx.zonaHoraria, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     // Total = los 4 estados oficiales (ver clasificarEstadoAsistencia
     // en lib/motorContexto.ts) — "sin registrar" cuenta para el total
     // de alumnos, nunca para el % de asistencia. calcularPorcentajeAsistencia
@@ -131,6 +130,50 @@ const herramientaConsultarAsistenciaGrupo = definir({
       total: datos.presentes.length + datos.faltas.length + datos.retardos.length + datos.sinRegistrarHoy.length,
     }
     const total = conteo.total
+
+    // Ver "Corregir respuestas excesivas del modo voz": la respuesta
+    // debe ajustarse a lo que realmente se preguntó — nunca el reporte
+    // completo por default. nivel_detalle_asistencia_grupo/
+    // categoria_asistencia_grupo vienen del Clasificador de Nivel 0
+    // (regla 5.1). null/desconocido cae en "completo" (comportamiento
+    // de siempre) para nunca perder información ante un caso no
+    // cubierto por las reglas.
+    const nivel = clasificacion.nivel_detalle_asistencia_grupo ?? 'completo'
+    const categoria = clasificacion.categoria_asistencia_grupo
+
+    if (nivel === 'cantidad') {
+      switch (categoria) {
+        case 'faltas':
+          return datos.faltas.length === 0 ? 'Nadie faltó hoy.' : datos.faltas.length === 1 ? 'Faltó 1 alumno.' : `Faltaron ${datos.faltas.length} alumnos.`
+        case 'presentes':
+          return `Hay ${datos.presentes.length} presentes hoy.`
+        case 'retardos':
+          return datos.retardos.length === 0 ? 'No hubo retardos hoy.' : datos.retardos.length === 1 ? 'Hubo 1 retardo.' : `Hubo ${datos.retardos.length} retardos.`
+        case 'total':
+          return `El grupo tiene ${total} alumnos en total.`
+      }
+    }
+
+    if (nivel === 'nombres') {
+      switch (categoria) {
+        case 'faltas':
+          return datos.faltas.length === 0 ? 'Nadie faltó hoy.' : datos.faltas.join(', ')
+        case 'presentes':
+          return datos.presentes.length === 0 ? 'Nadie ha sido registrado como presente hoy.' : datos.presentes.join(', ')
+        case 'retardos':
+          return datos.retardos.length === 0 ? 'No hubo retardos hoy.' : datos.retardos.join(', ')
+      }
+    }
+
+    if (nivel === 'resumen') {
+      const porcentajeAsistencia = calcularPorcentajeAsistencia(conteo).toFixed(1)
+      return `Total: ${total}. Presentes: ${datos.presentes.length}, ausentes: ${datos.faltas.length}, retardos: ${datos.retardos.length}. Asistencia: ${porcentajeAsistencia}%.`
+    }
+
+    // "completo" (o cualquier combinación nivel/categoria no cubierta
+    // arriba, ej. nivel="nombres" categoria="total") — el reporte de
+    // siempre, sin cambios.
+    const fechaLegible = formatearFecha(datos.fecha, ctx.zonaHoraria, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     const porcentajeAsistencia = calcularPorcentajeAsistencia(conteo).toFixed(1)
     const lineas = [
       `Hoy, ${fechaLegible}.`,

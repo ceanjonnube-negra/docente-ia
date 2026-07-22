@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'panel-diagnostico-arranque-voz-v78-8038851'
+export const BUILD_ID = 'fix-turnos-y-nivel-detalle-voz-v79-c320e1f'

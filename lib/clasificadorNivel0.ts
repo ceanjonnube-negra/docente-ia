@@ -56,6 +56,19 @@ export type ClasificacionNivel0 = {
   // pidió ver el maestro (ver el mismo estado `filtro` que ya existe
   // en app/dashboard/lista/page.tsx). null en cualquier otra intención.
   filtro_lista: 'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes' | null;
+  // Solo para consultar_asistencia_grupo (ver "Corregir respuestas
+  // excesivas del modo voz" — regla 5.1) — qué tan detallada debe ser
+  // la respuesta. 'cantidad': solo el número de UNA categoría
+  // (categoria_asistencia_grupo). 'nombres': solo la lista de nombres
+  // de esa misma categoría. 'resumen': totales de las 4 categorías,
+  // sin nombres. 'completo': el reporte de siempre (totales, %,
+  // nombres de ausentes y retardos). null en cualquier otra intención.
+  nivel_detalle_asistencia_grupo: 'cantidad' | 'nombres' | 'resumen' | 'completo' | null;
+  // Solo relevante cuando nivel_detalle_asistencia_grupo es 'cantidad'
+  // o 'nombres' — a qué categoría se refiere ("¿cuántos retardos?" →
+  // "retardos"). null en 'resumen'/'completo' (cubren las 4 a la vez)
+  // o en cualquier otra intención.
+  categoria_asistencia_grupo: 'faltas' | 'presentes' | 'retardos' | 'total' | null;
   // Solo para actualizar_perfil_docente — el grado/grupo NUEVO que
   // pidió el maestro, ya resuelto contra el dominio válido real (ver
   // app/onboarding/page.tsx: mismos 6 grados y 5 letras que usa el
@@ -83,6 +96,8 @@ const FALLBACK: ClasificacionNivel0 = {
   estado_asistencia_solicitado: null,
   pestana_lista: null,
   filtro_lista: null,
+  nivel_detalle_asistencia_grupo: null,
+  categoria_asistencia_grupo: null,
   grado_solicitado: null,
   grupo_solicitado: null,
   datos_faltantes: [],
@@ -119,6 +134,8 @@ Formato exacto de salida:
   "estado_asistencia_solicitado": "presente" | "falta" | "retardo" | null,
   "pestana_lista": "resumen" | "datos" | "asistencia" | "incidencias" | "evaluaciones" | "evidencias" | "fichas" | "historial" | null,
   "filtro_lista": "todos" | "ninas" | "ninos" | "presentes" | "ausentes" | null,
+  "nivel_detalle_asistencia_grupo": "cantidad" | "nombres" | "resumen" | "completo" | null,
+  "categoria_asistencia_grupo": "faltas" | "presentes" | "retardos" | "total" | null,
   "grado_solicitado": "1°" | "2°" | "3°" | "4°" | "5°" | "6°" | null,
   "grupo_solicitado": "A" | "B" | "C" | "D" | "E" | null,
   "datos_faltantes": string[],
@@ -142,6 +159,12 @@ REGLAS:
 3. Si pide una ficha descriptiva de un alumno → intencion_principal="ficha_descriptiva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 4. Si pide una planeación → intencion_principal="planeacion_nueva", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. entidades_resueltas.alumno_id queda null en este caso.
 5. Si pregunta por asistencia a nivel de TODO el grupo, no de un alumno específico — "¿quién faltó hoy?", "¿quién tiene más faltas?", "¿cuál fue la última asistencia registrada?", "¿quién no ha llegado?", "¿cuántas faltas hay hoy?", "¿quiénes asistieron?", "¿cuántos presentes hay?", "¿quién llegó tarde?", "¿cuántos retardos hay?", "¿quiénes faltaron?", "¿quién está ausente?", "muéstrame las faltas de hoy", "muéstrame/revisa/consulta la asistencia (de hoy/la lista)", "¿cómo quedó la asistencia?" — cualquier forma de pedir el estado de asistencia del grupo, aunque no use ninguna de estas palabras exactas → intencion_principal="consultar_asistencia_grupo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true, entidades_resueltas.alumno_id=null.
+5.1. Para consultar_asistencia_grupo, la respuesta debe ajustarse EXACTAMENTE a lo que se preguntó — nunca asumas que quieren el reporte completo. Decide nivel_detalle_asistencia_grupo así:
+   - "cantidad": preguntó por un NÚMERO de una sola categoría. Ejemplos: "¿cuántos faltaron?", "¿cuántas faltas hay?" → categoria_asistencia_grupo="faltas". "¿cuántos presentes hay?", "¿cuántos alumnos asistieron?" → categoria_asistencia_grupo="presentes". "¿cuántos retardos hay?", "¿cuántos llegaron tarde?" → categoria_asistencia_grupo="retardos". "¿cuántos alumnos son/hay en total?" → categoria_asistencia_grupo="total".
+   - "nombres": preguntó QUIÉNES, sin pedir cifras de otras categorías. Ejemplos: "¿quiénes faltaron?" → categoria_asistencia_grupo="faltas". "¿quiénes asistieron?" → categoria_asistencia_grupo="presentes". "¿quiénes llegaron tarde?" → categoria_asistencia_grupo="retardos".
+   - "resumen": preguntó de forma general por el estado de la asistencia SIN especificar una sola categoría ni pedir el reporte completo explícitamente. Ejemplos: "¿cómo quedó la asistencia?", "¿cómo va la asistencia hoy?". categoria_asistencia_grupo=null.
+   - "completo": pidió EXPLÍCITAMENTE el reporte completo, o mencionó varias categorías juntas en la misma pregunta. Ejemplos: "dame el reporte completo de asistencia", "muéstrame la asistencia completa", "dame presentes, faltas y retardos". categoria_asistencia_grupo=null.
+   Ante la duda entre "resumen" y "completo", usa "resumen" — es preferible responder corto y que el maestro pida más, que saturarlo con datos que no pidió.
 6. Si pregunta qué alumnos requieren apoyo, tienen necesidades especiales, o van rezagados/con dificultades → intencion_principal="consultar_apoyo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 7. Si pregunta qué documentos tiene generados/guardados/almacenados en la aplicación (planeaciones, fichas, exámenes, citatorios que ya generó antes) → intencion_principal="consultar_documentos", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 8. Si pregunta por actividades, eventos o fechas programadas en el calendario escolar, o por cualquier cosa relacionada con tiempo/fechas de la escuela — aunque no diga la palabra "calendario" ni lo pida explícitamente — → intencion_principal="consultar_calendario", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué sigue esta semana?", "¿cuándo regresamos?", "¿qué tengo mañana?", "¿hay CTE este mes?", "¿qué actividades tengo el viernes?", "¿cuándo son las vacaciones?", "¿qué día es la junta?", "¿qué eventos hay este mes?", "¿cuántos eventos tengo esta semana?", "¿qué días están libres?", "¿qué actividades son oficiales?", "¿qué actividades agregué yo?", "¿cuándo es el próximo consejo técnico?", "¿ya empezaron las vacaciones?".

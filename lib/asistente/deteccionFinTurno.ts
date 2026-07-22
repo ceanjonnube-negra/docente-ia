@@ -16,7 +16,18 @@ export const CONFIG_FIN_TURNO = {
   // CASO A — la transcripción acumulada tiene toda la forma de una idea
   // ya terminada (termina en . ? !): basta una pausa breve para cerrar
   // el turno y pedir la respuesta.
-  silencioFraseCompletaMs: 900,
+  //
+  // CAUSA RAÍZ de "Gracias" separado como turno aparte (ver "Corregir
+  // la conversación de voz — turnos cortados y respuestas excesivas"):
+  // con 900ms, una oración corta que ya termina en punto ("...faltas.")
+  // programaba el cierre casi de inmediato — más corto que la pausa
+  // natural real antes de un cierre tipo "gracias" o una idea
+  // relacionada que sigue. 1200ms (dentro del rango 900-1300ms pedido
+  // como punto de partida) da más margen sin volver la respuesta
+  // perceptiblemente lenta. Validar en dispositivo real y ajustar si
+  // hace falta — no hay forma de medir la duración real de una pausa
+  // humana sin probarlo.
+  silencioFraseCompletaMs: 1200,
   // CASO B — no hay señal clara de que la idea haya terminado (sin
   // puntuación de cierre, o termina en una palabra que normalmente
   // introduce algo más). Se espera más antes de cerrar, dándole al
