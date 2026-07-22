@@ -195,6 +195,29 @@ export type EventoMotor =
   // renderiza si el panel no está activo. Nunca incluye tokens ni claves,
   // solo estados/códigos/mensajes de error reales.
   | { tipo: 'debug-paso'; paso: string; resultado: 'ok' | 'error' | 'info'; detalle?: string; ms: number }
+  // Panel técnico TEMPORAL (ver "Capturar el error real de arranque de
+  // voz directamente desde el iPhone") — a diferencia de 'debug-paso'
+  // (que solo se ve con ?voiceDebug=1), esto se muestra SIEMPRE que
+  // arrancar la sesión de voz falla, sin flag ni configuración previa,
+  // porque el objetivo es diagnosticar en el propio dispositivo sin
+  // depender de que alguien recuerde agregar el parámetro a la URL.
+  // Quitar este panel (y esta variante) en cuanto deje de hacer falta.
+  | { tipo: 'diagnostico-arranque-voz'; datos: DiagnosticoArranqueVoz }
+
+// Todos los campos son texto simple listos para mostrarse tal cual —
+// nunca tokens ni claves reales, solo etapas/estados/códigos/mensajes.
+export type DiagnosticoArranqueVoz = {
+  buildId: string
+  etapa: string
+  ultimoCheckpoint: string | null
+  errorName: string
+  errorMessage: string
+  httpStatus: string | null
+  responseBody: string | null
+  connectionState: string
+  iceConnectionState: string
+  dataChannelState: string
+}
 
 export type DesuscribirFn = () => void
 

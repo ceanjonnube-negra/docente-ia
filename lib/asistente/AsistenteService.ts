@@ -31,6 +31,7 @@ import type {
   AdjuntoImagen,
   ArchivoGeneradoInfo,
   ContextoAplicacion,
+  DiagnosticoArranqueVoz,
   DiferenciaCalendario,
   EstadoMotor,
   EventoMotor,
@@ -83,6 +84,13 @@ export type EstadoAsistente = {
   // asistente, es un estado transitorio de la interfaz). Se muestra junto
   // al botón del micrófono y desaparece solo. Ver mostrarAvisoVoz().
   avisoVoz: string | null
+  // Panel técnico TEMPORAL (ver "Capturar el error real de arranque de
+  // voz directamente desde el iPhone") — a diferencia de debugVoz, este
+  // SIEMPRE se muestra en AsistentePanel cuando arrancar la voz falla,
+  // sin necesitar ?voiceDebug=1. null en cuanto se intenta de nuevo o
+  // la conexión tiene éxito. Quitar junto con AsistentePanel cuando ya
+  // no haga falta diagnosticar en el propio dispositivo.
+  diagnosticoArranqueVoz: DiagnosticoArranqueVoz | null
   // Registro paso a paso de la última conexión de voz — solo lo renderiza
   // AsistentePanel cuando la URL trae ?voiceDebug=1 (ver ese archivo).
   // Siempre se llena (barato), independientemente de si el panel de
@@ -183,6 +191,7 @@ class AsistenteServiceImpl {
   private modoVoz = false
   private avisoVoz: string | null = null
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
+  private diagnosticoArranqueVoz: DiagnosticoArranqueVoz | null = null
   private debugVoz: PasoDebugVoz[] = []
   private estadoEscucha: 'escuchando' | 'hablando' | null = null
   private avisoGeneracion: string | null = null
@@ -314,6 +323,7 @@ class AsistenteServiceImpl {
       transcripcionParcial: this.transcripcionParcial,
       modoVoz: this.modoVoz,
       avisoVoz: this.avisoVoz,
+      diagnosticoArranqueVoz: this.diagnosticoArranqueVoz,
       debugVoz: this.debugVoz,
       estadoEscucha: this.estadoEscucha,
       avisoGeneracion: this.avisoGeneracion,
@@ -669,6 +679,7 @@ class AsistenteServiceImpl {
     // que el panel siempre muestre exactamente el último paso alcanzado
     // en LA conexión actual, no un mezcladero de intentos anteriores.
     this.debugVoz = []
+    this.diagnosticoArranqueVoz = null
     this.registrarPasoDebugVoz('voice:start_button_pressed', 'ok')
     this.estadoEscucha = 'escuchando'
     this.abrirPanel()
@@ -1046,6 +1057,10 @@ class AsistenteServiceImpl {
       }
       case 'debug-paso':
         this.registrarPasoDebugVoz(evento.paso, evento.resultado, evento.detalle, evento.ms)
+        this.notificar()
+        break
+      case 'diagnostico-arranque-voz':
+        this.diagnosticoArranqueVoz = evento.datos
         this.notificar()
         break
       case 'estado-escucha':

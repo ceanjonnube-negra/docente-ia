@@ -888,6 +888,33 @@ export default function AsistentePanel() {
             {asistente.avisoVoz}
           </button>
         )}
+        {/* Panel técnico TEMPORAL — ver "Capturar el error real de
+            arranque de voz directamente desde el iPhone". A diferencia
+            del panel ?voiceDebug=1, este se muestra SIEMPRE que falla
+            arrancar la voz, sin ningún parámetro en la URL: el objetivo
+            es diagnosticar en el propio dispositivo sin depender de que
+            alguien recuerde agregarlo. Quitar junto con
+            diagnosticoArranqueVoz cuando ya no haga falta. */}
+        {asistente.diagnosticoArranqueVoz && (
+          <div className="mb-2 w-full text-[11px] font-mono text-red-800 bg-red-50 border border-red-200 rounded-xl px-3 py-2 space-y-0.5 whitespace-pre-wrap break-words">
+            <p className="font-bold text-red-900">VOICE BUILD: {asistente.diagnosticoArranqueVoz.buildId}</p>
+            <p>etapa: {asistente.diagnosticoArranqueVoz.etapa}</p>
+            {asistente.diagnosticoArranqueVoz.ultimoCheckpoint && (
+              <p>último paso ok: {asistente.diagnosticoArranqueVoz.ultimoCheckpoint}</p>
+            )}
+            <p>error.name: {asistente.diagnosticoArranqueVoz.errorName}</p>
+            <p>error.message: {asistente.diagnosticoArranqueVoz.errorMessage}</p>
+            {asistente.diagnosticoArranqueVoz.httpStatus && (
+              <p>HTTP status: {asistente.diagnosticoArranqueVoz.httpStatus}</p>
+            )}
+            {asistente.diagnosticoArranqueVoz.responseBody && (
+              <p>response body: {asistente.diagnosticoArranqueVoz.responseBody}</p>
+            )}
+            <p>RTCPeerConnection.connectionState: {asistente.diagnosticoArranqueVoz.connectionState}</p>
+            <p>RTCPeerConnection.iceConnectionState: {asistente.diagnosticoArranqueVoz.iceConnectionState}</p>
+            <p>DataChannel.readyState: {asistente.diagnosticoArranqueVoz.dataChannelState}</p>
+          </div>
+        )}
         {asistente.avisoGeneracion && (
           <button
             type="button"

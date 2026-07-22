@@ -18,16 +18,24 @@ const VOZ_DEFECTO = 'marin'
 // WebRTC directa con el proveedor. Exige una sesión válida de Supabase
 // para no dejar este endpoint abierto a cualquiera.
 export async function POST(req: NextRequest) {
+  const inicio = Date.now()
+  // Nunca el accessToken/clientSecret reales — solo booleanos/metadatos
+  // (ver "Capturar el error real de arranque de voz directamente desde
+  // el iPhone", sección LOGS DEL BACKEND).
+  console.log(`[VOZ][token-endpoint] POST /api/realtime-token recibido · OPENAI_API_KEY configurada=${Boolean(process.env.OPENAI_API_KEY)}`)
   try {
     const { accessToken, instrucciones, voz } = await req.json()
 
     if (!accessToken) {
+      console.log(`[VOZ][token-endpoint] 401 sin accessToken · ${Date.now() - inicio}ms`)
       return NextResponse.json({ error: 'Sesión no encontrada.' }, { status: 401 })
     }
     const { data: { user }, error: errorAuth } = await supabaseAuth.auth.getUser(accessToken)
     if (errorAuth || !user) {
+      console.log(`[VOZ][token-endpoint] 401 sesión inválida (${errorAuth?.message || 'sin usuario'}) · ${Date.now() - inicio}ms`)
       return NextResponse.json({ error: 'Sesión inválida.' }, { status: 401 })
     }
+    console.log(`[VOZ][token-endpoint] sesión válida (${user.email || user.id}) · modelo=${MODELO_REALTIME} voz=${typeof voz === 'string' ? voz : VOZ_DEFECTO} instrucciones=${typeof instrucciones === 'string' ? `${instrucciones.length} chars` : 'ninguna'}`)
 
     // Garantía a nivel de arquitectura, no de convención (ver
     // "Rediseñar el modo voz como conversación continua"): Realtime
@@ -77,6 +85,7 @@ export async function POST(req: NextRequest) {
     })
 
     const modelo = clientSecret.session?.type === 'realtime' ? clientSecret.session.model : undefined
+    console.log(`[VOZ][token-endpoint] 200 OK · modelo=${modelo || MODELO_REALTIME} · client secret recibido de OpenAI (valor nunca logueado) · ${Date.now() - inicio}ms`)
 
     return NextResponse.json({
       value: clientSecret.value,
@@ -85,7 +94,11 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     const detalle = error?.error?.message || error?.message || 'sin detalle'
     const codigo = error?.error?.code || error?.code || ''
-    console.error('[VOZ][5-token-efimero][servidor] Error creando client secret:', error?.status, codigo, detalle, error)
+    const tipo = error?.error?.type || error?.type || ''
+    console.error(
+      `[VOZ][token-endpoint] Error creando client secret · status=${error?.status ?? 'n/a'} tipo=${tipo || 'n/a'} codigo=${codigo || 'n/a'} detalle="${detalle}" · ${Date.now() - inicio}ms`,
+      error
+    )
     return NextResponse.json(
       { error: `OpenAI ${error?.status ? `HTTP ${error.status}` : ''} ${codigo ? `(${codigo})` : ''}: ${detalle}`.trim() },
       { status: 500 }

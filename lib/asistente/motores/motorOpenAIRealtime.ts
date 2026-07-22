@@ -58,10 +58,12 @@ import { PERSONA_VOZ, MARCADOR_LECTURA_EXACTA } from '../personaVoz'
 import { limpiarTextoParaVoz } from '../lecturaVoz'
 import { analizarComplecionFrase, CONFIG_FIN_TURNO } from '../deteccionFinTurno'
 import { supabase } from '@/lib/supabaseClient'
+import { BUILD_ID } from '@/lib/buildInfo'
 import type {
   AdjuntoImagen,
   ContextoAplicacion,
   DesuscribirFn,
+  DiagnosticoArranqueVoz,
   EventoMotor,
   FinalizarArchivoInfo,
   Herramienta,
@@ -252,6 +254,12 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     console.log(`[VOZ][${etapa}]`, detalle)
   }
 
+  // Último paso (de cualquier resultado) registrado por debug() — "qué
+  // fue lo último que pasó antes de la falla", sin tener que mantener a
+  // mano una tabla de qué checkpoint corresponde a qué sub-etapa de
+  // conectarWebRTC() (ver capturarErrorArranque).
+  private ultimoCheckpoint: { paso: string; resultado: string; detalle?: string } | null = null
+
   // Un paso del diagnóstico ?voiceDebug=1 (ver AsistentePanel). Siempre
   // se emite — es barato (un evento más al mismo bus que ya existe) y
   // AsistenteService simplemente lo ignora si el panel de debug no está
@@ -259,29 +267,63 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // estados, códigos HTTP o el mensaje de error real.
   private debug(paso: string, resultado: 'ok' | 'error' | 'info', detalle?: string) {
     this.registrar(`debug:${paso}`, detalle ?? resultado)
+    this.ultimoCheckpoint = { paso, resultado, detalle }
     this.emitir({ tipo: 'debug-paso', paso, resultado, detalle, ms: Date.now() })
   }
 
-  // Checkpoint único de fallo de arranque (ver "Auditar el arranque de
-  // la sesión de voz — traza obligatoria"): se llama justo ANTES de cada
-  // throw new ErrorEtapaVoz(...), mientras this.pc todavía existe (antes
-  // de que limpiarConexionParcial()/cancelarConexion() lo pongan en
-  // null), para que el estado real de WebRTC en el momento exacto del
-  // fallo quede visible en ?voiceDebug=1 — nunca solo en console.log,
-  // que en un iPhone real sin Mac conectado no se puede leer.
+  // Extrae "HTTP 500" / "cuerpo real" del texto de mensaje — todos los
+  // Error de este archivo que vienen de una respuesta HTTP usan el
+  // mismo formato `HTTP ${status}: ${cuerpo}` (ver intentarConexionConReintentos
+  // y conectarWebRTC), así que no hace falta un tipo de error nuevo
+  // para separar ambos campos.
+  private extraerHttpDeMensaje(mensaje: string): { status: string | null; body: string | null } {
+    const m = mensaje.replace(/\n/g, ' ').match(/^HTTP (\d+)[^:]*:?\s*(.*)$/)
+    if (!m) return { status: null, body: null }
+    return { status: m[1], body: m[2]?.slice(0, 300) || null }
+  }
+
+  // Panel técnico TEMPORAL visible en el propio iPhone sin ?voiceDebug=1
+  // (ver "Capturar el error real de arranque de voz directamente desde
+  // el iPhone") — se llama justo ANTES de cada throw new
+  // ErrorEtapaVoz(...), mientras this.pc/this.canal todavía existen
+  // (antes de que limpiarConexionParcial()/cancelarConexion() los
+  // pongan en null), para que el estado real de WebRTC en el momento
+  // exacto del fallo quede capturado.
   private capturarErrorArranque(etapa: string, err: unknown) {
     const e = err instanceof Error ? err : null
-    const detalle = [
+    const mensaje = e?.message || describirError(err)
+    const { status, body } = this.extraerHttpDeMensaje(mensaje)
+    const checkpointPrevio = this.ultimoCheckpoint
+      ? `${this.ultimoCheckpoint.paso} (${this.ultimoCheckpoint.resultado}${this.ultimoCheckpoint.detalle ? `: ${this.ultimoCheckpoint.detalle.slice(0, 120)}` : ''})`
+      : null
+
+    const datos: DiagnosticoArranqueVoz = {
+      buildId: BUILD_ID,
+      etapa,
+      ultimoCheckpoint: checkpointPrevio,
+      errorName: e?.name || 'desconocido',
+      errorMessage: mensaje,
+      httpStatus: status,
+      responseBody: body,
+      connectionState: this.pc?.connectionState ?? 'sin-pc',
+      iceConnectionState: this.pc?.iceConnectionState ?? 'sin-pc',
+      dataChannelState: this.canal?.readyState ?? 'sin-canal',
+    }
+    this.emitir({ tipo: 'diagnostico-arranque-voz', datos })
+
+    // Se conserva también en el bus de ?voiceDebug=1, ahora con el
+    // mismo detalle completo — útil cuando SÍ hay Mac/consola a mano.
+    this.debug('voice:start_error', 'error', [
       `etapa=${etapa}`,
-      `name=${e?.name || 'desconocido'}`,
-      `message=${e?.message || describirError(err)}`,
-      `connectionState=${this.pc?.connectionState ?? 'sin-pc'}`,
-      `iceConnectionState=${this.pc?.iceConnectionState ?? 'sin-pc'}`,
-      `signalingState=${this.pc?.signalingState ?? 'sin-pc'}`,
-    ].join(' · ')
-    this.debug('voice:start_error', 'error', detalle)
-    // El stack completo solo a consola — es largo y ?voiceDebug=1 está
-    // pensado para leerse en la pantalla de un teléfono.
+      `name=${datos.errorName}`,
+      `message=${datos.errorMessage}`,
+      `httpStatus=${status ?? 'n/a'}`,
+      `connectionState=${datos.connectionState}`,
+      `iceConnectionState=${datos.iceConnectionState}`,
+      `dataChannelState=${datos.dataChannelState}`,
+    ].join(' · '))
+    // El stack completo solo a consola — es largo y el panel visible
+    // está pensado para leerse en la pantalla de un teléfono.
     if (e?.stack) this.registrar('voice:start_error-stack', e.stack)
   }
 
@@ -342,6 +384,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   async iniciar(contexto: ContextoAplicacion, _herramientas: Herramienta[]) {
     const idIntento = ++this.idIntentoActual
     this.contexto = contexto
+    this.ultimoCheckpoint = null
     this.emitir({ tipo: 'estado', estado: 'conectando' })
     this.registrar('0-inicio', 'Activando modo voz')
 
