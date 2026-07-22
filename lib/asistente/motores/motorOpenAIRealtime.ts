@@ -399,13 +399,30 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     }
     this.verificarIntentoVigente(idIntento)
 
-    // --- Techo duro de 12s para TODA la secuencia de token + WebRTC +
-    // canal de datos (con sus reintentos incluidos): si no se completó en
-    // ese tiempo, se cancela todo y se vuelve a idle en vez de dejar el
+    // --- Techo duro para TODA la secuencia de token + WebRTC + canal de
+    // datos (con sus reintentos incluidos): si no se completó en ese
+    // tiempo, se cancela todo y se vuelve a idle en vez de dejar el
     // indicador girando a la espera de un timeout interno más largo. El
     // caso de éxito real nunca se acerca a este techo (conexiones limpias
     // observadas en pruebas: 1.8-2.3s de punta a punta).
-    const TECHO_CONEXION_MS = 12000
+    //
+    // CAUSA RAÍZ real de "No se pudo conectar la voz" en cuanto se
+    // presiona el micrófono (ver "Auditar el arranque de la sesión de
+    // voz"): este techo estaba en 12000ms, pero la SUMA de los propios
+    // timeouts internos de una sola conexión ya alcanza hasta 29000ms
+    // (token 8000 + espera de ICE gathering 3000 + POST del SDP 8000 +
+    // apertura del canal de datos 10000) — el techo global mataba la
+    // conexión ANTES de que sus propias etapas hubieran tenido chance de
+    // completarse en cualquier red que no fuera excelente (datos
+    // móviles, wifi de escuela), y de paso eliminaba en la práctica el
+    // segundo intento de intentarConexionConReintentos(): un primer
+    // intento lento ya consumía casi todo el presupuesto, sin dejar
+    // tiempo real para el reintento con token nuevo. 20000ms deja margen
+    // para un intento completo realista y todavía un segundo intento
+    // parcial si el primero falla rápido, sin llegar a los 58000ms del
+    // peor caso absoluto de dos intentos completos (que sí sería
+    // demasiado tiempo esperando con el indicador de "conectando").
+    const TECHO_CONEXION_MS = 20000
     const promesaConexion = this.intentarConexionConReintentos(idIntento, accessToken)
     let temporizadorTecho: ReturnType<typeof setTimeout> | null = null
     const resultado = await Promise.race([
