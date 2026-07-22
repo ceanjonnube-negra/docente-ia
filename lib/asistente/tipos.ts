@@ -253,7 +253,13 @@ export interface MotorConversacional {
   // opcional, para que ningún motor existente tenga que cambiar su
   // firma salvo para ignorarlo (ver MotorOpenAIRealtime, que hace lo
   // mismo con `adjunto` desde antes).
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[]): Promise<void>
+  // canal: "voz" cuando el turno viene del modo voz (ver "Diagnóstico y
+  // Plan de Optimización del Pipeline de Voz" — Fase 1) — MotorTextoClaude
+  // lo manda como channel:"voice" a /api/chat para que Claude ajuste el
+  // estilo de la respuesta SOLO ese turno, sin tocar el prompt general
+  // del chat escrito. Opcional y al final: ningún motor ni llamador
+  // existente tiene que cambiar, salvo para ignorarlo.
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz'): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

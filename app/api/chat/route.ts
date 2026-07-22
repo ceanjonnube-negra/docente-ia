@@ -276,7 +276,7 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel } = await req.json()
 
   // [IMAGEN][API] — log temporal de auditoría del pipeline de imágenes
   // (ver "Revisar pipeline completo de imágenes del Chat IA"): confirma
@@ -972,6 +972,28 @@ Si el mensaje del maestro es una instruccion para continuar (ej: continua, sigue
     }
   }
 
+  // FASE 1 — "Diagnóstico y Plan de Optimización del Pipeline de Voz":
+  // instrucciones ADICIONALES, solo para el turno actual, cuando viene
+  // del modo voz (channel==="voice", mandado por
+  // MotorOpenAIRealtime.finalizarTurno() vía enviarComoMensaje). El
+  // prompt general de arriba NO se modifica ni se reordena — esto se
+  // concatena al final, así que nunca cambia el comportamiento del chat
+  // escrito (channel ausente/"text").
+  const bloqueVoz = channel === 'voice' ? `
+
+MODO VOZ ACTIVO — este turno viene de una conversación hablada, no escrita (el maestro habló, la app transcribió, y tu respuesta se va a leer en voz alta automáticamente). Ajusta el estilo SOLO para este turno:
+- Responde de forma directa y conversacional, como lo dirías en voz alta, no como un documento.
+- Usa normalmente entre una y tres frases.
+- Da primero el dato concreto que se pidió, sin preámbulo.
+- Evita listas extensas salvo que el maestro las haya pedido explícitamente.
+- No repitas el nombre del maestro en cada turno.
+- No agregues saludos ni despedidas si el turno no es puramente social.
+- No cierres la respuesta con "¿en qué más te ayudo?" ni frases equivalentes de cierre genérico.
+- No expliques detalles técnicos internos de la aplicación (voz, transcripción, TTS, conexión).
+- Nunca inventes ni sugieras causas técnicas del dispositivo del maestro (volumen, permisos, configuración, batería, conexión) — no tienes esa información real; si algo de voz falló, eso lo maneja la aplicación, no tu respuesta.
+- Amplía la respuesta únicamente cuando la tarea en sí lo requiera (una planeación, un documento, una explicación pedida) o el maestro pida explícitamente más detalle.
+Ejemplos: "¿Cuántos faltaron?" → "Faltaron cinco alumnos." "¿Cuántas niñas y niños tengo?" → "Tienes doce niñas y dieciséis niños." "¿Quiénes faltaron?" → solo los nombres. "Dame el reporte completo." → ahí sí, el reporte completo.` : ''
+
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
   // el archivo en un solo mensaje, ver más abajo) — el único que cambia
@@ -1202,7 +1224,7 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}`,
     messages: [
       ...historialMensajes,
       {

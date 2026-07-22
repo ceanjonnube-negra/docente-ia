@@ -142,7 +142,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[]) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz') {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -192,6 +192,11 @@ export class MotorTextoClaude implements MotorConversacional {
           zonaHoraria: obtenerZonaHorariaDispositivo(),
           finalizarArchivo: finalizarArchivo || null,
           esEdicionDocumento: esEdicionDocumento || false,
+          // Ver "Diagnóstico y Plan de Optimización del Pipeline de Voz"
+          // — Fase 1: le dice a /api/chat que ajuste SOLO el estilo de
+          // esta respuesta para lectura en voz alta, sin tocar el
+          // Motor de intención, el Tool Registry ni ninguna herramienta.
+          channel: canal === 'voz' ? 'voice' : undefined,
         }),
         signal: this.controlador.signal,
       })

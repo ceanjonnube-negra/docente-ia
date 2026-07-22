@@ -5,4 +5,4 @@
 // despliegue relacionado con el modo voz, para que el docente pueda
 // confirmar de un vistazo que Safari no le está sirviendo una copia
 // vieja desde caché en vez del build recién publicado.
-export const BUILD_ID = 'fix-boton-colgar-y-reproduccion-v80-8abb4b3'
+export const BUILD_ID = 'fase1-prompt-voz-v81-61d5597'

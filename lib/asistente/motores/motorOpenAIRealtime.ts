@@ -1120,7 +1120,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // esa marca no tiene un resultado bien definido y podría hacer que
   // "razone" algo por su cuenta, justo lo que esta arquitectura
   // prohíbe (ver "Rediseñar el modo voz como conversación continua").
-  async enviarTexto(_texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[]) {
+  async enviarTexto(_texto: string, _adjunto?: AdjuntoImagen, _finalizarArchivo?: FinalizarArchivoInfo, _esEdicionDocumento?: boolean, _adjuntos?: AdjuntoImagen[], _canal?: 'texto' | 'voz') {
     console.error('[VOZ] enviarTexto() llamado sobre MotorOpenAIRealtime — no debería pasar nunca (ver motorDeContenido en AsistenteService.ts).')
   }
 
