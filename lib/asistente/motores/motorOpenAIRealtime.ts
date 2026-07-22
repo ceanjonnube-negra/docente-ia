@@ -637,12 +637,11 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.audioEl = audioEl
     pc.ontrack = (evento) => {
       const pista = evento.streams[0]?.getAudioTracks()[0]
-      this.debug('5-audio-track-recibido', 'ok', `streamId=${evento.streams[0]?.id || 'sin-id'} trackState=${pista?.readyState || 'sin-track'}`)
+      this.debug('voice:audio_track_received', 'ok', `streamId=${evento.streams[0]?.id || 'sin-id'} trackState=${pista?.readyState || 'sin-track'}`)
       audioEl.srcObject = evento.streams[0]
-      this.debug('6-play-invocado', 'info', 'llamando audioEl.play()')
       audioEl.play().then(
-        () => this.debug('7-play-resultado', 'ok', 'play() resuelto correctamente'),
-        err => this.debug('8-play-error', 'error', describirError(err))
+        () => this.debug('voice:playback_started', 'ok', 'play() resuelto correctamente'),
+        err => this.debug('voice:output_error', 'error', `audioEl.play() rechazado: ${describirError(err)}`)
       )
     }
 
@@ -674,7 +673,23 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         this.emitir({ tipo: 'error', mensaje: 'Se perdió la conexión de voz. Toca para reintentar.' })
       }
     }
-    canal.onclose = () => this.registrar('7-canal-cerrado', 'Data channel cerrado')
+    canal.onclose = () => {
+      this.registrar('7-canal-cerrado', 'Data channel cerrado')
+      // CAUSA RAÍZ real de "la sesión aparentemente permanece abierta"
+      // (ver "Confirmar arquitectura híbrida y corregir botón de colgar
+      // y reproducción"): si el canal se cierra SOLO mientras el
+      // docente solo está escuchando (sin que reproducirRespuestaEnVoz
+      // ni ningún otro método lo detecte), antes nada le avisaba a
+      // AsistenteService — modoVoz se quedaba en true para siempre, sin
+      // ningún error visible, con la interfaz mostrando que sigue
+      // escuchando aunque la conexión real ya haya muerto. Mismo
+      // criterio que canal.onerror: solo se avisa si esto pasa DESPUÉS
+      // de haber quedado conectados (nunca durante el intento inicial).
+      if (this.conexionEstablecida) {
+        this.debug('voice:output_error', 'error', 'DataChannel se cerró solo, fuera de un detener() explícito')
+        this.emitir({ tipo: 'error', mensaje: 'Se perdió la conexión de voz. Toca para reintentar.' })
+      }
+    }
 
     const canalListo = new Promise<void>((resolve, reject) => {
       rechazarCanalListo = reject
@@ -786,6 +801,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
 
   async detener() {
     this.registrar('detener', 'Cerrando modo voz')
+    this.debug('voice:stop_started', 'ok')
     // Invalida cualquier intento de conexión que aún pudiera estar en
     // vuelo (ver verificarIntentoVigente) y corta cualquier fetch
     // pendiente — detener() puede llamarse mientras iniciar() todavía no
@@ -799,12 +815,50 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.cancelarTemporizadorFinTurno()
     if (this.temporizadorSilencio) { clearTimeout(this.temporizadorSilencio); this.temporizadorSilencio = null }
     this.leyendoRespuestaClaude = false
+    // El usuario siempre tiene prioridad al cerrar: si había una
+    // respuesta en curso, cancelarla explícitamente (evento nativo)
+    // antes de tirar la conexión entera.
+    if (this.respondiendoActivo && this.canal?.readyState === 'open') {
+      try {
+        this.enviarEventoCliente({ type: 'response.cancel' })
+        this.debug('voice:response_cancelled', 'ok')
+      } catch (err) {
+        this.debug('voice:response_cancelled', 'error', describirError(err))
+      }
+    }
     this.conexionEstablecida = false
-    this.canal?.close()
-    this.pc?.getSenders().forEach(remitente => remitente.track?.stop())
-    this.stream?.getTracks().forEach(pista => pista.stop())
-    this.pc?.close()
-    this.audioEl?.remove()
+    // Cada paso de limpieza va en su propio try/catch — ver "Confirmar
+    // arquitectura híbrida y corregir botón de colgar y reproducción":
+    // antes, si UN solo paso (ej. canal.close()) lanzaba una excepción
+    // real, TODOS los pasos siguientes (detener pistas, cerrar la
+    // PeerConnection) se saltaban en seco, dejando recursos vivos y —
+    // más grave — impidiendo que este método terminara de correr, lo
+    // que a su vez impedía que AsistenteService.desactivarModoVoz()
+    // llegara a notificar() a React.
+    try {
+      this.canal?.close()
+      this.debug('voice:data_channel_closed', 'ok')
+    } catch (err) {
+      this.debug('voice:data_channel_closed', 'error', describirError(err))
+    }
+    try {
+      this.pc?.getSenders().forEach(remitente => remitente.track?.stop())
+      this.stream?.getTracks().forEach(pista => pista.stop())
+      this.debug('voice:tracks_stopped', 'ok')
+    } catch (err) {
+      this.debug('voice:tracks_stopped', 'error', describirError(err))
+    }
+    try {
+      this.pc?.close()
+      this.debug('voice:peer_closed', 'ok')
+    } catch (err) {
+      this.debug('voice:peer_closed', 'error', describirError(err))
+    }
+    try {
+      this.audioEl?.remove()
+    } catch {
+      // Elemento ya desconectado del DOM — no es un error real.
+    }
     this.pc = null
     this.canal = null
     this.stream = null
@@ -813,6 +867,8 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.transcripcionUsuarioParcial = ''
     this.transcripcionUsuarioAcumulada = ''
     this.respondiendoActivo = false
+    this.marcasTurno = {}
+    this.debug('voice:state_idle', 'ok')
     this.emitir({ tipo: 'estado', estado: 'inactivo' })
   }
 
@@ -991,8 +1047,27 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // "Rediseñar el modo voz como conversación continua").
   reproducirRespuestaEnVoz(texto: string) {
     this.marcarLatencia('first_text_received')
+    this.debug('voice:output_requested', 'info', `${texto.length} caracteres recibidos de /api/chat`)
     const textoLimpio = limpiarTextoParaVoz(texto)
-    if (!textoLimpio) return
+    if (!textoLimpio) {
+      this.debug('voice:output_error', 'error', 'texto vacío después de limpiar Markdown — nada que leer')
+      return
+    }
+    // CAUSA RAÍZ real de "el texto llega pero nunca se reproduce, sin
+    // ningún error visible" (ver "Confirmar arquitectura híbrida y
+    // corregir botón de colgar y reproducción"): enviarEventoCliente()
+    // ya comprobaba canal.readyState === 'open' antes de mandar cada
+    // evento, pero si NO estaba abierto (el DataChannel puede cerrarse
+    // solo mientras se espera la respuesta de Claude, que a veces tarda
+    // varios segundos — ver LATENCIA) simplemente no mandaba nada, en
+    // silencio, sin avisarle a nadie. Ahora se comprueba una sola vez
+    // aquí, explícitamente, y si no está abierto se emite un error real
+    // (mismo mensaje/canal que canal.onerror) en vez de un vacío.
+    if (this.canal?.readyState !== 'open') {
+      this.debug('voice:output_error', 'error', `DataChannel no está abierto (readyState=${this.canal?.readyState ?? 'sin-canal'}) — no se pudo pedir la lectura`)
+      this.emitir({ tipo: 'error', mensaje: 'Se perdió la conexión de voz. Toca para reintentar.' })
+      return
+    }
     // Nunca se solapan dos lecturas — corta cualquiera en curso primero
     // (no debería haber ninguna normalmente, ya que enviarComoMensaje
     // se espera antes de llegar aquí, pero es defensivo).
@@ -1018,6 +1093,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     // problema con la voz": el reconocimiento y el Chat IA nunca
     // pasaban por este método, solo la reproducción.
     this.enviarEventoCliente({ type: 'response.create', response: { output_modalities: ['audio'] } })
+    this.debug('voice:response_create_sent', 'ok')
   }
 
   suscribir(callback: (evento: EventoMotor) => void): DesuscribirFn {
@@ -1182,7 +1258,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         if (this.esEventoDeRespuestaSuperada(evento.response_id)) break
         if (this.primerAudioDeEstaRespuesta) {
           this.primerAudioDeEstaRespuesta = false
-          this.debug('turno-primer-audio', 'ok')
+          this.debug('voice:audio_event_received', 'ok')
           this.marcarLatencia('first_audio_played')
           // Resumen completo del turno — desglose de dónde se fue el
           // tiempo (silencio/transcripción/clasificación+herramienta+
@@ -1215,7 +1291,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           // constancia, pero nunca es un error para el docente.
           this.registrar('respuesta-no-completada', `status=${status}`)
         }
-        this.debug('turno-respuesta-finalizada', status === 'completed' || !status ? 'ok' : 'info', status)
+        this.debug('voice:playback_finished', status === 'completed' || !status ? 'ok' : 'info', status)
         // Diagnóstico temporal: compara lo que se le pidió leer contra
         // lo que Realtime realmente dijo (ver reproducirRespuestaEnVoz)
         // — si algún día difieren, esto lo hace visible de inmediato en

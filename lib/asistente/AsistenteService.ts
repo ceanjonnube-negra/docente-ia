@@ -777,15 +777,40 @@ class AsistenteServiceImpl {
   // (detección automática de fin de turno, ver motorOpenAIRealtime.ts).
   async desactivarModoVoz() {
     if (!this.modoVoz) return
-    await this.motorVoz?.detener()
-    this.motorVoz = null
-    this.modoVoz = false
-    this.turnoUsuarioPendiente = false
-    this.textoAsistentePendiente = ''
-    this.finalPendiente = false
-    this.estadoEscucha = null
-    this.motor = await this.asegurarMotorTexto()
-    this.notificar()
+    this.registrarPasoDebugVoz('voice:stop_button_pressed', 'ok')
+    // CAUSA RAÍZ real de "el botón de colgar no hace nada visible" (ver
+    // "Confirmar arquitectura híbrida y corregir botón de colgar y
+    // reproducción"): antes, si motor.detener() o asegurarMotorTexto()
+    // lanzaban una excepción, la función se detenía en seco AHÍ MISMO —
+    // this.modoVoz nunca llegaba a false y this.notificar() (el único
+    // puente hacia React) nunca se ejecutaba, así que ni el estado
+    // interno ni la UI cambiaban, aunque el toque sí se hubiera
+    // registrado. try/finally garantiza que el estado SIEMPRE vuelve a
+    // IDLE y SIEMPRE se notifica a React, pase lo que pase adentro.
+    try {
+      await this.motorVoz?.detener()
+    } catch (err) {
+      console.error('[VOZ] motor.detener() falló al colgar — se limpia el estado de todas formas:', err)
+    } finally {
+      this.motorVoz = null
+      this.modoVoz = false
+      this.turnoUsuarioPendiente = false
+      this.textoAsistentePendiente = ''
+      this.finalPendiente = false
+      this.estadoEscucha = null
+      this.registrarPasoDebugVoz('voice:state_idle', 'ok')
+      this.notificar()
+    }
+    // asegurarMotorTexto() se deja fuera del try/finally a propósito: si
+    // falla, el docente ya volvió a ver el micrófono normal y la
+    // conversación de voz ya terminó (lo urgente); el chat escrito
+    // simplemente reintentará crear su motor en el próximo mensaje (ver
+    // asegurarMotor/motorDeContenido), sin bloquear el cierre de voz.
+    try {
+      this.motor = await this.asegurarMotorTexto()
+    } catch (err) {
+      console.error('[VOZ] asegurarMotorTexto() falló tras colgar — se reintentará en el próximo mensaje:', err)
+    }
   }
 
   private manejarEventoMotor(evento: EventoMotor) {
@@ -1018,11 +1043,41 @@ class AsistenteServiceImpl {
         // de esa lectura (estado 'hablando', barge-in, vuelta a
         // 'escuchando' al terminar) lo maneja el propio motor a través
         // de response.done — este método no necesita saber nada más.
-        if (this.modoVoz) this.motorVoz?.reproducirRespuestaEnVoz(evento.texto)
+        if (this.modoVoz) {
+          this.registrarPasoDebugVoz('chat:response_received', 'ok', `${evento.texto.length} caracteres`)
+          this.motorVoz?.reproducirRespuestaEnVoz(evento.texto)
+        }
         this.notificar()
         break
       }
       case 'error': {
+        // CAUSA RAÍZ real de "la sesión aparentemente permanece abierta"
+        // (ver "Confirmar arquitectura híbrida y corregir botón de
+        // colgar y reproducción"): este 'error' genérico también recibe
+        // los errores de CONEXIÓN de MotorOpenAIRealtime (canal.onerror/
+        // onclose, DataChannel cerrado en reproducirRespuestaEnVoz) —
+        // antes se trataban igual que un error conversacional de Claude:
+        // se metían al chat como si fueran un mensaje del asistente, Y
+        // modoVoz se quedaba en true (solo estadoEscucha volvía a
+        // 'escuchando'), así que la interfaz seguía mostrando la sesión
+        // activa aunque la conexión real ya hubiera muerto. Se distingue
+        // por el texto exacto — solo MotorOpenAIRealtime emite este
+        // mensaje — y aquí se termina la sesión de verdad, sin ensuciar
+        // el historial con un "mensaje" que Claude nunca dijo.
+        if (this.modoVoz && evento.mensaje === 'Se perdió la conexión de voz. Toca para reintentar.') {
+          this.motorVoz?.detener().catch(() => {})
+          this.motorVoz = null
+          this.modoVoz = false
+          this.estadoEscucha = null
+          this.generando = false
+          this.estadoMotor = 'inactivo'
+          this.mostrarAvisoVoz(evento.mensaje)
+          this.asegurarMotorTexto()
+            .then(motor => { this.motor = motor; this.notificar() })
+            .catch(err => console.error('[VOZ] asegurarMotorTexto() falló tras conexión perdida:', err))
+          this.notificar()
+          break
+        }
         this.generando = false
         this.estadoMotor = 'error'
         const estabaEditandoUnDocumento = this.editandoDocumentoId !== null
