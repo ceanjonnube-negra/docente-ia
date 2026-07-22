@@ -17,6 +17,7 @@ import {
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
+import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
@@ -621,6 +622,12 @@ export async function POST(req: NextRequest) {
   // no tiene nada que clasificar, el propio clasificador devuelve
   // "conversacion_general" y el flujo sigue exactamente igual. ---
   let contextoEnriquecido = [contexto || '', resumenGrupoTexto || ''].filter(Boolean).join('\n\n')
+  // Ver "Consultar información oficial vigente de la SEP" — true solo si
+  // el Clasificador de Nivel 0 (regla 18) autorizó este turno específico
+  // para usar la herramienta de búsqueda oficial. Declarado en este
+  // scope (antes del try) para que parametrosClaude, más abajo, pueda
+  // leerlo sin importar qué pasó dentro del bloque del clasificador.
+  let requiereConsultaOficial = false
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -630,6 +637,10 @@ export async function POST(req: NextRequest) {
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
       const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       marcarTelemetria('intent:classification_finished')
+      requiereConsultaOficial = clasificacion.requiere_consulta_oficial === true
+      if (requiereConsultaOficial) {
+        console.log(`[CONSULTA_OFICIAL] activada — intencion=${clasificacion.intencion_principal}`)
+      }
       // Diagnóstico — nunca visible al maestro. Con esto se puede ver en
       // vercel logs EXACTAMENTE por qué una consulta como "¿cuántas
       // faltas tiene Audrey?" no llegó a responder con el dato real: si
@@ -1016,6 +1027,16 @@ MODO VOZ ACTIVO — este turno viene de una conversación hablada, no escrita (e
 - Amplía la respuesta únicamente cuando la tarea en sí lo requiera (una planeación, un documento, una explicación pedida) o el maestro pida explícitamente más detalle.
 Ejemplos: "¿Cuántos faltaron?" → "Faltaron cinco alumnos." "¿Cuántas niñas y niños tengo?" → "Tienes doce niñas y dieciséis niños." "¿Quiénes faltaron?" → solo los nombres. "Dame el reporte completo." → ahí sí, el reporte completo.` : ''
 
+  // "Consultar información oficial vigente de la SEP" — instrucciones
+  // ADICIONALES, solo para el turno actual, cuando el Clasificador de
+  // Nivel 0 (regla 18) autorizó el uso de la herramienta de búsqueda
+  // oficial. El prompt general NO se modifica — esto se concatena al
+  // final, igual que bloqueVoz, así que un turno sin
+  // requiereConsultaOficial nunca ve este texto ni la herramienta.
+  const bloqueConsultaOficial = requiereConsultaOficial ? `
+
+CONSULTA DE INFORMACIÓN OFICIAL VIGENTE — este turno SÍ tiene acceso a la herramienta web_search, restringida por la propia plataforma a fuentes oficiales (gob.mx, sep.gob.mx, dof.gob.mx). Tienes terminantemente PROHIBIDO decir "no tengo acceso a internet" o cualquier frase equivalente — si la pregunta es sobre calendario escolar oficial, ciclo escolar, planes y programas, campos formativos, lineamientos, normas, trámites o acuerdos SEP/DOF, USA la herramienta antes de responder. Nunca respondas una fecha o dato oficial solo por tu conocimiento general ("normalmente termina a finales de julio") — usa siempre el resultado real de la búsqueda. Prioriza: 1) el documento oficial vigente más reciente, 2) su fecha de publicación o actualización, 3) la autoridad responsable (SEP federal vs. autoridad educativa estatal), 4) el ciclo escolar exacto que preguntó el maestro. Si el calendario federal y el estatal difieren, explica ambos con claridad e indica cuál aplica. En tu respuesta de chat escrito, cita la fuente y autoridad (ej. "Fuente: calendario oficial SEP, publicado el [fecha]"). Si la búsqueda no encuentra el dato o falla, dilo con honestidad ("No pude consultar la fuente oficial en este momento. No quiero darte una fecha sin verificar.") — nunca inventes una fecha para no dejar la pregunta sin respuesta.` : ''
+
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
   // el archivo en un solo mensaje, ver más abajo) — el único que cambia
@@ -1246,7 +1267,15 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}`,
+    // "Consultar información oficial vigente de la SEP": la herramienta
+    // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
+    // autorizó este turno específico (requiereConsultaOficial) — nunca
+    // está disponible por default. Realtime/voz nunca la ve: no existe
+    // en app/api/realtime-token/route.ts, así que estructuralmente
+    // tampoco puede buscar nada por su cuenta (ver
+    // MotorOpenAIRealtime — cero tools registradas ahí, sin cambios).
+    ...(requiereConsultaOficial ? { tools: [construirHerramientaConsultaOficial()] } : {}),
     messages: [
       ...historialMensajes,
       {
@@ -1385,6 +1414,24 @@ Grado: [grado] | Grupo: [grupo]
               marcarTelemetria('claude:first_text_received')
             }
             controller.enqueue(encoder.encode(event.delta.text))
+          }
+          // "Consultar información oficial vigente de la SEP" — SEGURIDAD:
+          // registro interno de qué pasó con la búsqueda (nunca expuesto
+          // al maestro) — nunca el contenido recuperado de las páginas,
+          // solo si Claude la invocó y si tuvo éxito o falló, para poder
+          // diagnosticar sin exponer errores técnicos en el chat.
+          if (requiereConsultaOficial && event.type === 'content_block_start') {
+            if (event.content_block.type === 'server_tool_use' && event.content_block.name === 'web_search') {
+              console.log('[CONSULTA_OFICIAL] Claude invocó web_search para este turno')
+            }
+            if (event.content_block.type === 'web_search_tool_result') {
+              const contenido = event.content_block.content
+              if (Array.isArray(contenido)) {
+                console.log(`[CONSULTA_OFICIAL] resultado ok — ${contenido.length} fuente(s): ${contenido.map((r) => new URL(r.url).hostname).join(', ')}`)
+              } else {
+                console.log(`[CONSULTA_OFICIAL] resultado con error — error_code=${contenido.error_code}`)
+              }
+            }
           }
         }
         marcarTelemetria('claude:response_finished')
