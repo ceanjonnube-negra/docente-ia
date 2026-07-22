@@ -262,6 +262,29 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.emitir({ tipo: 'debug-paso', paso, resultado, detalle, ms: Date.now() })
   }
 
+  // Checkpoint único de fallo de arranque (ver "Auditar el arranque de
+  // la sesión de voz — traza obligatoria"): se llama justo ANTES de cada
+  // throw new ErrorEtapaVoz(...), mientras this.pc todavía existe (antes
+  // de que limpiarConexionParcial()/cancelarConexion() lo pongan en
+  // null), para que el estado real de WebRTC en el momento exacto del
+  // fallo quede visible en ?voiceDebug=1 — nunca solo en console.log,
+  // que en un iPhone real sin Mac conectado no se puede leer.
+  private capturarErrorArranque(etapa: string, err: unknown) {
+    const e = err instanceof Error ? err : null
+    const detalle = [
+      `etapa=${etapa}`,
+      `name=${e?.name || 'desconocido'}`,
+      `message=${e?.message || describirError(err)}`,
+      `connectionState=${this.pc?.connectionState ?? 'sin-pc'}`,
+      `iceConnectionState=${this.pc?.iceConnectionState ?? 'sin-pc'}`,
+      `signalingState=${this.pc?.signalingState ?? 'sin-pc'}`,
+    ].join(' · ')
+    this.debug('voice:start_error', 'error', detalle)
+    // El stack completo solo a consola — es largo y ?voiceDebug=1 está
+    // pensado para leerse en la pantalla de un teléfono.
+    if (e?.stack) this.registrar('voice:start_error-stack', e.stack)
+  }
+
   // Lanza ConexionCanceladaError si, mientras se esperaba el último await,
   // este intento dejó de ser el vigente (cancelarConexion()/detener()
   // avanzaron idIntentoActual). Se llama después de CADA await de la
@@ -330,7 +353,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     }
 
     // --- Etapas 1 y 2: permiso + captura de audio. SIEMPRE lo primero. ---
-    this.debug('permiso-microfono-solicitado', 'info')
+    this.debug('voice:permission_requested', 'info')
     try {
       // Constraints explícitas (no confiar en el default del navegador):
       // sin cancelación de eco, el micrófono capta la propia voz del
@@ -342,13 +365,16 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       })
       this.registrar('1-2-microfono', `Permiso concedido, ${this.stream.getAudioTracks().length} pista(s) de audio`)
-      this.debug('permiso-microfono-concedido', 'ok')
+      this.debug('voice:permission_granted', 'ok')
       const pista = this.stream.getAudioTracks()[0]
-      this.debug('mediastream-obtenido', 'ok', `${this.stream.getAudioTracks().length} pista(s)`)
-      this.debug('track-audio-activo', pista?.readyState === 'live' ? 'ok' : 'error', `readyState=${pista?.readyState}`)
+      this.debug('voice:media_stream_created', 'ok', `${this.stream.getAudioTracks().length} pista(s), readyState=${pista?.readyState}`)
     } catch (err) {
+      // err aquí es típicamente un DOMException real de getUserMedia —
+      // describirError ya extrae err.name (NotAllowedError, NotFoundError,
+      // NotReadableError, AbortError, SecurityError...) y err.message tal
+      // cual, nunca un texto genérico inventado.
       this.registrar('1-2-microfono-error', err)
-      this.debug('permiso-microfono-concedido', 'error', describirError(err))
+      this.capturarErrorArranque('1-2-microfono', err)
       throw new ErrorEtapaVoz('1-2-microfono', err)
     }
     this.verificarIntentoVigente(idIntento)
@@ -368,6 +394,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       this.registrar('3-sesion-docente', `Sesión válida (${session.user?.email || 'sin email'})`)
     } catch (err) {
       this.registrar('3-sesion-docente-error', err)
+      this.capturarErrorArranque('3-sesion-docente', err)
       throw new ErrorEtapaVoz('3-sesion-docente', err)
     }
     this.verificarIntentoVigente(idIntento)
@@ -398,6 +425,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       // adelante; sin este catch, ese rechazo tardío aparecería como una
       // promesa no manejada en la consola.
       promesaConexion.catch(() => {})
+      this.capturarErrorArranque('techo-12s', new Error(`No se completó en ${TECHO_CONEXION_MS / 1000}s`))
       throw new ErrorEtapaVoz('techo-12s', `La conexión de voz no se completó en ${TECHO_CONEXION_MS / 1000} segundos.`)
     }
   }
@@ -417,7 +445,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       let clientSecret: string
       let model: string
       try {
-        this.debug('token-efimero-solicitado', 'info', `intento ${intento}`)
+        this.debug('voice:token_request_started', 'info', `intento ${intento}`)
         const controlador = this.crearControladorConTimeout(8000)
         // instrucciones: PERSONA_VOZ tal cual, sin contexto dinámico —
         // este motor ya no razona ni compone nada (ver "Rediseñar el
@@ -437,16 +465,21 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           signal: controlador.signal,
         })
         this.registrar('5-token-efimero', `POST /api/realtime-token -> HTTP ${tokenRes.status} (intento ${intento})`)
+        // Nunca se asume JSON válido — si el body no parsea (ej. una
+        // página de error HTML de un 500/502 de la plataforma), data
+        // queda {} y el mensaje de abajo usa 'sin detalle del servidor'
+        // en vez de reventar aquí mismo.
         const data = await tokenRes.json().catch(() => ({}))
+        this.debug('voice:token_response_status', tokenRes.ok ? 'ok' : 'error', `HTTP ${tokenRes.status} · body=${JSON.stringify(data).slice(0, 300)}`)
         if (!tokenRes.ok) throw new Error(`HTTP ${tokenRes.status}: ${data.error || 'sin detalle del servidor'}`)
         if (!data.value) throw new Error('La respuesta del servidor no incluyó un client secret.')
         clientSecret = data.value
         model = data.model || MODELO_DEFECTO
-        this.debug('token-efimero-recibido', 'ok', `HTTP ${tokenRes.status}`)
+        this.debug('voice:ephemeral_token_received', 'ok', `HTTP ${tokenRes.status}, modelo=${model}`)
       } catch (err) {
         this.verificarIntentoVigente(idIntento)
         this.registrar('5-token-efimero-error', err)
-        this.debug('token-efimero-recibido', 'error', describirError(err))
+        this.capturarErrorArranque('5-token-efimero', err)
         throw new ErrorEtapaVoz('5-token-efimero', err)
       }
       this.verificarIntentoVigente(idIntento)
@@ -455,14 +488,17 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         await this.conectarWebRTC(clientSecret, model)
         this.verificarIntentoVigente(idIntento)
         this.registrar('8-listo', 'Modo voz completamente conectado')
-        this.debug('sesion-configurada', 'ok')
+        this.debug('voice:session_ready', 'ok')
         this.conexionEstablecida = true
         this.emitir({ tipo: 'estado', estado: 'activo' })
-        this.debug('estado-listening', 'ok')
         return
       } catch (err) {
         if (err instanceof ConexionCanceladaError) throw err
         this.verificarIntentoVigente(idIntento)
+        // Captura el diagnóstico ANTES de limpiarConexionParcial(), que
+        // pone this.pc en null — si se hiciera después, connectionState/
+        // iceConnectionState/signalingState ya no se podrían leer.
+        if (intento >= MAX_INTENTOS_CONEXION) this.capturarErrorArranque('6-7-conexion-webrtc', err)
         this.limpiarConexionParcial()
         if (intento >= MAX_INTENTOS_CONEXION) {
           this.registrar('6-7-error', err)
@@ -492,7 +528,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   private async conectarWebRTC(clientSecret: string, model: string): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     this.pc = pc
-    this.debug('peerconnection-creada', 'ok')
+    this.debug('voice:peer_connection_created', 'ok')
 
     let rechazarCanalListo: ((err: Error) => void) | null = null
     // Diagnóstico completo del ciclo de vida de la conexión — solo va a
@@ -502,15 +538,14 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     pc.onsignalingstatechange = () => this.registrar('4-signaling', pc.signalingState)
     pc.onicegatheringstatechange = () => {
       this.registrar('4-ice-gathering', pc.iceGatheringState)
-      this.debug('ice-gathering-state', 'info', pc.iceGatheringState)
     }
     pc.oniceconnectionstatechange = () => {
       this.registrar('4-ice', pc.iceConnectionState)
-      this.debug('ice-connection-state', pc.iceConnectionState === 'failed' ? 'error' : 'info', pc.iceConnectionState)
+      this.debug('voice:connection_state', pc.iceConnectionState === 'failed' ? 'error' : 'info', `ice=${pc.iceConnectionState}`)
     }
     pc.onconnectionstatechange = () => {
       this.registrar('4-conexion', pc.connectionState)
-      this.debug('peerconnection-state', pc.connectionState === 'failed' ? 'error' : 'info', pc.connectionState)
+      this.debug('voice:connection_state', pc.connectionState === 'failed' ? 'error' : 'info', `connection=${pc.connectionState}`)
       // No esperar los 10s completos si la conexión ya falló de plano —
       // esto es lo que hace que el reintento sea rápido en vez de que el
       // docente se quede viendo "conectando" sin necesidad.
@@ -539,7 +574,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     const pistasAudio = this.stream!.getAudioTracks()
     this.registrar('2-pista-local', pistasAudio.map(t => `readyState=${t.readyState} enabled=${t.enabled} muted=${t.muted}`))
     pistasAudio.forEach(pista => pc.addTrack(pista, this.stream!))
-    this.debug('track-agregado', pistasAudio.length > 0 ? 'ok' : 'error', `${pistasAudio.length} pista(s)`)
+    this.debug('voice:local_track_added', pistasAudio.length > 0 ? 'ok' : 'error', `${pistasAudio.length} pista(s)`)
 
     const canal = pc.createDataChannel('oai-events')
     this.canal = canal
@@ -581,19 +616,19 @@ export class MotorOpenAIRealtime implements MotorConversacional {
           connectionState: pc.connectionState,
         }
         this.registrar('7-canal-timeout-diagnostico', diagnostico)
-        this.debug('datachannel-open', 'error', `timeout 10s — ${JSON.stringify(diagnostico)}`)
+        this.debug('voice:data_channel_open', 'error', `timeout 10s — ${JSON.stringify(diagnostico)}`)
         reject(new Error('Tiempo de espera agotado (10s) esperando que abriera el canal de datos.'))
       }, 10000)
       canal.addEventListener('open', () => {
         clearTimeout(limite)
         this.registrar('7-canal-abierto', `Data channel abierto (readyState=${canal.readyState})`)
-        this.debug('datachannel-open', 'ok', `readyState=${canal.readyState}`)
+        this.debug('voice:data_channel_open', 'ok', `readyState=${canal.readyState}`)
         resolve()
       }, { once: true })
     })
 
     const offer = await pc.createOffer()
-    this.debug('offer-creada', 'ok')
+    this.debug('voice:offer_created', 'ok')
     await pc.setLocalDescription(offer)
     this.debug('localdescription-configurada', 'ok', `signalingState=${pc.signalingState}`)
 
@@ -617,7 +652,7 @@ export class MotorOpenAIRealtime implements MotorConversacional {
       '6-oferta-sdp',
       `Oferta local lista (${sdpParaEnviar?.length || 0} bytes), ICE gathering=${pc.iceGatheringState}, candidatos=${resumirCandidatos(sdpParaEnviar)}`
     )
-    this.debug('sdp-enviado-openai', 'info', `candidatos=${resumirCandidatos(sdpParaEnviar)}`)
+    this.debug('voice:offer_sent', 'info', `candidatos=${resumirCandidatos(sdpParaEnviar)}`)
 
     const controladorSdp = this.crearControladorConTimeout(8000)
     let respuestaSdp: Response
@@ -632,21 +667,21 @@ export class MotorOpenAIRealtime implements MotorConversacional {
         signal: controladorSdp.signal,
       })
     } catch (err) {
-      this.debug('respuesta-sdp-recibida', 'error', describirError(err))
+      this.debug('voice:answer_received', 'error', describirError(err))
       throw err
     }
     this.registrar('6-respuesta-sdp', `POST /v1/realtime/calls -> HTTP ${respuestaSdp.status}`)
     if (!respuestaSdp.ok) {
       const textoError = await respuestaSdp.text().catch(() => '')
-      this.debug('respuesta-sdp-recibida', 'error', `HTTP ${respuestaSdp.status}`)
+      this.debug('voice:answer_received', 'error', `HTTP ${respuestaSdp.status} · body=${textoError.slice(0, 300) || 'sin cuerpo de respuesta'}`)
       throw new Error(`HTTP ${respuestaSdp.status} de OpenAI: ${textoError.slice(0, 300) || 'sin cuerpo de respuesta'}`)
     }
-    this.debug('respuesta-sdp-recibida', 'ok', `HTTP ${respuestaSdp.status}`)
+    this.debug('voice:answer_received', 'ok', `HTTP ${respuestaSdp.status}`)
     const answerSdp = await respuestaSdp.text()
     this.registrar('6-respuesta-sdp-contenido', `candidatos remotos=${resumirCandidatos(answerSdp)}`)
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp })
     this.registrar('6-respuesta-remota', 'setRemoteDescription OK')
-    this.debug('remotedescription-configurada', 'ok', `signalingState=${pc.signalingState}`)
+    this.debug('voice:remote_description_set', 'ok', `signalingState=${pc.signalingState}`)
 
     await canalListo
   }

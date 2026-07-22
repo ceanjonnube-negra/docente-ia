@@ -669,7 +669,7 @@ class AsistenteServiceImpl {
     // que el panel siempre muestre exactamente el último paso alcanzado
     // en LA conexión actual, no un mezcladero de intentos anteriores.
     this.debugVoz = []
-    this.registrarPasoDebugVoz('tap-recibido', 'ok')
+    this.registrarPasoDebugVoz('voice:start_button_pressed', 'ok')
     this.estadoEscucha = 'escuchando'
     this.abrirPanel()
     try {
