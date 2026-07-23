@@ -26,6 +26,8 @@ const ESTADOS_ASISTENCIA: { valor: 'presente' | 'falta' | 'retardo'; icono: stri
 
 type Resumen = {
   estadoHoy: EstadoAsistencia
+  totalAsistencias: number
+  totalFaltas: number
   incidencias: number
 }
 
@@ -137,26 +139,39 @@ function ListaPageContent() {
     )
     const inscripcionIds = Array.from(inscripcionPorAlumno.values())
 
-    const { data: registrosHoy } = inscripcionIds.length > 0
+    // Todo el historial (no solo hoy) de una sola consulta — de aquí
+    // salen tanto el estado de hoy como el "Asist"/"Faltas" acumulado de
+    // cada tarjeta (ver "Restaurar Asist/Faltas por alumno"): antes esas
+    // dos cifras venían de la tabla legada `asistencias`, que colapsaba
+    // retardo -> presente (ver escribirAsistencia en motorContexto.ts);
+    // asistencia_registro sí distingue los 3 estados, así que un retardo
+    // ya no infla "Asist" ni cuenta como falta.
+    const { data: registrosTodos } = inscripcionIds.length > 0
       ? await supabase
           .from('asistencia_registro')
-          .select('inscripcion_id, estatus')
-          .eq('fecha', hoy)
+          .select('inscripcion_id, fecha, estatus')
           .in('inscripcion_id', inscripcionIds)
-      : { data: [] as { inscripcion_id: string; estatus: string }[] }
+      : { data: [] as { inscripcion_id: string; fecha: string; estatus: string }[] }
 
     const estatusPorInscripcion = new Map(
-      (registrosHoy || []).map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
+      (registrosTodos || [])
+        .filter((r: { inscripcion_id: string; fecha: string; estatus: string }) => r.fecha === hoy)
+        .map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
     )
 
     const nuevosResumenes: Record<string, Resumen> = {}
     alumnosDelGrupo.forEach(a => {
       const inscripcionId = inscripcionPorAlumno.get(a.id)
+      const registrosAlumno = (registrosTodos || []).filter(
+        (r: { inscripcion_id: string }) => r.inscripcion_id === inscripcionId
+      )
       nuevosResumenes[a.id] = {
         // clasificarEstadoAsistencia (lib/motorContexto.ts): sin fila
         // hoy -> 'sin_registrar', NUNCA 'presente' por default. Misma
         // función que usa asistenciaGrupoResumen para el Chat IA.
         estadoHoy: clasificarEstadoAsistencia(inscripcionId ? estatusPorInscripcion.get(inscripcionId) : null),
+        totalAsistencias: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'presente').length,
+        totalFaltas: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'falta').length,
         incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
       }
     })
@@ -449,6 +464,8 @@ function ListaPageContent() {
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
                 <span>{a.sexo === 'M' ? 'Niña' : a.sexo === 'H' ? 'Niño' : '—'}</span>
                 <span>{calcularEdad(a.fecha_nacimiento)}</span>
+                <span>Asist: {r?.totalAsistencias ?? 0}</span>
+                <span>Faltas: {r?.totalFaltas ?? 0}</span>
                 <span>Incidencias: {r?.incidencias ?? 0}</span>
               </div>
             </div>
