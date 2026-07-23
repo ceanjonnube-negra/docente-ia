@@ -66,11 +66,24 @@ export async function analizarArchivos(
   let completados = 0
   callbacks.onProgreso(0, archivos.length)
 
+  // FASE 1A — "Protección de endpoints críticos": /api/importar-alumnos
+  // ahora exige sesión válida. Un solo access_token para todas las
+  // llamadas en paralelo de abajo (misma sesión, no cambia entre
+  // archivos de un mismo análisis).
+  const { data: { session } } = await sb.auth.getSession()
+  if (!session?.access_token) {
+    throw new Error('No se encontró una sesión activa. Inicia sesión de nuevo.')
+  }
+
   const resultadosPorArchivo = await Promise.all(
     archivos.map(async (archivo) => {
       const formData = new FormData()
       formData.append('archivo', archivo)
-      const res = await fetch('/api/importar-alumnos', { method: 'POST', body: formData })
+      const res = await fetch('/api/importar-alumnos', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: formData,
+      })
       const data = await res.json()
       completados += 1
       callbacks.onProgreso(completados, archivos.length)

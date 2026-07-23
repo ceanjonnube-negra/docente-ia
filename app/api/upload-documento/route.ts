@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabaseClient';
 import crypto from 'crypto';
 import OpenAI from 'openai';
+import { autenticarRequestApi, extraerBearerToken, usuarioPerteneceAInstitucion } from '@/lib/server/authApi';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -68,11 +69,35 @@ async function extractText(buffer: Buffer, mimeType: string, filename: string): 
 
 export async function POST(req: Request) {
   try {
+    // FASE 1A — "Protección de endpoints críticos": autenticación y
+    // autorización ANTES de tocar el archivo. Nada de OCR, extracción de
+    // texto, embeddings ni inserciones corre hasta que ambas validaciones
+    // pasen.
+    const accessToken = extraerBearerToken(req);
+    const auth = await autenticarRequestApi(accessToken);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.mensaje }, { status: auth.status });
+    }
+
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const categoria = (formData.get('categoria') as string) || 'General';
     const descripcion = (formData.get('descripcion') as string) || '';
     const institucionId = (formData.get('institucion_id') as string) || null;
+
+    // Nunca se confía solo en el institucion_id que mandó el cliente —
+    // se verifica contra la pertenencia real del docente autenticado
+    // (perfiles_docentes.institucion_id o docente_instituciones, mismo
+    // patrón que ya usa app/dashboard/grupos/nuevo/page.tsx). Si el
+    // caller no manda institución (comportamiento actual real, ver
+    // diagnóstico), no hay nada que verificar — se preserva el
+    // comportamiento existente para ese caso.
+    if (institucionId) {
+      const pertenece = await usuarioPerteneceAInstitucion(auth.supabase, auth.user.id, institucionId);
+      if (!pertenece) {
+        return NextResponse.json({ error: 'No tienes acceso a esta institución.' }, { status: 403 });
+      }
+    }
 
     if (!file) {
       return NextResponse.json({ error: 'No se envio archivo' }, { status: 400 });

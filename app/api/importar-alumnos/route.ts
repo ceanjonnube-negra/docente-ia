@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
+import { autenticarRequestApi, extraerBearerToken, usuarioPerteneceAInstitucion } from '@/lib/server/authApi';
 
 export const runtime = 'nodejs';
 
@@ -70,6 +71,14 @@ function extraerJsonDeRespuesta(respuesta: Anthropic.Message): any {
 
 export async function POST(req: NextRequest) {
   try {
+    // FASE 1A — "Protección de endpoints críticos": autenticación
+    // obligatoria ANTES de leer el archivo o consumir Anthropic/OpenAI.
+    const accessToken = extraerBearerToken(req);
+    const auth = await autenticarRequestApi(accessToken);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.mensaje }, { status: auth.status });
+    }
+
     const formData = await req.formData();
     const archivo = formData.get('archivo') as File | null;
 
@@ -78,6 +87,30 @@ export async function POST(req: NextRequest) {
         { error: 'No se recibió ningún archivo' },
         { status: 400 }
       );
+    }
+
+    // El caller real hoy (lib/importacionInteligente.ts) no manda estos
+    // campos — se validan solo si llegan, sin exigirlos, para no romper
+    // el flujo actual mientras se cierra el hueco para cualquier llamador
+    // que sí los mande.
+    const institucionId = formData.get('institucion_id') as string | null;
+    if (institucionId) {
+      const pertenece = await usuarioPerteneceAInstitucion(auth.supabase, auth.user.id, institucionId);
+      if (!pertenece) {
+        return NextResponse.json({ error: 'No tienes acceso a esta institución.' }, { status: 403 });
+      }
+    }
+    const grupoId = formData.get('grupo_id') as string | null;
+    if (grupoId) {
+      const { data: grupo } = await auth.supabase
+        .from('grupos')
+        .select('id')
+        .eq('id', grupoId)
+        .eq('docente_id', auth.user.id)
+        .maybeSingle();
+      if (!grupo) {
+        return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 });
+      }
     }
 
     const arrayBuffer = await archivo.arrayBuffer();

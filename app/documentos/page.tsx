@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function DocumentosPage() {
   // Documentos es un módulo independiente — nunca debe mostrarse con el
@@ -36,14 +37,32 @@ export default function DocumentosPage() {
     setResultado(null)
     setError(null)
 
+    // FASE 1A — "Protección de endpoints críticos": el endpoint ahora
+    // exige sesión válida. institucion_id se manda como la institución
+    // real del docente autenticado (perfiles_docentes), nunca un valor
+    // arbitrario — el servidor la vuelve a verificar de todas formas.
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) {
+      setError('No se encontró una sesión activa. Inicia sesión de nuevo.')
+      setSubiendo(false)
+      return
+    }
+    const { data: perfil } = await supabase
+      .from('perfiles_docentes')
+      .select('institucion_id')
+      .eq('id', session.user.id)
+      .maybeSingle()
+
     const formData = new FormData()
     formData.append('file', archivo)
     formData.append('categoria', categoria)
     formData.append('descripcion', descripcion)
+    if (perfil?.institucion_id) formData.append('institucion_id', perfil.institucion_id)
 
     try {
       const res = await fetch('/api/upload-documento', {
         method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: formData,
       })
       const data = await res.json()
