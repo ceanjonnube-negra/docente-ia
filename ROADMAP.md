@@ -1,15 +1,29 @@
 # Roadmap — Docente IA
 
-> Basado en el análisis completo del repositorio realizado en esta sesión (ver `PROJECT_MAP.md` para el detalle técnico). Refleja el estado al 2026-07-14, commit `74e0ea1`.
+> Basado en el análisis completo del repositorio realizado en esta sesión (ver `PROJECT_MAP.md` para el detalle técnico). Base al 2026-07-14, commit `74e0ea1`; actualizado el 2026-07-23 con el cierre parcial del Sprint LISTA DE ALUMNOS bajo la metodología de sprints vigente (ver `ESTADO_PROYECTO.md`).
 
 Prioridad vigente del proyecto (regla del proyecto): **Sprint 1 = módulo Lista**. No se trabaja Planeación, Documentos ni Chat IA como módulos nuevos hasta terminar Lista.
+
+## Sprint LISTA DE ALUMNOS — 14/15 🟢, cierre pendiente de validación manual
+
+Único punto abierto: **Diseño y Responsive**, pendientes de validación directa del usuario en dispositivos reales — no cerrable desde este entorno. Todo lo demás del checklist del sprint (contadores, asistencia del día, guardado de asistencia, historial, porcentaje grupal, número de lista, filtros, búsqueda, rendimiento, importación, persistencia, sin regresiones) quedó en 🟢. **Edades** se retiró formalmente de este sprint — ver siguiente sprint.
+
+## Sprint siguiente: CALIDAD E INTEGRIDAD DE DATOS — 🔴 primer pendiente definido
+
+Abierto formalmente el 2026-07-23. No es un problema de ninguna pantalla, sino de la calidad de los datos capturados.
+
+**Primer pendiente (obligatorio antes de cerrar este sprint):**
+- Corregir por completo las edades incorrectas ya existentes en fichas de alumno (13 años, 2 años, "—" — causa raíz: fechas de nacimiento inválidas o mal capturadas).
+- Agregar validación de fecha de nacimiento que impida capturar valores inválidos hacia adelante, tanto en la edición manual (`guardarDatos()` en `app/dashboard/lista/[alumnoId]/page.tsx`) como en la importación inteligente (`lib/importacionInteligente.ts` / `/api/importar-datos-alumnos`).
+
+Este sprint no se cierra hasta que ambos puntos queden en 🟢.
 
 ## Resumen por módulo
 
 | Módulo | Estado | Prioridad |
 |---|---|---|
 | **CORE — Alumno permanente / Inscripción** | Diseñado (decisión documentada en `DECISIONS.md`, Decisiones 10-11), pendiente de implementar | 🔴 Alta — bloqueante antes de seguir ampliando Lista con nuevas capturas |
-| Lista (asistencia, ficha individual, seguimiento) | En desarrollo avanzado | 🔴 Alta — Sprint 1 activo |
+| Lista (asistencia, ficha individual, seguimiento) | 14/15 🟢 — pendiente validación manual de Diseño/Responsive | 🔴 Alta — Sprint 1 casi cerrado |
 | Autenticación / Onboarding | Terminado | — (base, no tocar sin necesidad) |
 | Grupos (alta de grupo, importación de lista oficial) | En desarrollo | 🔴 Alta — soporta a Lista |
 | Periodos de evaluación | En desarrollo (base funcional) | 🟠 Media |

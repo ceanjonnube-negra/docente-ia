@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/). F
 
 ## [Unreleased]
 
+### Fixed — Regresión: doble menú al importar en Lista (2026-07-23)
+- `components/ImportacionInteligente.tsx`: el botón "Importar" volvía a mostrar el selector nativo del sistema operativo (Fototeca/Tomar foto/Elegir archivo) encima del menú propio de la app al elegir "Fotos" o "Archivos" — mismo bug ya diagnosticado y corregido para el Chat IA (commit `d388bd7`), pero explícitamente dejado sin corregir en Lista en ese momento a cambio de conservar selección múltiple de fotos. Se aplicó el mismo patrón ya validado en producción: un solo `<input type="file">` nativo disparado directamente por el botón, sin menú propio delante — el sistema operativo muestra su único selector en un solo toque, conservando la selección múltiple. Afecta también a `app/dashboard/grupos/[id]/importar/page.tsx` (mismo componente compartido).
+- `components/ui/MenuAdjuntos.tsx` queda sin ningún consumidor en el proyecto tras este cambio — no se eliminó en este paso (fuera de alcance de esta corrección puntual).
+
+### Fixed — Sprint LISTA DE ALUMNOS (cierre parcial, 2026-07-23)
+- `escribirAsistencia()` (`lib/motorContexto.ts`): la escritura en `asistencia_registro` (único origen de verdad declarado del proyecto) ahora es la que determina éxito/error; antes, una escritura exitosa en la tabla legada `asistencias` podía reportar "✅ Asistencia guardada" al docente aunque `asistencia_registro` hubiera fallado en silencio. La tabla legada se sigue sincronizando después, de mejor esfuerzo, sin eliminarse.
+
+### Removed — Sprint LISTA DE ALUMNOS (cierre parcial, 2026-07-23)
+- `app/dashboard/lista/page.tsx`: eliminada la consulta huérfana a la tabla legada `asistencias` y los campos `totalAsistencias`/`totalFaltas` que solo existían para alimentarla (ninguno se mostraba ya en pantalla). `asistencia_registro` queda como única fuente de asistencia usada por esta pantalla.
+
 ### Added
 - Acceso visible al módulo **Lista** desde la pantalla principal (`/dashboard`): tarjeta "Lista" junto a Historial.
 - Acceso visible al módulo **Lista** desde el drawer/menú lateral del Chat IA (`/dashboard/chat`), justo después de "Chat IA".
