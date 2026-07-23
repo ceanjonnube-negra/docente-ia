@@ -387,13 +387,48 @@ export type ResultadoEscrituraAsistencia = { exito: boolean; error?: string; gua
 
 // Fuente única de verdad para ESCRIBIR asistencia — un alumno o varios
 // a la vez, misma función. app/api/asistencia-guardar/route.ts (Lista,
-// guardado por lote) y app/api/chat/route.ts (Chat IA, un alumno a la
-// vez por nombre) llaman aquí, en vez de cada uno reimplementar el
-// upsert por su cuenta. Nunca reporta éxito sin que Supabase confirme
-// la escritura real — devuelve { exito:false, error } ante cualquier
-// falla, para que quien llama pueda responder con honestidad en vez de
-// asumir que ya quedó guardado (ver CORRECCIÓN — nunca confirmar una
-// operación antes de verificarla).
+// guardado por lote) y la Herramienta de voz/chat (lib/asistente/
+// herramientas/asistencia.ts, mismo endpoint) llaman aquí, en vez de
+// cada uno reimplementar el upsert por su cuenta. Nunca reporta éxito
+// sin que Supabase confirme la escritura real — devuelve
+// { exito:false, error } ante cualquier falla, para que quien llama
+// pueda responder con honestidad en vez de asumir que ya quedó
+// guardado (ver CORRECCIÓN — nunca confirmar una operación antes de
+// verificarla).
+//
+// CAUSA RAÍZ corregida (ver "Sprint LISTA DE ALUMNOS — Guardado de
+// asistencia"): antes, esta función escribía PRIMERO en la tabla
+// legada `asistencias` (esa escritura determinaba `exito`), y
+// `asistencia_registro` — la tabla que la propia aplicación declaró
+// "único origen de verdad" para los contadores de Lista y todo lo que
+// reporta el Chat IA (ver "Unificar los 4 estados oficiales de
+// asistencia") — se escribía DESPUÉS, "de mejor esfuerzo": si fallaba,
+// solo se registraba en consola, sin afectar el resultado. Un docente
+// podía ver "✅ Asistencia guardada" mientras la tabla que de verdad
+// se lee para reportar asistencia se quedaba sin ese registro, en
+// silencio. Ahora el orden y la prioridad se invierten: la escritura a
+// asistencia_registro es la que determina éxito/error; la tabla legada
+// se sincroniza DESPUÉS, de mejor esfuerzo, mientras siga existiendo.
+//
+// DEPENDENCIAS REALES DE LA TABLA LEGADA `asistencias` (documentadas
+// aquí, no se elimina la tabla en este sprint — ver instrucción
+// explícita "no eliminar todavía la tabla antigua"):
+//   1. app/dashboard/lista/[alumnoId]/page.tsx (pestaña "Asistencia" y
+//      tarjetas del resumen) — SÍ la lee y la muestra al docente; es
+//      la única lectura real que depende de ella hoy.
+//   2. app/dashboard/lista/page.tsx — todavía la consulta (línea ~133)
+//      pero su resultado ya NO se muestra desde la corrección anterior
+//      de este mismo sprint ("Historial del alumno" se movió a la
+//      ficha individual) — consulta viva, dato sin usar. Limpieza
+//      pendiente, fuera de alcance de esta corrección puntual.
+//   3. app/api/chat/route.ts (intención registrar_asistencia, "pasa
+//      lista" masivo) — ya sincroniza esta misma tabla legada por su
+//      cuenta, de mejor esfuerzo, DESPUÉS de la escritura oficial vía
+//      la RPC registrar_asistencia_masiva — mismo criterio que se
+//      aplica aquí ahora, ya era consistente. No se tocó (fuera del
+//      Sprint Lista de Alumnos).
+// Mientras el punto 1 exista, la tabla legada no se puede eliminar sin
+// antes migrar esa pestaña a leer asistencia_registro.
 export async function escribirAsistencia(
   sb: SupabaseClient,
   registros: RegistroAsistencia[],
@@ -402,48 +437,73 @@ export async function escribirAsistencia(
 ): Promise<ResultadoEscrituraAsistencia> {
   if (registros.length === 0) return { exito: true, guardados: 0 };
 
-  // Tabla legada `asistencias` — solo booleano `presente` (un retardo
-  // cuenta como presente para ese modelo, igual que ya hacía Lista).
-  const filas = registros.map((r) => ({
+  // 1. Resolver la inscripción activa de cada alumno — necesaria para
+  // escribir en asistencia_registro (vía inscripcion_id, no alumno_id).
+  // Acotar por grupoId cuando se conoce evita que un alumno con más de
+  // una inscripción activa (excepcional, pero posible entre ciclos)
+  // reciba el registro en el grupo equivocado — la misma clase de
+  // divergencia que causaba que Lista y el Chat IA mostraran totales
+  // distintos para "el mismo grupo" (ver "Corregir inconsistencia
+  // entre Lista y Chat IA en el resumen de asistencia").
+  const alumnoIds = registros.map((r) => r.alumno_id);
+  let consultaInscripciones = sb.from('inscripciones').select('id, alumno_id').in('alumno_id', alumnoIds).eq('estatus', 'activo');
+  if (grupoId) consultaInscripciones = consultaInscripciones.eq('grupo_id', grupoId);
+  const { data: inscripcionesActivas, error: errorInscripciones } = await consultaInscripciones;
+
+  if (errorInscripciones) {
+    return { exito: false, error: errorInscripciones.message, guardados: 0 };
+  }
+
+  const inscripcionPorAlumno = new Map(
+    ((inscripcionesActivas || []) as { id: string; alumno_id: string }[]).map((i) => [i.alumno_id, i.id])
+  );
+  const registrosConInscripcion = registros.filter((r) => inscripcionPorAlumno.has(r.alumno_id));
+  const registrosSinInscripcion = registros.filter((r) => !inscripcionPorAlumno.has(r.alumno_id));
+
+  if (registrosSinInscripcion.length > 0) {
+    // No es un error fatal (mismo criterio que antes: un alumno sin
+    // inscripción activa resoluble simplemente no puede tener un
+    // registro oficial), pero ya no queda en silencio — antes esto se
+    // descartaba sin ningún rastro.
+    console.error(
+      `escribirAsistencia: ${registrosSinInscripcion.length} alumno(s) sin inscripción activa resoluble — sin registro oficial en asistencia_registro:`,
+      registrosSinInscripcion.map((r) => r.alumno_id)
+    );
+  }
+
+  // 2. Escritura OFICIAL — asistencia_registro. Esto es lo que ahora
+  // determina si se reporta éxito real al docente.
+  let guardados = 0
+  if (registrosConInscripcion.length > 0) {
+    const filasRegistro = registrosConInscripcion.map((r) => ({
+      inscripcion_id: inscripcionPorAlumno.get(r.alumno_id) as string,
+      fecha,
+      estatus: r.estado,
+    }));
+    const { data: dataRegistro, error: errorRegistro } = await sb
+      .from('asistencia_registro')
+      .upsert(filasRegistro, { onConflict: 'inscripcion_id,fecha' })
+      .select();
+    if (errorRegistro) return { exito: false, error: errorRegistro.message, guardados: 0 };
+    guardados = dataRegistro?.length ?? 0
+  }
+
+  // 3. Sincronización de la tabla LEGADA `asistencias` — de mejor
+  // esfuerzo mientras siga existiendo (ver dependencias documentadas
+  // arriba). Si falla, NO cambia el resultado: la escritura oficial de
+  // arriba ya tuvo éxito confirmado.
+  const filasLegado = registros.map((r) => ({
     alumno_id: r.alumno_id,
     fecha,
     presente: r.estado !== 'falta',
     ...(grupoId ? { grupo_id: grupoId } : {}),
   }));
-
-  const { data, error } = await sb.from('asistencias').upsert(filas, { onConflict: 'alumno_id,fecha' }).select();
-  if (error) return { exito: false, error: error.message, guardados: 0 };
-
-  // Modelo nuevo del CORE (asistencia_registro, vía inscripcion_id,
-  // guarda el estatus completo incluido retardo) — de mejor esfuerzo:
-  // si falla, no cambia el resultado porque la tabla legada de arriba
-  // ya quedó guardada correctamente (mismo criterio que ya usaba
-  // app/api/asistencia-guardar/route.ts).
-  const alumnoIds = registros.map((r) => r.alumno_id);
-  // Acotar por grupoId cuando se conoce (siempre que quien llama tenga
-  // un grupo activo resuelto) evita que un alumno con más de una
-  // inscripción activa (excepcional, pero posible entre ciclos) reciba
-  // el registro en el grupo equivocado — la misma clase de divergencia
-  // que causaba que Lista y el Chat IA mostraran totales distintos
-  // para "el mismo grupo" (ver "Corregir inconsistencia entre Lista y
-  // Chat IA en el resumen de asistencia").
-  let consultaInscripciones = sb.from('inscripciones').select('id, alumno_id').in('alumno_id', alumnoIds).eq('estatus', 'activo');
-  if (grupoId) consultaInscripciones = consultaInscripciones.eq('grupo_id', grupoId);
-  const { data: inscripcionesActivas } = await consultaInscripciones;
-
-  const inscripcionPorAlumno = new Map(
-    ((inscripcionesActivas || []) as { id: string; alumno_id: string }[]).map((i) => [i.alumno_id, i.id])
-  );
-  const filasRegistro = registros
-    .filter((r) => inscripcionPorAlumno.has(r.alumno_id))
-    .map((r) => ({ inscripcion_id: inscripcionPorAlumno.get(r.alumno_id) as string, fecha, estatus: r.estado }));
-
-  if (filasRegistro.length > 0) {
-    const { error: errorRegistro } = await sb.from('asistencia_registro').upsert(filasRegistro, { onConflict: 'inscripcion_id,fecha' });
-    if (errorRegistro) console.error('Error al guardar asistencia_registro (de mejor esfuerzo):', errorRegistro);
+  const { error: errorLegado } = await sb.from('asistencias').upsert(filasLegado, { onConflict: 'alumno_id,fecha' });
+  if (errorLegado) {
+    console.error('Error al sincronizar la tabla legada asistencias (de mejor esfuerzo, no afecta el resultado ya confirmado):', errorLegado);
   }
 
-  return { exito: true, guardados: data?.length ?? 0 };
+  return { exito: true, guardados };
 }
 
 export async function actualizarDatosAlumno(

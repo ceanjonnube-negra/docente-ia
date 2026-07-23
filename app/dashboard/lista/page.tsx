@@ -26,8 +26,6 @@ const ESTADOS_ASISTENCIA: { valor: 'presente' | 'falta' | 'retardo'; icono: stri
 
 type Resumen = {
   estadoHoy: EstadoAsistencia
-  totalAsistencias: number
-  totalFaltas: number
   incidencias: number
 }
 
@@ -129,8 +127,7 @@ function ListaPageContent() {
     // podía buscar el registro de asistencia del día equivocado.
     const hoy = fechaISOHoy(obtenerZonaHorariaDispositivo())
 
-    const [{ data: asistenciasTodas }, { data: incidenciasTodas }, { data: inscripcionesActivas }] = await Promise.all([
-      supabase.from('asistencias').select('alumno_id, fecha, presente').in('alumno_id', idsAlumnos),
+    const [{ data: incidenciasTodas }, { data: inscripcionesActivas }] = await Promise.all([
       supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
       supabase.from('inscripciones').select('id, alumno_id').eq('grupo_id', grupoActivo.id).eq('estatus', 'activo'),
     ])
@@ -154,15 +151,12 @@ function ListaPageContent() {
 
     const nuevosResumenes: Record<string, Resumen> = {}
     alumnosDelGrupo.forEach(a => {
-      const registros = (asistenciasTodas || []).filter(r => r.alumno_id === a.id)
       const inscripcionId = inscripcionPorAlumno.get(a.id)
       nuevosResumenes[a.id] = {
         // clasificarEstadoAsistencia (lib/motorContexto.ts): sin fila
         // hoy -> 'sin_registrar', NUNCA 'presente' por default. Misma
         // función que usa asistenciaGrupoResumen para el Chat IA.
         estadoHoy: clasificarEstadoAsistencia(inscripcionId ? estatusPorInscripcion.get(inscripcionId) : null),
-        totalAsistencias: registros.filter(r => r.presente).length,
-        totalFaltas: registros.filter(r => !r.presente).length,
         incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
       }
     })
@@ -271,13 +265,30 @@ function ListaPageContent() {
   // ambos lados quedan matemáticamente obligados a coincidir. Sin
   // fallback a 'presente': estados[a.id] ya viene sembrado con un
   // valor real de los 4 oficiales (ver cargarTodo) para cada alumno
-  // del grupo — un alumno sin captura cuenta en totalSinRegistrar,
-  // nunca en totalPresentes.
+  // del grupo — un alumno sin captura no cuenta en totalPresentes.
+  // Sin contador dedicado de "sin registrar": la validación de que la
+  // lista quedó completa es presentes+faltas+retardos === alumnos.length.
   const conteoAsistenciaHoy = contarEstadosAsistencia(alumnos.map(a => estados[a.id] ?? 'sin_registrar'))
   const totalPresentes = conteoAsistenciaHoy.presentes
   const totalFaltas = conteoAsistenciaHoy.faltas
   const totalRetardos = conteoAsistenciaHoy.retardos
-  const totalSinRegistrar = conteoAsistenciaHoy.sinRegistrar
+
+  // "Asistencia de hoy: XX%" (ver "Diagnosticar inconsistencia visible
+  // en la pantalla de asistencia del grupo" — decisión 2). Fórmula
+  // pedida explícitamente: presentes/total de alumnos, SIN sumar
+  // retardos — a diferencia de calcularPorcentajeAsistencia
+  // (lib/motorContexto.ts), que sí cuenta el retardo como asistencia
+  // para el reporte del Chat IA. Es una fórmula distinta a propósito,
+  // no un descuido: este porcentaje puede no coincidir con el que
+  // reporta el Chat IA el mismo día. Reutiliza conteoAsistenciaHoy y
+  // alumnos, ya cargados en memoria — cero consultas nuevas a Supabase.
+  // hayRegistroHoy: false solo cuando NADA se ha capturado todavía hoy —
+  // en ese caso el banner completo no se renderiza (sin texto de
+  // reemplazo, ver instrucción explícita de no sustituir el contador
+  // eliminado por ningún otro indicador). Un día real con 0 presentes
+  // pero con faltas/retardos ya capturados sí debe mostrar 0%.
+  const hayRegistroHoy = totalPresentes + totalFaltas + totalRetardos > 0
+  const porcentajeAsistenciaHoy = alumnos.length > 0 ? Math.round((totalPresentes / alumnos.length) * 100) : 0
 
   const alumnosFiltrados = alumnos.filter(a => {
     if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
@@ -343,7 +354,7 @@ function ListaPageContent() {
       </header>
 
       {alumnos.length > 0 && (
-        <div className="grid grid-cols-4 gap-1.5 px-4 py-3 bg-white border-b border-gray-100">
+        <div className="grid grid-cols-3 gap-1.5 px-4 py-3 bg-white border-b border-gray-100">
           <div className="rounded-xl bg-green-50 border border-green-200 py-2 text-center">
             <p className="text-lg font-bold text-green-700">{totalPresentes}</p>
             <p className="text-[10px] font-medium text-green-600">🟢 Presentes</p>
@@ -356,10 +367,14 @@ function ListaPageContent() {
             <p className="text-lg font-bold text-orange-700">{totalRetardos}</p>
             <p className="text-[10px] font-medium text-orange-600">🟠 Retardos</p>
           </div>
-          <div className="rounded-xl bg-gray-50 border border-gray-200 py-2 text-center">
-            <p className="text-lg font-bold text-gray-500">{totalSinRegistrar}</p>
-            <p className="text-[10px] font-medium text-gray-400">⚪ Sin registrar</p>
-          </div>
+        </div>
+      )}
+
+      {alumnos.length > 0 && hayRegistroHoy && (
+        <div className="px-4 py-2 bg-white border-b border-gray-100 text-center">
+          <p className="text-xs font-semibold text-gray-600">
+            {`Asistencia de hoy: ${porcentajeAsistenciaHoy}%`}
+          </p>
         </div>
       )}
 
@@ -434,8 +449,6 @@ function ListaPageContent() {
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
                 <span>{a.sexo === 'M' ? 'Niña' : a.sexo === 'H' ? 'Niño' : '—'}</span>
                 <span>{calcularEdad(a.fecha_nacimiento)}</span>
-                <span>Asist: {r?.totalAsistencias ?? 0}</span>
-                <span>Faltas: {r?.totalFaltas ?? 0}</span>
                 <span>Incidencias: {r?.incidencias ?? 0}</span>
               </div>
             </div>

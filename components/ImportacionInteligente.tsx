@@ -1,7 +1,6 @@
 'use client'
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import MenuAdjuntos, { type OpcionAdjunto } from '@/components/ui/MenuAdjuntos'
 import { supabase } from '@/lib/supabaseClient'
 import {
   type AlumnoPreview,
@@ -28,19 +27,21 @@ type Props = {
 const CLASE_TRIGGER_DEFECTO =
   'px-4 py-2 bg-emerald-600 rounded-full text-xs font-semibold text-white hover:bg-emerald-700 whitespace-nowrap'
 
-// Mismas 3 opciones y mismo componente (components/ui/MenuAdjuntos.tsx)
-// que usa el Chat IA — "Archivos" usa extensiones de imagen explícitas
-// en vez de "image/*" para no disparar el selector nativo del sistema
-// operativo encima de este menú (ver la nota completa en
-// MenuAdjuntos.tsx).
-const OPCIONES_ADJUNTO_IMPORTACION: OpcionAdjunto[] = [
-  { id: 'foto', icono: '📷', titulo: 'Tomar foto', descripcion: 'Fotografía una lista o documento', accept: 'image/*', capture: 'environment' },
-  { id: 'fotos', icono: '🖼️', titulo: 'Fotos', descripcion: 'Selecciona una o varias imágenes', accept: 'image/*', multiple: true },
-  { id: 'archivos', icono: '📄', titulo: 'Archivos', descripcion: 'PDF, Word, Excel o imágenes', accept: '.pdf,.doc,.docx,.xlsx,.xls,.jpg,.jpeg,.png,.heic,.heif', multiple: true },
-]
+// Un solo <input type="file"> nativo, sin menú propio delante — mismo
+// patrón ya validado en producción para el botón de adjuntar del Chat
+// IA (ver components/Asistente/AsistentePanel.tsx, commit "eliminar la
+// doble capa de menús"). Un menú propio (con opciones "Tomar
+// foto"/"Fotos"/"Archivos") que abre por debajo un <input type="file">
+// sin `capture` seguía disparando el selector nativo del sistema
+// operativo (Fototeca/Tomar foto/Elegir archivo) ENCIMA del menú propio
+// — esa es la causa exacta del "doble menú" reportado. Al tocar
+// "Importar" se llama directamente a este único input: el sistema
+// operativo muestra su propio selector una sola vez, con esas mismas 3
+// opciones, sin ningún menú previo.
+const ACCEPT_IMPORTACION = 'image/*,.heic,.heif,.pdf,.doc,.docx,.xlsx,.xls'
 
-// Botón "Importar" (abre el menú único de adjuntos, ver MenuAdjuntos.tsx)
-// + análisis automático + revisión final, todo en un solo componente.
+// Botón "Importar" (dispara el único <input type="file"> nativo) +
+// análisis automático + revisión final, todo en un solo componente.
 export default function ImportacionInteligente({
   grupo,
   onImportacionCompleta,
@@ -54,8 +55,18 @@ export default function ImportacionInteligente({
   const [error, setError] = useState<string | null>(null)
   const [progreso, setProgreso] = useState({ completados: 0, total: 0 })
   const primeraFilaConAtencionRef = useRef<HTMLInputElement | null>(null)
+  const inputArchivoRef = useRef<HTMLInputElement | null>(null)
 
-  async function manejarArchivosSeleccionados(_opcionId: string, files: FileList) {
+  // autoAbrir: la pantalla de importación por foto de grupo dispara la
+  // selección de archivo en cuanto se monta, sin que el docente tenga
+  // que tocar primero el botón "Importar" (ver
+  // app/dashboard/grupos/[id]/importar/page.tsx).
+  useEffect(() => {
+    if (autoAbrir) inputArchivoRef.current?.click()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function manejarArchivosSeleccionados(files: FileList) {
     if (!files || files.length === 0) return
 
     setError(null)
@@ -164,15 +175,26 @@ export default function ImportacionInteligente({
 
   return (
     <>
-      <MenuAdjuntos
-        opciones={OPCIONES_ADJUNTO_IMPORTACION}
-        onArchivos={manejarArchivosSeleccionados}
-        triggerLabel={triggerLabel ?? '🟢 Importar'}
-        triggerAriaLabel="Importar lista de alumnos"
-        triggerClassName={triggerClassName ?? CLASE_TRIGGER_DEFECTO}
-        placement="bottom-end"
-        abiertoInicial={autoAbrir}
+      <input
+        ref={inputArchivoRef}
+        type="file"
+        accept={ACCEPT_IMPORTACION}
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = e.target.files
+          e.target.value = ''
+          if (files && files.length > 0) manejarArchivosSeleccionados(files)
+        }}
       />
+      <button
+        type="button"
+        onClick={() => inputArchivoRef.current?.click()}
+        aria-label="Importar lista de alumnos"
+        className={triggerClassName ?? CLASE_TRIGGER_DEFECTO}
+      >
+        {triggerLabel ?? '🟢 Importar'}
+      </button>
 
       {/* Superposición de análisis y revisión — sin cambios respecto a la versión anterior */}
       {estado !== 'inicial' && (
