@@ -790,12 +790,13 @@ export async function POST(req: NextRequest) {
         const descripcion = clasificacion.descripcion_incidencia
         const tipo = clasificacion.tipo_incidencia || 'Incidencia'
         const nombreReal = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+        const grupoId = sesion.grupo_activo_id
 
-        if (!alumnoId || !descripcion) {
-          console.log(`[NIVEL0] registrar_incidencia sin alumno_id (${alumnoId}) o descripcion (${descripcion}) resuelto — cae al flujo normal`)
+        if (!alumnoId || !descripcion || !grupoId) {
+          console.log(`[NIVEL0] registrar_incidencia sin alumno_id (${alumnoId}), descripcion (${descripcion}) o grupo_id (${grupoId}) resuelto — cae al flujo normal`)
         } else {
           try {
-            const resultado = await registrarIncidencia(supabaseUser, alumnoId, sesion.fecha_actual, tipo, descripcion)
+            const resultado = await registrarIncidencia(supabaseUser, alumnoId, grupoId, userId, sesion.fecha_actual, tipo, descripcion)
             if (!resultado.exito) {
               console.error(`[NIVEL0] registrar_incidencia — Supabase rechazó la escritura, alumno_id=${alumnoId}:`, resultado.error)
               return respuestaTexto('No fue posible registrar la incidencia. Intenta de nuevo en unos segundos.')

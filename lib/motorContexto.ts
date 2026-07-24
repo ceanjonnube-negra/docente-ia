@@ -540,16 +540,28 @@ export type ResultadoRegistrarIncidencia = { exito: boolean; error?: string; id?
 // nada existente, así que no necesita confirmación explícita del
 // docente antes de ejecutarse (ver Sprint LISTA DE ALUMNOS — Chat IA:
 // clasificación de riesgo Nivel 1/2/3).
+//
+// CORRECCIÓN (primer intento en producción falló con "new row violates
+// row-level security policy for table incidencias" — confirmado con el
+// log real de Vercel, no el mensaje genérico que veía el docente): la
+// política RLS de `incidencias` exige `docente_id = auth.uid()` en
+// using Y en with_check, y además `grupo_id`/`docente_id`/`fecha` son
+// NOT NULL sin default — el primer insert solo mandaba alumno_id/fecha/
+// tipo/descripcion, sin grupo_id ni docente_id, así que Supabase lo
+// rechazaba siempre, sin importar qué tan bien el Clasificador
+// resolviera al alumno. Ahora ambos se mandan explícitamente.
 export async function registrarIncidencia(
   sb: SupabaseClient,
   alumnoId: string,
+  grupoId: string,
+  docenteId: string,
   fecha: string,
   tipo: string,
   descripcion: string
 ): Promise<ResultadoRegistrarIncidencia> {
   const { data, error } = await sb
     .from('incidencias')
-    .insert({ alumno_id: alumnoId, fecha, tipo, descripcion })
+    .insert({ alumno_id: alumnoId, grupo_id: grupoId, docente_id: docenteId, fecha, tipo, descripcion })
     .select('id')
     .single();
 
