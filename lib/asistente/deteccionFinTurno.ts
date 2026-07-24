@@ -27,12 +27,26 @@ export const CONFIG_FIN_TURNO = {
   // perceptiblemente lenta. Validar en dispositivo real y ajustar si
   // hace falta — no hay forma de medir la duración real de una pausa
   // humana sin probarlo.
-  silencioFraseCompletaMs: 1200,
+  //
+  // AJUSTE (reporte: "se detiene sola con una pausa breve al hablar, y
+  // el texto parcial se envía sin confirmar" — el modo voz sigue siendo
+  // conversación continua sin toques por turno, decisión de diseño ya
+  // tomada; se mantiene el envío automático, solo se le da más margen a
+  // la pausa antes de cerrar): 1200 → 2000ms. Sigue sin sentirse lento
+  // (una pausa de "respiro" normal después de un punto cabe en 2s), pero
+  // dobla el margen frente al valor anterior. Validar en dispositivo
+  // real — no hay forma de medir la pausa humana real sin probarlo.
+  silencioFraseCompletaMs: 2000,
   // CASO B — no hay señal clara de que la idea haya terminado (sin
   // puntuación de cierre, o termina en una palabra que normalmente
   // introduce algo más). Se espera más antes de cerrar, dándole al
   // maestro tiempo real de continuar sin cortarlo.
-  silencioFraseIncompletaMs: 2500,
+  //
+  // AJUSTE (mismo reporte que arriba): 2500 → 3500ms — más paciencia
+  // todavía cuando no hay ninguna señal de que la idea ya terminó, que
+  // es exactamente el caso donde cortar a media frase es más molesto.
+  // Validar en dispositivo real.
+  silencioFraseIncompletaMs: 3500,
   // CASO D — respaldo final si nada de lo anterior aplicó (por ejemplo,
   // una transcripción vacía que después sí llega). No es el mecanismo
   // principal — ver SILENCIO_MAXIMO_MS en motorOpenAIRealtime.ts, que ya
