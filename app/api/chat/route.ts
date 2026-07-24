@@ -13,6 +13,7 @@ import {
   contextoGrupo,
   escribirAsistencia,
   registrarAsistenciaMasiva,
+  registrarIncidencia,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
@@ -661,6 +662,9 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('alumno')) {
           return respuestaTexto('¿De qué alumno se trata?')
         }
+        if (clasificacion.datos_faltantes.includes('descripcion_incidencia')) {
+          return respuestaTexto('¿Qué fue lo que pasó exactamente?')
+        }
       }
 
       // Separación estricta entre conversación libre y consultas de
@@ -769,6 +773,38 @@ export async function POST(req: NextRequest) {
           } catch (e) {
             console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}:`, e)
             return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
+          }
+        }
+      }
+
+      // Nivel 1: registrar_incidencia — un alumno específico, por
+      // nombre. Nivel 2 de riesgo (aditivo, reversible: un registro de
+      // más se corrige o se borra después sin perder ningún otro dato),
+      // por eso NO pide confirmación explícita antes de escribir —
+      // única diferencia real frente a marcar_asistencia_individual.
+      // tipo_incidencia/descripcion_incidencia ya vienen extraídos por
+      // el Clasificador de Nivel 0 (regla 19) directo de las palabras
+      // del maestro, nunca inventados aquí.
+      if (clasificacion.intencion_principal === 'registrar_incidencia' && clasificacion.nivel_ejecucion === 1) {
+        const alumnoId = clasificacion.entidades_resueltas.alumno_id
+        const descripcion = clasificacion.descripcion_incidencia
+        const tipo = clasificacion.tipo_incidencia || 'Incidencia'
+        const nombreReal = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+
+        if (!alumnoId || !descripcion) {
+          console.log(`[NIVEL0] registrar_incidencia sin alumno_id (${alumnoId}) o descripcion (${descripcion}) resuelto — cae al flujo normal`)
+        } else {
+          try {
+            const resultado = await registrarIncidencia(supabaseUser, alumnoId, sesion.fecha_actual, tipo, descripcion)
+            if (!resultado.exito) {
+              console.error(`[NIVEL0] registrar_incidencia — Supabase rechazó la escritura, alumno_id=${alumnoId}:`, resultado.error)
+              return respuestaTexto('No fue posible registrar la incidencia. Intenta de nuevo en unos segundos.')
+            }
+            console.log(`[NIVEL0] registrar_incidencia OK — alumno_id=${alumnoId} tipo=${tipo}`)
+            return respuestaTexto(`Listo. Registré la incidencia de ${nombreReal} (${tipo}).`)
+          } catch (e) {
+            console.error(`[NIVEL0] registrar_incidencia — excepción escribiendo, alumno_id=${alumnoId}:`, e)
+            return respuestaTexto('No fue posible registrar la incidencia. Intenta de nuevo en unos segundos.')
           }
         }
       }
@@ -1053,6 +1089,8 @@ CONSULTA DE INFORMACIÓN OFICIAL VIGENTE — este turno SÍ tiene acceso a la he
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos, y también su asesor pedagógico de confianza: el lugar donde consultan información oficial de la SEP, documentos internos de su escuela y los datos de su propio grupo, sin tener que buscar en otro lado.
 
 CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
+
+LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes). Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta, editar, ni ELIMINAR alumnos (ni uno solo ni el grupo completo), ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
 
 VOZ Y AUDIO — cuando el maestro te habla por micrófono, la aplicación transcribe su voz a texto (así te llega el mensaje) y, en cuanto respondes, la propia aplicación lee tu respuesta en voz alta con síntesis de voz del dispositivo — eso ocurre siempre, automáticamente, fuera de esta conversación; tú nunca lo gestionas ni lo mencionas. El asistente NUNCA debe afirmar que no tiene voz o audio: tienes PROHIBIDO decir o insinuar "solo me comunico por texto", "no tengo voz", "no puedo hablar", "no tengo audio", "no puedo reproducir sonido" ni ninguna frase equivalente — todas son falsas dentro de esta aplicación. La reproducción de voz es responsabilidad de la aplicación, no del modelo; tu única tarea es responder con el texto correcto.
 

@@ -527,9 +527,73 @@ export async function actualizarDatosAlumno(
   return data;
 }
 
+export type ResultadoRegistrarIncidencia = { exito: boolean; error?: string; id?: string };
+
+// Primera escritura real de `incidencias` en todo el proyecto — hasta
+// hoy solo existía lectura (incidenciasAlumno arriba, y la pestaña
+// Incidencias de la ficha individual). Mismo esquema real confirmado
+// por esa lectura: id, alumno_id, fecha, tipo, descripcion, seguimiento
+// (jsonb, para seguimiento posterior — se deja sin tocar aquí, es
+// aditivo por diseño: nunca se llena al registrar la incidencia inicial
+// desde el Chat IA). Nivel 2 (aditivo, reversible) — a diferencia de
+// escribirAsistencia/darDeBajaGrupoCompleto, no reemplaza ni sobrescribe
+// nada existente, así que no necesita confirmación explícita del
+// docente antes de ejecutarse (ver Sprint LISTA DE ALUMNOS — Chat IA:
+// clasificación de riesgo Nivel 1/2/3).
+export async function registrarIncidencia(
+  sb: SupabaseClient,
+  alumnoId: string,
+  fecha: string,
+  tipo: string,
+  descripcion: string
+): Promise<ResultadoRegistrarIncidencia> {
+  const { data, error } = await sb
+    .from('incidencias')
+    .insert({ alumno_id: alumnoId, fecha, tipo, descripcion })
+    .select('id')
+    .single();
+
+  if (error) return { exito: false, error: error.message };
+  return { exito: true, id: data?.id };
+}
+
 export async function eliminarAlumnoDefinitivamente(sb: SupabaseClient, alumnoId: string) {
   const { error } = await sb.rpc('eliminar_alumno_definitivamente', { p_alumno_id: alumnoId });
   if (error) throw error;
+}
+
+export type ResultadoBajaGrupo = { exito: boolean; error?: string; dadosDeBaja: number };
+
+// Baja lógica de TODO el grupo — "Eliminar lista completa" en
+// app/dashboard/lista/page.tsx. NUNCA toca `alumnos` ni ninguna tabla
+// de historial (asistencias, asistencia_registro, incidencias,
+// evaluaciones, evidencias, necesidades_apoyo, fichas_descriptivas,
+// perfil_alumno_notas) — solo marca la inscripción como 'baja', el
+// mismo valor que ya usa el constraint real de la base de datos
+// (inscripciones_estatus_check: 'activo' | 'baja' | 'cambio_escuela').
+// Como Lista, asistencia y contadores ya filtran por estatus='activo'
+// en todo el código, un alumno dado de baja desaparece de inmediato de
+// todo lo demás sin haber tocado esos archivos — mismo criterio que la
+// baja individual documentada en la auditoría de eliminación de
+// alumnos vía Chat IA. `ciclo_escolar_id` se filtra explícitamente
+// además de `grupo_id` — no depende únicamente de que cada grupo
+// pertenezca a un solo ciclo por construcción (ver `app/dashboard/
+// grupos/nuevo/page.tsx`).
+export async function darDeBajaGrupoCompleto(
+  sb: SupabaseClient,
+  grupoId: string,
+  cicloEscolarId: string
+): Promise<ResultadoBajaGrupo> {
+  const { data, error } = await sb
+    .from('inscripciones')
+    .update({ estatus: 'baja' })
+    .eq('grupo_id', grupoId)
+    .eq('ciclo_escolar_id', cicloEscolarId)
+    .eq('estatus', 'activo')
+    .select('id');
+
+  if (error) return { exito: false, error: error.message, dadosDeBaja: 0 };
+  return { exito: true, dadosDeBaja: data?.length ?? 0 };
 }
 
 export async function compartirGrupoConDocente(
