@@ -569,6 +569,56 @@ export async function registrarIncidencia(
   return { exito: true, id: data?.id };
 }
 
+export type ResultadoRegistroEscolar = { exito: boolean; error?: string; guardados: number }
+
+// Chat IA — Registro genérico desde imagen/mensaje (ver
+// chat_ia_mapeos): a diferencia de registrarIncidencia (una sola
+// tabla, campos fijos), esta función sirve calificaciones,
+// asistencia, incidencias, evidencias y nota_perfil desde el mismo
+// tool_use del modelo grande, validando contra el mapeo antes de
+// escribir — nunca inserta un tipo o columna que no esté en la tabla
+// de mapeos, sin importar lo que Claude haya mandado.
+export async function ejecutarRegistroEscolar(
+  sb: SupabaseClient,
+  docenteId: string,
+  grupoId: string,
+  tipo: string,
+  registros: Record<string, unknown>[]
+): Promise<ResultadoRegistroEscolar> {
+  const { data: mapeo, error: errorMapeo } = await sb
+    .from('chat_ia_mapeos')
+    .select('*')
+    .eq('tipo', tipo)
+    .eq('activo', true)
+    .single()
+
+  if (errorMapeo || !mapeo) {
+    return { exito: false, error: `Tipo '${tipo}' no reconocido en chat_ia_mapeos`, guardados: 0 }
+  }
+
+  const registrosCompletos = registros.map((r) => ({
+    ...r,
+    docente_id: r.docente_id || docenteId,
+    ...(mapeo.columnas.grupo_id ? { grupo_id: r.grupo_id || grupoId } : {}),
+    ...(tipo === 'nota_perfil' ? { generado_por: 'chat_ia', estado: 'activo' } : {}),
+  }))
+
+  const faltantes = registrosCompletos.filter((r) =>
+    (mapeo.columnas_requeridas as string[]).some((col) => (r as Record<string, unknown>)[col] === undefined || (r as Record<string, unknown>)[col] === null || (r as Record<string, unknown>)[col] === '')
+  )
+  if (faltantes.length > 0) {
+    return { exito: false, error: `${faltantes.length} registro(s) sin campos requeridos (${mapeo.columnas_requeridas.join(', ')})`, guardados: 0 }
+  }
+
+  const { error } = await sb.from(mapeo.tabla_destino).insert(registrosCompletos)
+  if (error) {
+    console.error(`[REGISTRO_ESCOLAR] Supabase rechazó la escritura en ${mapeo.tabla_destino}:`, error)
+    return { exito: false, error: error.message, guardados: 0 }
+  }
+
+  return { exito: true, guardados: registrosCompletos.length }
+}
+
 export async function eliminarAlumnoDefinitivamente(sb: SupabaseClient, alumnoId: string) {
   const { error } = await sb.rpc('eliminar_alumno_definitivamente', { p_alumno_id: alumnoId });
   if (error) throw error;

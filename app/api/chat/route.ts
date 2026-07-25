@@ -14,11 +14,13 @@ import {
   escribirAsistencia,
   registrarAsistenciaMasiva,
   registrarIncidencia,
+  ejecutarRegistroEscolar,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
+import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
@@ -614,6 +616,10 @@ export async function POST(req: NextRequest) {
   // DISPONIBLES más adelante (una sola fuente de verdad para "¿hay
   // imagen este turno?", nunca calculado dos veces).
   const tieneImagenAdjunta = Boolean(imagenBase64) || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0)
+  // Chat IA — Registro escolar: la tool solo se agrega cuando hay
+  // imagen adjunta este turno (ver lib/registroEscolarTool.ts). En
+  // texto plano ya lo cubre el Clasificador de Nivel 0.
+  const requiereRegistroEscolar = tieneImagenAdjunta
   const cantidadImagenesAdjuntas = Array.isArray(imagenesBase64) ? imagenesBase64.length : (imagenBase64 ? 1 : 0)
 
   // --- Clasificador de Nivel 0 — se llama SIEMPRE que hay sesión real,
@@ -1314,7 +1320,14 @@ Grado: [grado] | Grupo: [grupo]
     // en app/api/realtime-token/route.ts, así que estructuralmente
     // tampoco puede buscar nada por su cuenta (ver
     // MotorOpenAIRealtime — cero tools registradas ahí, sin cambios).
-    ...(requiereConsultaOficial ? { tools: [construirHerramientaConsultaOficial()] } : {}),
+    ...(requiereConsultaOficial || requiereRegistroEscolar
+      ? {
+          tools: [
+            ...(requiereConsultaOficial ? [construirHerramientaConsultaOficial()] : []),
+            ...(requiereRegistroEscolar ? [construirHerramientaRegistroEscolar()] : []),
+          ],
+        }
+      : {}),
     messages: [
       ...historialMensajes,
       {
@@ -1443,6 +1456,10 @@ Grado: [grado] | Grupo: [grupo]
 
   const encoder = new TextEncoder()
   let primerDeltaTelemetria = false
+  // Chat IA — Registro escolar: acumula el tool_use mientras Claude lo
+  // transmite en fragmentos (content_block_start -> delta -> stop) antes
+  // de ejecutar el guardado real (ver lib/motorContexto.ts).
+  let toolUseActivo: { id: string; name: string; inputJson: string } | null = null
   const readable = new ReadableStream({
     async start(controller) {
       try {
@@ -1454,6 +1471,52 @@ Grado: [grado] | Grupo: [grupo]
             }
             controller.enqueue(encoder.encode(event.delta.text))
           }
+
+          // Chat IA — Registro escolar: a diferencia de web_search
+          // (server-side, Anthropic la ejecuta sola), esta tool es
+          // client-side — nuestro backend tiene que ejecutar el guardado
+          // real en Supabase y devolver un tool_result antes de que la
+          // conversación pueda continuar. Se captura el JSON parcial
+          // mientras llega y se ejecuta solo cuando el bloque cierra.
+          if (event.type === 'content_block_start' && event.content_block.type === 'tool_use' && event.content_block.name === 'registrar_dato_escolar') {
+            toolUseActivo = { id: event.content_block.id, name: event.content_block.name, inputJson: '' }
+            console.log('[REGISTRO_ESCOLAR] Claude invocó registrar_dato_escolar para este turno')
+          }
+          if (toolUseActivo && event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {
+            toolUseActivo.inputJson += event.delta.partial_json
+          }
+          if (toolUseActivo && event.type === 'content_block_stop') {
+            try {
+              const input = JSON.parse(toolUseActivo.inputJson)
+              console.log(`[REGISTRO_ESCOLAR] tipo=${input.tipo} registros=${input.registros?.length}`)
+
+              const resultadoGuardado = await ejecutarRegistroEscolar(supabaseUser!, userId, sesion!.grupo_activo_id!, input.tipo, input.registros)
+
+              const streamContinuacion = await conReintento(
+                () => client.messages.create({
+                  ...parametrosClaude,
+                  messages: [
+                    ...parametrosClaude.messages,
+                    { role: 'assistant' as const, content: [{ type: 'tool_use' as const, id: toolUseActivo!.id, name: toolUseActivo!.name, input }] },
+                    { role: 'user' as const, content: [{ type: 'tool_result' as const, tool_use_id: toolUseActivo!.id, content: JSON.stringify(resultadoGuardado) }] },
+                  ],
+                  stream: true,
+                }, { timeout: TIMEOUT_ANTHROPIC_MS }),
+                'registro_escolar_continuacion'
+              )
+              for await (const eventoContinuacion of streamContinuacion) {
+                if (eventoContinuacion.type === 'content_block_delta' && eventoContinuacion.delta.type === 'text_delta') {
+                  controller.enqueue(encoder.encode(eventoContinuacion.delta.text))
+                }
+              }
+              toolUseActivo = null
+            } catch (e) {
+              console.error('[REGISTRO_ESCOLAR] error ejecutando o continuando:', e)
+              controller.enqueue(encoder.encode('\n\nHubo un problema guardando los datos. Intenta de nuevo en unos segundos.'))
+              toolUseActivo = null
+            }
+          }
+
           // "Consultar información oficial vigente de la SEP" — SEGURIDAD:
           // registro interno de qué pasó con la búsqueda (nunca expuesto
           // al maestro) — nunca el contenido recuperado de las páginas,
