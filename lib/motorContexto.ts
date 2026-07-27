@@ -569,7 +569,9 @@ export async function registrarIncidencia(
   return { exito: true, id: data?.id };
 }
 
-export type ResultadoRegistroEscolar = { exito: boolean; error?: string; guardados: number }
+import { resolverAlumnosPorNombre } from '@/lib/emparejarAlumno'
+
+export type ResultadoRegistroEscolar = { exito: boolean; error?: string; guardados: number; noResueltos?: string[] }
 
 // Chat IA — Registro genérico desde imagen/mensaje (ver
 // chat_ia_mapeos): a diferencia de registrarIncidencia (una sola
@@ -596,27 +598,47 @@ export async function ejecutarRegistroEscolar(
     return { exito: false, error: `Tipo '${tipo}' no reconocido en chat_ia_mapeos`, guardados: 0 }
   }
 
-  const registrosCompletos = registros.map((r) => ({
-    ...r,
-    docente_id: r.docente_id || docenteId,
-    ...(mapeo.columnas.grupo_id ? { grupo_id: r.grupo_id || grupoId } : {}),
-    ...(tipo === 'nota_perfil' ? { generado_por: 'chat_ia', estado: 'activo' } : {}),
-  }))
+  const nombresLeidos = registros.map((r) => String(r.nombre_alumno || '').trim())
+  const resueltos = await resolverAlumnosPorNombre(sb, grupoId, nombresLeidos)
+
+  const registrosCompletos: Record<string, unknown>[] = []
+  const noResueltos: string[] = []
+
+  registros.forEach((r, i) => {
+    const resuelto = resueltos[i]
+    if (!resuelto || !resuelto.alumnoId) {
+      noResueltos.push(nombresLeidos[i] || `registro #${i + 1}`)
+      return
+    }
+    const { nombre_alumno, ...resto } = r
+    registrosCompletos.push({
+      ...resto,
+      alumno_id: resuelto.alumnoId,
+      docente_id: (r.docente_id as string) || docenteId,
+      ...(mapeo.columnas.grupo_id ? { grupo_id: (r.grupo_id as string) || grupoId } : {}),
+      ...(tipo === 'nota_perfil' ? { generado_por: 'chat_ia', estado: 'activo' } : {}),
+    })
+  })
+
+  if (registrosCompletos.length === 0) {
+    return { exito: false, error: 'No se pudo identificar a ningún alumno de la lista real del grupo', guardados: 0, noResueltos }
+  }
 
   const faltantes = registrosCompletos.filter((r) =>
-    (mapeo.columnas_requeridas as string[]).some((col) => (r as Record<string, unknown>)[col] === undefined || (r as Record<string, unknown>)[col] === null || (r as Record<string, unknown>)[col] === '')
+    (mapeo.columnas_requeridas as string[]).some((col) => r[col] === undefined || r[col] === null || r[col] === '')
   )
   if (faltantes.length > 0) {
-    return { exito: false, error: `${faltantes.length} registro(s) sin campos requeridos (${mapeo.columnas_requeridas.join(', ')})`, guardados: 0 }
+    return { exito: false, error: `${faltantes.length} registro(s) sin campos requeridos (${mapeo.columnas_requeridas.join(', ')})`, guardados: 0, noResueltos }
   }
 
   const { error } = await sb.from(mapeo.tabla_destino).insert(registrosCompletos)
   if (error) {
     console.error(`[REGISTRO_ESCOLAR] Supabase rechazó la escritura en ${mapeo.tabla_destino}:`, error)
-    return { exito: false, error: error.message, guardados: 0 }
+    return { exito: false, error: error.message, guardados: 0, noResueltos }
   }
 
-  return { exito: true, guardados: registrosCompletos.length }
+  console.log(`[REGISTRO_ESCOLAR] Guardado OK — tabla=${mapeo.tabla_destino} guardados=${registrosCompletos.length} noResueltos=${noResueltos.length}`)
+  return { exito: true, guardados: registrosCompletos.length, noResueltos: noResueltos.length > 0 ? noResueltos : undefined }
 }
 
 export async function eliminarAlumnoDefinitivamente(sb: SupabaseClient, alumnoId: string) {

@@ -24,8 +24,17 @@ export function construirHerramientaRegistroEscolar() {
         },
         registros: {
           type: 'array' as const,
-          description: 'Uno o más registros a guardar, cada uno como pares campo-valor reales leídos de la imagen o el mensaje',
-          items: { type: 'object' as const },
+          description: 'Uno o más registros a guardar. Cada registro DEBE incluir "nombre_alumno" (el nombre tal como aparece escrito en la imagen o mensaje — nunca inventes un ID, el sistema resuelve el alumno real por nombre) más los demás campos según el tipo (ej. campo_formativo y calificacion para calificaciones; presente para asistencia).',
+          items: {
+            type: 'object' as const,
+            properties: {
+              nombre_alumno: {
+                type: 'string' as const,
+                description: 'Nombre del alumno tal como aparece escrito en la imagen o mensaje, sin modificarlo',
+              },
+            },
+            required: ['nombre_alumno'],
+          },
         },
         resumen: {
           type: 'string' as const,
