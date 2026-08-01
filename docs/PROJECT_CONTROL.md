@@ -199,7 +199,7 @@ Nota: la tabla breve "Estado de cada módulo conocido" que existía desde C-001 
 ---
 
 **Módulo:** Seguimiento
-**Estado:** BLOQUEADO (seguridad + migración sin verificar)
+**Estado:** BLOQUEADO (seguridad corregida en código por C-002, sin commit; migración sin verificar) — ver sección "C-002" más abajo, esta línea queda superada en ese punto, se conserva por trazabilidad
 **Funciones confirmadas:** creación de proyectos de seguimiento (`POST /api/proyectos-seguimiento`); sugerencia de indicadores con autenticación fuerte real vía `access_token` + `auth.getUser()` (`POST /api/proyectos-seguimiento/sugerir-indicadores`, línea 53); generación de hoja/PDF (`POST /api/proyectos-seguimiento/[id]/hoja`).
 **Funciones parciales:** pantallas `app/dashboard/lista/proyectos/page.tsx` y `.../nuevo/page.tsx` sin commitear.
 **Errores conocidos:** IDOR confirmado con línea exacta — ver "Hallazgo de seguridad crítico" abajo y ACC-013.
@@ -406,6 +406,8 @@ El tercer endpoint, `app/api/proyectos-seguimiento/sugerir-indicadores/route.ts`
 
 No se corrigió durante C-001 ni C-001B (fuera de su alcance autorizado) — queda como bloqueante explícito, definido en detalle en "Bloque actual y siguiente bloque" (C-002).
 
+**Actualización C-002 (ver sección propia más abajo):** corregido en código — ambos endpoints resuelven `docente_id` desde `auth.getUser()` vía `autenticarRequestApi()`, nunca del body. Sin commit todavía.
+
 ## Lista maestra de pendientes (ACC-001 a ACC-017)
 
 Los identificadores ACC-001, ACC-002, ACC-009 y ACC-012 existían como huecos en el registro heredado de C-001 (el archivo temporal de auditoría original, `/tmp/AUDITORIA_DOCENTE_IA.md`, ya no existe en este entorno). Se conservan los IDs, sin inventar contenido:
@@ -558,7 +560,7 @@ Los identificadores ACC-001, ACC-002, ACC-009 y ACC-012 existían como huecos en
 **Nombre:** Vulnerabilidad IDOR en endpoints de Seguimiento
 **Módulo:** Seguimiento / Seguridad
 **Tipo:** SEGURIDAD
-**Estado:** BLOQUEADO
+**Estado:** CORREGIDO EN CÓDIGO por C-002 (sin commit, sin prueba funcional real) — este campo queda superado, se conserva por trazabilidad
 **Prioridad:** P0
 **Riesgo:** crítico
 **Archivos:** `app/api/proyectos-seguimiento/route.ts` (línea 88), `app/api/proyectos-seguimiento/[id]/hoja/route.ts` (líneas 69 y 116)
@@ -685,9 +687,8 @@ Bloque: C-001B
 Permitido: Git, inventario, plan maestro, documentación, autorización de bloques.
 
 **TERMINAL 2 — IMPLEMENTACIÓN**
-Estado: INACTIVA
-Próximo bloque posible: C-002
-No debe abrirse hasta que C-001B quede cerrado.
+Estado: INACTIVA (se activó y cerró para ejecutar C-002)
+Próximo bloque posible: ninguno asignado — ver "Próximo bloque permitido"
 
 **TERMINAL 3 — PRUEBAS**
 Estado: INACTIVA
@@ -764,6 +765,31 @@ Apertura: ID del pendiente, objetivo, archivos previstos, funciones que no deben
 Cierre: archivos modificados, resumen de cambios, pruebas ejecutadas, resultados, funciones verificadas, riesgos restantes, estado final del pendiente, recomendación del siguiente paso.
 Regla dura: ninguna Terminal 2 se abre sin confirmar primero el ID del pendiente contra este archivo.
 
+## C-002 — Corrección de seguridad de los dos endpoints críticos de Seguimiento (ejecutado, sin commit)
+
+**Estado:** CORREGIDO EN CÓDIGO, sin probar en producción, sin commit ni push (pendiente de autorización del usuario).
+
+**Endpoints corregidos:**
+- `POST /api/proyectos-seguimiento` (`app/api/proyectos-seguimiento/route.ts`).
+- `POST /api/proyectos-seguimiento/[id]/hoja` (`app/api/proyectos-seguimiento/[id]/hoja/route.ts`).
+
+**Corrección aplicada (idéntica en ambos):** se reemplazó la confianza en `docente_id` del body por `autenticarRequestApi(access_token)` (`lib/server/authApi.ts`, mismo patrón ya usado en `app/api/importar-alumnos/route.ts`), que llama a `auth.getUser()` y regresa el usuario real de la sesión. `docente_id` ya no se lee del body en ningún punto — se resuelve siempre como `auth.user.id`. Se agregó verificación explícita de pertenencia (grupo/proyecto → docente autenticado) en vez de delegarla implícitamente al RLS, con códigos de estado diferenciados: 401 sin sesión, 400 con ID de grupo/proyecto con formato inválido (regex UUID), 404 si el recurso no existe, 403 si existe pero pertenece a otro docente. `lib/server/authApi.ts` no se modificó — se reutilizó tal cual.
+
+**Vulnerabilidades corregidas:** IDOR confirmado en C-001/C-001B — `docente_id` del body se usaba sin verificar para insertar el proyecto (route.ts:88 original) y para leer `perfiles_docentes` / construir la ruta de Storage del PDF (hoja/route.ts:69,116 original). Ambos puntos ahora usan el `docente_id` resuelto por sesión.
+
+**Archivos modificados:** `app/api/proyectos-seguimiento/route.ts`, `app/api/proyectos-seguimiento/[id]/hoja/route.ts`.
+**Archivos NO modificados:** `app/api/proyectos-seguimiento/sugerir-indicadores/route.ts` (ya tenía el patrón correcto, no se tocó), `lib/server/authApi.ts`, cualquier archivo de Lista, Chat IA, Asistencia, Incidencias, CURP, pantallas de Seguimiento, `migrations/`.
+
+**Pruebas ejecutadas:** `npx tsc --noEmit` (sin errores) y `npx eslint` sobre los 2 archivos modificados (sin errores). Verificación por lectura de código de los 4 casos de autorización (401/403/404/continúa) y del caso de ID inválido (400). No se ejecutó prueba funcional real contra Supabase (sin credenciales en este entorno, mismo bloqueo documentado para el módulo Base de datos).
+
+**Hallazgo nuevo, fuera de alcance de C-002 (no corregido):** el `GET /api/proyectos-seguimiento` (mismo archivo `route.ts`) tampoco verifica que el `grupo_id` recibido por query param pertenezca al docente autenticado — mismo patrón de IDOR, pero de solo lectura (expone nombre/estado/fechas de los proyectos de seguimiento de un grupo ajeno, no el perfil completo del docente ni el PDF). No estaba en el alcance documentado de C-002 y no se corrigió. Se propone un bloque nuevo (ID sugerido: ACC-018) para cerrarlo — requiere autorización explícita antes de tocar ese archivo de nuevo.
+
+**Riesgos restantes:**
+- La corrección no tiene efecto observable en producción hasta confirmar si `migrations/seguimiento_fase3.sql` ya se aplicó contra Supabase real (dependencia ya documentada, módulo Base de datos sigue NO VERIFICADO).
+- Sin credenciales reales de Supabase en este entorno, no fue posible probar en vivo los 4 casos de autorización (solo verificación por lectura de código).
+- ACC-018 (nuevo, ver arriba) queda abierto sin bloque asignado.
+- Depende de que las políticas RLS reales de `grupos` y `proyectos_seguimiento` no contradigan la verificación explícita agregada (si RLS ya restringe por `auth.uid()`, la verificación explícita es redundante pero no dañina; si RLS es más permisivo de lo esperado, la verificación explícita es ahora la única defensa real).
+
 ## Próximo bloque permitido
 
-Ninguno todavía. Requiere autorización explícita del usuario para C-002 (corrección de seguridad de Seguimiento) o para cualquiera de los bloques independientes de Grupo B o Grupo C.
+Ninguno todavía. C-002 queda implementado en código pero sin commit. Requiere autorización explícita del usuario para: (a) commitear C-002, (b) abrir ACC-018 (IDOR de solo lectura en el GET), o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.
