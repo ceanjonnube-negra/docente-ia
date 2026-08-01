@@ -58,8 +58,8 @@ export const FRASES_FINALIZAR_DOCUMENTO = [
   'pasalo', 'pasamelo', 'conviertelo', 'abrelo', 'compartelo', 'comparte', 'compartir',
   'bajalo', 'entregalo', 'entrega', 'entregar', 'documeto',
   // Nombra el resultado sin verbo ("solo el archivo", "mándame el
-  // documento")
-  'archivo', 'documento',
+  // documento", "dame el link/liga de descarga")
+  'archivo', 'documento', 'descarga', 'link', 'liga de descarga',
   // Pide que no se repita/explique de nuevo el documento activo — no es
   // una instrucción de EDICIÓN real (cambiar contenido), sino la misma
   // intención de ENTREGA que "descárgalo": dar el resultado sin volver
