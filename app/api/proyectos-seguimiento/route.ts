@@ -1,35 +1,56 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { CAMPOS_FORMATIVOS } from '@/lib/seguimiento/tipos'
-import { autenticarRequestApi } from '@/lib/server/authApi'
+import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
 
 export const runtime = 'nodejs'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function getClient(accessToken: string): SupabaseClient {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { global: { headers: { Authorization: `Bearer ${accessToken}` } } }
-  )
-}
-
+// GET solo acepta grupo_id (ver ACC-018 / C-003): un docente nunca puede
+// listar proyectos sin especificar un grupo, y ese grupo se verifica
+// explícitamente contra el docente real de la sesión antes de consultar
+// proyectos_seguimiento — mismo patrón ya usado en el POST de este mismo
+// archivo (C-002).
 export async function GET(req: NextRequest) {
-  const accessToken = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!accessToken) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
+  const accessToken = extraerBearerToken(req)
+  const auth = await autenticarRequestApi(accessToken)
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
+  }
+  const docenteId = auth.user.id
 
   const grupoId = req.nextUrl.searchParams.get('grupo_id')
-  if (!grupoId) return NextResponse.json({ error: 'Falta grupo_id' }, { status: 400 })
+  if (!grupoId) {
+    return NextResponse.json({ error: 'Falta grupo_id' }, { status: 400 })
+  }
+  if (!REGEX_UUID.test(grupoId)) {
+    return NextResponse.json({ error: 'Identificador de grupo inválido.' }, { status: 400 })
+  }
 
-  const supabase = getClient(accessToken)
+  const supabase = auth.supabase
+
+  const { data: grupo, error: errorGrupo } = await supabase
+    .from('grupos')
+    .select('id, docente_id')
+    .eq('id', grupoId)
+    .maybeSingle()
+  if (errorGrupo) {
+    return NextResponse.json({ error: 'No se pudo verificar el grupo.' }, { status: 500 })
+  }
+  if (!grupo) {
+    return NextResponse.json({ error: 'Grupo no encontrado.' }, { status: 404 })
+  }
+  if (grupo.docente_id !== docenteId) {
+    return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
+  }
+
   const { data, error } = await supabase
     .from('proyectos_seguimiento')
     .select('id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, estado, hoja_id, creado_en')
     .eq('grupo_id', grupoId)
     .order('creado_en', { ascending: false })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) return NextResponse.json({ error: 'No se pudieron leer los proyectos.' }, { status: 500 })
   return NextResponse.json({ proyectos: data })
 }
 

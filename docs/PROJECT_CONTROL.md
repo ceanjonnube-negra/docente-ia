@@ -782,14 +782,34 @@ Regla dura: ninguna Terminal 2 se abre sin confirmar primero el ID del pendiente
 
 **Pruebas ejecutadas:** `npx tsc --noEmit` (sin errores) y `npx eslint` sobre los 2 archivos modificados (sin errores). Verificación por lectura de código de los 4 casos de autorización (401/403/404/continúa) y del caso de ID inválido (400). No se ejecutó prueba funcional real contra Supabase (sin credenciales en este entorno, mismo bloqueo documentado para el módulo Base de datos).
 
-**Hallazgo nuevo, fuera de alcance de C-002 (no corregido):** el `GET /api/proyectos-seguimiento` (mismo archivo `route.ts`) tampoco verifica que el `grupo_id` recibido por query param pertenezca al docente autenticado — mismo patrón de IDOR, pero de solo lectura (expone nombre/estado/fechas de los proyectos de seguimiento de un grupo ajeno, no el perfil completo del docente ni el PDF). No estaba en el alcance documentado de C-002 y no se corrigió. Se propone un bloque nuevo (ID sugerido: ACC-018) para cerrarlo — requiere autorización explícita antes de tocar ese archivo de nuevo.
+**Hallazgo nuevo, fuera de alcance de C-002 (no corregido en C-002):** el `GET /api/proyectos-seguimiento` (mismo archivo `route.ts`) tampoco verificaba que el `grupo_id` recibido por query param perteneciera al docente autenticado — mismo patrón de IDOR, pero de solo lectura. Registrado como ACC-018. **Corregido en C-002 — ver sección "C-003" más abajo.**
 
 **Riesgos restantes:**
 - La corrección no tiene efecto observable en producción hasta confirmar si `migrations/seguimiento_fase3.sql` ya se aplicó contra Supabase real (dependencia ya documentada, módulo Base de datos sigue NO VERIFICADO).
 - Sin credenciales reales de Supabase en este entorno, no fue posible probar en vivo los 4 casos de autorización (solo verificación por lectura de código).
-- ACC-018 (nuevo, ver arriba) queda abierto sin bloque asignado.
 - Depende de que las políticas RLS reales de `grupos` y `proyectos_seguimiento` no contradigan la verificación explícita agregada (si RLS ya restringe por `auth.uid()`, la verificación explícita es redundante pero no dañina; si RLS es más permisivo de lo esperado, la verificación explícita es ahora la única defensa real).
+
+## C-003 — Corrección de ACC-018 en GET /api/proyectos-seguimiento (ejecutado, sin commit)
+
+**ID del pendiente cerrado:** ACC-018.
+**Estado:** CORREGIDO EN CÓDIGO, sin probar en producción, sin commit ni push (pendiente de autorización del usuario).
+
+**Vulnerabilidad:** el `GET` obtenía `grupo_id` de un query param y consultaba `proyectos_seguimiento` filtrando solo por ese valor, sin verificar sesión con `auth.getUser()` ni pertenencia del grupo al docente autenticado — IDOR de lectura: cualquier docente con el UUID de un grupo ajeno podía listar sus proyectos de seguimiento (nombre, campos formativos, fechas, estado).
+
+**Cambio realizado:** el `GET` ahora resuelve el docente real vía `autenticarRequestApi(extraerBearerToken(req))` (mismo patrón de `lib/server/authApi.ts` ya usado en el `POST` de este archivo y en C-002), exige `grupo_id` con formato UUID válido, y verifica explícitamente `grupo.docente_id === docenteId` contra la tabla `grupos` antes de consultar `proyectos_seguimiento`. Devuelve 401 sin sesión, 400 sin `grupo_id` o con formato inválido, 404 si el grupo no existe, 403 si existe pero es de otro docente. El `POST` del mismo archivo no se tocó.
+
+**Archivos modificados:** `app/api/proyectos-seguimiento/route.ts` (únicamente el handler `GET`).
+**Archivos NO modificados:** `app/api/proyectos-seguimiento/[id]/hoja/route.ts`, `app/api/proyectos-seguimiento/sugerir-indicadores/route.ts`, `lib/server/authApi.ts`, pantallas de Seguimiento, Lista, Chat IA, CURP, `migrations/`.
+
+**Pruebas ejecutadas:** `npx tsc --noEmit` (sin errores), `npx eslint app/api/proyectos-seguimiento/route.ts` (sin errores). Verificación por lectura de código de los 5 casos requeridos (401 sin sesión; grupo propio → solo proyectos autorizados; grupo ajeno → 403/404; sin `grupo_id` → nunca hay fuga de datos ajenos, ya que la ruta corta con 400 antes de consultar; `grupo_id` con formato inválido → 400) y confirmación de que el `POST` quedó exactamente igual.
+
+**ACC-018:** CERRADO.
+
+**Riesgos restantes:**
+- Sin credenciales reales de Supabase en este entorno, no fue posible probar en vivo (mismo bloqueo documentado desde C-001).
+- Mismo riesgo de dependencia con RLS real ya documentado en C-002.
+- Sin commit ni push todavía — el archivo queda como cambio local sin consolidar dentro de Grupo A (Seguimiento).
 
 ## Próximo bloque permitido
 
-Ninguno todavía. C-002 queda implementado en código pero sin commit. Requiere autorización explícita del usuario para: (a) commitear C-002, (b) abrir ACC-018 (IDOR de solo lectura en el GET), o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.
+Ninguno todavía. C-002 y C-003 quedan implementados en código pero sin commit. Requiere autorización explícita del usuario para: (a) commitear C-002/C-003, (b) revisar el estado de la migración `seguimiento_fase3.sql`, o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.

@@ -59,3 +59,20 @@ Resultado:
 Pruebas: `tsc --noEmit` y `eslint` dirigido pasaron sin errores; sin prueba funcional en vivo (sin credenciales reales de Supabase en este entorno, mismo bloqueo ya documentado para el módulo Base de datos).
 Incidencias: ninguna durante la ejecución del bloque.
 Sin modificaciones fuera de alcance: confirmado — no se tocaron pantallas, no se tocó generación de PDF, no se tocó Lista/Planeación/Voz/Incidencias/CURP, no se ejecutó ninguna migración, no se modificó `lib/server/authApi.ts`, no se tocó `sugerir-indicadores/route.ts`, no se hizo commit ni push.
+
+---
+
+## 2026-08-01 — C-003
+
+ID: C-003
+Acción realizada: Corrección de ACC-018 — IDOR de lectura en `GET /api/proyectos-seguimiento` (documentado como hallazgo nuevo al cierre de C-002, fuera de su alcance en ese momento). El `GET` consultaba `proyectos_seguimiento` filtrando solo por `grupo_id` de query param, sin sesión verificada ni comprobación de que el grupo perteneciera al docente autenticado.
+Archivo modificado: `app/api/proyectos-seguimiento/route.ts` (únicamente el handler `GET`; se reemplazó la lectura manual del header Authorization y el cliente Supabase sin `getUser()` por `autenticarRequestApi(extraerBearerToken(req))`, mismo patrón de `lib/server/authApi.ts` ya usado en el `POST` de este archivo desde C-002; se agregó validación de formato UUID de `grupo_id` y verificación explícita `grupo.docente_id === docenteId` contra la tabla `grupos` antes de consultar `proyectos_seguimiento`; se eliminó la función `getClient()` y el import de `createClient`/`SupabaseClient`, ya sin uso). El handler `POST` del mismo archivo no se modificó.
+Archivos NO modificados: `app/api/proyectos-seguimiento/[id]/hoja/route.ts`, `app/api/proyectos-seguimiento/sugerir-indicadores/route.ts`, `lib/server/authApi.ts`, cualquier pantalla de Seguimiento/Lista/Chat IA/CURP, `migrations/`.
+Verificaciones ejecutadas: `npx tsc --noEmit` (sin errores), `npx eslint app/api/proyectos-seguimiento/route.ts` (sin errores), lectura de código confirmando los 5 casos exigidos (401 sin sesión; grupo propio → solo proyectos de ese grupo; grupo ajeno → 403 si existe, 404 si no existe; sin `grupo_id` → 400 antes de tocar la base, ninguna fuga posible; `grupo_id` con formato inválido → 400), `git status` confirmando que ningún otro archivo cambió, confirmación de que el `POST` quedó byte-idéntico a como salió de C-002.
+Resultado:
+- `GET /api/proyectos-seguimiento` ya no permite listar proyectos de un grupo ajeno — el docente se resuelve exclusivamente desde `auth.getUser()`, y el grupo se verifica explícitamente contra ese docente antes de cualquier lectura de `proyectos_seguimiento`.
+- ACC-018 queda CERRADO.
+- Sin push, sin commit — el archivo queda como cambio local sin consolidar dentro de Grupo A (Seguimiento), igual que el resto de C-002.
+Pruebas: `tsc --noEmit` y `eslint` dirigido pasaron sin errores; sin prueba funcional en vivo (sin credenciales reales de Supabase en este entorno, mismo bloqueo ya documentado).
+Incidencias: ninguna durante la ejecución del bloque.
+Sin modificaciones fuera de alcance: confirmado — no se tocó el `POST` de este archivo, no se tocó `[id]/hoja/route.ts`, no se tocaron pantallas, no se ejecutó ninguna migración, no se hizo commit ni push, no se abrió C-004.
