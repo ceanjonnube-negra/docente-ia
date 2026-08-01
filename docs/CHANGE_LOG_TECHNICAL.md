@@ -76,3 +76,21 @@ Resultado:
 Pruebas: `tsc --noEmit` y `eslint` dirigido pasaron sin errores; sin prueba funcional en vivo (sin credenciales reales de Supabase en este entorno, mismo bloqueo ya documentado).
 Incidencias: ninguna durante la ejecución del bloque.
 Sin modificaciones fuera de alcance: confirmado — no se tocó el `POST` de este archivo, no se tocó `[id]/hoja/route.ts`, no se tocaron pantallas, no se ejecutó ninguna migración, no se hizo commit ni push, no se abrió C-004.
+
+---
+
+## 2026-08-01 — C-001C
+
+ID: C-001C
+Acción realizada: Registro de verificación de la migración de Seguimiento. El usuario reportó haber verificado directamente en Supabase, mediante una consulta de solo lectura a `information_schema.tables`, que las 4 tablas de `migrations/seguimiento_fase3.sql` ya existen en la base de datos real. Este bloque (Terminal 1, control/documentación) registra esa confirmación en `docs/PROJECT_CONTROL.md` y aquí, marca la migración como CONFIRMADA/APLICADA, deja constancia de que no debe volver a ejecutarse, y define (sin ejecutar) el bloque C-004 recomendado para consolidar y probar funcionalmente el módulo Seguimiento.
+Archivos modificados: docs/PROJECT_CONTROL.md (actualizado: módulo Seguimiento, módulo Base de datos, prioridad P0/P1, riesgos restantes de C-002/C-003, matriz de acciones que no deben repetirse, nueva sección "Estado de la migración seguimiento_fase3.sql", nueva sección "Siguiente bloque propuesto — C-004", "Próximo bloque permitido"), docs/CHANGE_LOG_TECHNICAL.md (esta entrada).
+Verificaciones ejecutadas por esta terminal antes de escribir: `git fetch` + `git status` (sin cambios remotos nuevos), `git log --oneline -5` y `git show --stat` sobre los commits `b201ba4` y `ed901b9` para confirmar que corresponden a C-002 y C-003 ya ejecutados y documentados por otra terminal (autor: el mismo usuario del repositorio, sin push, sin commit de C-001C todavía), lectura completa de las secciones "C-002" y "C-003" ya presentes en docs/PROJECT_CONTROL.md, lectura del diff completo de ambos commits sobre los endpoints de Seguimiento para confirmar que el patrón aplicado (`autenticarRequestApi`, verificación explícita de pertenencia, códigos 400/401/403/404) coincide con lo definido en el bloque C-002 original.
+Resultado:
+- Migración `migrations/seguimiento_fase3.sql`: CONFIRMADA/APLICADA. Tablas verificadas: `proyectos_seguimiento`, `hojas_evaluacion`, `seguimiento_resultados`, `seguimiento_versiones`. Verificación hecha por el usuario directamente en Supabase (fuera de este entorno de desarrollo, que sigue sin credenciales reales configuradas) — esta terminal no ejecutó la consulta, solo registra el resultado reportado.
+- Regla dura registrada: `migrations/seguimiento_fase3.sql` NO debe volver a ejecutarse bajo ninguna circunstancia — ya está aplicada.
+- Se detectó (no ejecutado por esta terminal) que otra terminal ya había completado y documentado C-002 (corrección de IDOR en POST de los 2 endpoints de Seguimiento) y C-003 (corrección de IDOR de lectura en GET, cerrando ACC-018 nuevo), ambos con `tsc --noEmit` y `eslint` limpios, ambos sin commit ni push. Esta terminal no modificó ni repitió ese trabajo, solo lo referenció para mantener P0/P1 y los riesgos restantes consistentes con la realidad del código.
+- P0 actualizado: ambos puntos que eran P0 (IDOR de Seguimiento, estado de la migración) quedan marcados como resueltos en código/confirmados — el IDOR sigue pendiente de commit y prueba funcional real, ya no de corrección.
+- Bloque C-004 definido (consolidación y prueba funcional de Seguimiento: commitear C-002/C-003, prueba funcional real de los 3 endpoints, separar ACC-017, decidir etiqueta Evaluación/Seguimiento, verificar RLS real) — NO ejecutado.
+Pruebas: ninguna prueba funcional ni de código ejecutada por esta terminal — solo lectura de commits/diffs ya existentes y actualización de documentación.
+Incidencias: ninguna.
+Sin modificaciones funcionales: confirmado — no se tocó ningún endpoint, no se ejecutó la migración ni ninguna otra, no se abrió C-004, no se hizo commit todavía (pendiente de autorización explícita del usuario).

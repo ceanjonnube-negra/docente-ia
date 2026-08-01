@@ -199,17 +199,17 @@ Nota: la tabla breve "Estado de cada módulo conocido" que existía desde C-001 
 ---
 
 **Módulo:** Seguimiento
-**Estado:** BLOQUEADO (seguridad corregida en código por C-002, sin commit; migración sin verificar) — ver sección "C-002" más abajo, esta línea queda superada en ese punto, se conserva por trazabilidad
-**Funciones confirmadas:** creación de proyectos de seguimiento (`POST /api/proyectos-seguimiento`); sugerencia de indicadores con autenticación fuerte real vía `access_token` + `auth.getUser()` (`POST /api/proyectos-seguimiento/sugerir-indicadores`, línea 53); generación de hoja/PDF (`POST /api/proyectos-seguimiento/[id]/hoja`).
+**Estado:** EN DESARROLLO (seguridad corregida en código por C-002/C-003, sin commit; migración CONFIRMADA/APLICADA — ver "Estado de la migración seguimiento_fase3.sql" abajo) — esta línea queda superada por las secciones "C-002"/"C-003" y por el registro de migración, se conserva por trazabilidad
+**Funciones confirmadas:** creación de proyectos de seguimiento (`POST /api/proyectos-seguimiento`); sugerencia de indicadores con autenticación fuerte real vía `access_token` + `auth.getUser()` (`POST /api/proyectos-seguimiento/sugerir-indicadores`, línea 53); generación de hoja/PDF (`POST /api/proyectos-seguimiento/[id]/hoja`); las 4 tablas de soporte (`proyectos_seguimiento`, `hojas_evaluacion`, `seguimiento_resultados`, `seguimiento_versiones`) confirmadas existentes en Supabase real (verificación de solo lectura contra `information_schema.tables`, registrada 2026-08-01).
 **Funciones parciales:** pantallas `app/dashboard/lista/proyectos/page.tsx` y `.../nuevo/page.tsx` sin commitear.
-**Errores conocidos:** IDOR confirmado con línea exacta — ver "Hallazgo de seguridad crítico" abajo y ACC-013.
+**Errores conocidos:** IDOR confirmado con línea exacta en C-001/C-001B — corregido en código por C-002 (POST) y C-003 (GET), ver esas secciones abajo; sin commit ni push todavía.
 **Archivos principales:** `app/api/proyectos-seguimiento/route.ts`, `app/api/proyectos-seguimiento/sugerir-indicadores/route.ts`, `app/api/proyectos-seguimiento/[id]/hoja/route.ts`, `lib/seguimiento/tipos.ts`, `migrations/seguimiento_fase3.sql`, `app/dashboard/lista/proyectos/*`.
-**Datos o tablas utilizadas:** tabla(s) definidas en `migrations/seguimiento_fase3.sql` (no verificable si ya existen en Supabase real), `perfiles_docentes`.
-**Pruebas realizadas:** ninguna prueba funcional; solo revisión de seguridad de código (C-001 y C-001B).
-**Pruebas pendientes:** confirmar si la migración ya se aplicó; pruebas de autorización cruzada tras la corrección (C-002).
-**Riesgo:** crítico (P0).
-**Dependencias:** Lista de alumnos (diff mezclado), Evaluación (decisión de etiqueta), Base de datos (estado de la migración).
-**Próximo pendiente autorizado:** ninguno todavía — C-002 queda definido pero no ejecutado.
+**Datos o tablas utilizadas:** `proyectos_seguimiento`, `hojas_evaluacion`, `seguimiento_resultados`, `seguimiento_versiones` (las 4 confirmadas existentes en Supabase real), `perfiles_docentes`, `grupos`.
+**Pruebas realizadas:** revisión de seguridad de código (C-001, C-001B, C-002, C-003) más `tsc --noEmit`/`eslint` sobre los endpoints corregidos; verificación de solo lectura de las 4 tablas contra Supabase real. Ninguna prueba funcional en vivo todavía (crear un proyecto real, generar una hoja real).
+**Pruebas pendientes:** prueba funcional real contra Supabase (crear proyecto, generar hoja, listar) ahora que la migración está confirmada; separar el diff mezclado de Lista (ACC-017); decidir la etiqueta Evaluación/Seguimiento.
+**Riesgo:** medio — bajó de crítico porque el IDOR ya está corregido en código (C-002/C-003), pero sigue sin commit, sin push y sin prueba funcional real.
+**Dependencias:** Lista de alumnos (diff mezclado), Evaluación (decisión de etiqueta).
+**Próximo pendiente autorizado:** ninguno todavía — ver "Siguiente bloque propuesto" (C-004) al final de este documento.
 
 ---
 
@@ -349,17 +349,17 @@ Nota: la tabla breve "Estado de cada módulo conocido" que existía desde C-001 
 ---
 
 **Módulo:** Base de datos
-**Estado:** NO VERIFICADO
-**Funciones confirmadas:** ninguna verificable sin credenciales reales de Supabase (`NEXT_PUBLIC_SUPABASE_ANON_KEY` y `SUPABASE_SERVICE_ROLE_KEY` vacíos en este entorno, confirmado en C-001).
-**Funciones parciales:** una sola migración existe en el repositorio: `migrations/seguimiento_fase3.sql`; no se sabe si ya se aplicó contra la base real.
-**Errores conocidos:** estado de la migración desconocido (bloqueante para cerrar Seguimiento).
-**Archivos principales:** `migrations/seguimiento_fase3.sql`.
-**Datos o tablas utilizadas:** las definidas en esa migración (no verificadas contra el estado real).
-**Pruebas realizadas:** ninguna (sin credenciales).
-**Pruebas pendientes:** verificación del estado real de Supabase antes de cualquier migración futura.
-**Riesgo:** incierto — tratar como potencialmente crítico hasta verificar (contribuye al P0 de Seguimiento).
+**Estado:** FUNCIONAL CON VALIDACIÓN PENDIENTE (migración de Seguimiento CONFIRMADA/APLICADA, 2026-08-01)
+**Funciones confirmadas:** `migrations/seguimiento_fase3.sql` ya está aplicada contra la base real — verificado el 2026-08-01 mediante consulta de solo lectura a `information_schema.tables`, confirmando la existencia de las 4 tablas: `proyectos_seguimiento`, `hojas_evaluacion`, `seguimiento_resultados`, `seguimiento_versiones`. Ver "Estado de la migración seguimiento_fase3.sql" más abajo para el registro completo.
+**Funciones parciales:** solo se confirmó la existencia de las 4 tablas (estructura a nivel `information_schema.tables`); no se verificaron columnas, políticas RLS reales, ni datos de prueba dentro de ellas.
+**Errores conocidos:** ninguno — el bloqueo anterior (estado de la migración desconocido) queda resuelto.
+**Archivos principales:** `migrations/seguimiento_fase3.sql` (ya aplicada — NO debe volver a ejecutarse).
+**Datos o tablas utilizadas:** `proyectos_seguimiento`, `hojas_evaluacion`, `seguimiento_resultados`, `seguimiento_versiones` (las 4 confirmadas existentes).
+**Pruebas realizadas:** consulta de solo lectura a `information_schema.tables` contra Supabase real, confirmando las 4 tablas.
+**Pruebas pendientes:** verificar columnas/constraints reales contra lo esperado por `lib/seguimiento/tipos.ts`; confirmar las políticas RLS reales de las 4 tablas (relevante para el patrón de autorización delegada a RLS usado en otros endpoints, ver módulo Seguridad); prueba funcional real de escritura/lectura desde la aplicación.
+**Riesgo:** bajo en cuanto a la existencia de la migración (ya no es un bloqueo); pendiente de verificar RLS antes de considerar el módulo completamente cerrado.
 **Dependencias:** Seguimiento.
-**Próximo pendiente autorizado:** ninguno — Terminal 4 permanece en solo lectura hasta instrucción explícita.
+**Próximo pendiente autorizado:** ninguno — Terminal 4 permanece en solo lectura hasta instrucción explícita; no volver a ejecutar `migrations/seguimiento_fase3.sql` bajo ninguna circunstancia, ya está aplicada.
 
 ---
 
@@ -643,13 +643,15 @@ Los identificadores ACC-001, ACC-002, ACC-009 y ACC-012 existían como huecos en
 
 ## Prioridad real del trabajo
 
-**P0 — Crítico:**
-- ACC-013 — IDOR en `POST /api/proyectos-seguimiento` y `POST /api/proyectos-seguimiento/[id]/hoja`.
-- Base de datos (módulo 22) — estado incierto de `migrations/seguimiento_fase3.sql` contra Supabase real; forma parte del mismo bloqueo que ACC-013.
+**P0 — Crítico (histórico, ya resuelto en código):**
+- ACC-013 — IDOR en `POST /api/proyectos-seguimiento` y `POST /api/proyectos-seguimiento/[id]/hoja`. CORREGIDO EN CÓDIGO por C-002 (2026-08-01), sin commit ni push todavía — ver sección "C-002".
+- ~~Base de datos (módulo 22) — estado incierto de `migrations/seguimiento_fase3.sql`~~ — RESUELTO 2026-08-01: migración CONFIRMADA/APLICADA (ver "Estado de la migración seguimiento_fase3.sql"). Ya no es P0.
 
 **P1 — Alto:**
 - ACC-014 — corrección de documentación que afecta directamente la ejecución correcta de C-002 (ya cerrado en C-001B).
 - ACC-015 — posible hueco de autorización sin confirmar en 2 endpoints adicionales (`periodos-evaluacion`, `ocr-foto`).
+- ACC-018 — IDOR de lectura en `GET /api/proyectos-seguimiento`. CORREGIDO EN CÓDIGO por C-003 (2026-08-01), sin commit ni push — ver sección "C-003".
+- Commitear y probar funcionalmente C-002/C-003 contra Supabase real, ahora que la migración está confirmada — ver "Siguiente bloque propuesto (C-004)".
 
 **P2 — Medio:**
 - ACC-005, ACC-006, ACC-007, ACC-008 (validaciones pendientes en dispositivo/producción real).
@@ -753,7 +755,7 @@ No debe mezclarse con: ningún otro grupo — commit exclusivo de estos 2 archiv
 ## Matriz de acciones que no deben repetirse
 
 - Volver a implementar "alta de alumnos desde foto" sin leer el plan ya escrito (ACC-010).
-- Repetir o reescribir `migrations/seguimiento_fase3.sql` sin confirmar antes si ya se aplicó.
+- Volver a ejecutar `migrations/seguimiento_fase3.sql` — CONFIRMADA/APLICADA desde el 2026-08-01, ver "Estado de la migración seguimiento_fase3.sql"; cualquier cambio de esquema futuro debe ser una migración nueva y separada.
 - Instalar una tercera dependencia de autenticación/SSR de Supabase sin antes determinar cuál de `@supabase/auth-helpers-nextjs` o `@supabase/ssr` está realmente en uso.
 - Tocar `escribirAsistencia()` o la tabla legada `asistencias` sin leer primero los comentarios ya existentes en `lib/motorContexto.ts` (documentan una causa raíz ya corregida).
 - Citar `app/api/importar-datos-alumnos/route.ts` como ejemplo de endpoint ya corregido — está descontinuado, no corregido (ver ACC-014).
@@ -785,9 +787,9 @@ Regla dura: ninguna Terminal 2 se abre sin confirmar primero el ID del pendiente
 **Hallazgo nuevo, fuera de alcance de C-002 (no corregido en C-002):** el `GET /api/proyectos-seguimiento` (mismo archivo `route.ts`) tampoco verificaba que el `grupo_id` recibido por query param perteneciera al docente autenticado — mismo patrón de IDOR, pero de solo lectura. Registrado como ACC-018. **Corregido en C-002 — ver sección "C-003" más abajo.**
 
 **Riesgos restantes:**
-- La corrección no tiene efecto observable en producción hasta confirmar si `migrations/seguimiento_fase3.sql` ya se aplicó contra Supabase real (dependencia ya documentada, módulo Base de datos sigue NO VERIFICADO).
-- Sin credenciales reales de Supabase en este entorno, no fue posible probar en vivo los 4 casos de autorización (solo verificación por lectura de código).
-- Depende de que las políticas RLS reales de `grupos` y `proyectos_seguimiento` no contradigan la verificación explícita agregada (si RLS ya restringe por `auth.uid()`, la verificación explícita es redundante pero no dañina; si RLS es más permisivo de lo esperado, la verificación explícita es ahora la única defensa real).
+- RESUELTO 2026-08-01: `migrations/seguimiento_fase3.sql` está CONFIRMADA/APLICADA contra Supabase real (ver "Estado de la migración seguimiento_fase3.sql" más abajo) — la corrección ya tiene efecto observable en producción en cuanto se commitee y despliegue.
+- Sin credenciales reales de Supabase en este entorno de desarrollo (variables de entorno vacías), no fue posible probar en vivo los 4 casos de autorización desde la aplicación (solo verificación por lectura de código); esto es independiente de que la migración ya esté aplicada, que se verificó por otro medio (consulta directa de solo lectura a `information_schema.tables`).
+- Depende de que las políticas RLS reales de `grupos` y `proyectos_seguimiento` no contradigan la verificación explícita agregada (si RLS ya restringe por `auth.uid()`, la verificación explícita es redundante pero no dañina; si RLS es más permisivo de lo esperado, la verificación explícita es ahora la única defensa real) — RLS real todavía no verificado.
 
 ## C-003 — Corrección de ACC-018 en GET /api/proyectos-seguimiento (ejecutado, sin commit)
 
@@ -806,10 +808,37 @@ Regla dura: ninguna Terminal 2 se abre sin confirmar primero el ID del pendiente
 **ACC-018:** CERRADO.
 
 **Riesgos restantes:**
-- Sin credenciales reales de Supabase en este entorno, no fue posible probar en vivo (mismo bloqueo documentado desde C-001).
+- Sin credenciales reales de Supabase en este entorno de desarrollo, no fue posible probar en vivo desde la aplicación (mismo bloqueo documentado desde C-001); la migración en sí ya está confirmada por otro medio, ver abajo.
 - Mismo riesgo de dependencia con RLS real ya documentado en C-002.
 - Sin commit ni push todavía — el archivo queda como cambio local sin consolidar dentro de Grupo A (Seguimiento).
 
+## Estado de la migración seguimiento_fase3.sql — CONFIRMADA/APLICADA (registrado 2026-08-01)
+
+**Conclusión:** la migración `migrations/seguimiento_fase3.sql` ya fue aplicada en la base de datos real de Supabase.
+
+**Método de verificación:** consulta de solo lectura a `information_schema.tables`, ejecutada directamente contra Supabase por el usuario (fuera de este entorno de desarrollo, que sigue sin credenciales reales configuradas).
+
+**Tablas confirmadas existentes (las 4 que define la migración):**
+- `proyectos_seguimiento`
+- `hojas_evaluacion`
+- `seguimiento_resultados`
+- `seguimiento_versiones`
+
+**Alcance de esta verificación:** solo confirma la existencia de las 4 tablas a nivel de `information_schema.tables`. NO confirma columnas exactas, constraints, ni políticas RLS reales — eso sigue pendiente (ver módulo Base de datos y módulo Seguridad).
+
+**Regla dura — NO VOLVER A EJECUTAR:** `migrations/seguimiento_fase3.sql` NO debe ejecutarse de nuevo bajo ninguna circunstancia. Ya está aplicada; volver a correrla arriesga errores de "ya existe" en el mejor caso, o daño a datos reales ya almacenados en esas 4 tablas en el peor caso. Cualquier cambio futuro al esquema de Seguimiento debe ser una migración nueva y separada, nunca una re-ejecución de esta.
+
+**Efecto sobre bloqueos previos:** esto resuelve la dependencia de migración que mantenía a ACC-013 y al módulo Base de datos como P0 (ver "Prioridad real del trabajo", ya actualizado arriba). El módulo Seguimiento ya no está BLOQUEADO por este motivo — ver estado actualizado del módulo Seguimiento arriba.
+
+## Siguiente bloque propuesto — C-004 — Consolidación y prueba funcional del módulo Seguimiento (definido, NO ejecutado)
+
+Con el IDOR corregido en código (C-002, C-003) y la migración confirmada/aplicada, el trabajo pendiente para cerrar el módulo Seguimiento es de consolidación y prueba, no de más correcciones de seguridad:
+
+- **Objetivo:** commitear el código ya corregido de C-002/C-003, probar funcionalmente los 3 endpoints de Seguimiento contra Supabase real (crear proyecto, generar hoja, listar proyectos por grupo, y los casos negativos 401/403/404), y dejar el módulo en un estado consolidado y verificable.
+- **Alcance sugerido:** (a) revisar y commitear `app/api/proyectos-seguimiento/route.ts` y `app/api/proyectos-seguimiento/[id]/hoja/route.ts` tal como quedaron tras C-002/C-003; (b) prueba funcional real de los 3 endpoints; (c) separar el diff mezclado de `app/dashboard/lista/page.tsx` (ACC-017) antes de tocarlo; (d) decidir la etiqueta Evaluación/Seguimiento en la ficha del alumno; (e) verificar políticas RLS reales de `grupos`, `proyectos_seguimiento`, `hojas_evaluacion`.
+- **Fuera de alcance de C-004:** ACC-015 (periodos-evaluacion/ocr-foto — módulo distinto, bloque de seguridad aparte); cualquier función nueva de Seguimiento no solicitada.
+- **Depende de:** autorización explícita del usuario para abrir C-004 y para el primer commit de código funcional de Seguimiento.
+
 ## Próximo bloque permitido
 
-Ninguno todavía. C-002 y C-003 quedan implementados en código pero sin commit. Requiere autorización explícita del usuario para: (a) commitear C-002/C-003, (b) revisar el estado de la migración `seguimiento_fase3.sql`, o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.
+Ninguno todavía. C-002 y C-003 quedan implementados en código pero sin commit; la migración de Seguimiento queda CONFIRMADA/APLICADA (no volver a ejecutar). Requiere autorización explícita del usuario para: (a) commitear C-002/C-003, (b) abrir C-004 (consolidación y prueba funcional de Seguimiento), o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.
