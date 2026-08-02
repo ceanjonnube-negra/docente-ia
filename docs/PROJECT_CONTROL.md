@@ -1020,6 +1020,54 @@ Al intentar recuperar el acceso (contraseña no disponible para probar en este o
 
 **Pendiente explícito antes de cerrar C-004 por completo:** recuperar el acceso local (ACC-022 o una alternativa manual vía el panel de Supabase) y completar la prueba funcional real de crear proyecto → generar hoja → descargar PDF.
 
+## Cierre definitivo de C-004 (2026-08-01)
+
+**Estado final: CERRADO — con alcance corregido respecto al objetivo original.**
+
+C-004 se abrió como "consolidación y prueba funcional del módulo Seguimiento". Ese objetivo queda **parcialmente cumplido y parcialmente cancelado — no pendiente**:
+
+**Cumplido y cerrado dentro de C-004:**
+- Autenticación: recuperación de contraseña completa (`app/login/page.tsx`, `app/actualizar-contrasena/page.tsx`) — ACC-022 cerrado.
+- Sincronización de sesión tras magic link (listener `onAuthStateChange` en `app/dashboard/lista/page.tsx` y en las pantallas de Seguimiento) — corrige la carrera entre `detectSessionInUrl` y el montaje del componente.
+- Identificación correcta del docente, carga correcta del grupo y de los alumnos — confirmado con prueba real: Luis Manuel Ramírez, Francisco I. Madero, 4.º B, 28 alumnos (12 niñas, 16 niños).
+- Corrección técnica del `GET` de `proyectos-seguimiento` (try/catch) y de la pantalla en blanco en red local (`allowedDevOrigins`).
+
+**NO cumplido, y formalmente CANCELADO (no queda como pendiente de C-004):**
+- La prueba funcional del formulario manual de Seguimiento (crear proyecto → indicadores → generar hoja → descargar PDF) **no se completó ni se completará dentro de C-004**. No es un pendiente abierto: el formulario manual (`app/dashboard/lista/proyectos/nuevo/page.tsx`) deja de ser el flujo definitivo por la decisión arquitectónica registrada abajo, así que validarlo como estaba habría sido esfuerzo desechable.
+- El trabajo de Seguimiento (API, pantallas, endpoint `DELETE` construido en este bloque) **no se considera terminado ni validado como flujo definitivo** — se conserva sin commit, reutilizable, a la espera de C-005 en adelante.
+
+## Decisión arquitectónica obligatoria — Seguimiento pertenece a Planeación (registrada 2026-08-01)
+
+- Seguimiento deja de ser un módulo independiente accesible desde Lista; pertenece a **Planeación**.
+- La estructura definitiva es: **Planeación → Proyecto → Hoja final de evaluación → impresión y llenado manual → fotografía → reconocimiento automático → confirmación de lecturas dudosas → historial individual del alumno → concentrado trimestral → reporte de evaluación → ficha descriptiva.**
+- El acceso 🏆 en Lista (`app/dashboard/lista/page.tsx`) se retirará **cuando el flujo nuevo esté completo** — no antes, para no dejar al docente sin ninguna forma de usar Seguimiento durante la transición.
+- "Nuevo proyecto de seguimiento" (`app/dashboard/lista/proyectos/nuevo/page.tsx`) deja de ser el flujo principal — el docente no volverá a capturar manualmente nombre, campos formativos, trimestre, fechas ni indicadores que ya existan en la planeación.
+- Habrá una sola hoja final de evaluación por proyecto (ya es así en el código actual — `generarHojaSeguimientoPdf.ts` no cambia en esto).
+- La hoja se imprime, se llena a mano, y se captura mediante fotografía desde Docente IA — la app reconoce proyecto, grupo, alumnos, indicadores y niveles/resultados marcados.
+- Antes de guardar, solo se resaltan las lecturas dudosas para corrección mínima — nunca se pide recapturar todo.
+- Los resultados confirmados alimentan: historial individual del alumno, concentrado trimestral (no existe hoy), reporte de evaluación (hoy PARCIAL/NO VERIFICADO), y ficha descriptiva (hoy no consume Seguimiento).
+- Esta decisión reemplaza la premisa original de C-001/C-001B/C-002/C-003/C-004 de que Seguimiento sería un módulo independiente accesible desde Lista — se conserva el código ya construido (ver tabla de reutilización abajo), no se descarta nada.
+
+## Código de Seguimiento conservado sin commit (reutilizable para C-005 en adelante)
+
+Ninguno de estos archivos se revierte, se borra ni se archiva aparte — permanecen exactamente donde están, sin commit, hasta que el bloque correspondiente de Planeación los retome:
+
+| Código | Reutilización prevista |
+|---|---|
+| `migrations/seguimiento_fase3.sql` (ya aplicada) | Las 4 tablas, sin cambios de esquema |
+| `lib/seguimiento/tipos.ts` | Enums reutilizables tal cual |
+| `lib/identificadorHoja.ts` | Función pura, reutilizable tal cual |
+| `lib/documentGen/generarHojaSeguimientoPdf.ts` | Ya es la hoja final que pide el flujo nuevo |
+| `lib/documentGen/almacenamiento.ts` (bucket + `eliminarArchivo`) | Reutilizable tal cual |
+| `app/api/proyectos-seguimiento/route.ts`, `[id]/route.ts`, `[id]/hoja/route.ts`, `sugerir-indicadores/route.ts` | API reutilizable — cambiará quién la llama (Planeación en vez de un formulario), no la lógica interna |
+| `app/dashboard/lista/proyectos/page.tsx`, `nuevo/page.tsx` | Se conservan sin commit; dejarán de ser el flujo principal cuando C-005+ esté listo |
+
+**Riesgo abierto explícito:** el endpoint `DELETE /api/proyectos-seguimiento/[id]` (construido en este bloque) nunca se probó de extremo a extremo con un proyecto real — solo verificado por lectura de código y pruebas de autorización sin sesión (401/400). Debe probarse antes de confiar en él cuando se retome.
+
 ## Próximo bloque permitido
 
-Ninguno todavía. C-004 permanece BLOQUEADO POR AUTENTICACIÓN — no se abre ningún bloque nuevo hasta recuperar el acceso local. Una vez recuperado el acceso, se retoma la prueba funcional dentro del mismo C-004 (no se abre C-005). Los bloques ya definidos y pendientes de decisión del usuario siguen siendo: (a) recuperación de acceso (ACC-022, vía panel de Supabase, sin código); (b) reanudar y completar la prueba funcional de C-004; (c) commitear lo ya validado (C-002+C-003+correcciones técnicas de C-004: `proyectos-seguimiento/route.ts` GET y `next.config.ts`); (d) un bloque futuro e independiente para ACC-019, ACC-021 y ACC-022; (e) cualquiera de los bloques independientes de Grupo B o Grupo C. La migración de Seguimiento sigue CONFIRMADA/APLICADA (no volver a ejecutar).
+**C-005 — Construcción del módulo Planeación — Fase 1: modelo de datos y estructura funcional base.**
+
+Alcance recomendado para C-005 (no iniciado, requiere autorización explícita aparte): diseñar el modelo de datos de una planeación real (hoy no existe ninguna tabla — Planeación hoy solo genera documentos sueltos vía Chat IA, sin registro estructurado) y construir la pantalla de Planeación como módulo funcional real (hoy es un stub de 34 líneas, "Próximamente"). NO incluye todavía: conexión con Seguimiento, generación automática de hoja, ni fotografía/reconocimiento — esas son fases posteriores (C-006, C-007...).
+
+No se abre C-005 todavía. Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno — ahora con solución definida dentro del flujo nuevo), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto — con fecha de resolución ya definida: cuando el flujo nuevo esté completo), UI-023 (tarjeta redundante de sidebar). La migración de Seguimiento sigue CONFIRMADA/APLICADA (no volver a ejecutar).

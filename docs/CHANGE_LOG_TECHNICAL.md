@@ -134,3 +134,21 @@ Resultado:
 Pruebas: ver "Verificaciones ejecutadas" arriba. Ninguna prueba funcional de Seguimiento con datos reales todavía.
 Incidencias: 1 — impresión accidental de una clave `NEXT_PUBLIC_*` en salida de terminal (ver arriba); reconocida y no repetida; no afecta el estado del código ni de los datos.
 Sin modificaciones fuera de alcance: confirmado — no se intentaron más inicios de sesión con credenciales reales, no se modificaron enlaces de recuperación, no se cambió ninguna contraseña, no se crearon usuarios, no se creó el proyecto de prueba de Seguimiento, no se usó `service_role`, no se ejecutó ninguna migración, no se hizo commit ni push, no se abrió C-005.
+
+---
+
+## 2026-08-01 — C-004 (cierre definitivo)
+
+ID: C-004 (cierre)
+Acción realizada: cierre documental definitivo de C-004. Tras la prueba funcional exitosa de login/recuperación de contraseña/sincronización de sesión (docente, grupo y 28 alumnos cargando correctamente), se implementó y verificó por código un endpoint `DELETE` para proyectos de Seguimiento como paso previo a la prueba funcional del formulario manual. Antes de ejecutar esa prueba, el usuario aprobó una decisión arquitectónica: Seguimiento deja de ser un módulo independiente accesible desde Lista y pasa a depender de Planeación, con un flujo definitivo de captura por fotografía en vez de formulario manual. En consecuencia, C-004 se cierra con el alcance de autenticación/sesión completo, y el objetivo original de probar el formulario manual de Seguimiento queda formalmente CANCELADO (no pendiente) — ese formulario deja de ser el flujo definitivo.
+Archivos modificados en este cierre: docs/PROJECT_CONTROL.md (cierre definitivo de C-004, decisión arquitectónica Seguimiento→Planeación registrada en detalle, tabla de código conservado sin commit, definición de C-005), docs/CHANGE_LOG_TECHNICAL.md (esta entrada).
+Verificaciones ejecutadas antes de escribir: `git log --oneline` (4 commits locales sin push: 51d5a5e, bd37e2e, d64ae39, e02712d), `git status --short` y `git status -sb` (confirmando el mismo inventario de archivos sin commit ya conocido, sin cambios inesperados), revisión de que ninguno de los 4 commits ya hechos depende del formulario manual de Seguimiento ni se ve afectado por la nueva decisión arquitectónica.
+Resultado:
+- C-004 CERRADO. Cumplido: recuperación de contraseña (ACC-022 cerrado), sincronización de sesión tras magic link, identificación correcta de docente/grupo/alumnos, correcciones técnicas (GET try/catch, allowedDevOrigins). Cancelado, no pendiente: prueba funcional del formulario manual de Seguimiento.
+- Decisión arquitectónica registrada: Seguimiento pertenece a Planeación (Planeación → Proyecto → Hoja final → impresión/llenado manual → fotografía → reconocimiento automático → confirmación de lecturas dudosas → historial individual → concentrado trimestral → reporte de evaluación → ficha descriptiva). La copa de Lista se retira solo cuando el flujo nuevo esté completo, no antes. El formulario "Nuevo proyecto de seguimiento" deja de ser el flujo principal.
+- Todo el código de Seguimiento ya construido (API, tablas, generación de PDF, Storage, endpoint DELETE nuevo) se conserva sin commit, sin revertir, sin archivar aparte — reutilizable para C-005 en adelante.
+- Riesgo abierto registrado: el endpoint DELETE construido en este bloque nunca se probó de extremo a extremo con un proyecto real.
+- Siguiente bloque definido (NO iniciado): C-005 — Construcción del módulo Planeación, Fase 1 (modelo de datos y estructura funcional base). Confirmado por búsqueda en el repo: no existe hoy ninguna tabla de planeaciones ni modelo de datos estructurado — Planeación hoy solo genera documentos sueltos vía Chat IA.
+Pruebas: ninguna prueba funcional ni de código ejecutada en este cierre — solo verificación de Git y actualización de documentación.
+Incidencias: ninguna.
+Sin modificaciones funcionales: confirmado — no se modificó código, no se borró ninguna función ni archivo, no se ejecutó ninguna migración, no se hizo push, no se hizo commit todavía (pendiente de autorización explícita del usuario), no se abrió C-005.
