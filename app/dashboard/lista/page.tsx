@@ -204,6 +204,20 @@ function ListaPageContent() {
     cargarTodo()
   }, [])
 
+  // Cubre el acceso por magic link: supabase-js procesa el token de la
+  // URL de forma asíncrona (detectSessionInUrl), así que la sesión puede
+  // no estar lista todavía cuando el efecto de arriba corre — sin este
+  // listener, getUser() regresa null de forma permanente y nunca se
+  // vuelve a intentar. Mismo patrón ya usado en
+  // lib/asistente/AsistenteService.ts (evento SIGNED_IN/INITIAL_SESSION/
+  // TOKEN_REFRESHED), replicado aquí en vez de reinventado.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((evento) => {
+      if (evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION' || evento === 'TOKEN_REFRESHED') cargarTodo()
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
   useEffect(() => {
     if (!mostrarExitoImportacion) return
     router.replace('/dashboard/lista')
