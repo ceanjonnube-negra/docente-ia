@@ -839,6 +839,187 @@ Con el IDOR corregido en código (C-002, C-003) y la migración confirmada/aplic
 - **Fuera de alcance de C-004:** ACC-015 (periodos-evaluacion/ocr-foto — módulo distinto, bloque de seguridad aparte); cualquier función nueva de Seguimiento no solicitada.
 - **Depende de:** autorización explícita del usuario para abrir C-004 y para el primer commit de código funcional de Seguimiento.
 
+## C-004 — Consolidación y prueba funcional del módulo Seguimiento (EN PROGRESO — diagnóstico y pruebas técnicas completos, prueba funcional bloqueada por entorno)
+
+**Estado:** diagnóstico de integración completo, pruebas técnicas completas, 1 corrección aplicada, prueba funcional en vivo BLOQUEADA (no por falta de autorización, sino porque este entorno de desarrollo no tiene credenciales reales de Supabase). Sin commit, sin push.
+
+### 1. Confirmaciones de lectura obligatoria
+
+C-002 y C-003 cerrados (ver esas secciones arriba); ACC-018 cerrado; migración `seguimiento_fase3.sql` CONFIRMADA/APLICADA (ver sección propia); C-004 era el siguiente bloque autorizado (ver "Siguiente bloque propuesto" ya escrito en C-001C). Git al abrir este bloque: rama `main`, sincronizada con `origin/main`, mismos 5 archivos modificados + 8 rutas sin rastrear ya conocidas de Grupos A/B/C, sin cambios remotos nuevos.
+
+### 2. Auditoría de integración (diagnóstico, antes de tocar nada)
+
+- **Pantalla que inicia el flujo:** `app/dashboard/lista/proyectos/page.tsx` (lista de proyectos del grupo), accesible desde el botón 🏆 "Seguimiento" en el header de `app/dashboard/lista/page.tsx` (línea 388) y desde el enlace "+ Crear un proyecto para el grupo" en la pestaña "Seguimiento" de la ficha del alumno (`app/dashboard/lista/[alumnoId]/page.tsx`, línea 826) cuando no hay evaluaciones.
+- **Creación de proyecto:** botón "+ Nuevo proyecto" → `app/dashboard/lista/proyectos/nuevo/page.tsx` → `crearProyecto()` → `POST /api/proyectos-seguimiento` con `access_token` de la sesión real (`supabase.auth.getSession()`). El backend resuelve el docente desde el token, verifica que el grupo le pertenezca, e inserta en `proyectos_seguimiento` con `estado='planeado'`.
+- **Sugerencia de indicadores:** botón "✨ Ayúdame a redactar los indicadores" → `POST /api/proyectos-seguimiento/sugerir-indicadores` → valida sesión con `auth.getUser()` (sin tocar datos del grupo) → llama a Claude con el marco curricular vigente (`lib/asistente/marcoCurricular.ts`) → regresa 5 indicadores, uno por cada aspecto general.
+- **Guardado del proyecto:** ya cubierto arriba — el proyecto se crea en un solo POST, sin pasos intermedios.
+- **Generación de la hoja:** inmediatamente después de crear el proyecto, `generarHoja()` llama a `POST /api/proyectos-seguimiento/[id]/hoja` con `access_token` + los indicadores capturados en pantalla. El backend verifica que el proyecto pertenezca al docente, arma el roster del grupo (`lib/rosterGrupo.ts`, tablas `inscripciones`/`alumnos`), dibuja el PDF (`lib/documentGen/generarHojaSeguimientoPdf.ts`, vía `pdf-lib`), lo sube a Storage (`lib/documentGen/almacenamiento.ts`, bucket `hojas-seguimiento`, privado) e inserta la fila en `hojas_evaluacion` con reintento ante colisión de identificador (`lib/identificadorHoja.ts`, hasta 3 intentos).
+- **Descarga/apertura del PDF:** URL firmada de 7 días (`crearUrlFirmada`), mostrada como botón "📄 Ver / descargar hoja" en la pantalla de confirmación.
+- **Tablas usadas por paso:** crear proyecto → `grupos` (verificación), `proyectos_seguimiento` (insert); generar hoja → `proyectos_seguimiento` (select+update), `periodos_evaluacion` (select opcional), `perfiles_docentes` (select), `inscripciones`/`alumnos` (roster vía `obtenerRosterConPosicion`), `hojas_evaluacion` (insert+update); listar → `grupos` (verificación), `proyectos_seguimiento` (select). Las tablas `seguimiento_resultados` y `seguimiento_versiones` (creadas por la migración) NO tienen ningún consumidor en el código todavía — esperado, corresponden a una fase futura (captura de resultados desde la hoja física, fuera de alcance de C-004 y explícitamente no autorizada en este bloque).
+- **Bucket de Storage:** `hojas-seguimiento` (`BUCKET_HOJAS_SEGUIMIENTO`), separado del bucket de documentos generados por el Chat IA (`documentos-generados-ia`), privado, se autoasegura de forma perezosa la primera vez que se usa.
+- **Rutas que conectan cada pantalla:** lista → nuevo (`?grupoId=`) → confirmación (`router.push` de vuelta a la lista); todas propagan `grupoId` correctamente; confirmado sin enlaces rotos.
+- **Validaciones de sesión y propiedad:** las 3 rutas API resuelven el docente exclusivamente desde `auth.getUser()` sobre el `access_token` real (nunca del body/query); `POST /api/proyectos-seguimiento` y `POST .../[id]/hoja` verifican explícitamente que el grupo/proyecto pertenezca al docente (403/404 diferenciados); `GET` verifica lo mismo sobre el grupo antes de listar (C-003). RLS real (Patrón A, "solo titular") ya está definida en la migración como defensa adicional.
+- **Enlaces rotos:** ninguno encontrado.
+- **Funciones sin consumidor:** el tipo `EstadoProyectoFase2` (`lib/seguimiento/tipos.ts`) está declarado pero sin ningún valor de esa unión usado fuera de la propia definición — es intencional y está documentado en el propio archivo (valores reservados para fases futuras). Las tablas `seguimiento_resultados`/`seguimiento_versiones` no tienen ningún código que las consulte todavía (mismo motivo).
+- **Pantallas que prometen acciones inexistentes:** SÍ, un caso real — la pestaña "Seguimiento" de la ficha del alumno (`app/dashboard/lista/[alumnoId]/page.tsx`, línea 821) muestra el texto "Los resultados se registrarán al cargar la hoja de evaluación de un proyecto" cuando no hay evaluaciones. Esto es engañoso: generar una hoja NO produce ningún resultado visible ahí — no existe ningún código que escriba en `seguimiento_resultados` (eso requiere la fase de captura por foto/OCR, explícitamente fuera de alcance de C-004). Registrado como **ACC-019** abajo.
+- **Etiqueta "Seguimiento" de la ficha individual:** confirmado por lectura de código — la pestaña sigue leyendo exclusivamente la tabla `evaluaciones` preexistente (tipo `Evaluacion`, línea 23 del archivo); el único cambio real (más allá del renombrado de etiqueta que ya documentaba C-001) es el nuevo enlace "+ Crear un proyecto para el grupo" cuando la lista está vacía. La etiqueta NO está conectada a resultados reales de Seguimiento — ver decisión en la sección 7 más abajo.
+- **Hallazgo adicional (menor, no bloqueante):** `app/dashboard/lista/proyectos/nuevo/page.tsx` sigue enviando `docente_id: user.id` en el body de los 2 POST (líneas 156 y 189), pero el backend ya no lo lee en absoluto desde C-002 (el tipo `BodyPost` no lo incluye) — es un campo muerto, inofensivo (el backend lo ignora), pero vale la pena limpiarlo en un futuro bloque de pulido. Registrado como **ACC-020**, prioridad P3, no corregido en C-004 (no es necesario para esta fase).
+- **Hallazgo adicional (comentario impreciso, no funcional):** el comentario de `lib/identificadorHoja.ts` (líneas 8-10) dice que el manejo de colisión del identificador "vive en `app/api/proyectos-seguimiento/route.ts`" — en realidad vive en `app/api/proyectos-seguimiento/[id]/hoja/route.ts` (el bucle de reintento de C-002/C-003 está en el endpoint de la hoja, no en el de creación del proyecto). Es solo un comentario desactualizado, no afecta el comportamiento. No corregido en C-004 por ser cosmético y no formar parte de los archivos con lógica de negocio activa del diagnóstico.
+
+### 3. Pruebas técnicas ejecutadas
+
+- **`npx tsc --noEmit`** (proyecto completo): sin errores.
+- **`npx eslint`** sobre los 9 archivos del bloque: 1 error — `app/dashboard/lista/proyectos/page.tsx:126`, regla `@next/next/no-html-link-for-pages` (usa `<a>` en vez de `<Link/>`). CONFIRMADO como patrón preexistente en todo el proyecto (mismo error en `app/dashboard/lista/[alumnoId]/page.tsx:587` y 10+ archivos más de `app/dashboard/`) — no es una regresión del bloque, no se corrige aquí para no desviarse de la convención ya establecida en el resto de la app.
+- **`npm run build`**: NO completó — falla en la recolección de datos de página de `/api/realtime-token` por `OPENAI_API_KEY` vacío en este entorno. Error preexistente y ajeno al bloque (no relacionado con Seguimiento); no se intentó rodear ni ocultar.
+- **Archivos sin uso:** ninguno completo sin usar; ver "Funciones sin consumidor" arriba para los casos parciales (intencionales).
+- **Prueba en vivo de los guards de autenticación** (servidor local, sin datos reales, sin necesidad de credenciales): con `npm run dev` y `curl` directo a los 3 endpoints —
+  - `GET` sin `Authorization` → 401 "Sesión no encontrada." ✓
+  - `POST` proyecto sin `access_token` → 401 "Sesión no encontrada." ✓
+  - `POST` hoja sin `access_token` → 401 "Sesión no encontrada." ✓
+  - `POST` sugerir-indicadores sin `access_token` → 401 "Sesión no encontrada. Vuelve a iniciar sesión." ✓
+  - `GET`/`POST` proyecto con un token no vacío pero inválido → 500 "supabaseKey is required." — esperado en este entorno porque `NEXT_PUBLIC_SUPABASE_ANON_KEY` está vacía (no hay forma de que `auth.getUser()` se ejecute realmente); en producción, con la anon key real, este mismo caso devolvería 401 "Sesión inválida o expirada." (supabase-js regresa un error, no lanza una excepción, ante un JWT inválido con una key real).
+  - **Corrección aplicada:** el `GET` no tenía `try/catch` (a diferencia de los 2 `POST` del módulo), así que el caso de arriba salía como un error sin manejar de Next.js en vez de un JSON `{error: ...}` limpio. Se envolvió el cuerpo completo del `GET` en `try/catch`, igual que ya hacían los 2 `POST` del mismo archivo — mismo patrón, mismo archivo, sin nueva lógica. Verificado después: el mismo caso ahora responde `{"error":"supabaseKey is required."}` con 500 en vez de la página de error por defecto de Next.js. `tsc`/`eslint` limpios tras el cambio.
+
+### 4. Prueba funcional local — BLOQUEADA POR ENTORNO (sección 5 del bloque)
+
+No se pudo ejecutar. Antes de siquiera llegar a la pregunta de qué nombre de prueba usar, se confirmó que `.env.local` en este entorno de desarrollo tiene `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY` y `OPENAI_API_KEY` vacíos (solo `NEXT_PUBLIC_SUPABASE_URL` tiene un valor real) — ningún login real, lectura ni escritura contra Supabase es posible desde aquí. Esto es consistente con lo ya documentado desde C-001 para el módulo Base de datos. Se ejecutó en su lugar una verificación segura y no destructiva de los 3 endpoints (guards de autenticación, ver arriba), que no requiere credenciales ni crea ningún dato. La prueba funcional real (crear proyecto, generar hoja, descargar PDF, ver datos correctos del grupo) queda pendiente para cuando el usuario la ejecute con credenciales reales (localmente o en un entorno con acceso a Supabase) — no es un pendiente de autorización, es un pendiente de entorno.
+
+### 5. Decisión sobre la ficha del alumno (recomendación, SIN modificar el archivo)
+
+**Recomendación: Opción A — dejar `app/dashboard/lista/[alumnoId]/page.tsx` fuera de este commit.**
+
+Razones: (1) la pestaña sigue leyendo exclusivamente `evaluaciones`, sin ninguna conexión real a `seguimiento_resultados` — conectarla de verdad (Opción C) requiere la fase de captura de resultados (foto/OCR), explícitamente fuera de alcance de C-004; (2) volver a "Evaluación" (Opción B) escondería el enlace "+ Crear un proyecto para el grupo" que sí es una función real y funcionando, y el usuario ya invirtió en construir todo el módulo Seguimiento — revertir la etiqueta ahora sería un paso atrás sin necesidad; (3) el texto engañoso del estado vacío (ACC-019) es un problema de copy aislado, corregible con un cambio de una línea en un bloque futuro pequeño y específico, sin esperar a la fase de OCR. Commitear este archivo junto con C-002/C-003/C-004 mezclaría "corrección de seguridad ya probada" con "cambio de UI todavía con una promesa imprecisa" — mejor mantenerlos separados.
+
+### 6. Pendientes nuevos de este bloque
+
+**ID:** ACC-019
+**Nombre:** Texto engañoso en la pestaña Seguimiento de la ficha del alumno
+**Módulo:** Ficha individual del alumno / Seguimiento
+**Tipo:** EXPERIENCIA DE USUARIO
+**Estado:** NO VERIFICADO → confirmado como hallazgo real en C-004
+**Prioridad:** P2
+**Riesgo:** bajo-medio (expectativa falsa para el docente, no pérdida de datos)
+**Archivos:** `app/dashboard/lista/[alumnoId]/page.tsx` (línea 821)
+**Dependencias:** fase futura de captura de resultados de Seguimiento (OCR/foto), fuera de alcance de C-004
+**Trabajo ya realizado:** identificado y confirmado por lectura de código en C-004
+**Trabajo pendiente:** decidir una redacción honesta para el estado vacío (ej. mencionar que los resultados llegarán en una fase futura, sin prometer que aparecen automáticamente al generar la hoja)
+**Pruebas realizadas:** ninguna, es un cambio de copy
+**Pruebas pendientes:** ninguna técnica; solo revisión de redacción
+**Criterio de aceptación:** el texto ya no promete una actualización automática que el código no puede cumplir todavía
+**Bloque recomendado:** bloque pequeño e independiente, no requiere esperar a C-005 ni a la fase de OCR
+**No repetir:** no conectar apresuradamente esta pestaña a `seguimiento_resultados` sin la fase de captura real construida.
+
+**ID:** ACC-020
+**Nombre:** Campo `docente_id` muerto enviado por el frontend de Seguimiento
+**Módulo:** Seguimiento
+**Tipo:** FUNCIÓN PARCIAL
+**Estado:** PARCIAL (inofensivo)
+**Prioridad:** P3
+**Riesgo:** nulo (el backend ya lo ignora desde C-002)
+**Archivos:** `app/dashboard/lista/proyectos/nuevo/page.tsx` (líneas 156, 189)
+**Dependencias:** ninguna
+**Trabajo ya realizado:** identificado en el diagnóstico de C-004
+**Trabajo pendiente:** quitar el campo `docente_id` del body de ambos `fetch` (limpieza, no afecta comportamiento)
+**Pruebas realizadas:** confirmado por lectura que el backend no lo lee (`BodyPost` no lo incluye)
+**Pruebas pendientes:** ninguna
+**Criterio de aceptación:** el frontend ya no manda un campo que el backend ignora
+**Bloque recomendado:** bloque de pulido técnico, sin urgencia
+**No repetir:** no interpretar este campo como si todavía tuviera efecto en la autorización — la autorización real es 100% server-side desde C-002/C-003.
+
+## C-004 — continuación: prueba manual guiada, hallazgo de entorno y bloqueo de autenticación (2026-08-01)
+
+Tras resolver el bloqueo de credenciales (el usuario agregó `NEXT_PUBLIC_SUPABASE_ANON_KEY` real a `.env.local`), se retomó la prueba funcional manual en navegador con la sesión real del usuario, guiada paso a paso.
+
+### Pantalla en blanco en `http://192.168.1.10:3000` (encontrado y corregido)
+
+- **Síntoma:** la app cargaba en blanco (solo la burbuja flotante del Chat IA y `BuildBadge`) tanto en Safari del iPhone como en Safari de la Mac al abrir la IP de red, pero no en `localhost`.
+- **Error real de consola (confirmado por el usuario vía Web Inspector):** `WebSocket connection to ws://192.168.1.10:3000/_next/webpack-hmr?... failed: cannot parse response`.
+- **Causa raíz:** el servidor de desarrollo de Next.js rechaza por seguridad el WebSocket de HMR cuando la página se abre desde un origen (`host`) que no está en `allowedDevOrigins` — el cliente de desarrollo se queda a medio inicializar y nunca termina de montar la app.
+- **Corrección aplicada:** se agregó `allowedDevOrigins: ["192.168.1.10"]` a `next.config.ts` (única línea funcional nueva, con comentario explicando el motivo). Verificado con `npx tsc --noEmit` (sin errores), `npx eslint next.config.ts` (sin errores), reinicio completo del servidor, y confirmación del propio usuario en Safari (Mac e iPhone) de que la pantalla en blanco desapareció.
+- **Alcance:** cambio exclusivo de configuración del servidor de desarrollo local — no afecta producción (Vercel no usa `next dev`).
+
+### Verificación de proyecto/clave de Supabase local vs. producción (sin bloqueos, sin cambios)
+
+Ante el hallazgo de que la misma cuenta sí inicia sesión en producción (`docente-ia-gules.vercel.app`) pero no en `192.168.1.10:3000`, se comparó la configuración sin exponer secretos:
+- **Proyecto:** idéntico en ambos entornos (`abdtrkdfobrkramerrrc.supabase.co`).
+- **Tipo de clave:** ambos usan el formato nuevo `sb_publishable_...` (no es la clave JWT legada) — la versión instalada de `@supabase/supabase-js` (2.108.2) lo soporta sin problema.
+- **¿Es la misma clave?** No — distinta clave publishable en cada entorno (confirmado por checksum, sin exponer ningún valor), lo cual es normal y válido: Supabase permite múltiples claves publishable activas por proyecto.
+- **Prueba de aceptación de la clave local:** `POST {url}/auth/v1/token?grant_type=password` con la clave local y credenciales de prueba obviamente falsas respondió `HTTP 400 {"error_code":"invalid_credentials"}` — confirma que la clave y el proyecto son correctos (un problema de clave habría dado `invalid_api_key`, no `invalid_credentials`).
+- **Conclusión:** ni el proyecto ni la clave son la causa del fallo de login local. La causa es que la sesión de Supabase se guarda en `localStorage`, aislado por origen exacto — iniciar sesión en producción no deja ninguna sesión visible en `http://192.168.1.10:3000` (son orígenes distintos para el navegador). Nunca se había completado un login real en ese origen específico.
+- Durante esta verificación, un comando (`cat -v`) mostró por accidente el valor completo de `NEXT_PUBLIC_SUPABASE_ANON_KEY` local en la salida de terminal — no es `service_role` ni una clave verdaderamente secreta (las `NEXT_PUBLIC_*` van embebidas en el bundle público por diseño), pero fue un descuido frente a la instrucción explícita de no imprimir valores. Registrado aquí por transparencia, no se repitió.
+
+### Bloqueo de autenticación — recuperación de contraseña incompleta
+
+Al intentar recuperar el acceso (contraseña no disponible para probar en este origen), se encontró que el proyecto **no tiene ningún flujo de recuperación/actualización de contraseña implementado**: sin páginas ni funciones para `resetPasswordForEmail`, `updateUser` con propósito de recuperación, ni ruta de "nueva contraseña". El correo de recuperación enviado desde el panel de Supabase redirige a una ruta local que no existe → **404**.
+
+**La prueba funcional local de C-004 queda BLOQUEADA POR AUTENTICACIÓN** — no se pudo completar el flujo de crear proyecto → generar hoja → descargar PDF con una sesión real en este origen. No se intentaron más logins, no se modificaron enlaces, no se tocó ninguna contraseña, no se creó el proyecto de prueba.
+
+**Confirmación importante que sí se conserva:** en producción (`docente-ia-gules.vercel.app`), con una sesión real, el docente, su grupo y sus alumnos SÍ cargan correctamente — es decir, la lógica de Lista/carga de contexto del docente ya funciona en producción; el problema de "No se pudo identificar al maestro" fue exclusivamente de sesión local en el origen de red, no un bug de la lógica de la aplicación.
+
+## Lista maestra de pendientes — ACC-021 y ACC-022 (nuevos)
+
+**ID:** ACC-021
+**Nombre:** Acceso a Seguimiento poco claro (solo un ícono de copa)
+**Módulo:** Lista / Seguimiento
+**Tipo:** EXPERIENCIA DE USUARIO
+**Estado:** PENDIENTE
+**Prioridad:** P2
+**Riesgo:** bajo (usabilidad, no funcional ni de datos)
+**Archivos:** `app/dashboard/lista/page.tsx` (línea 387-394, botón 🏆)
+**Dependencias:** ninguna
+**Trabajo ya realizado:** identificado durante la prueba manual de C-004
+**Trabajo pendiente:** diseñar un acceso claro, sencillo y rotulado como "Seguimiento", sin saturar la pantalla ni agregar menús redundantes
+**Pruebas realizadas:** ninguna (hallazgo de observación directa)
+**Pruebas pendientes:** validación de la nueva propuesta con el usuario antes de implementar
+**Criterio de aceptación:** el acceso a Seguimiento es reconocible sin necesidad de adivinar el significado del ícono
+**Bloque recomendado:** bloque independiente, posterior a que C-004 cierre por completo — explícitamente NO dentro de C-004
+**No repetir:** no rediseñar este acceso dentro de C-004 ni de ningún bloque de seguridad/consolidación.
+
+**ID:** ACC-022
+**Nombre:** Falta flujo completo de recuperación y actualización de contraseña
+**Módulo:** Autenticación
+**Tipo:** FUNCIÓN NUEVA
+**Estado:** PENDIENTE
+**Prioridad:** P1
+**Riesgo:** medio (bloquea el acceso legítimo de un docente que olvida su contraseña, sin alternativa dentro de la app)
+**Archivos:** ninguno existe todavía (se necesitaría una pantalla de "nueva contraseña" que llame `supabase.auth.updateUser({ password })`, más la configuración de redirección de Supabase apuntando a esa ruta)
+**Dependencias:** configuración de "Redirect URLs" en Supabase Authentication
+**Trabajo ya realizado:** diagnóstico confirmado — el correo de recuperación de Supabase redirige a una ruta local inexistente y termina en 404
+**Evidencia:** 404 real reproducido por el usuario al seguir el enlace del correo de recuperación
+**Trabajo pendiente:** implementar un flujo seguro y completo (solicitud de recuperación + página de nueva contraseña + redirecciones configuradas correctamente en Supabase)
+**Pruebas realizadas:** ninguna de código (no existe código todavía)
+**Pruebas pendientes:** flujo completo de extremo a extremo una vez implementado
+**Criterio de aceptación:** un docente puede recuperar y actualizar su contraseña sin intervención manual desde el panel de Supabase
+**Bloque recomendado:** bloque independiente de Autenticación, prioridad alta — recomendado antes o junto con la simplificación de acceso de ACC-021
+**No repetir:** no intentar más recuperaciones de contraseña ni cambios de enlaces hasta que este flujo se construya formalmente.
+
+**ID:** UI-023
+**Nombre:** Tarjeta redundante "VIENDO AHORA / inicio" en la barra lateral
+**Módulo:** Sidebar / navegación
+**Tipo:** EXPERIENCIA DE USUARIO
+**Estado:** PENDIENTE
+**Prioridad:** P2
+**Riesgo:** nulo (solo visual/redundancia, no funcional)
+**Archivos:** no identificados todavía (pendiente localizar el componente exacto de la barra lateral que dibuja esa tarjeta)
+**Dependencias:** ninguna
+**Trabajo ya realizado:** ninguno — solo acordado y registrado, sin diagnóstico de código todavía
+**Trabajo pendiente:** eliminar completamente la tarjeta "VIENDO AHORA / inicio"; la única indicación de la sección actual debe ser el elemento activo del menú, sin una segunda tarjeta o bloque de estado
+**Pruebas realizadas:** ninguna
+**Pruebas pendientes:** confirmar visualmente que no queda ningún indicador duplicado de sección activa tras el cambio
+**Criterio de aceptación:** ver "Criterio futuro" arriba — un solo indicador de sección activa, sin tarjeta redundante
+**Bloque recomendado:** bloque independiente de diseño/sidebar, posterior al cierre de C-004
+**No repetir:** no implementar este ajuste dentro de C-004; no modificar diseño todavía.
+
+## Estado de C-004 al cierre de esta pausa
+
+**Estado:** BLOQUEADO POR AUTENTICACIÓN (no por seguridad del código ni por falta de credenciales de entorno — ambas ya resueltas). Diagnóstico y pruebas técnicas completos (ver secciones anteriores); prueba funcional manual en navegador (crear proyecto → indicadores → guardar → generar hoja → descargar PDF) **no ejecutada todavía** — no se llegó a crear el proyecto de prueba.
+
+**Correcciones de código ya verificadas y listas para revisión de commit (dentro de C-004):**
+1. `app/api/proyectos-seguimiento/route.ts` — `try/catch` agregado al `GET` (consistencia con los `POST` del mismo archivo).
+2. `next.config.ts` — `allowedDevOrigins: ["192.168.1.10"]` (desbloqueo de pruebas en dispositivos de la red local, solo entorno de desarrollo).
+
+**Pendiente explícito antes de cerrar C-004 por completo:** recuperar el acceso local (ACC-022 o una alternativa manual vía el panel de Supabase) y completar la prueba funcional real de crear proyecto → generar hoja → descargar PDF.
+
 ## Próximo bloque permitido
 
-Ninguno todavía. C-002 y C-003 quedan implementados en código pero sin commit; la migración de Seguimiento queda CONFIRMADA/APLICADA (no volver a ejecutar). Requiere autorización explícita del usuario para: (a) commitear C-002/C-003, (b) abrir C-004 (consolidación y prueba funcional de Seguimiento), o (c) cualquiera de los bloques independientes de Grupo B o Grupo C.
+Ninguno todavía. C-004 permanece BLOQUEADO POR AUTENTICACIÓN — no se abre ningún bloque nuevo hasta recuperar el acceso local. Una vez recuperado el acceso, se retoma la prueba funcional dentro del mismo C-004 (no se abre C-005). Los bloques ya definidos y pendientes de decisión del usuario siguen siendo: (a) recuperación de acceso (ACC-022, vía panel de Supabase, sin código); (b) reanudar y completar la prueba funcional de C-004; (c) commitear lo ya validado (C-002+C-003+correcciones técnicas de C-004: `proyectos-seguimiento/route.ts` GET y `next.config.ts`); (d) un bloque futuro e independiente para ACC-019, ACC-021 y ACC-022; (e) cualquiera de los bloques independientes de Grupo B o Grupo C. La migración de Seguimiento sigue CONFIRMADA/APLICADA (no volver a ejecutar).
