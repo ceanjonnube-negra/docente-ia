@@ -1165,8 +1165,44 @@ Durante la prueba funcional real de Planeación (antes de crear ningún registro
 
 **Confirmado explícitamente que no se tocaron:** Chat IA (`app/api/chat/route.ts`), Clasificador de Nivel 0 (`lib/clasificadorNivel0.ts`), interfaz de Planeación, Seguimiento, Lista, Calendario, Asistencia, base de datos (sin migraciones) ni políticas RLS.
 
+## C-005 — Paso 3A completado: consulta de planeaciones desde el Chat IA (2026-08-03)
+
+**Estado: completado y verificado — integración aditiva, sin alterar el comportamiento existente de ninguna otra intención.**
+
+**Intención agregada:** `planeacion_consultar` (Clasificador de Nivel 0, `lib/clasificadorNivel0.ts` — regla 20, campos nuevos `tipo_consulta_planeacion`/`periodo_planeacion_consulta`/`estado_planeacion_consulta`/`nombre_planeacion_consulta`, todos opcionales).
+
+**El Chat IA ya puede consultar planeaciones ya guardadas mediante:**
+- listado general (sin filtro);
+- trimestre o periodo (texto libre del docente, resuelto contra `periodos_evaluacion` real);
+- estado (borrador/publicada/archivada);
+- planeación actual (vigente para la fecha de hoy);
+- última planeación (la de fecha de inicio más reciente);
+- búsqueda por nombre o tema, con desambiguación explícita si hay varias coincidencias (nunca elige arbitrariamente);
+- consulta por contexto cuando existe una coincidencia inequívoca — incluida la resolución de referencias vagas de continuación (ej. "ábrela") contra el nombre de planeación mencionado en el turno anterior del asistente, usando el mismo mecanismo de texto reciente que ya usa la regla 13 (sin memoria nueva).
+
+**Reutiliza exclusivamente la capa aislada de persistencia del Paso 2** (`listarPlaneaciones`, `obtenerPlaneacionPorId` de `lib/planeacion/persistencia.ts`) — cero lógica de seguridad nueva: ambas funciones ya resuelven el docente real desde el cliente autenticado y ya filtran por `docente_id`/`grupo_id`.
+
+**Archivos modificados/creados — exactamente 5:**
+- `app/api/chat/route.ts` — 1 línea aditiva (agrega `canal` al contexto que ya se pasa al dispatcher de Herramientas).
+- `lib/clasificadorNivel0.ts` — nueva intención y campos, regla 20 nueva al final; reglas 1-19 sin alterar.
+- `lib/motorContexto.ts` — función de solo lectura nueva `periodosEvaluacionDelCiclo()`.
+- `lib/asistente/herramientasModulo.ts` — nueva Herramienta `planeacion_consultar` (solo lectura, registrada en el mismo `REGISTRO` determinista que ya usan `consultar_documentos`/`consultar_apoyo`/`consultar_asistencia_grupo`), campo opcional `canal` agregado a `ContextoEjecucionHerramienta`.
+- `scripts/verificar-planeacion-consultar.ts` — pruebas.
+
+**Integración 100% aditiva — confirmado que no se modificó el comportamiento existente de:** ficha descriptiva, calendario, asistencia, incidencias, consultas SEP ni respuestas generales (ninguna regla del clasificador se tocó salvo la nueva regla 20; único cambio en `route.ts` es la línea aditiva ya descrita). En el canal de voz, las respuestas de esta consulta permanecen breves (una frase, sin viñetas ni bloques extensos) — verificado en las pruebas.
+
+**No implementado en este paso (queda para el Paso 3B o posteriores):** creación de planeaciones, edición, aprobación, persistencia automática, archivado desde el Chat IA, generación de hoja de evaluación.
+
+**Sin operaciones reales de escritura:** confirmado por revisión de código (cero `INSERT`/`UPDATE`/`DELETE` en el código nuevo) y por prueba automatizada dedicada (caso 14 — 0 escrituras registradas en ningún escenario). No se usó `service_role` ni se creó cliente administrativo — se reutiliza siempre el cliente ya autenticado de la solicitud.
+
+**Pruebas — 16 escenarios pedidos, 18 aserciones, todas aprobadas:** listado general; consulta sin registros; una planeación; varias planeaciones; filtro por trimestre; filtro por estado archivado; planeación actual; última planeación; búsqueda exacta por nombre; varias coincidencias por nombre (pide aclaración); planeación inexistente por nombre (mensaje distinto de "no tienes ninguna", ya que sí existen otras); protección entre docentes; protección entre grupos; confirmación de cero escrituras; respuesta breve en canal de voz (detalle y lista); frase pedagógica que menciona "planeación" sin pedir datos guardados (no activa la Herramienta).
+
+**Verificaciones técnicas:** `npx tsx scripts/verificar-planeacion-consultar.ts` (18/18 aprobadas), `npx tsc --noEmit` (0 errores), `npx eslint` sobre los 5 archivos (2 avisos preexistentes, ambos fuera de los cambios de este paso — ver `docs/CHANGE_LOG_TECHNICAL.md`).
+
+**Commit funcional aislado:** `bb5f5f58b87d2d601d099e7c69edc49db0c3b276` — exactamente los 5 archivos listados arriba, sin push.
+
 ## Próximo bloque permitido
 
-**C-005, Paso 3 — todavía NO iniciado, requiere autorización explícita aparte.** Integración de la capa de persistencia del Paso 2 con el Chat IA: nuevos intents, cambios en `app/api/chat/route.ts` y en el Clasificador de Nivel 0, persistencia automática al aprobar, vinculación con la hoja de evaluación final.
+**C-005, Paso 3B — todavía NO iniciado, requiere autorización explícita aparte.** Creación de planeaciones desde el Chat IA: persistencia automática al aprobar, y en fases posteriores, edición, archivado desde el Chat IA y vinculación con la hoja de evaluación final.
 
 Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto), UI-023 (tarjeta redundante de sidebar), UI-024 (duplicación de accesos manuales de creación — nuevo, ver arriba). La migración `seguimiento_fase3.sql` sigue CONFIRMADA/APLICADA (no volver a ejecutar); las 2 migraciones correctivas de Supabase tampoco deben volver a ejecutarse (son idempotentes, pero no hace falta repetirlas).
