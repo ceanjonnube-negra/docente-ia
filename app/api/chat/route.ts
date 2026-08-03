@@ -10,7 +10,6 @@ import {
   categoriaEventoCalendario,
   construirTextoListaAlumnos,
   contextoAlumno,
-  contextoGrupo,
   escribirAsistencia,
   registrarAsistenciaMasiva,
   registrarIncidencia,
@@ -19,6 +18,8 @@ import {
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
+import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
+import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -671,6 +672,9 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('descripcion_incidencia')) {
           return respuestaTexto('¿Qué fue lo que pasó exactamente?')
         }
+        if (clasificacion.datos_faltantes.includes('fecha_o_duracion')) {
+          return respuestaTexto('¿Para cuántos días o qué fechas te gustaría esta planeación?')
+        }
       }
 
       // Separación estricta entre conversación libre y consultas de
@@ -680,7 +684,7 @@ export async function POST(req: NextRequest) {
       // cualquier futura que se registre ahí), la respuesta sale
       // ÚNICAMENTE de esa Herramienta — nunca del modelo grande. Único
       // punto de entrada para todas ellas; ver ese archivo para la
-      // lista completa y por qué ficha_descriptiva/planeacion_nueva/
+      // lista completa y por qué ficha_descriptiva/planeacion_generar/
       // consultar_calendario NO están ahí (generación/razonamiento
       // real, no una cifra fija).
       marcarTelemetria('tool:execution_started')
@@ -928,7 +932,7 @@ export async function POST(req: NextRequest) {
         return respuestaTexto(`Mostrando ${etiquetaFiltro[filtro] ?? 'la lista'}.\n${marcador}`)
       }
 
-      // Nivel 4: ficha_descriptiva / planeacion_nueva / consultar_calendario
+      // Nivel 4: ficha_descriptiva / planeacion_generar / consultar_calendario
       // — estos tres siguen pasando por Claude a propósito (generación
       // real de un documento, o razonamiento sobre un rango de fechas
       // en lenguaje natural), pero SIEMPRE con datos reales ya
@@ -942,9 +946,24 @@ export async function POST(req: NextRequest) {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
             const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
-          } else if (clasificacion.intencion_principal === 'planeacion_nueva' && sesion.grupo_activo_id) {
-            const ctxGrupo = await contextoGrupo(supabaseUser, sesion.grupo_activo_id)
-            contextoEnriquecido += `\n\nCONTEXTO REAL DEL GRUPO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxGrupo)}`
+          } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id) {
+            // C-005, Paso 3B — reemplaza lo que antes era planeacion_nueva
+            // (solo inyectaba contextoGrupo). Ahora también calcula fechas
+            // reales (calcularFechasPlaneacion, única autoridad — ver
+            // lib/planeacion/generarBorrador.ts), resuelve el periodo de
+            // evaluación vigente y trae un resumen de planeaciones previas
+            // para evitar repetir tema — todo de solo lectura, sin
+            // persistir nada en este paso.
+            const resultadoGeneracion = await prepararContextoGeneracionPlaneacion(supabaseUser, sesion, {
+              tema: clasificacion.tema_planeacion,
+              fechaInicio: clasificacion.fecha_inicio_planeacion,
+              fechaFin: clasificacion.fecha_fin_planeacion,
+              duracionDias: clasificacion.duracion_dias_planeacion,
+              duracionSemanas: clasificacion.duracion_semanas_planeacion,
+              momentoRelativo: clasificacion.momento_relativo_planeacion,
+            })
+            contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
+            contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el

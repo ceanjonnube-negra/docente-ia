@@ -266,12 +266,22 @@ export async function documentosDelDocente(sb: SupabaseClient, userId: string, l
   };
 }
 
-export type PeriodoEvaluacion = { id: string; nombre: string; numero_periodo: number };
+export type PeriodoEvaluacion = {
+  id: string
+  nombre: string
+  numero_periodo: number
+  // Agregadas en C-005 Paso 3B para resolver el "periodo de evaluación
+  // actual" (el que cubre la fecha de hoy) sin pedírselo al docente —
+  // ver lib/planeacion/generarBorrador.ts. Paso 3A no las usaba y
+  // sigue funcionando igual (campos adicionales, no rompen su uso).
+  fecha_inicio: string | null
+  fecha_fin: string | null
+};
 
 export async function periodosEvaluacionDelCiclo(sb: SupabaseClient, cicloEscolarId: string): Promise<PeriodoEvaluacion[]> {
   const { data } = await sb
     .from('periodos_evaluacion')
-    .select('id, nombre, numero_periodo')
+    .select('id, nombre, numero_periodo, fecha_inicio, fecha_fin')
     .eq('ciclo_escolar_id', cicloEscolarId)
     .order('numero_periodo');
 
