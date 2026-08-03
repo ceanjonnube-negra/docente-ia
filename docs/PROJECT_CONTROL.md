@@ -1201,8 +1201,43 @@ Durante la prueba funcional real de Planeación (antes de crear ningún registro
 
 **Commit funcional aislado:** `bb5f5f58b87d2d601d099e7c69edc49db0c3b276` — exactamente los 5 archivos listados arriba, sin push.
 
+## C-005 — Paso 3B completado: generación de borrador de planeación desde el Chat IA, sin persistencia (2026-08-03)
+
+**Estado: completado y verificado.**
+
+**Decisión arquitectónica ejecutada: `planeacion_nueva` fue sustituida por `planeacion_generar` como única intención oficial para crear una planeación nueva desde el Chat IA.** Antes de implementar el Paso 3B se auditó `planeacion_nueva` (intención preexistente, sin relación con `lib/planeacion/`, que solo inyectaba el contexto del grupo y dejaba que Claude redactara texto libre con una plantilla genérica, sin fechas reales, sin calendario, sin periodo de evaluación, sin hoja de evaluación, sin ninguna prueba que la cubriera). Se confirmó que mantener ambas intenciones activas al mismo tiempo habría hecho que el clasificador compitiera de forma impredecible por frases prácticamente idénticas ("hazme una planeación", "genera una planeación", "prepara una planeación", "planea dos semanas") — con autorización explícita, se renombró en los 2 puntos donde vivía (la regla del clasificador y su rama en `app/api/chat/route.ts`), y se verificó que no queda ninguna referencia funcional a `planeacion_nueva` en el código. No existen dos intenciones compitiendo por esas frases.
+
+**El Chat IA ya puede generar un borrador de planeación con:**
+- contexto real del docente, grupo activo y grado (reutilizando la RPC `contexto_grupo` ya existente);
+- periodo de evaluación vigente, inferido automáticamente por fecha (nunca se le pregunta al docente);
+- calendario escolar disponible (festivos, suspensiones, vacaciones y eventos SEP marcados como sin clases, mapeados desde `calendario_eventos` real);
+- cálculo determinista de fechas hábiles, reutilizando `calcularFechasPlaneacion()` (Paso 1) como única autoridad — incluida la resolución de referencias relativas como "después de vacaciones" contra el calendario real;
+- campos formativos, contenidos, PDA, propósito, metodología, producto final, secuencia didáctica (actividades de inicio/desarrollo/cierre), recursos, evidencias, indicadores de evaluación, adecuaciones o apoyos, y observaciones honestas sobre los ajustes de calendario aplicados — los ~20 elementos requeridos, todos exigidos explícitamente en las instrucciones inyectadas para este turno.
+
+**El borrador incluye la estructura provisional de una única hoja de evaluación final** (identificador provisional, nombre del proyecto, grupo, alumnos, indicadores derivados de la planeación, espacio imprimible por alumno, nota de que está pensada para reconocimiento futuro por fotografía) — **todavía no genera PDF definitivo, no la guarda, y no crea ningún registro en Seguimiento.**
+
+**Correcciones y aprobación, sin persistencia:** las correcciones ("cambia la actividad del tercer día", "hazla más sencilla", "amplíala una semana", etc.) operan sobre el mismo borrador — se resuelven reutilizando el historial de conversación ya existente de la aplicación, sin ningún mecanismo nuevo de almacenamiento, y nunca crean una planeación nueva sin relación. Órdenes de aprobación ("guárdala", "apruébala", "déjala así") se reconocen dentro de la misma intención, pero las instrucciones prohíben explícitamente decir que ya se guardó — el Chat IA responde que el borrador quedó listo y que guardar se habilitará en una fase posterior (Paso 3C).
+
+**Archivos modificados/creados — exactamente 7:**
+- `app/api/chat/route.ts` — la rama renombrada ahora ensambla el contexto real completo e inyecta las instrucciones de generación; se agregó un atajo adicional junto al mecanismo ya existente de datos faltantes para preguntar únicamente el dato de tiempo indispensable cuando falta.
+- `lib/clasificadorNivel0.ts` — intención `planeacion_generar` (reemplaza a `planeacion_nueva`), 6 campos nuevos, regla 4 reescrita con ejemplos y distinción explícita frente a `planeacion_consultar` y preguntas educativas generales, regla 4.1 nueva (dato de tiempo indispensable).
+- `lib/motorContexto.ts` — `PeriodoEvaluacion` ahora incluye `fecha_inicio`/`fecha_fin` (aditivo, no afecta el uso ya existente del Paso 3A).
+- `lib/asistente/instruccionesPlaneacionGenerar.ts` (nuevo) — instrucciones de formato del borrador, de la hoja de evaluación provisional, de correcciones/aprobación y de brevedad en voz, inyectadas solo en este turno.
+- `lib/planeacion/generarBorrador.ts` (nuevo) — ensamblado determinista de contexto real (calendario, periodo, planeaciones previas, cálculo de fechas); solo lectura.
+- `scripts/verificar-generar-borrador-planeacion.ts` (nuevo) y `scripts/verificar-planeacion-consultar.ts` (actualizado por compatibilidad de tipos, sin cambio de comportamiento) — pruebas.
+
+**Sin operaciones reales de escritura:** confirmado por revisión de código (cero `INSERT`/`UPDATE`/`DELETE` en los archivos nuevos) y por prueba automatizada dedicada con contador de escrituras. No se usó `service_role` ni se creó cliente administrativo. No se modificó la interfaz, la base de datos, las políticas RLS, Seguimiento, Lista, Calendario ni Asistencia.
+
+**Sin regresiones:** `planeacion_consultar` (Paso 3A) sigue funcionando sin cambios de comportamiento (24/24 aserciones aprobadas); `ficha_descriptiva`, `consultar_calendario`, asistencia, incidencias y consultas SEP permanecen intactas (confirmado por diff — sus reglas y ramas no fueron tocadas).
+
+**Pruebas — 24 escenarios pedidos, 43 aserciones, todas aprobadas.** Donde el caso depende de la clasificación real de Claude o del texto que redacta el modelo grande, no es posible probarlo de forma determinista (ninguna prueba de este proyecto llama a Claude) — se verificó en su lugar el texto real de las reglas y de las instrucciones inyectadas, y el comportamiento determinista completo (fechas, calendario, periodo, escrituras) con un doble de Supabase en memoria.
+
+**Verificaciones técnicas:** `npx tsx scripts/verificar-generar-borrador-planeacion.ts` (43/43), `npx tsx scripts/verificar-planeacion-consultar.ts` (24/24, sin regresión), `npx tsx scripts/verificar-calculo-fechas-planeacion.ts` (28/28, sin regresión), `npx tsc --noEmit` (0 errores), `npx eslint` sobre los 7 archivos (2 avisos preexistentes, ambos fuera de los cambios de este paso).
+
+**Commit funcional aislado:** `401531aaf7507bd83dc03e60e812c10249011a44` — exactamente los 7 archivos listados arriba, sin push.
+
 ## Próximo bloque permitido
 
-**C-005, Paso 3B — todavía NO iniciado, requiere autorización explícita aparte.** Creación de planeaciones desde el Chat IA: persistencia automática al aprobar, y en fases posteriores, edición, archivado desde el Chat IA y vinculación con la hoja de evaluación final.
+**C-005, Paso 3C — todavía NO iniciado, requiere autorización explícita aparte.** Persistencia real al aprobar un borrador (crear la planeación y sus proyectos), y en fases posteriores, edición, archivado desde el Chat IA y vinculación con la hoja de evaluación final.
 
 Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto), UI-023 (tarjeta redundante de sidebar), UI-024 (duplicación de accesos manuales de creación — nuevo, ver arriba). La migración `seguimiento_fase3.sql` sigue CONFIRMADA/APLICADA (no volver a ejecutar); las 2 migraciones correctivas de Supabase tampoco deben volver a ejecutarse (son idempotentes, pero no hace falta repetirlas).
