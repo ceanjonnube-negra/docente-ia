@@ -27,6 +27,7 @@ export type ClasificacionNivel0 = {
     | 'consultar_calendario'
     | 'ficha_descriptiva'
     | 'planeacion_nueva'
+    | 'planeacion_consultar'
     | 'consultar_alumno_lista'
     | 'navegar_alumno_lista'
     | 'consultar_incidencias_alumno'
@@ -83,6 +84,30 @@ export type ClasificacionNivel0 = {
   // en cualquier otra intención.
   tipo_incidencia: string | null;
   descripcion_incidencia: string | null;
+  // Solo para planeacion_consultar (C-005, Paso 3A) — qué desea
+  // consultar sobre sus planeaciones YA GUARDADAS. 'listado_general':
+  // todas las del grupo activo, sin filtro. 'por_periodo': un
+  // trimestre/periodo específico (periodo_planeacion_consulta).
+  // 'por_estado': un estado específico (estado_planeacion_consulta).
+  // 'actual': la vigente para hoy. 'ultima': la más reciente por
+  // fecha de inicio. 'por_nombre': busca una en particular por nombre
+  // o tema (nombre_planeacion_consulta). null en cualquier otra
+  // intención.
+  tipo_consulta_planeacion: 'listado_general' | 'por_periodo' | 'por_estado' | 'actual' | 'ultima' | 'por_nombre' | null;
+  // Solo relevante con tipo_consulta_planeacion="por_periodo" — el
+  // trimestre/periodo tal cual lo dijo el maestro (ej. "primer
+  // trimestre", "trimestre 2"). La resolución exacta contra el
+  // periodo_evaluacion_id real la hace el código, nunca este campo.
+  periodo_planeacion_consulta: string | null;
+  // Solo relevante con tipo_consulta_planeacion="por_estado".
+  estado_planeacion_consulta: 'borrador' | 'publicada' | 'archivada' | null;
+  // Solo relevante con tipo_consulta_planeacion="por_nombre" — el
+  // nombre o tema buscado, tomado del mensaje actual, o (si el
+  // mensaje es una referencia vaga de continuación, ej. "ábrela") del
+  // nombre de planeación mencionado en el ÚLTIMO turno del asistente
+  // en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN". Nunca inventado si no
+  // aparece en ninguno de los dos.
+  nombre_planeacion_consulta: string | null;
   datos_faltantes: string[];
   nivel_confianza: number;
   requiere_confirmacion: boolean;
@@ -120,6 +145,10 @@ const FALLBACK: ClasificacionNivel0 = {
   grupo_solicitado: null,
   tipo_incidencia: null,
   descripcion_incidencia: null,
+  tipo_consulta_planeacion: null,
+  periodo_planeacion_consulta: null,
+  estado_planeacion_consulta: null,
+  nombre_planeacion_consulta: null,
   datos_faltantes: [],
   nivel_confianza: 0,
   requiere_confirmacion: false,
@@ -142,7 +171,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida:
 {
-  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_nueva" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_nueva" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "conversacion_general" | "intencion_no_reconocida",
   "nivel_ejecucion": 1 | 2 | 3 | 4,
   "requiere_ia": boolean,
   "requiere_contexto_memoria": boolean,
@@ -161,6 +190,10 @@ Formato exacto de salida:
   "grupo_solicitado": "A" | "B" | "C" | "D" | "E" | null,
   "tipo_incidencia": string | null,
   "descripcion_incidencia": string | null,
+  "tipo_consulta_planeacion": "listado_general" | "por_periodo" | "por_estado" | "actual" | "ultima" | "por_nombre" | null,
+  "periodo_planeacion_consulta": string | null,
+  "estado_planeacion_consulta": "borrador" | "publicada" | "archivada" | null,
+  "nombre_planeacion_consulta": string | null,
   "datos_faltantes": string[],
   "nivel_confianza": number entre 0 y 1,
   "requiere_confirmacion": boolean,
@@ -207,7 +240,8 @@ REGLAS:
 16. Si pide ver la Lista mostrando SOLO un subconjunto, sin nombrar a un alumno específico → intencion_principal="navegar_lista_filtrada", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, entidades_resueltas.alumno_id=null. Ejemplos: "muéstrame únicamente los ausentes", "muéstrame solo los presentes", "ver solo las niñas", "enséñame nada más los niños", "filtra la lista por ausentes". filtro_lista: "ausentes" si pide solo ausentes/faltantes/quién faltó, "presentes" si pide solo presentes/quién sí vino, "ninas" si pide solo niñas/mujeres/alumnas, "ninos" si pide solo niños/hombres/alumnos, "todos" si pide ver la lista completa sin filtro específico pero de todas formas con un verbo de navegación (abre/muéstrame/ve a la lista, sin más). Nunca actives esta regla si el mensaje ya nombra a un alumno específico (eso es 14/14.1).
 17. Si el mensaje indica un cambio de grado y/o grupo escolar del DOCENTE (no de un alumno, no de la lista) → intencion_principal="actualizar_perfil_docente", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "Ya somos cuarto.", "Ya somos 4° B.", "Corrige el grupo.", "Cambia el grado.", "Ahora es 4° B.", "Cambiamos a tercero.", "Ahora somos el grupo C.", "Pásame a 5° A.". Resuelve el grado mencionado contra el dominio exacto "1°"–"6°" (convierte palabras a número: primero→"1°", segundo→"2°", tercero→"3°", cuarto→"4°", quinto→"5°", sexto→"6°"; si ya viene como dígito o con el símbolo, solo normalízalo al formato "N°"). Resuelve el grupo mencionado contra el dominio exacto "A"–"E" (una sola letra, mayúscula). Si el mensaje solo menciona el grado, grupo_solicitado=null; si solo menciona el grupo, grado_solicitado=null — NUNCA inventes el campo que no se mencionó. Si no puedes resolver NI grado NI grupo dentro de esos dominios válidos, no uses esta intención — usa "conversacion_general" en su lugar. requiere_confirmacion=false (la confirmación la da la propia respuesta del sistema tras guardar, no una pregunta previa).
 18. requiere_consulta_oficial=true SOLO cuando el mensaje pregunta por información OFICIAL de la SEP/autoridades educativas que puede cambiar con el tiempo y cuya fecha/vigencia exacta el modelo no puede saber con certeza por su cuenta: calendario escolar oficial (inicio/término de ciclo, periodos vacacionales oficiales, días de CTE oficiales a nivel SEP), planes y programas de estudio vigentes, campos formativos vigentes, lineamientos, normas, trámites oficiales, acuerdos publicados por SEP o DOF. Es un campo INDEPENDIENTE de intencion_principal (puede coexistir con "consultar_calendario" si la pregunta es sobre el calendario OFICIAL de la SEP, no el calendario personal que el docente registró en la app, o con "conversacion_general" si no encaja en ninguna otra intención). Ejemplos que SÍ son requiere_consulta_oficial=true: "¿cuándo termina el ciclo escolar 2025-2026?", "¿cuándo inicia el siguiente ciclo escolar?", "¿cuáles son los campos formativos vigentes?", "¿qué dice el plan de estudios sobre...?", "¿cuándo son las vacaciones de verano según la SEP?". IMPORTANTE: distingue esto de "consultar_calendario" (regla 8), que es sobre eventos que EL DOCENTE registró en su propio calendario dentro de la app ("¿qué tengo mañana?", "¿hay junta el viernes?") — si la pregunta es sobre SU agenda personal, requiere_consulta_oficial=false aunque intencion_principal sea "consultar_calendario". requiere_consulta_oficial=false SIEMPRE para: datos internos del grupo (asistencias, alumnos, incidencias, documentos ya guardados en la app), y para conversación casual. Nunca lo actives "por si acaso" — solo cuando la pregunta específicamente requiera una fecha o dato oficial vigente que no está en DATOS DEL MAESTRO.
-19. Si pide REGISTRAR/REPORTAR/ANOTAR/DOCUMENTAR/LEVANTAR una incidencia, reporte o problema de conducta/comportamiento de UN alumno mencionado por nombre → intencion_principal="registrar_incidencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "repórtale una incidencia a [nombre] por interrumpir la clase", "registra que [nombre] se peleó con un compañero", "anota una incidencia de conducta para [nombre]", "levanta un reporte a [nombre] porque no trajo material", "documenta que [nombre] fue grosero con un compañero", "pon una incidencia a [nombre]: no hizo la tarea". Extrae dos campos SOLO de lo que el maestro realmente dijo, sin inventar ni completar HECHOS que no dio: tipo_incidencia (una categoría breve, 2-4 palabras, la que mejor describa lo ocurrido — ej. "Conducta", "Falta de material", "Conflicto entre compañeros", "Incumplimiento de tarea") y descripcion_incidencia. descripcion_incidencia va a quedar guardada tal cual en el expediente oficial del alumno, así que NUNCA la copies literal en el lenguaje coloquial del maestro — redáctala en registro formal y administrativo, el mismo tono objetivo y en tercera persona que usarías para un reporte oficial SEP, PRESERVANDO EXACTAMENTE los mismos hechos que el maestro relató: nunca agregues, quites, minimices, exageres ni inventes ningún detalle — solo cambia el registro/tono de la redacción, nunca el contenido. Ejemplo: si el maestro dice "se portó mal, no trabajó y le jaló el pelo a Luis Ángel", descripcion_incidencia debe quedar como "La alumna mostró conducta inapropiada durante la jornada escolar y no participó en las actividades académicas programadas. Se registró un incidente de agresión física hacia un compañero, consistente en jalón de cabello, ocasionado a Luis Ángel." Si el maestro solo dice "repórtale una incidencia a [nombre]" sin decir qué pasó, agrega "descripcion_incidencia" a datos_faltantes — nunca inventes tipo ni descripción para rellenar. Esto es DISTINTO de 2.1 (asistencia: presente/falta/retardo) — llegar tarde por sí solo es un asunto de asistencia (retardo), no una incidencia de conducta, a menos que el maestro relacione explícitamente el retraso con un problema de comportamiento.`;
+19. Si pide REGISTRAR/REPORTAR/ANOTAR/DOCUMENTAR/LEVANTAR una incidencia, reporte o problema de conducta/comportamiento de UN alumno mencionado por nombre → intencion_principal="registrar_incidencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "repórtale una incidencia a [nombre] por interrumpir la clase", "registra que [nombre] se peleó con un compañero", "anota una incidencia de conducta para [nombre]", "levanta un reporte a [nombre] porque no trajo material", "documenta que [nombre] fue grosero con un compañero", "pon una incidencia a [nombre]: no hizo la tarea". Extrae dos campos SOLO de lo que el maestro realmente dijo, sin inventar ni completar HECHOS que no dio: tipo_incidencia (una categoría breve, 2-4 palabras, la que mejor describa lo ocurrido — ej. "Conducta", "Falta de material", "Conflicto entre compañeros", "Incumplimiento de tarea") y descripcion_incidencia. descripcion_incidencia va a quedar guardada tal cual en el expediente oficial del alumno, así que NUNCA la copies literal en el lenguaje coloquial del maestro — redáctala en registro formal y administrativo, el mismo tono objetivo y en tercera persona que usarías para un reporte oficial SEP, PRESERVANDO EXACTAMENTE los mismos hechos que el maestro relató: nunca agregues, quites, minimices, exageres ni inventes ningún detalle — solo cambia el registro/tono de la redacción, nunca el contenido. Ejemplo: si el maestro dice "se portó mal, no trabajó y le jaló el pelo a Luis Ángel", descripcion_incidencia debe quedar como "La alumna mostró conducta inapropiada durante la jornada escolar y no participó en las actividades académicas programadas. Se registró un incidente de agresión física hacia un compañero, consistente en jalón de cabello, ocasionado a Luis Ángel." Si el maestro solo dice "repórtale una incidencia a [nombre]" sin decir qué pasó, agrega "descripcion_incidencia" a datos_faltantes — nunca inventes tipo ni descripción para rellenar. Esto es DISTINTO de 2.1 (asistencia: presente/falta/retardo) — llegar tarde por sí solo es un asunto de asistencia (retardo), no una incidencia de conducta, a menos que el maestro relacione explícitamente el retraso con un problema de comportamiento.
+20. Si el docente pregunta por planeaciones YA GUARDADAS en la aplicación — listado general, filtradas por trimestre/periodo, por estado (borrador/publicada/archivada), la vigente/actual, la más reciente/última, o busca una en particular por nombre o tema — → intencion_principal="planeacion_consultar", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué planeaciones tengo?", "muéstrame las planeaciones del primer trimestre", "¿cuál es mi planeación actual?", "abre la planeación de leyendas", "¿qué fechas tiene mi última planeación?", "¿cuáles están archivadas?". Resuelve tipo_consulta_planeacion así: "listado_general" si no especifica ningún filtro; "por_periodo" + periodo_planeacion_consulta (el trimestre/periodo tal cual lo dijo, ej. "primer trimestre") si menciona un periodo o trimestre; "por_estado" + estado_planeacion_consulta ("borrador"|"publicada"|"archivada") si menciona un estado; "actual" si pregunta por la vigente o la de este momento; "ultima" si pregunta por la más reciente o la última que creó; "por_nombre" + nombre_planeacion_consulta (el nombre o tema mencionado) si busca una planeación específica. Si el mensaje es una referencia vaga de continuación sin nombre propio (ej. "ábrela", "muéstrame esa", "ábreme esa planeación") Y el ÚLTIMO turno del ASISTENTE en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN" menciona el nombre de UNA planeación específica, usa tipo_consulta_planeacion="por_nombre" con nombre_planeacion_consulta tomado de ese turno anterior — nunca inventado si no aparece ahí. DISTINGUE esto de "planeacion_nueva" (regla 4 — pedir CREAR una planeación nueva) y de una pregunta general o pedagógica sobre qué es una planeación o cómo planear (esos casos NO son esta intención aunque mencionen la palabra "planeación") — en esos casos usa "conversacion_general".`;
 }
 
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras

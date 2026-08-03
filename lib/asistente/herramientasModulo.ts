@@ -41,9 +41,13 @@ import {
   documentosDelDocente,
   incidenciasAlumno,
   necesidadesApoyoGrupo,
+  periodosEvaluacionDelCiclo,
   type ConteoAsistencia,
+  type PeriodoEvaluacion,
 } from '../motorContexto'
 import { formatearFecha } from '../tiempo/TimeService'
+import { listarPlaneaciones, obtenerPlaneacionPorId } from '../planeacion/persistencia'
+import type { EstadoPlaneacion, Planeacion } from '../planeacion/tipos'
 
 export type ResultadoHerramientaModulo<T> = { exito: true; datos: T } | { exito: false; error: string }
 
@@ -52,6 +56,12 @@ export type ContextoEjecucionHerramienta = {
   sesion: SesionContexto
   userId: string | null
   zonaHoraria: string | null | undefined
+  // Solo para ajustar la brevedad de la respuesta en el canal de voz
+  // (ver planeacion_consultar, C-005 Paso 3A) — 'voice' cuando el
+  // turno vino de conversación hablada (channel==="voice" en
+  // app/api/chat/route.ts), 'text'/undefined en cualquier otro caso.
+  // Las herramientas existentes no lo usan — campo opcional, aditivo.
+  canal?: 'voice' | 'text'
 }
 
 type DisponibilidadHerramienta = { listo: true } | { listo: false; mensaje: string }
@@ -272,12 +282,199 @@ const herramientaConsultarDocumentos = definir({
   },
 })
 
+// --- Planeaciones ya guardadas (C-005, Paso 3A — solo lectura) ---
+//
+// Reutiliza exclusivamente lib/planeacion/persistencia.ts
+// (listarPlaneaciones/obtenerPlaneacionPorId), que ya resuelven el
+// docente real desde el cliente autenticado y ya filtran por
+// docente_id — cero lógica de seguridad nueva aquí. Nunca INSERT,
+// UPDATE ni DELETE.
+
+// Quita diacríticos (acentos) tras normalizar a NFD, usando puntos de
+// código explícitos (U+0300-U+036F) para no depender de caracteres
+// combinantes literales en el código fuente.
+const RANGO_DIACRITICOS = new RegExp('[̀-ͯ]', 'g')
+
+function normalizarTexto(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(RANGO_DIACRITICOS, '').trim()
+}
+
+const ORDINALES_PERIODO: Record<string, number> = {
+  primer: 1, primero: 1, '1': 1, '1er': 1, '1ro': 1, '1°': 1,
+  segundo: 2, '2': 2, '2do': 2, '2°': 2,
+  tercer: 3, tercero: 3, '3': 3, '3er': 3, '3ro': 3, '3°': 3,
+  cuarto: 4, '4': 4, '4to': 4, '4°': 4,
+}
+
+function resolverPeriodoPorTexto(periodos: PeriodoEvaluacion[], texto: string): PeriodoEvaluacion | null {
+  const normalizado = normalizarTexto(texto)
+  for (const [palabra, numero] of Object.entries(ORDINALES_PERIODO)) {
+    if (normalizado.includes(palabra)) {
+      const encontrado = periodos.find((p) => p.numero_periodo === numero)
+      if (encontrado) return encontrado
+    }
+  }
+  return periodos.find((p) => normalizado.includes(normalizarTexto(p.nombre))) || null
+}
+
+function filtrarPlaneacionesPorNombre(planeaciones: Planeacion[], texto: string): Planeacion[] {
+  const normalizado = normalizarTexto(texto)
+  if (!normalizado) return []
+  return planeaciones.filter((p) => {
+    const nombreNormalizado = normalizarTexto(p.nombre)
+    return nombreNormalizado.includes(normalizado) || normalizado.includes(nombreNormalizado)
+  })
+}
+
+const ETIQUETA_ESTADO_PLANEACION: Record<EstadoPlaneacion, string> = {
+  borrador: 'en borrador',
+  publicada: 'publicada',
+  archivada: 'archivada',
+}
+
+function formatearRangoFechas(p: Planeacion, zonaHoraria: string | null | undefined): string {
+  if (!p.fecha_inicio && !p.fecha_fin) return 'sin fechas asignadas'
+  const opciones: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }
+  const inicio = p.fecha_inicio ? formatearFecha(p.fecha_inicio, zonaHoraria, opciones) : '(sin inicio)'
+  const fin = p.fecha_fin ? formatearFecha(p.fecha_fin, zonaHoraria, opciones) : '(sin fin)'
+  return `${inicio} – ${fin}`
+}
+
+function etiquetaPeriodo(p: Planeacion, periodos: PeriodoEvaluacion[]): string {
+  const periodo = periodos.find((per) => per.id === p.periodo_evaluacion_id)
+  return periodo?.nombre || 'sin periodo asignado'
+}
+
+function formatearPlaneacionDetalle(p: Planeacion, periodos: PeriodoEvaluacion[], zonaHoraria: string | null | undefined, voz: boolean): string {
+  const periodo = etiquetaPeriodo(p, periodos)
+  const fechas = formatearRangoFechas(p, zonaHoraria)
+  const estado = ETIQUETA_ESTADO_PLANEACION[p.estado]
+  if (voz) return `${p.nombre}, ${periodo}, del ${fechas}, ${estado}.`
+  return [`**${p.nombre}**`, `Periodo: ${periodo}`, `Fechas: ${fechas}`, `Estado: ${estado}`].join('\n')
+}
+
+function formatearPlaneacionesLista(planeaciones: Planeacion[], periodos: PeriodoEvaluacion[], zonaHoraria: string | null | undefined, voz: boolean): string {
+  if (voz) {
+    const nombres = planeaciones.slice(0, 3).map((p) => p.nombre)
+    const extra = planeaciones.length > 3 ? ' y otras más' : ''
+    return `Tienes ${planeaciones.length} planeaciones: ${nombres.join(', ')}${extra}.`
+  }
+  const lineas = [`Tienes ${planeaciones.length} planeación(es):`]
+  planeaciones.forEach((p) => {
+    lineas.push(`• ${p.nombre} — ${etiquetaPeriodo(p, periodos)}, ${formatearRangoFechas(p, zonaHoraria)}, ${ETIQUETA_ESTADO_PLANEACION[p.estado]}`)
+  })
+  return lineas.join('\n')
+}
+
+type ResultadoConsultaPlaneaciones =
+  // Sin ninguna planeación guardada en el grupo (sin filtro de por medio).
+  | { tipo: 'vacio' }
+  // Con filtro (periodo/estado/nombre) aplicado, pero cero coincidencias
+  // — el grupo SÍ tiene planeaciones, solo que ninguna cumple el
+  // filtro; mensaje distinto para no decir "no tienes ninguna" cuando
+  // en realidad sí existen, solo no coinciden con la búsqueda.
+  | { tipo: 'sin_coincidencias' }
+  | { tipo: 'detalle'; planeacion: Planeacion; periodos: PeriodoEvaluacion[] }
+  | { tipo: 'lista'; planeaciones: Planeacion[]; periodos: PeriodoEvaluacion[] }
+  | { tipo: 'ambiguo'; planeaciones: Planeacion[] }
+
+const MENSAJE_SIN_PLANEACIONES = 'Todavía no tienes planeaciones guardadas para este grupo.'
+const MENSAJE_SIN_COINCIDENCIAS = 'No encontré planeaciones que coincidan con esa búsqueda.'
+
+const herramientaConsultarPlaneaciones = definir({
+  intent: 'planeacion_consultar',
+  puedeEjecutar: (_clasificacion, ctx) => {
+    if (!ctx.sesion.grupo_activo_id) return { listo: false, mensaje: 'No tengo un grupo activo configurado para consultar tus planeaciones.' }
+    return { listo: true }
+  },
+  ejecutar: async (clasificacion, ctx): Promise<ResultadoHerramientaModulo<ResultadoConsultaPlaneaciones>> => {
+    try {
+      const grupoId = ctx.sesion.grupo_activo_id!
+      const tipo = clasificacion.tipo_consulta_planeacion ?? 'listado_general'
+
+      if (tipo === 'por_periodo' && clasificacion.periodo_planeacion_consulta && ctx.sesion.ciclo_escolar_id) {
+        const periodos = await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id)
+        const periodo = resolverPeriodoPorTexto(periodos, clasificacion.periodo_planeacion_consulta)
+        if (!periodo) return { exito: true, datos: { tipo: 'sin_coincidencias' } }
+        const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId, periodo_evaluacion_id: periodo.id })
+        if (!r.ok) return { exito: false, error: r.error.mensaje }
+        if (r.datos.length === 0) return { exito: true, datos: { tipo: 'sin_coincidencias' } }
+        if (r.datos.length === 1) return { exito: true, datos: { tipo: 'detalle', planeacion: r.datos[0], periodos } }
+        return { exito: true, datos: { tipo: 'lista', planeaciones: r.datos, periodos } }
+      }
+
+      if (tipo === 'por_estado' && clasificacion.estado_planeacion_consulta) {
+        const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId, estado: clasificacion.estado_planeacion_consulta })
+        if (!r.ok) return { exito: false, error: r.error.mensaje }
+        if (r.datos.length === 0) return { exito: true, datos: { tipo: 'sin_coincidencias' } }
+        const periodos = ctx.sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id) : []
+        if (r.datos.length === 1) return { exito: true, datos: { tipo: 'detalle', planeacion: r.datos[0], periodos } }
+        return { exito: true, datos: { tipo: 'lista', planeaciones: r.datos, periodos } }
+      }
+
+      if (tipo === 'por_nombre' && clasificacion.nombre_planeacion_consulta) {
+        const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId })
+        if (!r.ok) return { exito: false, error: r.error.mensaje }
+        const coincidencias = filtrarPlaneacionesPorNombre(r.datos, clasificacion.nombre_planeacion_consulta)
+        if (coincidencias.length === 0) return { exito: true, datos: { tipo: 'sin_coincidencias' } }
+        if (coincidencias.length > 1) return { exito: true, datos: { tipo: 'ambiguo', planeaciones: coincidencias } }
+        const detalle = await obtenerPlaneacionPorId({ supabase: ctx.sb }, coincidencias[0].id)
+        if (!detalle.ok) return { exito: false, error: detalle.error.mensaje }
+        const periodos = ctx.sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id) : []
+        return { exito: true, datos: { tipo: 'detalle', planeacion: detalle.datos.planeacion, periodos } }
+      }
+
+      if (tipo === 'actual') {
+        const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId })
+        if (!r.ok) return { exito: false, error: r.error.mensaje }
+        if (r.datos.length === 0) return { exito: true, datos: { tipo: 'vacio' } }
+        const hoy = ctx.sesion.fecha_actual
+        const vigente = r.datos.find((p) => p.estado !== 'archivada' && p.fecha_inicio && p.fecha_fin && p.fecha_inicio <= hoy && hoy <= p.fecha_fin)
+        if (!vigente) return { exito: true, datos: { tipo: 'sin_coincidencias' } }
+        const periodos = ctx.sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id) : []
+        return { exito: true, datos: { tipo: 'detalle', planeacion: vigente, periodos } }
+      }
+
+      if (tipo === 'ultima') {
+        const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId })
+        if (!r.ok) return { exito: false, error: r.error.mensaje }
+        if (r.datos.length === 0) return { exito: true, datos: { tipo: 'vacio' } }
+        const periodos = ctx.sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id) : []
+        return { exito: true, datos: { tipo: 'detalle', planeacion: r.datos[0], periodos } }
+      }
+
+      // listado_general (default)
+      const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId })
+      if (!r.ok) return { exito: false, error: r.error.mensaje }
+      if (r.datos.length === 0) return { exito: true, datos: { tipo: 'vacio' } }
+      const periodos = ctx.sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(ctx.sb, ctx.sesion.ciclo_escolar_id) : []
+      if (r.datos.length === 1) return { exito: true, datos: { tipo: 'detalle', planeacion: r.datos[0], periodos } }
+      return { exito: true, datos: { tipo: 'lista', planeaciones: r.datos, periodos } }
+    } catch (e) {
+      console.error('[HERRAMIENTA] planeacion_consultar — fallo consultando:', e)
+      return { exito: false, error: 'No fue posible consultar tus planeaciones' }
+    }
+  },
+  formatearRespuesta: (datos: ResultadoConsultaPlaneaciones, _clasificacion, ctx) => {
+    const voz = ctx.canal === 'voice'
+    if (datos.tipo === 'vacio') return MENSAJE_SIN_PLANEACIONES
+    if (datos.tipo === 'sin_coincidencias') return MENSAJE_SIN_COINCIDENCIAS
+    if (datos.tipo === 'ambiguo') {
+      const nombres = datos.planeaciones.map((p) => p.nombre).join(', ')
+      return `Tengo más de una planeación que coincide: ${nombres}. ¿Cuál te interesa?`
+    }
+    if (datos.tipo === 'detalle') return formatearPlaneacionDetalle(datos.planeacion, datos.periodos, ctx.zonaHoraria, voz)
+    return formatearPlaneacionesLista(datos.planeaciones, datos.periodos, ctx.zonaHoraria, voz)
+  },
+})
+
 const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_asistencia: herramientaConsultarAsistencia,
   consultar_asistencia_grupo: herramientaConsultarAsistenciaGrupo,
   consultar_incidencias_alumno: herramientaConsultarIncidencias,
   consultar_apoyo: herramientaConsultarApoyo,
   consultar_documentos: herramientaConsultarDocumentos,
+  planeacion_consultar: herramientaConsultarPlaneaciones,
 }
 
 // Único punto de entrada: si la intención clasificada tiene una

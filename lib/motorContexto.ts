@@ -266,6 +266,18 @@ export async function documentosDelDocente(sb: SupabaseClient, userId: string, l
   };
 }
 
+export type PeriodoEvaluacion = { id: string; nombre: string; numero_periodo: number };
+
+export async function periodosEvaluacionDelCiclo(sb: SupabaseClient, cicloEscolarId: string): Promise<PeriodoEvaluacion[]> {
+  const { data } = await sb
+    .from('periodos_evaluacion')
+    .select('id, nombre, numero_periodo')
+    .eq('ciclo_escolar_id', cicloEscolarId)
+    .order('numero_periodo');
+
+  return (data || []) as PeriodoEvaluacion[];
+}
+
 export type EventoCalendario = { titulo: string; fecha: string; tipo: string };
 
 export async function calendarioProximo(sb: SupabaseClient, userId: string, fechaDesde: string, limite = 10): Promise<EventoCalendario[]> {

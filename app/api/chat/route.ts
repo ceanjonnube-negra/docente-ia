@@ -689,6 +689,7 @@ export async function POST(req: NextRequest) {
         sesion,
         userId,
         zonaHoraria,
+        canal: channel === 'voice' ? 'voice' : 'text',
       })
       marcarTelemetria('tool:execution_finished')
       if (respuestaDeModulo !== null) {
