@@ -194,3 +194,24 @@ Resultado:
 Pruebas: ver "Verificaciones ejecutadas" arriba — todas limpias, sin errores.
 Incidencias: 1 menor — un `let`/`const` detectado por eslint, corregido de inmediato, sin impacto funcional.
 Sin modificaciones funcionales fuera de alcance: confirmado — no se tocó Chat IA, el clasificador de intenciones, la interfaz de Planeación, Seguimiento, Calendario, Lista, Asistencia ni la base de datos; no se crearon registros de prueba; no se ejecutó ninguna migración; no se modificaron políticas RLS; no se hizo commit ni push; no se inició el Paso 2.
+
+---
+
+## 2026-08-03 — C-005, Paso 2 (capa aislada de persistencia)
+
+ID: C-005 — Paso 2
+Acción realizada: con autorización explícita y diseño mostrado y aprobado previamente, se implementaron 5 funciones puras de persistencia para Planeación en `lib/planeacion/`, reutilizables tanto por los endpoints HTTP ya existentes (`app/api/planeaciones/*`) como por el futuro flujo del Chat IA (Paso 3, no iniciado).
+Archivos creados: `lib/planeacion/persistencia.ts` (`crearPlaneacion`, `listarPlaneaciones`, `obtenerPlaneacionPorId`, `actualizarPlaneacion`, `archivarPlaneacion`), `scripts/verificar-persistencia-planeacion.ts` (pruebas con un doble en memoria de `SupabaseClient`, mismo patrón `verificar()` del resto del proyecto).
+Archivos modificados: ninguno de código — `lib/planeacion/tipos.ts` se revisó y no requirió cambios, se reutilizó tal cual.
+Verificaciones ejecutadas: `npx tsx scripts/verificar-persistencia-planeacion.ts` (12 escenarios, 24 aserciones), `npx tsc --noEmit`, `npx eslint` sobre ambos archivos nuevos, `git diff --check`, `git status --short` — repetidas antes del commit, todas limpias.
+Resultado:
+- 24/24 aserciones aprobadas: creación válida; campos faltantes; listado por grupo; listado por trimestre; consulta por ID válida e inexistente; actualización parcial sin sobrescribir campos no incluidos (con incremento de `version`); protección de `docente_id` y de `grupo_id` frente a datos ajenos; archivado sin borrado físico y sin incrementar `version`; error controlado de Supabase devuelto como resultado tipado sin lanzar excepción; confirmación estática de ausencia de `service_role` y de creación de cliente propio.
+- Cada función recibe un `SupabaseClient` ya autenticado con la sesión real del docente (nunca crea uno propio, nunca usa `service_role`); RLS se aplica por el token real, y además cada función resuelve `docenteId` por su cuenta vía `auth.getUser()` como defensa adicional, sin confiar en un `docente_id` recibido como dato.
+- `actualizarPlaneacion` excluye `docente_id`/`grupo_id` de su tipo de entrada a nivel de TypeScript — no solo en tiempo de ejecución.
+- `archivarPlaneacion` usa `UPDATE` del campo `estado` únicamente, sin `DELETE`, sin incrementar `version`.
+- `app/api/chat/route.ts`, `lib/clasificadorNivel0.ts`, la interfaz de Planeación, Seguimiento, Lista, Calendario y Asistencia NO se tocaron — confirmado, el Paso 2 es 100% aislado.
+- Paso 3 (integración con Chat IA: nuevos intents, cambios en `app/api/chat/route.ts` y en el Clasificador de Nivel 0, persistencia automática al aprobar) definido en el diagnóstico previo, pero NO iniciado.
+Commit funcional aislado: `c4b1fbce2112de5ca86d451eb19bd25c505fca3e` — exactamente los 2 archivos listados arriba, sin push.
+Pruebas: ver "Verificaciones ejecutadas" arriba — todas limpias, sin errores.
+Incidencias: 1 menor — la primera corrida de eslint marcó una advertencia por un parámetro del doble de pruebas intencionalmente sin usar (`_columnas` en el `select()` simulado); corregida referenciándolo explícitamente (`void _columnas`), sin efecto funcional.
+Sin modificaciones funcionales fuera de alcance: confirmado — no se tocó Chat IA, el clasificador de intenciones, la interfaz de Planeación, Seguimiento, Calendario, Lista, Asistencia ni la base de datos; no se ejecutó ninguna migración; no se modificaron políticas RLS; no se incluyó ningún archivo ajeno en el commit; no se hizo push; no se inició el Paso 3.

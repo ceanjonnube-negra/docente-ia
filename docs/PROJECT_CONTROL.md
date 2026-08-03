@@ -1138,8 +1138,35 @@ Durante la prueba funcional real de Planeación (antes de crear ningún registro
 
 **Confirmado explícitamente:** `app/api/chat/route.ts` y el Clasificador de Nivel 0 **no se tocaron todavía** — el Paso 1 es una utilidad aislada, sin ningún punto de integración real con el Chat IA todavía.
 
+## C-005 — Paso 2 completado: capa aislada de persistencia (2026-08-03)
+
+**Estado: completado y verificado — aislado, sin tocar Chat IA, Clasificador de Nivel 0, interfaz de Planeación, Seguimiento, Lista, Calendario, Asistencia, base de datos ni políticas RLS.**
+
+**Archivos creados:**
+- `lib/planeacion/persistencia.ts` — 5 funciones puras de persistencia.
+- `scripts/verificar-persistencia-planeacion.ts` — pruebas con un doble en memoria de `SupabaseClient`, mismo patrón `verificar()` ya usado en el resto del proyecto.
+
+`lib/planeacion/tipos.ts` se revisó y **no requirió ningún cambio** — se reutilizó tal cual.
+
+**Funciones disponibles:**
+- `crearPlaneacion` — crea la planeación (y, si vienen, sus proyectos vinculados en `planeacion_proyectos`), validando campos obligatorios y que el grupo pertenezca al docente antes de insertar.
+- `listarPlaneaciones` — filtra por docente autenticado, grupo y, opcionalmente, trimestre/estado.
+- `obtenerPlaneacionPorId` — devuelve la planeación junto con sus proyectos vinculados, con errores controlados de no-encontrado y no-propio.
+- `actualizarPlaneacion` — actualización parcial real (nunca sobrescribe un campo no incluido), incrementa `version` solo cuando hay cambio de contenido, y su tipo de entrada excluye `docente_id`/`grupo_id` a nivel de TypeScript, no solo en tiempo de ejecución.
+- `archivarPlaneacion` — cambia únicamente el `estado` a `archivada` mediante `UPDATE`, sin `DELETE` ni borrado físico; no incrementa `version`.
+
+**Estrategia de cliente y seguridad:** cada función recibe un `SupabaseClient` ya autenticado con la sesión real del docente (el mismo objeto que devuelve `autenticarRequestApi()`) — ninguna función crea su propio cliente ni usa `service_role`. RLS se aplica automáticamente por el token real, y además cada función resuelve `docenteId` por su cuenta vía `auth.getUser()` (nunca confía en un `docente_id` recibido como dato), aplicando la misma defensa en profundidad usada en el resto del proyecto desde la corrección de IDOR de Seguimiento.
+
+**Pruebas — 12 escenarios pedidos, 24 aserciones, todas aprobadas:** creación válida, campos faltantes, listado por grupo, listado por trimestre, consulta por ID válida e inexistente, actualización parcial sin sobrescribir campos no incluidos, protección de `docente_id` y de `grupo_id` frente a datos ajenos, archivado sin borrado físico y sin incrementar versión, error controlado de Supabase devuelto como resultado tipado (sin excepción), y confirmación estática de que el archivo no referencia `service_role` ni crea un cliente propio.
+
+**Verificaciones técnicas:** `npx tsx scripts/verificar-persistencia-planeacion.ts` (24/24 aprobadas), `npx tsc --noEmit` (0 errores), `npx eslint` sobre ambos archivos (0 errores, 0 advertencias).
+
+**Commit funcional aislado:** `c4b1fbce2112de5ca86d451eb19bd25c505fca3e` — exactamente los 2 archivos listados arriba, sin push.
+
+**Confirmado explícitamente que no se tocaron:** Chat IA (`app/api/chat/route.ts`), Clasificador de Nivel 0 (`lib/clasificadorNivel0.ts`), interfaz de Planeación, Seguimiento, Lista, Calendario, Asistencia, base de datos (sin migraciones) ni políticas RLS.
+
 ## Próximo bloque permitido
 
-**C-005, Paso 2 — todavía NO iniciado, requiere autorización explícita aparte.** Según el plan de implementación ya diagnosticado: funciones puras de persistencia en `lib/planeacion/` (crear/editar/archivar, hoy solo existen `tipos.ts` y `calculoFechasHabiles.ts`), reutilizables tanto por los endpoints HTTP ya existentes como por el futuro flujo del Chat IA.
+**C-005, Paso 3 — todavía NO iniciado, requiere autorización explícita aparte.** Integración de la capa de persistencia del Paso 2 con el Chat IA: nuevos intents, cambios en `app/api/chat/route.ts` y en el Clasificador de Nivel 0, persistencia automática al aprobar, vinculación con la hoja de evaluación final.
 
 Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto), UI-023 (tarjeta redundante de sidebar), UI-024 (duplicación de accesos manuales de creación — nuevo, ver arriba). La migración `seguimiento_fase3.sql` sigue CONFIRMADA/APLICADA (no volver a ejecutar); las 2 migraciones correctivas de Supabase tampoco deben volver a ejecutarse (son idempotentes, pero no hace falta repetirlas).
