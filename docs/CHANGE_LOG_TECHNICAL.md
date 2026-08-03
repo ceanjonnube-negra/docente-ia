@@ -174,3 +174,23 @@ Resultado:
 Pruebas: `npx tsc --noEmit`/`npx eslint` no aplicaron en este bloque (sin cambios de código de aplicación); validación estática de ambos archivos SQL (balance de paréntesis, `begin;`/`commit;` únicos, ausencia confirmada de `DROP TABLE`/`TRUNCATE`/`DELETE FROM`/`FOR ALL`/`FOR DELETE`/`SECURITY DEFINER`/`service_role` en instrucciones ejecutables) antes de cada ejecución; `git diff --check` limpio en ambos archivos.
 Incidencias: 1 — la primera migración correctiva no eliminó las políticas heredadas por una discrepancia de nombres en sus `DROP POLICY IF EXISTS`; detectada por el usuario, corregida con una segunda migración específica.
 Sin modificaciones funcionales: confirmado — no se modificó ningún archivo de la interfaz ni de los endpoints ya existentes (`app/api/planeaciones/*`, `app/dashboard/planeacion/page.tsx`), no se ejecutó `migration repair`, no se ejecutó `db reset`, no se perdió ningún dato, no se hizo commit ni push.
+
+---
+
+## 2026-08-03 — C-005, Paso 1 (cálculo determinista de fechas)
+
+ID: C-005 — Paso 1
+Acción realizada: durante la prueba funcional real de Planeación, antes de crear cualquier registro, se detectó que el flujo de creación manual ("+ Nueva") contradice la arquitectura aprobada (creación principal vía Chat IA) y que existe una duplicación de accesos manuales de creación en Seguimiento/ficha del alumno/Planeación (registrada como ACC UI-024, no implementada). Se suspendió la prueba manual y se entregó un diagnóstico completo (sin modificar código) de la integración Chat IA → Planeación, dividida en pasos pequeños. Con autorización explícita, se implementó únicamente el Paso 1: una función aislada y determinista para calcular fechas y días efectivos de clase.
+Archivos creados: `lib/planeacion/calculoFechasHabiles.ts` (función `calcularFechasPlaneacion()`), `scripts/verificar-calculo-fechas-planeacion.ts` (pruebas, mismo patrón que `scripts/verificar-analisis-calendario.ts`).
+Archivos modificados: ninguno de código — `docs/PROJECT_CONTROL.md` (esta misma actualización).
+Verificaciones ejecutadas: `npx tsx scripts/verificar-calculo-fechas-planeacion.ts` (14 casos, 28 aserciones), `npx tsc --noEmit`, `npx eslint` sobre ambos archivos nuevos, `git diff --check`, `git status --short`.
+Resultado:
+- 28/28 aserciones aprobadas en la primera corrida completa (tras corregir 1 error de eslint — `let` que debía ser `const`, sin efecto funcional, detectado y corregido antes de este registro).
+- Casos cubiertos: dos semanas normales; cruce de fin de semana; inicio en sábado (se mueve al siguiente día hábil con advertencia); un día inhábil dentro del periodo; una semana completa de vacaciones; dos suspensiones separadas; fechas exactas del docente; duración sin fecha inicial; rango sin ningún día efectivo (conflicto); fecha final anterior a la inicial (conflicto); duración cero o negativa (conflicto); cambio de mes; cambio de año; cierre de trimestre (evento_sin_clases arbitrario).
+- "Dos semanas" se resuelve como 10 días efectivos por defecto (`duracionSemanas × diasEfectivosPorSemana`, configurable) — la función nunca interpreta lenguaje natural, solo recibe el número ya resuelto.
+- Límite de seguridad de 400 días naturales de búsqueda hacia adelante, para no entrar en un bucle si los días no laborables cubrieran un tramo absurdo.
+- `app/api/chat/route.ts` y `lib/clasificadorNivel0.ts` NO se tocaron — confirmado, el Paso 1 es 100% aislado.
+- Paso 2 (funciones puras de persistencia en `lib/planeacion/`) definido en el diagnóstico previo, pero NO iniciado.
+Pruebas: ver "Verificaciones ejecutadas" arriba — todas limpias, sin errores.
+Incidencias: 1 menor — un `let`/`const` detectado por eslint, corregido de inmediato, sin impacto funcional.
+Sin modificaciones funcionales fuera de alcance: confirmado — no se tocó Chat IA, el clasificador de intenciones, la interfaz de Planeación, Seguimiento, Calendario, Lista, Asistencia ni la base de datos; no se crearon registros de prueba; no se ejecutó ninguna migración; no se modificaron políticas RLS; no se hizo commit ni push; no se inició el Paso 2.

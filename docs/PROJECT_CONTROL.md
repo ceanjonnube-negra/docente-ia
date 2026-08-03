@@ -1010,6 +1010,30 @@ Al intentar recuperar el acceso (contraseña no disponible para probar en este o
 **Bloque recomendado:** bloque independiente de diseño/sidebar, posterior al cierre de C-004
 **No repetir:** no implementar este ajuste dentro de C-004; no modificar diseño todavía.
 
+**ID:** UI-024
+**Nombre:** Duplicación de accesos manuales de creación de proyecto/planeación
+**Módulo:** Seguimiento / Ficha individual del alumno / Planeación
+**Tipo:** EXPERIENCIA DE USUARIO
+**Estado:** PENDIENTE — detectado durante la prueba funcional de C-005, no implementar todavía
+**Prioridad:** P2
+**Riesgo:** nulo (redundancia de navegación, no funcional ni de seguridad)
+**Archivos:** `app/dashboard/lista/proyectos/page.tsx` (botón "+ Nuevo proyecto"), `app/dashboard/lista/[alumnoId]/page.tsx` (enlace "+ Crear un proyecto para el grupo"), `app/dashboard/planeacion/page.tsx` (botón "+ Nueva" — este se conserva, ver decisión abajo)
+**Dependencias:** decisión arquitectónica ya registrada en "Decisión arquitectónica obligatoria — Seguimiento pertenece a Planeación"
+**Trabajo ya realizado:** ninguno — solo acordado y registrado
+**Trabajo pendiente:**
+- Eliminar "+ Nuevo proyecto" de la pantalla de Seguimiento.
+- Eliminar "+ Crear un proyecto para el grupo" de la ficha individual del alumno.
+- No permitir creación manual de proyectos desde Seguimiento ni desde la ficha del alumno — la creación principal de planeaciones/proyectos pasa a ser desde el Chat IA (texto o voz).
+- En Planeación, mantener únicamente un botón manual **secundario y discreto** ("Nueva planeación") como respaldo técnico, no como flujo principal.
+- Seguimiento pasa a mostrar únicamente resultados de proyectos ya evaluados (tras cargar la fotografía de la hoja final) — sin ninguna llamada a crear.
+- La ficha del alumno pasa a mostrar únicamente el historial acumulado del alumno.
+- "Sin proyectos evaluados" se mantiene como estado informativo, sin llamada duplicada a crear.
+**Pruebas realizadas:** ninguna
+**Pruebas pendientes:** confirmar visualmente, tras el cambio, que no queda ningún acceso de creación manual duplicado en Seguimiento ni en la ficha del alumno
+**Criterio de aceptación:** un solo camino principal de creación (Chat IA), un único respaldo manual discreto en Planeación, cero botones de creación en Seguimiento y en la ficha del alumno
+**Bloque recomendado:** bloque de depuración visual, posterior a que la prueba funcional de C-005 (Planeación) esté completa y aprobada
+**No repetir:** no implementar este ajuste todavía; no modificar diseño ni navegación mientras la prueba funcional de C-005 sigue en curso.
+
 ## Estado de C-004 al cierre de esta pausa
 
 **Estado:** BLOQUEADO POR AUTENTICACIÓN (no por seguridad del código ni por falta de credenciales de entorno — ambas ya resueltas). Diagnóstico y pruebas técnicas completos (ver secciones anteriores); prueba funcional manual en navegador (crear proyecto → indicadores → guardar → generar hoja → descargar PDF) **no ejecutada todavía** — no se llegó a crear el proyecto de prueba.
@@ -1086,8 +1110,36 @@ Ninguno de estos archivos se revierte, se borra ni se archiva aparte — permane
 
 **Riesgo abierto, sin resolver:** el origen real de la `planeaciones` parcial y su política `"docentes gestionan sus propias planeaciones"` sigue sin explicación — no viene de ningún archivo de este repositorio. No bloquea continuar, pero queda registrado.
 
+## Decisión arquitectónica — creación principal de planeaciones vía Chat IA, no formulario manual (2026-08-03)
+
+Durante la prueba funcional real de Planeación (antes de crear ningún registro), se detectó que el flujo de "+ Nueva" (formulario manual: nombre, trimestre, fechas) contradice la arquitectura central aprobada: la creación debe originarse principalmente desde el Chat IA (texto o voz), no de un formulario de captura. Se detectó además una duplicación de accesos manuales de creación en 3 lugares (Seguimiento, ficha del alumno, Planeación) — registrada como **UI-024** en la lista maestra de pendientes (no implementada todavía, solo documentada).
+
+**Se suspendió la prueba manual de la interfaz** y se inició en su lugar el diseño de la integración Chat IA → generación → persistencia automática → Planeación, dividida en pasos pequeños y seguros (ver diagnóstico completo entregado antes de implementar nada, resumido abajo).
+
+## C-005 — Paso 1 completado: cálculo determinista de fechas y días efectivos (2026-08-03)
+
+**Estado: completado y verificado — aislado, sin tocar Chat IA, interfaz, Seguimiento, Calendario, Lista, Asistencia ni la base de datos.**
+
+**Archivos creados:**
+- `lib/planeacion/calculoFechasHabiles.ts` — función pura `calcularFechasPlaneacion()`, sin dependencias de React, Supabase ni `app/`.
+- `scripts/verificar-calculo-fechas-planeacion.ts` — pruebas, mismo patrón ya usado en `scripts/verificar-analisis-calendario.ts` (sin agregar ningún framework de pruebas nuevo).
+
+**Capacidades implementadas y verificadas:**
+- Cálculo 100% determinista, sin depender de texto generado por IA — la "fecha de hoy" se recibe ya resuelta (`fechaReferencia`), nunca se calcula internamente con `new Date()` real, para que el resultado sea reproducible en pruebas.
+- Soporta exclusión por fin de semana (configurable), días inhábiles, suspensiones, vacaciones, y eventos sin clases (ej. cierre de trimestre) — cada exclusión queda registrada con su motivo exacto.
+- Resolución automática de fecha inicial (si cae en día no laborable, se mueve al siguiente día hábil con advertencia explícita, nunca falla en silencio) y de fecha final (se calcula o se extiende automáticamente para completar la duración solicitada, saltando vacaciones/suspensiones).
+- "Dos semanas" se interpreta, por defecto, como 10 días efectivos (`duracionSemanas × diasEfectivosPorSemana`, configurable) — la interpretación de lenguaje natural ("dos semanas") es responsabilidad de quien llame a la función (el futuro paso de integración con el Chat IA), nunca de esta función.
+- Devuelve advertencias y un indicador de conflicto explícito para casos límite (rango sin ningún día efectivo, fecha final anterior a la inicial, duración cero o negativa) — nunca falla de forma silenciosa ni entrega un resultado engañoso.
+- Límite de seguridad de 400 días naturales de búsqueda hacia adelante, para evitar un bucle si los días no laborables cubrieran un tramo absurdo.
+
+**Pruebas — 14 casos pedidos, 28 aserciones, todas aprobadas:** dos semanas normales; periodo que cruza un fin de semana; inicio en sábado; un día inhábil dentro del periodo; una semana completa de vacaciones; dos suspensiones separadas; fechas exactas del docente; duración sin fecha inicial; rango sin ningún día efectivo; fecha final anterior a la inicial; duración cero o negativa; cambio de mes; cambio de año; cruce de un cierre de trimestre.
+
+**Verificaciones técnicas:** `npx tsx scripts/verificar-calculo-fechas-planeacion.ts` (28/28 aserciones aprobadas), `npx tsc --noEmit` (0 errores), `npx eslint` sobre ambos archivos (1 error corregido — `let` que debía ser `const`, sin efecto funcional — 0 errores tras la corrección).
+
+**Confirmado explícitamente:** `app/api/chat/route.ts` y el Clasificador de Nivel 0 **no se tocaron todavía** — el Paso 1 es una utilidad aislada, sin ningún punto de integración real con el Chat IA todavía.
+
 ## Próximo bloque permitido
 
-**C-005 continúa** — la infraestructura de base de datos ya está lista; lo que sigue es la construcción/prueba funcional de la interfaz y los endpoints, que **ya existen en código** (`app/api/planeaciones/route.ts`, `app/api/planeaciones/[id]/route.ts`, `lib/planeacion/tipos.ts`, `app/dashboard/planeacion/page.tsx` — todos escritos y verificados con `tsc`/`eslint` antes de descubrir que la base de datos no estaba lista) pero **nunca se probaron contra datos reales**, porque la base de datos no lo permitía hasta ahora. El siguiente paso natural es esa prueba funcional real (crear una planeación de prueba desde la interfaz, confirmar que persiste, archivarla) — no reconstrucción de código, ya que no se modificó la interfaz en este bloque de reparación de base de datos.
+**C-005, Paso 2 — todavía NO iniciado, requiere autorización explícita aparte.** Según el plan de implementación ya diagnosticado: funciones puras de persistencia en `lib/planeacion/` (crear/editar/archivar, hoy solo existen `tipos.ts` y `calculoFechasHabiles.ts`), reutilizables tanto por los endpoints HTTP ya existentes como por el futuro flujo del Chat IA.
 
-Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto), UI-023 (tarjeta redundante de sidebar). La migración `seguimiento_fase3.sql` sigue CONFIRMADA/APLICADA (no volver a ejecutar); las 2 migraciones correctivas de este bloque tampoco deben volver a ejecutarse (son idempotentes, pero no hace falta repetirlas).
+Pendientes que siguen abiertos e independientes de C-005: ACC-017 (diff mezclado de Lista), ACC-019 (texto engañoso en la ficha del alumno), ACC-020 (campo muerto en el formulario manual), ACC-021 (copa sin texto), UI-023 (tarjeta redundante de sidebar), UI-024 (duplicación de accesos manuales de creación — nuevo, ver arriba). La migración `seguimiento_fase3.sql` sigue CONFIRMADA/APLICADA (no volver a ejecutar); las 2 migraciones correctivas de Supabase tampoco deben volver a ejecutarse (son idempotentes, pero no hace falta repetirlas).
