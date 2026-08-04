@@ -42,6 +42,39 @@ const EXTENSION_FORMATO: Record<string, string> = { word: '.docx', pdf: '.pdf', 
 // ofrecer "Convertir a..." con los que NO sea ya el formato actual.
 const FORMATOS_CONVERTIBLES = ['word', 'pdf', 'powerpoint', 'excel'] as const
 
+// Formatos ofrecidos según el TIPO de documento (ver "corrección
+// funcional de tarjetas de documentos" — no todos los documentos
+// tienen sentido en todos los formatos): una planeación didáctica
+// nunca se ofrece en Excel (no es una hoja de cálculo), una hoja de
+// evaluación nunca se ofrece en PowerPoint (es una tabla, no una
+// presentación) ni en Word (el generador de Word actual no reproduce
+// el diseño de casillas 4-3-2-1, así que ofrecerlo daría un resultado
+// pobre — "Word solo si existe una conversión funcional y útil").
+// Cualquier documento SIN tipoDocumento (Word/PDF/PPT/Excel genéricos,
+// ficha_descriptiva, exámenes...) conserva el comportamiento de
+// siempre: los 4 formatos, menos el actual.
+//
+// Lectura tolerante a tipos (ver nota abajo): tipoDocumento todavía no
+// está declarado en ArchivoGeneradoInfo en este commit aislado (esa
+// declaración pertenece a la corrección pendiente que diferencia el
+// PDF de planeación de la hoja de evaluación, fuera de este bloque a
+// propósito) — se lee con un cast seguro en vez de depender de ese
+// campo, así este archivo compila y funciona igual hoy (sin el campo,
+// cae siempre a FORMATOS_CONVERTIBLES) y automáticamente empieza a
+// aplicar las reglas por tipo en cuanto esa corrección se incorpore,
+// sin tener que tocar este archivo de nuevo.
+const FORMATOS_POR_TIPO_DOCUMENTO: Record<string, readonly TipoHerramienta[]> = {
+  planeacion: ['pdf', 'word', 'powerpoint'],
+  hoja_evaluacion: ['pdf', 'excel'],
+}
+
+function formatosDisponiblesPara(archivo: ArchivoGeneradoInfo): TipoHerramienta[] {
+  const tipoDocumento = (archivo as { tipoDocumento?: string }).tipoDocumento
+  const base = (tipoDocumento && FORMATOS_POR_TIPO_DOCUMENTO[tipoDocumento]) || FORMATOS_CONVERTIBLES
+  // Nunca ofrecer el formato que el archivo YA es.
+  return base.filter((t) => t !== archivo.tipo) as TipoHerramienta[]
+}
+
 function formatearTamano(bytes?: number): string | null {
   if (!bytes || bytes <= 0) return null
   if (bytes < 1024) return `${bytes} B`
@@ -108,18 +141,21 @@ async function compartirArchivo(archivo: { tipo: string; nombre: string; url: st
 }
 
 function TarjetaDescarga({
-  archivo, creadoEn, mensajeId, esActivo, generando, onConvertir, className = '', resaltado = false,
+  archivo, creadoEn, mensajeId, esActivo, estadosConversion, onConvertir, className = '', resaltado = false,
 }: {
   archivo: ArchivoGeneradoInfo
   creadoEn: number
-  // mensajeId/esActivo/generando/onConvertir: solo hacen falta para
-  // ofrecer "Convertir a..." (ver "Memoria del documento activo") —
-  // llegan como props en vez de que la tarjeta llame useAsistente()
-  // por su cuenta, para no duplicar la suscripción que ya tiene
-  // AsistentePanel.
+  // mensajeId/esActivo/estadosConversion/onConvertir: solo hacen falta
+  // para ofrecer "Convertir" (ver "corrección funcional de tarjetas de
+  // documentos") — llegan como props en vez de que la tarjeta llame
+  // useAsistente() por su cuenta, para no duplicar la suscripción que
+  // ya tiene AsistentePanel.
   mensajeId: string
   esActivo: boolean
-  generando: boolean
+  // Estado de conversión POR FORMATO de este mensaje — nunca depende
+  // de si el chat en general está generando algo (la conversión es
+  // silenciosa e independiente, ver AsistenteService.convertirDocumentoActivo).
+  estadosConversion?: Record<string, 'convirtiendo' | 'error'>
   onConvertir: (mensajeId: string, tipo: TipoHerramienta) => void
   className?: string
   resaltado?: boolean
@@ -137,9 +173,14 @@ function TarjetaDescarga({
     setVencido(Date.now() - creadoEn > VENCIMIENTO_URL_MS)
   }, [creadoEn])
   const extension = EXTENSION_FORMATO[archivo.tipo] || ''
+  const [mostrarConvertir, setMostrarConvertir] = useState(false)
   const tamano = formatearTamano(archivo.tamanoBytes)
   const fecha = formatearFecha(new Date(creadoEn), obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short' })
-  const otrosFormatos = FORMATOS_CONVERTIBLES.filter((t) => t !== archivo.tipo)
+  // Formatos ofrecidos según el tipo real del documento (ver
+  // "corrección funcional de tarjetas de documentos") — nunca el
+  // formato actual, y nunca Excel para una planeación ni
+  // PowerPoint/Word para una hoja de evaluación.
+  const otrosFormatos = formatosDisponiblesPara(archivo)
 
   return (
     <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
@@ -176,19 +217,38 @@ function TarjetaDescarga({
           {/* Convertir a otro formato: solo sobre el Documento Activo —
               convertir una tarjeta vieja convertiría por error lo que
               esté activo AHORA, no el documento que se está mirando
-              (ver convertirDocumentoActivo en AsistenteService.ts). */}
+              (ver convertirDocumentoActivo en AsistenteService.ts).
+              Compacto y plegado por defecto (ver "corrección funcional
+              de tarjetas de documentos") — nunca una fila permanente de
+              botones que sature la tarjeta. */}
           {esActivo && otrosFormatos.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap pt-0.5">
-              {otrosFormatos.map((tipo) => (
-                <button
-                  key={tipo}
-                  onClick={() => onConvertir(mensajeId, tipo)}
-                  disabled={generando}
-                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50 disabled:opacity-40"
-                >
-                  🔄 {NOMBRE_FORMATO[tipo]}
-                </button>
-              ))}
+            <div className="pt-0.5">
+              <button
+                onClick={() => setMostrarConvertir((v) => !v)}
+                className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
+              >
+                🔄 Convertir {mostrarConvertir ? '▴' : '▾'}
+              </button>
+              {mostrarConvertir && (
+                <div className="flex gap-1.5 flex-wrap pt-1.5">
+                  {otrosFormatos.map((tipo) => {
+                    const estado = estadosConversion?.[tipo]
+                    return (
+                      <button
+                        key={tipo}
+                        // Acción estructurada y silenciosa: nunca crea una
+                        // burbuja del usuario ni vuelve a mandar nada al
+                        // modelo — ver AsistenteService.convertirDocumentoActivo.
+                        onClick={() => onConvertir(mensajeId, tipo)}
+                        disabled={estado === 'convirtiendo'}
+                        className={`flex-1 flex items-center justify-center gap-1 border text-[11px] font-semibold px-3 py-1.5 rounded-full disabled:opacity-60 ${estado === 'error' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                      >
+                        {estado === 'convirtiendo' ? `Convirtiendo a ${NOMBRE_FORMATO[tipo]}…` : estado === 'error' ? `⚠️ Reintentar ${NOMBRE_FORMATO[tipo]}` : NOMBRE_FORMATO[tipo]}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -694,7 +754,7 @@ export default function AsistentePanel() {
                       creadoEn={m.creadoEn}
                       mensajeId={m.id}
                       esActivo={asistente.documentoActivoId === m.id}
-                      generando={asistente.generando}
+                      estadosConversion={m.estadosConversion}
                       onConvertir={asistente.convertirDocumentoActivo}
                       resaltado={asistente.archivoReutilizadoId === m.id}
                     />

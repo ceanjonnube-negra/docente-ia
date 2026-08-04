@@ -293,6 +293,73 @@ export class MotorTextoClaude implements MotorConversacional {
     }
   }
 
+  // Conversión SILENCIOSA de un documento ya existente a otro formato,
+  // disparada por el botón de una tarjeta (nunca por un mensaje escrito
+  // por el docente) — ver "corrección funcional de tarjetas de
+  // documentos": a diferencia de enviarTexto(), NUNCA emite eventos de
+  // chat (ni respuesta-parcial, ni respuesta-final) — el estado
+  // "Convirtiendo…" y el resultado viven enteramente dentro de la
+  // tarjeta que lo pidió (ver AsistenteService.convertirDocumentoActivo),
+  // nunca como una burbuja ni como una respuesta del asistente. Usa su
+  // PROPIO AbortController (nunca this.controlador) para no interferir
+  // con una conversación de texto que pueda estar en curso al mismo
+  // tiempo, y reutiliza el mismo endpoint/mecanismo de FINALIZAR
+  // ARCHIVO que ya usa enviarTexto — nunca un sistema paralelo: el
+  // servidor genera el archivo de forma mecánica, sin pasar por Claude
+  // (ver app/api/chat/route.ts, FINALIZAR ARCHIVO).
+  async generarArchivoDirecto(tipo: string, documentoTexto: string): Promise<ArchivoGeneradoInfo> {
+    const controlador = new AbortController()
+    const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_FETCH_DOCUMENTO_MS)
+    try {
+      const { user, session, perfil } = await conLimiteDeTiempo(
+        obtenerPerfilYSesion(),
+        TIMEOUT_SESION_MS,
+        'Tiempo de espera agotado obteniendo la sesión del docente'
+      )
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mensaje: '',
+          historial: [],
+          contexto: '',
+          institucionId: perfil?.institucion_id || null,
+          userId: user?.id || null,
+          accessToken: session?.access_token || null,
+          zonaHoraria: obtenerZonaHorariaDispositivo(),
+          finalizarArchivo: { tipo, documentoTexto },
+        }),
+        signal: controlador.signal,
+      })
+      if (!res.ok) {
+        const detalle = await res.text().catch(() => '')
+        let mensajeError = 'No fue posible generar el archivo.'
+        try {
+          const cuerpo = JSON.parse(detalle)
+          if (typeof cuerpo?.error === 'string' && cuerpo.error.trim()) mensajeError = cuerpo.error
+        } catch {
+          // el cuerpo no era JSON — se usa el mensaje genérico
+        }
+        throw new Error(mensajeError)
+      }
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      let respuesta = ''
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          respuesta += decoder.decode(value, { stream: true })
+        }
+      }
+      const { archivo } = this.procesarMarcadorDeArchivo(respuesta)
+      if (!archivo) throw new Error('El servidor no devolvió un archivo válido.')
+      return archivo
+    } finally {
+      clearTimeout(temporizador)
+    }
+  }
+
   // Marcador técnico con el archivo real ya generado y subido (ver
   // FINALIZAR ARCHIVO en app/api/chat/route.ts) — mismo patrón que
   // procesarMarcadorDeProceso: el docente nunca ve esta línea, se

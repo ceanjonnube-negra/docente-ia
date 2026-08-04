@@ -81,6 +81,15 @@ export type MensajeConversacion = {
   // la vez — cuando trae exactamente uno, sigue viajando únicamente en
   // `archivo`, igual que siempre.
   archivos?: ArchivoGeneradoInfo[]
+  // Estado de conversión EN CURSO por formato para este mensaje (ver
+  // "corrección funcional de tarjetas de documentos" — los botones de
+  // conversión ya NO crean una burbuja del usuario ni "Generando…" a
+  // nivel de chat): TarjetaDescarga usa esto para mostrar "Convirtiendo
+  // a X…" o un error breve con "Reintentar" dentro de SU PROPIA
+  // tarjeta, nunca como un mensaje nuevo en la conversación. Ausente o
+  // sin la clave del formato = sin conversión en curso para ese
+  // formato.
+  estadosConversion?: Record<string, 'convirtiendo' | 'error'>
   // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
   // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
   // que la burbuja lo siga mostrando después de restaurar la
