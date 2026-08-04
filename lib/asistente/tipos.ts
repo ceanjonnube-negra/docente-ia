@@ -19,6 +19,30 @@ export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 // él — la tarjeta universal simplemente no muestra el tamaño si falta.
 export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string; tamanoBytes?: number }
 
+// Acción ESTRUCTURADA que dispara un botón de conversión de formato
+// (ver "CORRECCIÓN REAL DE PRODUCCIÓN — los botones Word y PDF crean
+// mensajes falsos del docente"). Deliberadamente un objeto de datos
+// planos, sin un solo campo de texto libre ni de función: no existe
+// ningún campo aquí que pueda llevar un prompt conversacional, un
+// sendMessage o un handleSend — por construcción, un botón que arma
+// este objeto no puede fabricar una burbuja del docente. tipoDocumento
+// es `string` (no TipoDocumentoPlaneacion) a propósito: evita acoplar
+// este tipo a la diferenciación de documentos todavía pendiente.
+export type ParametrosConversionDocumento = {
+  // Id del mensaje/tarjeta que contiene el archivo — el modelo actual
+  // no tiene un id propio por archivo, así que la tarjeta se identifica
+  // por el mensaje que la muestra (igual que el resto de C-005).
+  archivoId: string
+  nombreArchivo: string
+  url: string
+  tipoDocumento?: string
+  formatoOrigen: string
+  formatoDestino: string
+  // Reservado para cuando exista conversión de una vista previa
+  // provisional (token-based, aún no persistida) — no se usa todavía.
+  tokenVistaPrevia?: string
+}
+
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
 // inteligente de actualización del Calendario Escolar") — el docente
 // confirma con un toque, sin tener que escribir. `estilo` decide el

@@ -26,7 +26,7 @@ import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseConteni
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
-import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import type { AdjuntoImagen, ArchivoGeneradoInfo, ParametrosConversionDocumento } from '@/lib/asistente/tipos'
 import type { TipoHerramienta } from '@/lib/asistente/documentos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -154,9 +154,14 @@ function TarjetaDescarga({
   esActivo: boolean
   // Estado de conversión POR FORMATO de este mensaje — nunca depende
   // de si el chat en general está generando algo (la conversión es
-  // silenciosa e independiente, ver AsistenteService.convertirDocumentoActivo).
+  // silenciosa e independiente, ver AsistenteService.convertirDocumento).
   estadosConversion?: Record<string, 'convirtiendo' | 'error'>
-  onConvertir: (mensajeId: string, tipo: TipoHerramienta) => void
+  // Recibe exclusivamente la acción ESTRUCTURADA (ParametrosConversionDocumento)
+  // — nunca un string de texto, nunca sendMessage/handleSend. Ver
+  // "CORRECCIÓN REAL DE PRODUCCIÓN — los botones Word y PDF crean
+  // mensajes falsos del docente": esta firma hace imposible, por tipos,
+  // que un botón de formato termine mandando una frase al chat.
+  onConvertir: (params: ParametrosConversionDocumento) => void
   className?: string
   resaltado?: boolean
 }) {
@@ -217,10 +222,9 @@ function TarjetaDescarga({
           {/* Convertir a otro formato: solo sobre el Documento Activo —
               convertir una tarjeta vieja convertiría por error lo que
               esté activo AHORA, no el documento que se está mirando
-              (ver convertirDocumentoActivo en AsistenteService.ts).
-              Compacto y plegado por defecto (ver "corrección funcional
-              de tarjetas de documentos") — nunca una fila permanente de
-              botones que sature la tarjeta. */}
+              (ver convertirDocumento en AsistenteService.ts). Compacto y
+              plegado por defecto — nunca una fila permanente de botones
+              que sature la tarjeta. */}
           {esActivo && otrosFormatos.length > 0 && (
             <div className="pt-0.5">
               <button
@@ -236,10 +240,21 @@ function TarjetaDescarga({
                     return (
                       <button
                         key={tipo}
-                        // Acción estructurada y silenciosa: nunca crea una
-                        // burbuja del usuario ni vuelve a mandar nada al
-                        // modelo — ver AsistenteService.convertirDocumentoActivo.
-                        onClick={() => onConvertir(mensajeId, tipo)}
+                        // Acción ESTRUCTURADA y silenciosa: arma un objeto
+                        // de datos (nunca un string de texto) y se lo pasa
+                        // a convertirDocumento — no hay ningún camino desde
+                        // aquí hacia sendMessage/handleSend/setInput ni
+                        // hacia crear un mensaje role:"usuario". Ver
+                        // AsistenteService.convertirDocumento.
+                        onClick={() => onConvertir({
+                          archivoId: mensajeId,
+                          nombreArchivo: archivo.nombre,
+                          url: archivo.url,
+                          tipoDocumento: (archivo as { tipoDocumento?: string }).tipoDocumento,
+                          formatoOrigen: archivo.tipo,
+                          formatoDestino: tipo,
+                          tokenVistaPrevia: undefined,
+                        })}
                         disabled={estado === 'convirtiendo'}
                         className={`flex-1 flex items-center justify-center gap-1 border text-[11px] font-semibold px-3 py-1.5 rounded-full disabled:opacity-60 ${estado === 'error' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
                       >
@@ -755,7 +770,7 @@ export default function AsistentePanel() {
                       mensajeId={m.id}
                       esActivo={asistente.documentoActivoId === m.id}
                       estadosConversion={m.estadosConversion}
-                      onConvertir={asistente.convertirDocumentoActivo}
+                      onConvertir={asistente.convertirDocumento}
                       resaltado={asistente.archivoReutilizadoId === m.id}
                     />
                   ))}

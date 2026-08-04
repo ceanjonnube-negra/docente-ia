@@ -38,7 +38,7 @@ async function main() {
   // Aísla el cuerpo real de la función nueva para no confundir sus
   // líneas con las de ejecutarConversionFormato/enviarComoFinalizacion
   // (que SIGUEN creando una burbuja a propósito — ver punto 0).
-  const iConvertir = rutaServicio.indexOf('async convertirDocumentoActivo(idDocumento: string, tipo: TipoHerramienta) {')
+  const iConvertir = rutaServicio.indexOf('async convertirDocumento(params: ParametrosConversionDocumento) {')
   const iSiguienteMetodo = rutaServicio.indexOf('// Fuente única para "fijar" documentoActivo', iConvertir)
   const cuerpoConvertirDocumentoActivo = rutaServicio.slice(iConvertir, iSiguienteMetodo)
 
@@ -59,8 +59,8 @@ async function main() {
   //      nunca reenvía toda la solicitud al modelo pedagógico.
   // ============================================================
   {
-    verificar(!cuerpoConvertirDocumentoActivo.includes("rol: 'usuario'"), '1. convertirDocumentoActivo (botón) NUNCA crea un mensaje con rol "usuario" — no hay burbuja')
-    verificar(!cuerpoConvertirDocumentoActivo.includes('this.ejecutarConversionFormato(') && !cuerpoConvertirDocumentoActivo.includes('this.enviarComoFinalizacion(') && !cuerpoConvertirDocumentoActivo.includes('this.reutilizarArchivoExistente('), '2. convertirDocumentoActivo (botón) ya no LLAMA al camino que arma texto visible para el chat (Conviértelo a X.) — solo lo menciona en un comentario comparativo')
+    verificar(!cuerpoConvertirDocumentoActivo.includes("rol: 'usuario'"), '1. convertirDocumento (botón) NUNCA crea un mensaje con rol "usuario" — no hay burbuja')
+    verificar(!cuerpoConvertirDocumentoActivo.includes('this.ejecutarConversionFormato(') && !cuerpoConvertirDocumentoActivo.includes('this.enviarComoFinalizacion(') && !cuerpoConvertirDocumentoActivo.includes('this.reutilizarArchivoExistente('), '2. convertirDocumento (botón) ya no LLAMA al camino que arma texto visible para el chat (Conviértelo a X.) — solo lo menciona en un comentario comparativo')
     verificar(cuerpoConvertirDocumentoActivo.includes('motorTexto.generarArchivoDirecto(tipo, documentoTexto)'), '3. Se invoca una acción estructurada (generarArchivoDirecto) con el archivo y el formato, no una frase interpretada')
     verificar(!cuerpoConvertirDocumentoActivo.includes('enviarMensaje') && !cuerpoConvertirDocumentoActivo.includes('sendMessage') && !cuerpoConvertirDocumentoActivo.includes('setInput'), '4. No se llama a enviarMensaje/sendMessage/setInput')
   }
@@ -189,7 +189,7 @@ async function main() {
     const cuerpoMetodo = rutaMotor.slice(iMetodo, iFinMetodo)
     verificar(!cuerpoMetodo.includes('SERVICE_ROLE') && !cuerpoMetodo.includes('service_role'), '15. generarArchivoDirecto nunca usa service_role')
     verificar(!cuerpoMetodo.includes('.insert(') && !cuerpoMetodo.includes('.update(') && !cuerpoMetodo.includes('.delete('), '16. generarArchivoDirecto no ejecuta ninguna escritura de base de datos directamente — delega en el mismo endpoint ya auditado')
-    verificar(!cuerpoConvertirDocumentoActivo.includes('.insert(') && !cuerpoConvertirDocumentoActivo.includes('.from('), '17. convertirDocumentoActivo (cliente) no toca Supabase directamente — todo pasa por /api/chat, igual que el resto del Chat IA')
+    verificar(!cuerpoConvertirDocumentoActivo.includes('.insert(') && !cuerpoConvertirDocumentoActivo.includes('.from('), '17. convertirDocumento (cliente) no toca Supabase directamente — todo pasa por /api/chat, igual que el resto del Chat IA')
   }
 
   // ============================================================

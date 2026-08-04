@@ -38,6 +38,7 @@ import type {
   Herramienta,
   MensajeConversacion,
   MotorConversacional,
+  ParametrosConversionDocumento,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
@@ -1422,12 +1423,13 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
-  // Resolución del archivo referenciado (ver "no regenerar archivos
-  // existentes") extraída como pieza única — la usan tanto el mensaje
-  // de texto normal ("conviértelo a PDF") como convertirDocumentoActivo
-  // (botón "Convertir a..." de la tarjeta universal), para que ambos
-  // caminos compartan exactamente la misma lógica de caché/finalización
-  // en vez de duplicarla.
+  // Camino EXCLUSIVO del mensaje de texto normal ("conviértelo a PDF"
+  // escrito por el docente) — SÍ crea una burbuja real porque el
+  // docente sí escribió algo (ver reutilizarArchivoExistente/
+  // enviarComoFinalizacion más abajo). convertirDocumento (botón
+  // "Convertir a..." de la tarjeta universal) NUNCA llama a esta
+  // función — tiene su propia lógica de caché/finalización, silenciosa
+  // y sin burbuja, a propósito separada de esta.
   private async ejecutarConversionFormato(tipoResuelto: TipoHerramienta, textoVisible: string) {
     if (!this.documentoActivo) return
     const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
@@ -1438,23 +1440,39 @@ class AsistenteServiceImpl {
     await this.enviarComoFinalizacion(this.documentoActivo.id, textoVisible, tipoResuelto, this.documentoActivo.texto)
   }
 
+  // Los 4 formatos reales que esta acción puede producir — cualquier
+  // otro valor de formatoDestino se rechaza antes de tocar nada (ver
+  // convertirDocumento). No importa TipoHerramienta aquí a propósito:
+  // esta lista es la que de verdad importa en tiempo de EJECUCIÓN
+  // (TipoHerramienta ya protege en tiempo de COMPILACIÓN a quien llame
+  // con el tipo correcto — esto es la segunda capa, por si algún día
+  // algo construye ParametrosConversionDocumento sin pasar por TS).
+  private static readonly FORMATOS_CONVERSION_VALIDOS = new Set<TipoHerramienta>(['word', 'pdf', 'powerpoint', 'excel'])
+
   // El docente tocó un formato en el menú "Convertir" de la tarjeta
   // universal del documento (ver TarjetaDescarga en AsistentePanel.tsx)
-  // — CORRECCIÓN FUNCIONAL ("los botones de conversión envían mensajes
-  // automáticos en vez de convertir"): a diferencia de escribir
+  // — CORRECCIÓN REAL DE PRODUCCIÓN ("los botones Word y PDF crean
+  // mensajes falsos del docente"): a diferencia de escribir
   // "conviértelo a X" en el chat (ver ejecutarConversionFormato más
   // arriba, que SÍ crea una burbuja real porque el docente sí escribió
   // algo), esto es una acción ESTRUCTURADA disparada por un botón —
-  // nunca crea una burbuja del usuario, nunca vuelve a mostrar el
-  // documento completo, nunca pasa por el modelo pedagógico. El estado
-  // "Convirtiendo…"/error y el resultado viven enteramente dentro de
-  // la tarjeta que lo pidió (ver marcarEstadoConversion/
-  // agregarArchivoATarjeta). Solo actúa si idDocumento sigue siendo el
+  // recibe un objeto de datos planos (ParametrosConversionDocumento),
+  // NUNCA un string de texto conversacional, y NUNCA tiene acceso a
+  // enviarMensaje/sendMessage ni a nada que pueda escribir el campo de
+  // texto del chat. No crea una burbuja del usuario, no vuelve a
+  // mostrar el documento completo, no pasa por el modelo pedagógico. El
+  // estado "Convirtiendo…"/error y el resultado viven enteramente
+  // dentro de la tarjeta que lo pidió (ver marcarEstadoConversion/
+  // agregarArchivoATarjeta). Solo actúa si archivoId sigue siendo el
   // Documento Activo: evita convertir el documento equivocado si el
   // docente generó otro distinto entre que vio la tarjeta y tocó el
   // botón (doble toque tardío, tarjeta vieja en pantalla mientras se
   // hace scroll hacia arriba, etc.).
-  async convertirDocumentoActivo(idDocumento: string, tipo: TipoHerramienta) {
+  async convertirDocumento(params: ParametrosConversionDocumento) {
+    const { archivoId, formatoDestino } = params
+    if (!AsistenteServiceImpl.FORMATOS_CONVERSION_VALIDOS.has(formatoDestino as TipoHerramienta)) return
+    const tipo = formatoDestino as TipoHerramienta
+    const idDocumento = archivoId
     if (!this.documentoActivo || this.documentoActivo.id !== idDocumento) return
 
     const clave = `${idDocumento}:${tipo}`

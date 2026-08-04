@@ -299,7 +299,7 @@ export class MotorTextoClaude implements MotorConversacional {
   // documentos": a diferencia de enviarTexto(), NUNCA emite eventos de
   // chat (ni respuesta-parcial, ni respuesta-final) — el estado
   // "Convirtiendo…" y el resultado viven enteramente dentro de la
-  // tarjeta que lo pidió (ver AsistenteService.convertirDocumentoActivo),
+  // tarjeta que lo pidió (ver AsistenteService.convertirDocumento),
   // nunca como una burbuja ni como una respuesta del asistente. Usa su
   // PROPIO AbortController (nunca this.controlador) para no interferir
   // con una conversación de texto que pueda estar en curso al mismo
