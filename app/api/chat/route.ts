@@ -419,6 +419,21 @@ export async function POST(req: NextRequest) {
     `[AUTH][chat] accessTokenPresente=${!!accessToken} usuarioPresente=${!!autenticacion?.ok} docenteIdPresente=${!!userId}${userIdCliente && userId && userIdCliente !== userId ? ' userIdClienteNoCoincide=true' : ''}`
   )
 
+  // Sesión rota (el cliente mandó un accessToken, pero el servidor no
+  // pudo validarlo — expiró, es inválido, o auth.getUser() nunca
+  // devolvió usuario) — ver "CORRECCIÓN CRÍTICA — DOCENTE NO
+  // IDENTIFICADO". Nunca dejar que Claude conteste como si conociera
+  // al docente ni que vuelva a pedir grado/grupo/calendario: eso ya
+  // pasó una vez y fue exactamente el síntoma reportado. Distinto de
+  // "sin accessToken en absoluto" (ver más abajo), que sigue
+  // funcionando como el asistente general sin sesión (por ejemplo en
+  // la página pública antes de iniciar sesión) — aquí el cliente SÍ
+  // cree tener sesión y no la tiene, así que el mensaje debe ser
+  // explícito, nunca una degradación silenciosa.
+  if (accessToken && !autenticacion?.ok) {
+    return respuestaTexto('Inicia sesión para cargar tu grupo.')
+  }
+
   // FINALIZAR ARCHIVO — cuando el maestro pide el documento activo en un
   // formato real (Word/PDF/PowerPoint/Excel), se genera y sube el
   // archivo directo, SIN pasar por Claude: es una acción mecánica (el
@@ -1047,6 +1062,16 @@ export async function POST(req: NextRequest) {
             console.log(
               `[NIVEL4][planeacion_generar] calendarioConsultado=true diasExcluidosPorCalendario=${resultadoGeneracion.eventosCalendarioDelPeriodo.length} cicloEscolarPresente=${!!sesion.ciclo_escolar_id} periodoEvaluacionPresente=${!!resultadoGeneracion.periodoEvaluacionActual} conflicto=${resultadoGeneracion.fechas.conflicto} totalDiasEfectivos=${resultadoGeneracion.fechas.totalDiasEfectivos}`
             )
+          } else if (clasificacion.intencion_principal === 'planeacion_generar' && !sesion.grupo_activo_id) {
+            // Docente autenticado (auth.getUser() sí devolvió usuario)
+            // pero sin grupo activo asociado — ver "CORRECCIÓN CRÍTICA
+            // — DOCENTE NO IDENTIFICADO": error controlado y
+            // determinista, nunca se le pide al docente grado/grupo
+            // por chat (esos datos no se inventan aquí, se resuelven
+            // solos cuando existan) y nunca se deja que Claude
+            // improvise una respuesta genérica como si tuviera acceso.
+            console.log(`[NIVEL4][planeacion_generar] sin grupo activo — docenteIdPresente=true grupoIdPresente=false`)
+            return respuestaTexto('No encontré un grupo activo asociado a tu cuenta. Verifica que tengas un grupo configurado en la aplicación.')
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el
