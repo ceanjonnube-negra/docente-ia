@@ -31,6 +31,16 @@ import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 
+// Límite explícito de duración de la función — sin esto, Vercel aplica
+// el límite implícito del plan/proyecto, que puede ser más corto que
+// el nuevo TIMEOUT_ANTHROPIC_MS (120s) más el resto del trabajo de la
+// petición (clasificador, lecturas de Supabase, construcción de los
+// descriptores). 180s da margen real por encima de eso sin acercarse
+// al límite máximo del runtime Node.js de Vercel (ver "corrección —
+// Error al conectar con la IA después de mostrar parte de la
+// planeación").
+export const maxDuration = 180
+
 const supabaseRAG = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -143,9 +153,26 @@ const MENSAJE_ERROR_DOCUMENTO = 'No fue posible generar el documento en este mom
 // Tiempo máximo que se espera la respuesta de Anthropic antes de darla
 // por colgada — sin esto, una llamada que nunca resuelve (no rechaza, no
 // responde) deja al maestro viendo "Generando..." indefinidamente, sin
-// que ningún catch se dispare nunca. 25s es generoso para el primer byte
-// de un stream real, pero corta una conexión realmente muerta.
-const TIMEOUT_ANTHROPIC_MS = 25_000
+// que ningún catch se dispare nunca.
+//
+// CORRECCIÓN ("Error al conectar con la IA" después de mostrar parte de
+// la planeación) — causa real confirmada por código: a diferencia de lo
+// que decía este comentario antes, el `timeout` del SDK de Anthropic NO
+// es "tiempo al primer byte" — cubre la petición HTTP completa,
+// streaming incluido, exactamente el mismo problema que ya se había
+// diagnosticado y corregido abajo para TIMEOUT_ANTHROPIC_DOCUMENTO_MS
+// (stream:false). planeacion_generar es la primera intención de la app
+// que produce respuestas realmente largas en streaming (una secuencia
+// didáctica completa de hasta 10 días, cerca del límite de max_tokens)
+// — con 25s, el SDK abortaba la conexión A MITAD del streaming en
+// cuanto la respuesta era larga de verdad, cortando el texto ya
+// transmitido sin ningún error de la aplicación que registrar (el
+// aborto ocurre dentro de la librería HTTP, no como una excepción de
+// negocio). 120s da margen real para los mismos ~8000 tokens de
+// max_tokens que ya usa el resto de la app, sin penalizar respuestas
+// cortas (un timeout más alto nunca alarga una respuesta que ya
+// terminó antes).
+const TIMEOUT_ANTHROPIC_MS = 120_000
 // CASO 3 de FINALIZAR ARCHIVO (más abajo) llama a Claude con
 // stream:false — a diferencia del streaming normal, esa llamada no
 // devuelve NADA hasta que termina de redactar el documento COMPLETO
@@ -285,6 +312,14 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
+  // Telemetría segura del ciclo de vida de la petición ("Error al
+  // conectar con la IA" después de mostrar parte de la planeación) —
+  // solo indicadores booleanos/duraciones/nombres de error, nunca
+  // tokens, cookies, contenido de documentos ni datos de alumnos (ver
+  // diagnóstico). inicioRequestMs vive en este scope y lo captura el
+  // closure del ReadableStream de más abajo.
+  const inicioRequestMs = Date.now()
+  console.log('[STREAM][chat] chatRequestIniciado=true')
   const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
@@ -1570,6 +1605,7 @@ Grado: [grado] | Grupo: [grupo]
   let stream
   try {
     stream = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: true }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'conversacion')
+    console.log('[STREAM][chat] modeloRespondio=true')
   } catch (err) {
     // Antes esto no estaba envuelto en try/catch: cualquier falla real
     // de Claude (límite de crédito, rate limit, error de red, petición
@@ -1580,6 +1616,7 @@ Grado: [grado] | Grupo: [grupo]
     // Anthropic) se queda SOLO en el log — el maestro nunca debe verlo,
     // ver ARQUITECTURA MAESTRA, principio de ERRORES.
     console.error(`[IA:conversacion] Falla definitiva (categoría=${clasificarErrorIA(err)}):`, err)
+    console.log(`[STREAM][chat] errorEtapa=antes_de_stream nombreError=${err instanceof Error ? err.name : 'desconocido'} duracionTotalMs=${Date.now() - inicioRequestMs}`)
     return NextResponse.json({ error: MENSAJE_ERROR_GENERICO }, { status: 502 })
   }
 
@@ -1597,6 +1634,7 @@ Grado: [grado] | Grupo: [grupo]
   const readable = new ReadableStream({
     async start(controller) {
       try {
+        console.log('[STREAM][chat] streamInicio=true')
         for await (const event of stream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             if (!primerDeltaTelemetria) {
@@ -1672,6 +1710,11 @@ Grado: [grado] | Grupo: [grupo]
           }
         }
         marcarTelemetria('claude:response_finished')
+        console.log(`[STREAM][chat] streamFinalizado=true duracionStreamMs=${Date.now() - inicioRequestMs}`)
+        // Telemetría segura — cuenta cuántos adjuntos quedaron
+        // realmente construidos en este turno (0, 1 o 2), nunca su
+        // contenido.
+        let cantidadAdjuntos = 0
 
         // Corrección funcional — "falta mostrar y descargar la
         // planeación": el borrador completo (no solo su hoja de
@@ -1686,6 +1729,7 @@ Grado: [grado] | Grupo: [grupo]
         if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
           try {
             const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
+            console.log(`[STREAM][chat] borradorExtraido=${!!textoCompleto}`)
             if (textoCompleto) {
               const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null }
               const datosComprimidos = gzipSync(Buffer.from(JSON.stringify(datosDocumento), 'utf-8')).toString('base64url')
@@ -1693,6 +1737,8 @@ Grado: [grado] | Grupo: [grupo]
               const archivoDocumento = { tipo: 'pdf', nombre: 'vista-previa-planeacion.pdf', url: urlDocumento }
               const marcadorDocumento = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoDocumento), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcadorDocumento}`))
+              cantidadAdjuntos++
+              console.log('[STREAM][chat] planeacionPdfGenerado=true')
             }
           } catch (e) {
             // Nunca rompe la respuesta del borrador por esto — el
@@ -1700,6 +1746,7 @@ Grado: [grado] | Grupo: [grupo]
             // documento descargable es un extra, no una condición
             // para poder seguir.
             console.error('[PLANEACION_GENERAR] fallo preparando la vista previa del documento de planeación:', e)
+            console.log(`[STREAM][chat] errorEtapa=planeacion_pdf nombreError=${e instanceof Error ? e.name : 'desconocido'}`)
           }
         }
 
@@ -1732,20 +1779,38 @@ Grado: [grado] | Grupo: [grupo]
               const archivo = { tipo: 'pdf', nombre: 'vista-previa-hoja-evaluacion.pdf', url }
               const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcador}`))
+              cantidadAdjuntos++
+              console.log('[STREAM][chat] evaluacionPdfGenerada=true')
             }
           } catch (e) {
             // Nunca rompe la respuesta del borrador por esto — el
             // docente ya tiene el texto completo; la vista previa es
             // un extra, no una condición para poder seguir.
             console.error('[PLANEACION_GENERAR] fallo preparando la vista previa de la hoja:', e)
+            console.log(`[STREAM][chat] errorEtapa=hoja_pdf nombreError=${e instanceof Error ? e.name : 'desconocido'}`)
           }
         }
+        console.log(`[STREAM][chat] eventoFinalEnviado=true cantidadAdjuntos=${cantidadAdjuntos} duracionTotalMs=${Date.now() - inicioRequestMs}`)
       } catch (err) {
         // Ya se había empezado a mandar texto plano — no se puede
-        // convertir esto en un JSON de error a estas alturas. Se registra
-        // para diagnóstico; el cliente ve la conexión cortarse, que ya
-        // maneja como error (ver motorTextoClaude.ts).
+        // convertir esto en un JSON de error a estas alturas.
+        //
+        // CORRECCIÓN ("Error al conectar con la IA" después de mostrar
+        // parte de la planeación) — antes esto solo registraba el error
+        // y llamaba a controller.close() (cierre NORMAL): el docente se
+        // quedaba con texto cortado a medias sin ningún aviso, o —si la
+        // conexión ya estaba rota por el mismo motivo que causó este
+        // catch (ver TIMEOUT_ANTHROPIC_MS)— el navegador lo interpretaba
+        // como una respuesta de red trunca ("Error al conectar con la
+        // IA", el catch-all genérico de motorTextoClaude.ts). Con
+        // controller.error() el cliente SIEMPRE recibe una señal
+        // explícita y distinguible (ver motorTextoClaude.ts,
+        // RESPUESTA_INTERRUMPIDA) en vez de dejarlo adivinar entre "se
+        // cortó la red" y "ya terminó".
         console.error('Error durante el streaming de Claude:', err)
+        console.log(`[STREAM][chat] errorEtapa=claude_streaming nombreError=${err instanceof Error ? err.name : 'desconocido'} duracionTotalMs=${Date.now() - inicioRequestMs}`)
+        controller.error(new Error('RESPUESTA_INTERRUMPIDA'))
+        return
       }
       controller.close()
     },

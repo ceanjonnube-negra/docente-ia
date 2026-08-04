@@ -273,6 +273,20 @@ export class MotorTextoClaude implements MotorConversacional {
         this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
       }
+      // Señal explícita del servidor (ver app/api/chat/route.ts,
+      // controller.error()) cuando el streaming se interrumpe A MITAD
+      // de una respuesta ya empezada (ej. una planeación larga) — antes
+      // esto caía en el genérico de abajo, indistinguible de un
+      // problema real de red ("Error al conectar con la IA" cuando en
+      // realidad la conexión sí conectó y ya venía transmitiendo texto
+      // real). El docente ya tiene el texto parcial en pantalla — el
+      // mensaje debe decir con honestidad que se cortó, no sugerir un
+      // problema de conexión que no existió.
+      if (err instanceof Error && err.message === 'RESPUESTA_INTERRUMPIDA') {
+        console.error('[CHAT] La respuesta se interrumpió a mitad de la transmisión')
+        this.emitir({ tipo: 'error', mensaje: 'La respuesta se interrumpió antes de terminar. Vuelve a pedir la planeación.' })
+        return
+      }
       this.emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
     } finally {
       if (temporizadorFetch) clearTimeout(temporizadorFetch)
