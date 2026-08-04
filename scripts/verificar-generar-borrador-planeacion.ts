@@ -448,6 +448,60 @@ async function main() {
     verificar(clasificador.includes('requiere_consulta_oficial=true SOLO cuando'), '24e. La regla de consultas SEP sigue presente')
   }
 
+  // 25. CORRECCIÓN — "Hazme una planeación diagnóstica para las primeras
+  //     dos semanas de clases de mi grupo, considerando el calendario
+  //     escolar, los días inhábiles y las suspensiones." pedida un día
+  //     que NO es el inicio del ciclo (HOY=2026-08-10, una semana
+  //     después del arranque real). Antes de la corrección, sin
+  //     momentoRelativo reconocido, fechaReferencia caía en HOY y el
+  //     periodo arrancaba tarde; con la corrección, "las primeras dos
+  //     semanas de clases" ancla al inicio real del ciclo
+  //     (2026-08-01 → primer día efectivo 2026-08-03), consultando el
+  //     calendario real (suspensión + festivo) para excluir los días
+  //     correctos y completar igual los 10 días efectivos.
+  {
+    const eventos = [
+      evento('2026-08-05', 'suspension', 'Suspensión de labores'),
+      evento('2026-08-12', 'festivo', 'Día inhábil oficial'),
+    ]
+    const { sb, interno } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
+    const r = await prepararContextoGeneracionPlaneacion(
+      sb,
+      sesion(),
+      solicitud({ duracionSemanas: 2, momentoRelativo: 'las primeras dos semanas de clases' })
+    )
+    verificar(r.fechas.fechaInicioResuelta === '2026-08-03', '25a. "Las primeras dos semanas de clases" ancla al inicio real del ciclo (2026-08-03), no a HOY (2026-08-10)')
+    verificar(r.fechas.totalDiasEfectivos === 10 && !r.fechas.conflicto, '25b. Se calculan los 10 días efectivos solicitados sin conflicto (cálculo de fechas correcto)')
+    verificar(r.fechas.fechaFinResuelta === '2026-08-18', '25c. La fecha final compensa correctamente la suspensión y el día inhábil intermedios')
+    verificar(r.fechas.fechasExcluidas.some((f) => f.motivo === 'suspension') && r.fechas.fechasExcluidas.some((f) => f.motivo === 'dia_inhabil'), '25d. La suspensión y el día inhábil registrados en el calendario real quedan excluidos (consulta automática del calendario)')
+    verificar(r.eventosCalendarioDelPeriodo.some((e) => e.motivo === 'suspension') && r.eventosCalendarioDelPeriodo.some((e) => e.motivo === 'dia_inhabil'), '25e. Ambos quedan reportados en eventosCalendarioDelPeriodo para que el borrador los mencione con honestidad')
+    verificar(!!r.explicacionMomentoRelativo && r.explicacionMomentoRelativo.includes('inicio oficial del ciclo escolar') && r.explicacionMomentoRelativo.includes('2026-08-01'), '25f. La explicación honesta indica que se ancló al inicio oficial del ciclo escolar')
+    verificar(interno.escrituras.length === 0, '25g. Cero escrituras en Supabase durante la generación del contexto (vista previa, nada persistido)')
+  }
+
+  // 26. Desambiguación planeacion_generar vs. consultar_calendario —
+  //     mencionar el calendario/días inhábiles/suspensiones DENTRO de
+  //     una solicitud de crear una planeación nunca debe reclasificar
+  //     a consultar_calendario (regla 8 competía con la 4 sin criterio
+  //     de desempate antes de esta corrección).
+  {
+    const clasificador = readFileSync(join(__dirname, '..', 'lib', 'clasificadorNivel0.ts'), 'utf-8')
+    verificar(clasificador.includes('NUNCA compite con la 8 (consultar_calendario)') && clasificador.includes('sigue siendo planeacion_generar'), '26a. La regla 4 declara explícitamente que nunca compite con consultar_calendario cuando el mensaje pide crear una planeación')
+    verificar(clasificador.includes('Excepción — NUNCA uses esta regla si el mensaje en realidad pide CREAR, AJUSTAR o APROBAR una planeación'), '26b. La regla 8 declara explícitamente la excepción simétrica hacia planeacion_generar')
+    verificar(clasificador.includes('duración y momento_relativo NO son excluyentes'.slice(0, 10)) || clasificador.includes('Duración y momento_relativo NO son excluyentes'), '26c. La regla 4 permite extraer duración Y momento relativo de inicio de ciclo al mismo tiempo')
+  }
+
+  // 27. Las instrucciones prohíben explícitamente el patrón de falla
+  //     reportado (Opción A/B, pedir ajuste manual, decir que no hay
+  //     calendario cargado) cuando el periodo ya se calculó sin conflicto.
+  {
+    const t = INSTRUCCIONES_PLANEACION_GENERAR
+    verificar(t.includes('NUNCA presentes "Opción A" / "Opción B"'), '27a. Las instrucciones prohíben explícitamente presentar Opción A / Opción B')
+    verificar(t.includes('NUNCA le pidas al maestro que ajuste manualmente las fechas'), '27b. Las instrucciones prohíben explícitamente pedir ajuste manual de fechas/suspensiones/días inhábiles')
+    verificar(t.includes('NUNCA digas que no tienes el calendario cargado'), '27c. Las instrucciones prohíben explícitamente afirmar que no hay calendario cargado')
+    verificar(t.includes('genera el borrador completo DE INMEDIATO'), '27d. Las instrucciones exigen generar el borrador de inmediato cuando no hay conflicto, nunca solo explicar lo que se podría hacer')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)

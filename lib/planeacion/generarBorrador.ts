@@ -72,22 +72,35 @@ export function resolverPeriodoEvaluacionActual(periodos: PeriodoEvaluacion[], h
   return periodos.find((p) => p.fecha_inicio && p.fecha_fin && p.fecha_inicio <= hoy && hoy <= p.fecha_fin) || null
 }
 
-// Único patrón relativo resuelto de forma determinista en este paso:
+// Patrones relativos resueltos de forma determinista en este paso:
 // "después de vacaciones" → el día siguiente a la última vacación
-// oficial SEP que empiece en o después de hoy. Cualquier otra
+// oficial SEP que empiece en o después de hoy; "inicio/regreso a
+// clases" o "primeras semanas de clases" → el inicio oficial del
+// ciclo escolar (nunca "hoy" — una planeación diagnóstica de inicio
+// de ciclo pedida a mitad del ciclo debe seguir anclada al arranque
+// real del ciclo, no a la fecha en que se pidió). Cualquier otra
 // referencia relativa que el clasificador no pudo convertir en fecha
 // se deja pasar tal cual como fechaReferencia=hoy (calcularFechasPlaneacion
 // ya busca el siguiente día efectivo desde ahí) — nunca se bloquea, y
 // el texto original se devuelve en `explicacionMomentoRelativo` para
 // que el borrador lo mencione con honestidad en vez de fingir certeza.
+const PATRON_INICIO_CICLO = /inicio de clases|primer d[ií]a de clases|comienzo (del |de )?(ciclo|curso)|regreso a clases|inicio del? ciclo escolar|inicio de ciclo|primeras?.*de clases/
+
 function resolverFechaReferencia(
   momentoRelativo: string | null,
   eventos: EventoCalendarioCompleto[],
-  hoy: string
+  hoy: string,
+  inicioCiclo: string
 ): { fechaReferencia: string; explicacion: string | null } {
   if (!momentoRelativo) return { fechaReferencia: hoy, explicacion: null }
 
   const normalizado = momentoRelativo.toLowerCase()
+  if (PATRON_INICIO_CICLO.test(normalizado)) {
+    return {
+      fechaReferencia: inicioCiclo,
+      explicacion: `Se solicitó iniciar en "${momentoRelativo}" — se ubicó el inicio oficial del ciclo escolar (${inicioCiclo}) y se calculó a partir de ahí, ajustando al siguiente día efectivo si cae en fin de semana o día no laborable.`,
+    }
+  }
   if (normalizado.includes('vacacion')) {
     const vacacionesFuturas = eventos
       .filter((e) => e.es_sep && (e.tipo || '').toLowerCase().includes('vacacion') && e.fecha >= hoy)
@@ -125,7 +138,7 @@ export async function prepararContextoGeneracionPlaneacion(
   ])
 
   const diasNoLaborables = mapearEventosADiasNoLaborables(eventosCiclo)
-  const { fechaReferencia, explicacion: explicacionMomentoRelativo } = resolverFechaReferencia(solicitud.momentoRelativo, eventosCiclo, sesion.fecha_actual)
+  const { fechaReferencia, explicacion: explicacionMomentoRelativo } = resolverFechaReferencia(solicitud.momentoRelativo, eventosCiclo, sesion.fecha_actual, inicioCiclo)
 
   const fechas = calcularFechasPlaneacion({
     fechaInicio: solicitud.fechaInicio,
