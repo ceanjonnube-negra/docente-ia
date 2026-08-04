@@ -32,6 +32,7 @@ type Fila = Record<string, unknown>
 
 class ConsultaFalsa {
   private filtros: Array<[string, unknown]> = []
+  private rangos: Array<['gt', string, unknown]> = []
   private orden: { columna: string; ascendente: boolean } | null = null
   private operacion: 'consultar' | 'insertar' | 'actualizar' = 'consultar'
   private payload: Fila | Fila[] | null = null
@@ -62,6 +63,11 @@ class ConsultaFalsa {
     return this
   }
 
+  gt(columna: string, valor: unknown) {
+    this.rangos.push(['gt', columna, valor])
+    return this
+  }
+
   order(columna: string, opciones?: { ascending?: boolean }) {
     this.orden = { columna, ascendente: opciones?.ascending ?? true }
     return this
@@ -83,7 +89,10 @@ class ConsultaFalsa {
       return { data: coincidentes, error: null }
     }
 
-    let resultado = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v))
+    let resultado = filas.filter((f) =>
+      this.filtros.every(([c, v]) => f[c] === v) &&
+      this.rangos.every(([, c, v]) => Number(f[c]) > Number(v))
+    )
     if (this.orden) {
       const { columna, ascendente } = this.orden
       resultado = [...resultado].sort((a, b) => {
@@ -223,6 +232,7 @@ function clasificacion(overrides: Partial<ClasificacionNivel0> = {}): Clasificac
     duracion_dias_planeacion: null,
     duracion_semanas_planeacion: null,
     momento_relativo_planeacion: null,
+    accion_planeacion_generar: null,
     datos_faltantes: [],
     nivel_confianza: 0.9,
     requiere_confirmacion: false,

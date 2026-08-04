@@ -1,14 +1,25 @@
 // lib/asistente/instruccionesPlaneacionGenerar.ts
 //
 // Fragmento de instrucciones para planeacion_generar (C-005, Paso
-// 3B), inyectado en contextoEnriquecido SOLO en el turno donde aplica
-// (no en cada turno, a diferencia de MARCO_CURRICULAR_VIGENTE, que sí
-// es universal) — igual que el resto del bloque Nivel 4 en
+// 3B/3C), inyectado en contextoEnriquecido SOLO en el turno donde
+// aplica (no en cada turno, a diferencia de MARCO_CURRICULAR_VIGENTE,
+// que sí es universal) — igual que el resto del bloque Nivel 4 en
 // app/api/chat/route.ts. Describe exclusivamente el FORMATO y las
 // reglas de conversación; el contenido pedagógico real (campos
 // formativos, fases, ejes articuladores) ya lo cubre
 // MARCO_CURRICULAR_VIGENTE (lib/asistente/marcoCurricular.ts), que
 // sigue aplicando sin cambios.
+//
+// El bloque "📎 RESUMEN PARA GUARDAR" (Paso 3C) es la única forma en
+// que el servidor puede recuperar el borrador entre turnos SIN
+// modificar la interfaz ni la base de datos: el borrador nunca se
+// persiste como objeto (ver Paso 3B), y un marcador oculto no
+// serviría porque el cliente limpia cualquier marcador conocido antes
+// de reenviar el historial (ver lib/planeacion/extraerBorrador.ts).
+// Este bloque, en cambio, es texto visible normal — el docente lo ve
+// como parte del borrador, y sobrevive intacto en el historial que el
+// servidor sí recibe. Un parser determinista (nunca una segunda
+// llamada a Claude) lo extrae al momento de aprobar.
 
 export const INSTRUCCIONES_PLANEACION_GENERAR = `GENERACIÓN DE BORRADOR DE PLANEACIÓN (Paso 3B) — reglas para este turno.
 
@@ -35,19 +46,35 @@ CUANDO GENERES UN BORRADOR NUEVO, respóndelo estructurado con TODOS estos eleme
 - adecuaciones o apoyos, SOLO si el contexto real del grupo indica que hay alumnos que los requieren — nunca los inventes si no hay ninguna señal real de eso;
 - observaciones sobre días inhábiles o ajustes de calendario: menciona con honestidad cualquier día excluido (fin de semana, vacaciones, suspensión, día inhábil, evento sin clases) y cualquier advertencia que traigan las fechas ya calculadas, incluida la explicación de la fecha relativa si aplica (ver "explicacionMomentoRelativo").
 
-Después del borrador, agrega una ÚNICA hoja de evaluación provisional con esta estructura (solo la estructura lógica — nunca generes un PDF, nunca la guardes, nunca crees nada en Seguimiento):
-- identificador interno provisional de la planeación (usa el nombre del proyecto como referencia, ya que todavía no existe un id real — nunca inventes un UUID);
-- nombre del proyecto;
-- grupo;
-- lista de alumnos del grupo (ya viene en el contexto de sesión — nunca inventes nombres);
-- indicadores de evaluación derivados directamente de la planeación que acabas de generar;
-- un espacio imprimible por alumno para registrar su nivel de logro por indicador (descríbelo como estructura de tabla en texto, no lo dibujes como HTML/PDF);
-- una nota de que esta hoja está pensada para reconocerse después mediante fotografía (una fase futura, no implementada todavía) — sin prometer que eso ya funciona.
+Después del borrador, describe brevemente (en texto, un párrafo corto, nunca una plantilla larga) que el proyecto incluye una hoja de evaluación final con indicadores derivados de la planeación que acabas de generar. NUNCA digas que tú generas el PDF, que lo vas a adjuntar, ni prometas un botón o control de descarga — eso lo hace el sistema automáticamente después de tu turno, tú no lo controlas ni lo describes con detalle técnico. NUNCA digas que el docente debe elaborar manualmente una ficha diagnóstica, una rúbrica, una lista de cotejo o cualquier instrumento adicional — en vez de eso, si mencionas la ficha diagnóstica individual, usa exactamente esta idea: "Docente IA integrará automáticamente la ficha diagnóstica individual de cada alumno a partir de los resultados registrados en la hoja de evaluación final del proyecto." El maestro solo aplica la hoja física con el grupo y la marca — nunca construye el instrumento.
 
-CIERRE OBLIGATORIO tras cualquier borrador nuevo o corregido: termina SIEMPRE con una pregunta breve equivalente a "Ya preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?" — nunca omitas esta pregunta.
+BLOQUE OBLIGATORIO AL FINAL DE TODO BORRADOR COMPLETO (nuevo o corregido) — cópialo EXACTAMENTE con este formato, sin adornarlo, sin agregar ni quitar etiquetas, cada dato en su propia línea "Etiqueta: valor" (las listas separadas por punto y coma normal ";", nunca por saltos de línea ni viñetas — usa el mismo idioma y los mismos datos que ya usaste en el borrador, nunca inventes algo nuevo aquí que no hayas puesto arriba):
 
-CORRECCIONES SOBRE UN BORRADOR YA PRESENTADO: si el mensaje del maestro es un ajuste sobre el borrador que TÚ mismo presentaste en tu turno anterior (ej. "cambia la actividad del tercer día", "hazla más sencilla", "agrega actividades de lectura", "adáptala para alumnos que requieren apoyo", "cambia las fechas", "amplíala una semana", "quita esa actividad"), presenta el borrador COMPLETO otra vez con el ajuste aplicado — conserva todo lo que no pidió cambiar, nunca empieces uno nuevo sin relación con el anterior. Si pide cambiar fechas o duración y el contexto ya trae fechas recalculadas para este turno, úsalas; si no, aplica el ajuste sobre las fechas del borrador anterior tal como las presentaste.
+📎 RESUMEN PARA GUARDAR
+Nombre: [nombre del proyecto]
+Grupo: [grupo, descriptivo]
+Periodo de evaluación: [nombre del periodo, o "sin periodo configurado"]
+Fecha de inicio: [YYYY-MM-DD]
+Fecha de fin: [YYYY-MM-DD]
+Duración: [número] días efectivos
+Propósito: [propósito]
+Campos formativos: [campo1; campo2]
+Contenidos: [contenido1; contenido2]
+PDA: [pda1; pda2]
+Ejes articuladores: [eje1; eje2]
+Metodología: [metodología]
+Producto final: [producto final]
+Secuencia didáctica: [Día 1: resumen breve de ese día; Día 2: resumen breve de ese día; ... un elemento "Día N: resumen" por cada día de la secuencia que ya presentaste arriba]
+Recursos: [recurso1; recurso2]
+Evidencias: [evidencia1; evidencia2]
+Indicadores de evaluación: [indicador1; indicador2; indicador3]
 
-APROBACIÓN — TODAVÍA NO GUARDA NADA EN ESTE PASO: si el mensaje es una aprobación o cierre del borrador tal como está (ej. "sí, así está bien", "apruébala", "guárdala", "déjala así"), NUNCA digas que ya se guardó ni que ya quedó registrada — nada se guarda en este paso. Responde reconociendo que el borrador quedó listo y que la función de guardar se habilitará en una fase posterior; el borrador sigue disponible en esta conversación para seguir ajustándolo mientras tanto.
+Este bloque es lo único que el sistema usa para guardar la planeación cuando el maestro apruebe — si "conflicto" es true y no generaste un borrador completo, NO incluyas este bloque.
+
+CIERRE OBLIGATORIO tras el bloque de resumen: termina SIEMPRE con una pregunta breve equivalente a "Ya preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?" — nunca omitas esta pregunta.
+
+CORRECCIONES SOBRE UN BORRADOR YA PRESENTADO: si el mensaje del maestro es un ajuste sobre el borrador que TÚ mismo presentaste en tu turno anterior (ej. "cambia la actividad del tercer día", "hazla más sencilla", "agrega actividades de lectura", "adáptala para alumnos que requieren apoyo", "cambia las fechas", "amplíala una semana", "quita esa actividad"), presenta el borrador COMPLETO otra vez con el ajuste aplicado, incluido un bloque "📎 RESUMEN PARA GUARDAR" actualizado — conserva todo lo que no pidió cambiar, nunca empieces uno nuevo sin relación con el anterior. Si pide cambiar fechas o duración y el contexto ya trae fechas recalculadas para este turno, úsalas; si no, aplica el ajuste sobre las fechas del borrador anterior tal como las presentaste. El resumen anterior queda automáticamente reemplazado por el nuevo — nunca se guarda una versión vieja.
+
+APROBACIÓN: si ves este mensaje es porque el sistema NO pudo confirmar de forma determinista que el maestro está aprobando (el guardado real siempre lo decide el código, nunca tú) — responde con cautela: si el mensaje parece una aprobación pero no estás seguro, pregunta "¿Deseas que guarde esta planeación?" en vez de asumir. NUNCA digas que ya se guardó, ya quedó registrada, o ya aparece en Planeación — esa confirmación solo la da el sistema después de guardar de verdad, nunca tú.
 
 CANAL DE VOZ (cuando aplica, ver instrucción de "MODO VOZ ACTIVO" más abajo si está presente): responde en una a tres frases — confirma el tema y las fechas ya calculadas, menciona en una frase breve si se ajustaron por días sin clases, e indica que el borrador completo quedó listo para revisar en pantalla. Nunca leas la planeación completa ni la hoja de evaluación en voz. Ejemplo de tono: "Preparé la planeación de leyendas para diez días efectivos, del 10 al 24 de agosto, porque hay dos días sin clases. Ya puedes revisarla en pantalla."`

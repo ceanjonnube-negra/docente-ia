@@ -20,6 +20,8 @@ import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
+import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
+import { extraerResumenBorrador } from '@/lib/planeacion/extraerBorrador'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -636,6 +638,13 @@ export async function POST(req: NextRequest) {
   // scope (antes del try) para que parametrosClaude, más abajo, pueda
   // leerlo sin importar qué pasó dentro del bloque del clasificador.
   let requiereConsultaOficial = false
+  // Corrección funcional de C-005 — vista previa descargable de la
+  // hoja de evaluación mientras el borrador de planeación TODAVÍA NO
+  // se aprueba. Declarado aquí (antes del try del clasificador) para
+  // que el bloque de streaming, mucho más abajo, pueda leerlo sin
+  // importar qué pasó dentro de ese try — mismo criterio ya usado por
+  // requiereConsultaOficial.
+  let esTurnoDeBorradorPlaneacion = false
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -821,6 +830,40 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // planeacion_generar, aprobación (C-005, Paso 3C) — la ÚNICA
+      // escritura real de este intent, y a propósito NUNCA pasa por
+      // Claude: el guardado se decide y se confirma 100% en código,
+      // igual que registrar_asistencia/marcar_asistencia_individual/
+      // registrar_incidencia arriba. accion_planeacion_generar==='aprobar'
+      // ya viene acotado por el clasificador (ver regla 4) a que el
+      // turno anterior presentó un borrador completo y este mensaje lo
+      // confirma sin ambigüedad — aun así, aprobarBorradorPlaneacion
+      // vuelve a extraer y validar el borrador de forma determinista,
+      // nunca confía ciegamente en la clasificación.
+      if (clasificacion.intencion_principal === 'planeacion_generar' && clasificacion.accion_planeacion_generar === 'aprobar') {
+        try {
+          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes)
+          if (!resultado.ok) {
+            console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)
+            return respuestaTexto(resultado.mensaje)
+          }
+          const p = resultado.planeacion
+          const fechas = p.fecha_inicio && p.fecha_fin ? `, del ${p.fecha_inicio} al ${p.fecha_fin}` : ''
+          const duracion = resultado.duracionDias ? ` para ${resultado.duracionDias} días efectivos` : ''
+          console.log(`[NIVEL0] planeacion_generar — aprobación OK, planeacion_id=${p.id}, hoja=${resultado.hoja.identificadorVisible}`)
+          const mensajeVoz = `Listo, guardé la planeación de ${p.nombre}${duracion}${fechas}.`
+          const mensajeTexto = `${mensajeVoz} Ya aparece en Planeación, queda disponible para consulta, y la hoja de evaluación se utilizará al finalizar el proyecto.`
+          // Hoja de evaluación DEFINITIVA — mismo marcador [[DOCUMENTO_ARCHIVO:...]]
+          // que la vista previa, ahora con la URL firmada real de Storage.
+          const archivo = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url }
+          const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+          return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcador}`)
+        } catch (e) {
+          console.error('[NIVEL0] planeacion_generar — excepción aprobando el borrador:', e)
+          return respuestaTexto('No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.')
+        }
+      }
+
       // Nivel 1: actualizar_perfil_docente — "Ya somos cuarto.", "Cambia
       // el grado.", "Ahora es 4° B." Escribe DIRECTO en
       // perfiles_docentes.grado/grupo (ver actualizarPerfilDocente en
@@ -964,6 +1007,7 @@ export async function POST(req: NextRequest) {
             })
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
+            esTurnoDeBorradorPlaneacion = true
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el
@@ -1480,6 +1524,11 @@ Grado: [grado] | Grupo: [grupo]
   // transmite en fragmentos (content_block_start -> delta -> stop) antes
   // de ejecutar el guardado real (ver lib/motorContexto.ts).
   let toolUseActivo: { id: string; name: string; inputJson: string } | null = null
+  // Corrección funcional de C-005 — acumula el texto completo del
+  // borrador mientras se transmite, para poder extraer su bloque de
+  // resumen EN CUANTO termine el streaming, dentro del mismo turno
+  // (ver más abajo, después del for-await).
+  let textoBorradorAcumulado = ''
   const readable = new ReadableStream({
     async start(controller) {
       try {
@@ -1490,6 +1539,7 @@ Grado: [grado] | Grupo: [grupo]
               marcarTelemetria('claude:first_text_received')
             }
             controller.enqueue(encoder.encode(event.delta.text))
+            if (esTurnoDeBorradorPlaneacion) textoBorradorAcumulado += event.delta.text
           }
 
           // Chat IA — Registro escolar: a diferencia de web_search
@@ -1557,6 +1607,44 @@ Grado: [grado] | Grupo: [grupo]
           }
         }
         marcarTelemetria('claude:response_finished')
+
+        // Corrección funcional de C-005 — vista previa descargable de
+        // la hoja de evaluación, adjunta en el MISMO turno en que se
+        // presentó/corrigió el borrador, sin persistir nada (no sube a
+        // Storage, no crea filas en ninguna tabla): reutiliza el mismo
+        // marcador [[DOCUMENTO_ARCHIVO:...]] que ya usan Word/PDF/PPT,
+        // así que la tarjeta compacta de descarga aparece sin ningún
+        // cambio en la interfaz. Si el borrador no quedó completo
+        // (Claude no incluyó el bloque de resumen porque hubo
+        // conflicto de fechas), extraerResumenBorrador devuelve null y
+        // no se adjunta nada.
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
+          try {
+            const resumenBorrador = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
+            if (resumenBorrador) {
+              const datosVistaPrevia = {
+                grupoId: sesion.grupo_activo_id,
+                nombreProyecto: resumenBorrador.nombre,
+                camposFormativos: resumenBorrador.camposFormativos,
+                trimestreNombre: resumenBorrador.periodoTexto,
+                fechaInicio: resumenBorrador.fechaInicio,
+                fechaFin: resumenBorrador.fechaFin,
+                indicadores: resumenBorrador.indicadores,
+                zonaHoraria: zonaHoraria ?? null,
+              }
+              const datosCodificados = Buffer.from(JSON.stringify(datosVistaPrevia), 'utf-8').toString('base64')
+              const url = `/api/planeaciones/vista-previa-hoja?token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}`
+              const archivo = { tipo: 'pdf', nombre: 'vista-previa-hoja-evaluacion.pdf', url }
+              const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+              controller.enqueue(encoder.encode(`\n\n${marcador}`))
+            }
+          } catch (e) {
+            // Nunca rompe la respuesta del borrador por esto — el
+            // docente ya tiene el texto completo; la vista previa es
+            // un extra, no una condición para poder seguir.
+            console.error('[PLANEACION_GENERAR] fallo preparando la vista previa de la hoja:', e)
+          }
+        }
       } catch (err) {
         // Ya se había empezado a mandar texto plano — no se puede
         // convertir esto en un JSON de error a estas alturas. Se registra

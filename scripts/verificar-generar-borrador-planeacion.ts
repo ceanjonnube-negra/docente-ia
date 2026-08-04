@@ -43,7 +43,7 @@ type Fila = Record<string, unknown>
 
 class ConsultaFalsa {
   private filtros: Array<[string, unknown]> = []
-  private rangos: Array<['gte' | 'lte', string, unknown]> = []
+  private rangos: Array<['gte' | 'lte' | 'gt', string, unknown]> = []
   private clausulasOr: string | null = null
   private orden: { columna: string; ascendente: boolean } | null = null
   private operacion: 'consultar' | 'insertar' | 'actualizar' = 'consultar'
@@ -82,6 +82,11 @@ class ConsultaFalsa {
 
   lte(columna: string, valor: unknown) {
     this.rangos.push(['lte', columna, valor])
+    return this
+  }
+
+  gt(columna: string, valor: unknown) {
+    this.rangos.push(['gt', columna, valor])
     return this
   }
 
@@ -126,7 +131,11 @@ class ConsultaFalsa {
 
     let resultado = filas.filter((f) => {
       if (!this.filtros.every(([c, v]) => f[c] === v)) return false
-      if (!this.rangos.every(([tipo, c, v]) => (tipo === 'gte' ? String(f[c]) >= String(v) : String(f[c]) <= String(v)))) return false
+      if (!this.rangos.every(([tipo, c, v]) => {
+        if (tipo === 'gte') return String(f[c]) >= String(v)
+        if (tipo === 'lte') return String(f[c]) <= String(v)
+        return Number(f[c]) > Number(v)
+      })) return false
       if (!this.cumpleOr(f)) return false
       return true
     })
@@ -358,13 +367,16 @@ async function main() {
     verificar(faltantes.length === 0, `12. Las instrucciones exigen los ${camposRequeridos.length} elementos del borrador (faltantes: ${faltantes.join(', ') || 'ninguno'})`)
   }
 
-  // 13. Hoja de evaluación provisional, única, sin PDF ni guardado
+  // 13. Hoja de evaluación — corrección funcional de C-005: el PDF real
+  //     (vista previa y definitivo) ahora lo genera el SISTEMA de forma
+  //     automática, nunca Claude — las instrucciones se lo prohíben
+  //     explícitamente para que nunca prometa un control que no controla.
   {
     const t = INSTRUCCIONES_PLANEACION_GENERAR
-    verificar(t.includes('ÚNICA hoja de evaluación'), '13. Las instrucciones exigen una única hoja de evaluación provisional')
-    verificar(t.includes('identificador interno provisional') && t.includes('lista de alumnos') && t.includes('indicadores de evaluación') && t.includes('espacio imprimible'), '13b. La hoja provisional incluye identificador, alumnos, indicadores y espacio imprimible')
-    verificar(t.includes('reconocerse después mediante fotografía'), '13c. La hoja queda descrita como preparada para reconocimiento futuro por fotografía')
-    verificar(t.includes('nunca generes un PDF') && t.includes('nunca la guardes') && t.includes('nunca crees nada en Seguimiento'), '13d. Las instrucciones prohíben explícitamente PDF, guardado y Seguimiento en este paso')
+    verificar(t.includes('hoja de evaluación final con indicadores derivados'), '13. Las instrucciones piden mencionar brevemente la hoja de evaluación final')
+    verificar(t.includes('NUNCA digas que tú generas el PDF') && t.includes('eso lo hace el sistema automáticamente'), '13b. Las instrucciones prohíben que Claude describa o prometa el control de descarga — lo hace el sistema')
+    verificar(t.includes('NUNCA digas que el docente debe elaborar manualmente una ficha diagnóstica'), '13c. Las instrucciones prohíben explícitamente pedirle al docente que elabore instrumentos manualmente')
+    verificar(t.includes('Docente IA integrará automáticamente la ficha diagnóstica individual de cada alumno a partir de los resultados registrados en la hoja de evaluación final del proyecto'), '13d. Las instrucciones usan exactamente la redacción corregida sobre la ficha diagnóstica')
   }
 
   // 14/15/16. Cero INSERT/UPDATE/DELETE reales

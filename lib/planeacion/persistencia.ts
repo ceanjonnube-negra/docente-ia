@@ -147,6 +147,10 @@ export async function listarPlaneaciones(ctx: ContextoPlaneacion, filtros: Filtr
     .select(COLUMNAS_PLANEACION)
     .eq('docente_id', docenteId)
     .eq('grupo_id', filtros.grupo_id)
+    // version=0 es el centinela de "creación en dos fases todavía sin
+    // confirmar" (ver aprobarBorrador.ts, C-005 Paso 3C) — nunca debe
+    // aparecer en una consulta normal, ni siquiera parcialmente creada.
+    .gt('version', 0)
     .order('fecha_inicio', { ascending: false })
 
   if (filtros.periodo_evaluacion_id) consulta = consulta.eq('periodo_evaluacion_id', filtros.periodo_evaluacion_id)
@@ -166,6 +170,7 @@ export async function obtenerPlaneacionPorId(ctx: ContextoPlaneacion, id: string
     .from('planeaciones')
     .select(COLUMNAS_PLANEACION)
     .eq('id', id)
+    .gt('version', 0) // oculta una fila todavía sin confirmar, igual que listarPlaneaciones
     .maybeSingle()
   if (errorPlaneacion) return fallo('ERROR_SUPABASE', 'No se pudo verificar la planeación.')
   if (!planeacion) return fallo('PLANEACION_NO_ENCONTRADA', 'Planeación no encontrada.')
@@ -220,6 +225,43 @@ export async function actualizarPlaneacion(ctx: ContextoPlaneacion, id: string, 
     .select(COLUMNAS_PLANEACION)
     .single()
   if (errorUpdate || !planeacion) return fallo('ERROR_SUPABASE', errorUpdate?.message || 'No se pudo actualizar la planeación.')
+
+  return exito(planeacion as Planeacion)
+}
+
+// Promueve una planeación creada con version=0 (centinela de "creación
+// en dos fases, todavía sin confirmar" — ver aprobarBorrador.ts, C-005
+// Paso 3C) a su estado final visible, incrementando version a 1 de
+// forma explícita. Distinta de actualizarPlaneacion A PROPÓSITO: esa
+// función nunca incrementa version en un cambio puro de estado (así
+// debe seguir siendo — archivar una planeación ya completa no es un
+// cambio de contenido). Aquí SIEMPRE se pasa de 0 a 1, porque ese
+// cambio es exactamente la señal que listarPlaneaciones y
+// obtenerPlaneacionPorId usan (filtro version>0) para dejar de
+// ocultarla. Nunca usar esta función para nada que no sea esa
+// promoción — para editar una planeación ya confirmada, usar
+// actualizarPlaneacion.
+export async function confirmarPlaneacion(ctx: ContextoPlaneacion, id: string, estado: EstadoPlaneacion): Promise<ResultadoPlaneacion<Planeacion>> {
+  const resDocente = await resolverDocenteId(ctx.supabase)
+  if (!resDocente.ok) return resDocente
+  const docenteId = resDocente.datos
+
+  const { data: actual, error: errorActual } = await ctx.supabase
+    .from('planeaciones')
+    .select('id, docente_id, version')
+    .eq('id', id)
+    .maybeSingle()
+  if (errorActual) return fallo('ERROR_SUPABASE', 'No se pudo verificar la planeación.')
+  if (!actual) return fallo('PLANEACION_NO_ENCONTRADA', 'Planeación no encontrada.')
+  if ((actual as { docente_id: string }).docente_id !== docenteId) return fallo('PLANEACION_AJENA', 'No tienes acceso a esta planeación.')
+
+  const { data: planeacion, error: errorUpdate } = await ctx.supabase
+    .from('planeaciones')
+    .update({ estado, version: 1, actualizado_en: new Date().toISOString() })
+    .eq('id', id)
+    .select(COLUMNAS_PLANEACION)
+    .single()
+  if (errorUpdate || !planeacion) return fallo('ERROR_SUPABASE', errorUpdate?.message || 'No se pudo confirmar la planeación.')
 
   return exito(planeacion as Planeacion)
 }

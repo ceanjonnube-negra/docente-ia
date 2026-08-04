@@ -34,6 +34,7 @@ type Fila = Record<string, unknown>
 
 class ConsultaFalsa {
   private filtros: Array<[string, unknown]> = []
+  private rangos: Array<['gt', string, unknown]> = []
   private orden: { columna: string; ascendente: boolean } | null = null
   private operacion: 'consultar' | 'insertar' | 'actualizar' = 'consultar'
   private payload: Fila | Fila[] | null = null
@@ -59,6 +60,11 @@ class ConsultaFalsa {
 
   eq(columna: string, valor: unknown) {
     this.filtros.push([columna, valor])
+    return this
+  }
+
+  gt(columna: string, valor: unknown) {
+    this.rangos.push(['gt', columna, valor])
     return this
   }
 
@@ -91,7 +97,10 @@ class ConsultaFalsa {
       return { data: coincidentes, error: null }
     }
 
-    let resultado = filas.filter(f => this.filtros.every(([c, v]) => f[c] === v))
+    let resultado = filas.filter(f =>
+      this.filtros.every(([c, v]) => f[c] === v) &&
+      this.rangos.every(([, c, v]) => Number(f[c]) > Number(v))
+    )
     if (this.orden) {
       const { columna, ascendente } = this.orden
       resultado = [...resultado].sort((a, b) => {
