@@ -21,14 +21,22 @@ export const ASPECTOS_GENERALES: { valor: AspectoGeneral; etiqueta: string }[] =
   { valor: 'autonomia', etiqueta: 'Autonomía' },
 ]
 
-export type NivelSeguimiento = 'destacado' | 'logrado' | 'en_proceso' | 'requiere_apoyo' | 'no_evaluado'
+// Escala numérica 1-4 (ver "AJUSTE DE DISEÑO Y MODELO DE EVALUACIÓN —
+// sustituir letras por escala numérica simple"): reemplaza la escala
+// de letras D/L/E/R/N — una marca de posición (X, círculo, palomita)
+// sobre una de 4 casillas es más fácil de capturar a mano y de
+// reconocer por fotografía (se identifica QUÉ casilla quedó marcada,
+// nunca un carácter escrito). No existe un valor para "no evaluado":
+// una fila/indicador sin ninguna casilla marcada ES "no evaluado" —
+// la ausencia de nivel (null) representa ese estado en todo el
+// sistema, nunca un valor numérico como 0.
+export type NivelEvaluacion = 1 | 2 | 3 | 4
 
-export const NIVELES_SEGUIMIENTO: { valor: NivelSeguimiento; etiqueta: string }[] = [
-  { valor: 'destacado', etiqueta: 'Destacado' },
-  { valor: 'logrado', etiqueta: 'Logrado' },
-  { valor: 'en_proceso', etiqueta: 'En proceso' },
-  { valor: 'requiere_apoyo', etiqueta: 'Requiere apoyo' },
-  { valor: 'no_evaluado', etiqueta: 'No evaluado' },
+export const NIVELES_EVALUACION: { valor: NivelEvaluacion; etiqueta: string }[] = [
+  { valor: 4, etiqueta: 'Dominio destacado' },
+  { valor: 3, etiqueta: 'Logro esperado' },
+  { valor: 2, etiqueta: 'En proceso' },
+  { valor: 1, etiqueta: 'Requiere apoyo' },
 ]
 
 // Los 4 campos formativos oficiales (Plan de Estudio 2022 / NEM) — ver

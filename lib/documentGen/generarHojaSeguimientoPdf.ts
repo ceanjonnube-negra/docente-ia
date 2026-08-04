@@ -16,14 +16,19 @@
 // justo lo que pide el spec ("espacios suficientes para marcar",
 // "diseño compatible con reconocimiento mediante cámara").
 //
-// Cada celda se marca con UNA letra (D/L/P/A/N, ver leyenda impresa),
-// no con 5 sub-casillas por nivel — con varios indicadores en pantalla
-// angosta, 5 sub-casillas por indicador desbordaría la página. Mismo
-// criterio que ya usan las hojas de evaluación en papel reales.
+// Escala numérica 1-4 (ver "AJUSTE DE DISEÑO Y MODELO DE EVALUACIÓN —
+// sustituir letras por escala numérica simple"): cada indicador ocupa
+// un bloque de 4 casillas (columnas "4", "3", "2", "1") — el docente
+// marca UNA sola con X, círculo o palomita, nunca escribe una letra ni
+// un número a mano. Una fila sin ninguna marca se interpreta como "no
+// evaluado" (ver lib/seguimiento/conversionCalificacion.ts). El
+// reconocimiento por fotografía identifica QUÉ casilla quedó marcada
+// (posición), nunca un carácter escrito — de ahí que cada nivel sea su
+// propia casilla vacía en vez de una sola celda con una letra dentro.
 
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { prepararEncabezado } from './encabezadoDocumento'
-import { NIVELES_SEGUIMIENTO, type IndicadorProyecto } from '../seguimiento/tipos'
+import { NIVELES_EVALUACION, type IndicadorProyecto } from '../seguimiento/tipos'
 
 const ANCHO_PAGINA = 792 // carta apaisada (11in), en puntos
 const ALTO_PAGINA = 612 // carta apaisada (8.5in)
@@ -82,9 +87,17 @@ export async function generarHojaSeguimientoPdfBuffer(
   const ANCHO_NUM = 22
   const ANCHO_NOMBRE = 190
   const anchoRestante = ANCHO_CONTENIDO - ANCHO_NUM - ANCHO_NOMBRE
-  const ANCHO_INDICADOR = Math.max(anchoRestante / numIndicadores, 34) // por debajo de ~34pt las casillas dejan de ser legibles en foto — con muchos indicadores la tabla se saldrá del margen derecho antes que encogerse más
+  // Cada indicador ocupa un bloque de 4 casillas (niveles 4/3/2/1) —
+  // por debajo de ~16pt por casilla dejan de ser legibles en foto ni
+  // caben un dígito + una marca a mano; con muchos indicadores la
+  // tabla se saldrá del margen derecho antes que encogerse más.
+  const ANCHO_NIVEL_MINIMO = 16
+  const ANCHO_INDICADOR = Math.max(anchoRestante / numIndicadores, ANCHO_NIVEL_MINIMO * NIVELES_EVALUACION.length)
+  const ANCHO_NIVEL = ANCHO_INDICADOR / NIVELES_EVALUACION.length
   const ALTO_FILA = 20
-  const ALTO_ENCABEZADO_TABLA = 22
+  const ALTO_ENCABEZADO_INDICADOR = 14 // fila superior: número del indicador, centrado sobre sus 4 casillas
+  const ALTO_ENCABEZADO_NIVELES = 14 // fila inferior: etiquetas "4  3  2  1"
+  const ALTO_ENCABEZADO_TABLA = ALTO_ENCABEZADO_INDICADOR + ALTO_ENCABEZADO_NIVELES
 
   let pagina: PDFPage = pdfDoc.addPage([ANCHO_PAGINA, ALTO_PAGINA])
   let y = ALTO_PAGINA - MARGEN
@@ -145,7 +158,9 @@ export async function generarHojaSeguimientoPdfBuffer(
   }
 
   function dibujarLeyenda() {
-    const etiqueta = 'Escala: ' + NIVELES_SEGUIMIENTO.map(n => `${n.etiqueta[0]} = ${n.etiqueta}`).join('   ')
+    // Escala numérica 1-4 (nunca letras D/L/E/R/N) — mismo orden que
+    // las columnas de la tabla (4 a la izquierda, 1 a la derecha).
+    const etiqueta = NIVELES_EVALUACION.map(n => `${n.valor} ${n.etiqueta}`).join('  ·  ')
     pagina.drawText(sanearParaWinAnsi(etiqueta), { x: MARGEN, y: y - 10, size: 9, font: regular, color: COLOR_TEXTO_SUAVE })
     y -= 18
   }
@@ -162,6 +177,11 @@ export async function generarHojaSeguimientoPdfBuffer(
     y -= 8
   }
 
+  // Encabezado en DOS filas: arriba el número del indicador (una sola
+  // celda que abarca visualmente sus 4 casillas), abajo la etiqueta de
+  // cada nivel (4/3/2/1, mismo orden que la leyenda) — así cada
+  // columna de la tabla queda identificada sin repetir texto dentro de
+  // cada fila de alumno.
   function dibujarEncabezadoTabla() {
     asegurarEspacio(ALTO_ENCABEZADO_TABLA + ALTO_FILA)
     const yInicio = y
@@ -173,15 +193,29 @@ export async function generarHojaSeguimientoPdfBuffer(
     pagina.drawText('Alumno', { x: x + 6, y: yInicio - 16, size: 9, font: negrita, color: COLOR_TITULO })
     x += ANCHO_NOMBRE
     datos.indicadores.forEach((_, i) => {
-      pagina.drawRectangle({ x, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_INDICADOR, height: ALTO_ENCABEZADO_TABLA, borderColor: COLOR_BORDE, borderWidth: 1 })
+      const xBloque = x
+      // Fila superior — número del indicador, centrado sobre el
+      // bloque completo de 4 casillas.
+      pagina.drawRectangle({ x: xBloque, y: yInicio - ALTO_ENCABEZADO_INDICADOR, width: ANCHO_INDICADOR, height: ALTO_ENCABEZADO_INDICADOR, borderColor: COLOR_BORDE, borderWidth: 1 })
       const num = String(i + 1)
       const anchoNum = negrita.widthOfTextAtSize(num, 9)
-      pagina.drawText(num, { x: x + (ANCHO_INDICADOR - anchoNum) / 2, y: yInicio - 16, size: 9, font: negrita, color: COLOR_TITULO })
+      pagina.drawText(num, { x: xBloque + (ANCHO_INDICADOR - anchoNum) / 2, y: yInicio - 11, size: 9, font: negrita, color: COLOR_TITULO })
+      // Fila inferior — una casilla por nivel (4, 3, 2, 1).
+      NIVELES_EVALUACION.forEach((nivel, j) => {
+        const xNivel = xBloque + j * ANCHO_NIVEL
+        pagina.drawRectangle({ x: xNivel, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_NIVEL, height: ALTO_ENCABEZADO_NIVELES, borderColor: COLOR_BORDE, borderWidth: 1 })
+        const etiquetaNivel = String(nivel.valor)
+        const anchoEtiqueta = negrita.widthOfTextAtSize(etiquetaNivel, 8)
+        pagina.drawText(etiquetaNivel, { x: xNivel + (ANCHO_NIVEL - anchoEtiqueta) / 2, y: yInicio - ALTO_ENCABEZADO_INDICADOR - 10, size: 8, font: negrita, color: COLOR_TITULO })
+      })
       x += ANCHO_INDICADOR
     })
     y -= ALTO_ENCABEZADO_TABLA
   }
 
+  // Una fila por alumno: 4 casillas VACÍAS por indicador (nunca una
+  // sola celda con una letra dentro) — el docente marca UNA con X,
+  // círculo o palomita; una fila sin ninguna marca es "no evaluado".
   function dibujarFilaAlumno(alumno: AlumnoHoja) {
     asegurarEspacio(ALTO_FILA)
     const yInicio = y
@@ -193,7 +227,9 @@ export async function generarHojaSeguimientoPdfBuffer(
     pagina.drawText(truncarConEllipsis(alumno.nombre, regular, 8.5, ANCHO_NOMBRE - 10), { x: x + 5, y: yInicio - 14, size: 8.5, font: regular, color: COLOR_TEXTO })
     x += ANCHO_NOMBRE
     datos.indicadores.forEach(() => {
-      pagina.drawRectangle({ x, y: yInicio - ALTO_FILA, width: ANCHO_INDICADOR, height: ALTO_FILA, borderColor: COLOR_BORDE, borderWidth: 0.75 })
+      NIVELES_EVALUACION.forEach((_, j) => {
+        pagina.drawRectangle({ x: x + j * ANCHO_NIVEL, y: yInicio - ALTO_FILA, width: ANCHO_NIVEL, height: ALTO_FILA, borderColor: COLOR_BORDE, borderWidth: 0.75 })
+      })
       x += ANCHO_INDICADOR
     })
     y -= ALTO_FILA
