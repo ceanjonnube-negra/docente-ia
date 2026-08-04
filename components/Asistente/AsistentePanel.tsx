@@ -676,12 +676,21 @@ export default function AsistentePanel() {
                   {/* Última condición del flujo: independientemente de si
                       hubo vista previa (esDoc) o de qué tipo de documento
                       sea (planeación, lista, ficha, oficio...), en cuanto
-                      el mensaje trae una URL firmada real del archivo, la
-                      tarjeta oficial de descarga se renderiza — la vista
-                      previa nunca la sustituye. */}
-                  {m.archivo?.url && (
+                      el mensaje trae una o más URLs firmadas reales de
+                      archivo, la tarjeta oficial de descarga se
+                      renderiza — la vista previa nunca la sustituye. Un
+                      turno puede traer más de un adjunto relacionado
+                      (ej. planeación + hoja de evaluación en la misma
+                      respuesta) — se renderiza una tarjeta por cada uno,
+                      en el mismo orden en que llegaron (ver
+                      procesarMarcadorDeArchivo en motorTextoClaude.ts).
+                      Mensajes de un solo documento (el caso de siempre)
+                      solo tienen `archivo`, nunca `archivos` — ese caso
+                      sigue rindiendo exactamente igual que antes. */}
+                  {(m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []).map((archivo, idxArchivo) => (
                     <TarjetaDescarga
-                      archivo={m.archivo}
+                      key={`${m.id}-archivo-${idxArchivo}`}
+                      archivo={archivo}
                       creadoEn={m.creadoEn}
                       mensajeId={m.id}
                       esActivo={asistente.documentoActivoId === m.id}
@@ -689,7 +698,7 @@ export default function AsistentePanel() {
                       onConvertir={asistente.convertirDocumentoActivo}
                       resaltado={asistente.archivoReutilizadoId === m.id}
                     />
-                  )}
+                  ))}
                 </div>
               ) : (
                 <div className={`flex flex-col gap-1.5 max-w-sm ${m.rol === 'usuario' ? 'items-end' : 'items-start'}`}>

@@ -253,12 +253,12 @@ export class MotorTextoClaude implements MotorConversacional {
       }
 
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
-      const { texto: sinArchivo, archivo } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
+      const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, contenidoOriginal, accionNavegacion, perfilActualizado })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -283,17 +283,31 @@ export class MotorTextoClaude implements MotorConversacional {
   // FINALIZAR ARCHIVO en app/api/chat/route.ts) — mismo patrón que
   // procesarMarcadorDeProceso: el docente nunca ve esta línea, se
   // extrae y se quita del texto visible antes de mostrarlo.
-  private procesarMarcadorDeArchivo(respuesta: string): { texto: string; archivo?: ArchivoGeneradoInfo } {
-    const match = respuesta.match(/\[\[DOCUMENTO_ARCHIVO:([^\]]+)\]\]/)
-    if (!match) return { texto: respuesta }
-    try {
-      const binario = atob(match[1])
-      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-      const archivo = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as ArchivoGeneradoInfo
-      return { texto: respuesta.replace(match[0], '').trim(), archivo }
-    } catch {
-      return { texto: respuesta.replace(match[0], '').trim() }
+  // Un turno puede traer más de un adjunto (ej. planeación + hoja de
+  // evaluación en la misma respuesta, ver "corrección funcional — falta
+  // mostrar y descargar la planeación") — se extraen TODOS los
+  // marcadores presentes, no solo el primero. `archivo` (singular) se
+  // sigue devolviendo con el primero para que ningún flujo existente
+  // de un solo documento (Word/PDF/PPT/Excel, ficha_descriptiva...)
+  // tenga que cambiar.
+  private procesarMarcadorDeArchivo(respuesta: string): { texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[] } {
+    const regex = /\[\[DOCUMENTO_ARCHIVO:([^\]]+)\]\]/g
+    const archivos: ArchivoGeneradoInfo[] = []
+    let texto = respuesta
+    let match: RegExpExecArray | null
+    while ((match = regex.exec(respuesta)) !== null) {
+      try {
+        const binario = atob(match[1])
+        const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+        archivos.push(JSON.parse(new TextDecoder('utf-8').decode(bytes)) as ArchivoGeneradoInfo)
+      } catch {
+        // marcador corrupto — se quita del texto igual, sin adjuntar nada por él
+      }
+      texto = texto.replace(match[0], '')
     }
+    texto = texto.trim()
+    if (archivos.length === 0) return { texto }
+    return { texto, archivo: archivos[0], archivos }
   }
 
   // Marcador técnico con el contenido REAL redactado por Claude cuando

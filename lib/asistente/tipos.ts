@@ -71,6 +71,16 @@ export type MensajeConversacion = {
   texto: string
   creadoEn: number
   archivo?: ArchivoGeneradoInfo
+  // Varios archivos generados en ESTE mismo turno (ej. planeación +
+  // hoja de evaluación en la misma respuesta) — campo nuevo y aditivo,
+  // mismo criterio que `imagenes` más abajo: nunca reemplaza a
+  // `archivo` (singular), que sigue siendo exactamente el mismo campo
+  // que usan todos los flujos de un solo documento (Word/PDF/PPT/Excel
+  // de "FINALIZAR ARCHIVO", ficha_descriptiva...) sin ningún cambio.
+  // `archivos` solo se llena cuando el turno trae 2 o más adjuntos a
+  // la vez — cuando trae exactamente uno, sigue viajando únicamente en
+  // `archivo`, igual que siempre.
+  archivos?: ArchivoGeneradoInfo[]
   // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
   // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
   // que la burbuja lo siga mostrando después de restaurar la
@@ -186,7 +196,7 @@ export type EventoMotor =
   // app/api/chat/route.ts) — AsistenteService lo usa como señal para
   // recargar EstadoAsistente.perfil, la única fuente que consumen el
   // menú lateral, /dashboard/inicio y el resto de la interfaz.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

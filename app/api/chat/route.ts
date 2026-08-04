@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
@@ -22,7 +23,7 @@ import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
-import { extraerResumenBorrador } from '@/lib/planeacion/extraerBorrador'
+import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -1671,6 +1672,36 @@ Grado: [grado] | Grupo: [grupo]
           }
         }
         marcarTelemetria('claude:response_finished')
+
+        // Corrección funcional — "falta mostrar y descargar la
+        // planeación": el borrador completo (no solo su hoja de
+        // evaluación) también se adjunta como documento descargable en
+        // el MISMO turno, sin persistir nada (no sube a Storage, no
+        // crea filas en ninguna tabla) — reutiliza generarPdfBuffer
+        // (el mismo generador ya usado para Word/PDF/PPT/Excel de
+        // cualquier documento formal, ver lib/documentGen/generarPdfServidor.ts),
+        // nunca un generador nuevo. Va PRIMERO (planeación, luego
+        // hoja) para que la tarjeta de la planeación aparezca antes en
+        // pantalla, tal como se pidió.
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
+          try {
+            const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
+            if (textoCompleto) {
+              const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null }
+              const datosComprimidos = gzipSync(Buffer.from(JSON.stringify(datosDocumento), 'utf-8')).toString('base64url')
+              const urlDocumento = `/api/planeaciones/vista-previa-documento?token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              const archivoDocumento = { tipo: 'pdf', nombre: 'vista-previa-planeacion.pdf', url: urlDocumento }
+              const marcadorDocumento = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoDocumento), 'utf-8').toString('base64')}]]`
+              controller.enqueue(encoder.encode(`\n\n${marcadorDocumento}`))
+            }
+          } catch (e) {
+            // Nunca rompe la respuesta del borrador por esto — el
+            // docente ya tiene el texto completo en pantalla; el
+            // documento descargable es un extra, no una condición
+            // para poder seguir.
+            console.error('[PLANEACION_GENERAR] fallo preparando la vista previa del documento de planeación:', e)
+          }
+        }
 
         // Corrección funcional de C-005 — vista previa descargable de
         // la hoja de evaluación, adjunta en el MISMO turno en que se

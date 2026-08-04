@@ -137,3 +137,19 @@ export function tieneBloqueResumen(historial: { role: string; content: string }[
   const ultimo = historial[historial.length - 1]
   return !!ultimo && ultimo.role === 'assistant' && ultimo.content.includes(ETIQUETA_INICIO_BLOQUE)
 }
+
+// El texto COMPLETO del borrador tal como Claude lo redactó (todos los
+// elementos pedidos en instruccionesPlaneacionGenerar.ts — secuencia
+// didáctica día por día completa, no el resumen breve que sí recorta
+// secuenciaDidactica arriba) — usado para generar el documento de
+// planeación descargable (corrección funcional "falta mostrar y
+// descargar la planeación"): nunca un resumen reducido, la misma
+// fuente completa que ya vio el docente en pantalla. Corta antes del
+// bloque "📎 RESUMEN PARA GUARDAR" (ese bloque es un artefacto interno
+// para guardar, no contenido del documento) y antes de la pregunta de
+// cierre de aprobación si quedó pegada al final del bloque.
+export function extraerTextoCompletoBorrador(texto: string): string {
+  const indiceBloque = texto.indexOf(ETIQUETA_INICIO_BLOQUE)
+  const sinResumen = indiceBloque === -1 ? texto : texto.slice(0, indiceBloque)
+  return sinResumen.trim()
+}

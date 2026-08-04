@@ -958,7 +958,7 @@ class AsistenteServiceImpl {
             if (idx !== -1) {
               this.mensajes = [
                 ...this.mensajes.slice(0, idx),
-                { ...this.mensajes[idx], archivo: evento.archivo },
+                { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
                 ...this.mensajes.slice(idx + 1),
               ]
             }
@@ -1005,7 +1005,7 @@ class AsistenteServiceImpl {
             // aquí también o la tarjeta de descarga nunca aparecía y el
             // maestro solo veía el texto plano "Documento generado
             // correctamente."
-            this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo }, ...this.mensajes.slice(idx + 1)]
+            this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo, archivos: evento.archivos }, ...this.mensajes.slice(idx + 1)]
             // documentoActivo también se fija aquí (antes no pasaba) —
             // usando evento.contenidoOriginal (el texto real que Claude
             // redactó, ver route.ts CASO 3) en vez de msg.texto, que a
