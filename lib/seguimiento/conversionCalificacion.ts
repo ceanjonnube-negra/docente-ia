@@ -82,20 +82,69 @@ export function calcularPromedio(resultados: ResultadoIndicadorEvaluado[]): numb
   return suma / evaluados.length
 }
 
-// Reconocimiento por fotografía — contrato puro para la posición de
-// la(s) marca(s) detectadas en una fila/indicador (ver "diseño de la
-// hoja": la lectura identifica la posición de la marca, nunca
-// caracteres escritos). Ninguna marca -> no evaluado; exactamente una
-// -> ese nivel; más de una en la misma fila/indicador -> lectura
-// dudosa que requiere revisión manual, nunca se adivina cuál es la
-// correcta.
+// Reconocimiento por fotografía — contrato puro para el/los nivel(es)
+// detectados en una celda (indicador o "Nivel final"). Con el modelo
+// compacto ("AJUSTE DEFINITIVO C-005") cada celda es un solo dígito
+// escrito a mano, no una de varias casillas de posición — pero el
+// contrato de salida es el mismo en ambos casos: ninguna lectura ->
+// no evaluado; exactamente un dígito 1-4 -> ese nivel; más de un
+// dígito, una corrección o un dígito fuera de 1-4 dentro de la misma
+// celda -> lectura dudosa que requiere revisión manual, nunca se
+// adivina cuál es la correcta.
 export type LecturaMarca =
   | { estado: 'nivel'; nivel: NivelEvaluacion }
   | { estado: 'no_evaluado' }
   | { estado: 'lectura_dudosa' }
 
-export function interpretarMarcas(columnasMarcadas: NivelEvaluacion[]): LecturaMarca {
-  if (columnasMarcadas.length === 0) return { estado: 'no_evaluado' }
-  if (columnasMarcadas.length > 1) return { estado: 'lectura_dudosa' }
-  return { estado: 'nivel', nivel: columnasMarcadas[0] }
+export function interpretarMarcas(digitosDetectados: NivelEvaluacion[]): LecturaMarca {
+  if (digitosDetectados.length === 0) return { estado: 'no_evaluado' }
+  if (digitosDetectados.length > 1) return { estado: 'lectura_dudosa' }
+  return { estado: 'nivel', nivel: digitosDetectados[0] }
+}
+
+// Modelo de datos a conservar por indicador evaluado (ver "AJUSTE
+// DEFINITIVO C-005 — modelo compacto de hoja de evaluación", sección
+// "Datos que deben conservarse en el modelo"). Son solo TIPOS por
+// ahora — no se ejecutan migraciones ni se persiste nada real
+// mientras la hoja siga en vista previa; describen la forma que
+// tendrá cada resultado una vez que exista la captura real (manual o
+// por fotografía).
+export type NumeroIndicadorHoja = 1 | 2 | 3 | 4 | 5
+
+export type EvaluacionIndicadorHoja = {
+  proyectoId: string
+  alumnoId: string
+  indicadorId: string
+  numeroIndicador: NumeroIndicadorHoja
+  // El nivel tal como quedó escrito en la celda del indicador (o null
+  // si la celda quedó vacía = no evaluado). Nunca se sobrescribe con
+  // el nivel final.
+  nivelOriginal: NivelEvaluacion | null
+  // El nivel final que el propio docente escribió en la columna
+  // "Nivel final" de la hoja — null si la dejó en blanco.
+  nivelFinalDocente: NivelEvaluacion | null
+  // Sugerencia que la app puede calcular a partir de los indicadores
+  // evaluados cuando "Nivel final" quedó en blanco (ver
+  // calcularNivelFinalSugerido) — nunca sustituye lo que el docente
+  // ya escribió a mano.
+  nivelFinalSugerido: NivelEvaluacion | null
+  fueCapturadoPorFotografia: boolean
+  // true si esta lectura (indicador o nivel final) quedó marcada como
+  // "lectura_dudosa" por interpretarMarcas y todavía no fue revisada
+  // manualmente — la app debe mostrar solo estos casos, nunca todos.
+  requiereRevision: boolean
+  fechaEvaluacion: string
+}
+
+// Sugerencia de "Nivel final" a partir de los indicadores YA
+// evaluados de un alumno — promedia solo los niveles no nulos
+// (ninguno cuenta como cero, igual que calcularPromedio) y redondea
+// al entero más cercano dentro de 1-4. Nunca decide por el docente:
+// es solo lo que la app puede ofrecer cuando la columna "Nivel final"
+// quedó en blanco.
+export function calcularNivelFinalSugerido(niveles: (NivelEvaluacion | null)[]): NivelEvaluacion | null {
+  const evaluados = niveles.filter((n): n is NivelEvaluacion => n != null)
+  if (evaluados.length === 0) return null
+  const promedio = evaluados.reduce((acc, n) => acc + n, 0) / evaluados.length
+  return Math.max(1, Math.min(4, Math.round(promedio))) as NivelEvaluacion
 }

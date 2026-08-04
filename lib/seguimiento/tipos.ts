@@ -39,6 +39,14 @@ export const NIVELES_EVALUACION: { valor: NivelEvaluacion; etiqueta: string }[] 
   { valor: 1, etiqueta: 'Requiere apoyo' },
 ]
 
+// Modelo compacto de hoja de evaluación ("AJUSTE DEFINITIVO C-005"):
+// cada hoja evalúa siempre este número exacto de indicadores
+// esenciales, sin importar cuántos criterios haya producido la
+// planeación original — ver construirIndicadoresSeguimiento en
+// lib/planeacion/aprobarBorrador.ts (consolidación a 5) y
+// generarHojaSeguimientoPdf.ts (una columna por indicador).
+export const CANTIDAD_INDICADORES_HOJA = 5
+
 // Los 4 campos formativos oficiales (Plan de Estudio 2022 / NEM) — ver
 // lib/asistente/marcoCurricular.ts, MARCO_CURRICULAR_VIGENTE. Mismo texto
 // exacto, para que un proyecto de Seguimiento nunca guarde un campo fuera

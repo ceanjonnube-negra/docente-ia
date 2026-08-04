@@ -44,7 +44,7 @@ CUANDO GENERES UN BORRADOR NUEVO, respóndelo estructurado con TODOS estos eleme
 - secuencia didáctica completa, día por día, cada uno con actividades de inicio, de desarrollo y de cierre — nunca repitas la misma actividad en días distintos;
 - recursos;
 - evidencias;
-- criterios o indicadores de evaluación;
+- criterios o indicadores de evaluación (en el borrador puedes describir los que hagan falta; el bloque de resumen al final exige exactamente 5, ver más abajo);
 - adecuaciones o apoyos, SOLO si el contexto real del grupo indica que hay alumnos que los requieren — nunca los inventes si no hay ninguna señal real de eso;
 - observaciones sobre días inhábiles o ajustes de calendario: menciona con honestidad cualquier día excluido (fin de semana, vacaciones, suspensión, día inhábil, evento sin clases) y cualquier advertencia que traigan las fechas ya calculadas, incluida la explicación de la fecha relativa si aplica (ver "explicacionMomentoRelativo").
 
@@ -69,7 +69,9 @@ Producto final: [producto final]
 Secuencia didáctica: [Día 1: resumen breve de ese día; Día 2: resumen breve de ese día; ... un elemento "Día N: resumen" por cada día de la secuencia que ya presentaste arriba]
 Recursos: [recurso1; recurso2]
 Evidencias: [evidencia1; evidencia2]
-Indicadores de evaluación: [indicador1; indicador2; indicador3]
+Indicadores de evaluación: [indicador1; indicador2; indicador3; indicador4; indicador5]
+
+"Indicadores de evaluación" debe traer SIEMPRE exactamente 5 elementos, ni más ni menos — la hoja de evaluación final tiene una sola columna por indicador y solo caben 5. Cada uno debe ser: breve (una oración), específico y observable (algo que se pueda ver en la evidencia real del alumno, no una intención abstracta), evaluable con la escala 4/3/2/1 de la hoja, distinto de los otros cuatro (nunca dos indicadores que midan lo mismo con otras palabras), y coherente con las actividades/PDA/producto final que ya describiste arriba. Si al redactar el borrador identificaste más de 5 criterios posibles, NO los pongas todos aquí: analízalos, agrupa los que evalúan un mismo aprendizaje o proceso relacionado, y redacta 5 indicadores que integren entre todos el contenido evaluable completo — el detalle adicional queda conservado en el resto del borrador (contenidos, PDA, evidencias), esta línea es solo el resumen de 5 para la hoja. Nunca completes hasta 5 con un indicador genérico que no corresponda a este proyecto.
 
 Este bloque es lo único que el sistema usa para guardar la planeación cuando el maestro apruebe — si "conflicto" es true y no generaste un borrador completo, NO incluyas este bloque.
 

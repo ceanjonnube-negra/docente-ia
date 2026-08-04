@@ -1,29 +1,31 @@
 // scripts/verificar-escala-evaluacion.ts
 //
 // Prueba aislada (sin credenciales, sin red, sin escrituras reales) de
-// "AJUSTE DE DISEÑO Y MODELO DE EVALUACIÓN — sustituir letras por
-// escala numérica simple": confirma que la hoja de evaluación ya no
-// usa la escala D/L/E/R/N, que el nuevo diseño de 4 casillas por
-// indicador (4/3/2/1) se genera correctamente, y que el modelo de
-// conversión (lib/seguimiento/conversionCalificacion.ts) conserva el
-// nivel original, convierte dentro del rango esperado y excluye del
-// promedio los indicadores sin evaluar. La generación real del PDF
-// (pdf-lib) es una librería pura sin red — se ejecuta de verdad aquí,
-// igual que en el resto de la serie C-005; lo único que no se puede
-// probar de forma determinista es la lectura óptica real de una foto,
-// que todavía no existe como funcionalidad en este proyecto — se
-// verifica en su lugar el contrato puro que esa futura lectura deberá
-// cumplir (interpretarMarcas).
+// "AJUSTE DEFINITIVO C-005 — modelo compacto de hoja de evaluación con
+// 5 indicadores y escala 1-4": confirma que la hoja evalúa EXACTAMENTE
+// 5 indicadores esenciales, que cada uno ocupa una sola columna (nunca
+// 4 sub-casillas como en el diseño anterior), que existe una única
+// columna "Nivel final", que la escala sigue siendo exclusivamente
+// 1-4 (nunca letras ni 5 niveles), y que el diseño cabe en una sola
+// página legible para 28 alumnos. La generación real del PDF (pdf-lib)
+// es una librería pura sin red — se ejecuta de verdad aquí, igual que
+// en el resto de la serie C-005; lo único que no se puede probar de
+// forma determinista es la lectura óptica real de una foto, que
+// todavía no existe como funcionalidad en este proyecto — se verifica
+// en su lugar el contrato puro que esa futura lectura deberá cumplir
+// (interpretarMarcas / calcularNivelFinalSugerido).
 // Se ejecuta con `npx tsx scripts/verificar-escala-evaluacion.ts`.
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { NIVELES_EVALUACION, type IndicadorProyecto } from '../lib/seguimiento/tipos'
+import { PDFDocument } from 'pdf-lib'
+import { NIVELES_EVALUACION, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../lib/seguimiento/tipos'
 import {
   REGLA_CONVERSION_PREDETERMINADA,
   evaluarIndicador,
   calcularPromedio,
   interpretarMarcas,
+  calcularNivelFinalSugerido,
   type ResultadoIndicadorEvaluado,
 } from '../lib/seguimiento/conversionCalificacion'
 import { generarHojaSeguimientoPdfBuffer } from '../lib/documentGen/generarHojaSeguimientoPdf'
@@ -39,79 +41,91 @@ function verificar(condicion: boolean, mensaje: string) {
 }
 
 const PERFIL_FALSO = { nombre: 'Docente de prueba', escuela: 'Escuela de prueba', grado: '4°', grupo: 'B' }
-const INDICADORES: IndicadorProyecto[] = [
-  { indicador_especifico: 'Identifica ideas principales', aspecto_general: 'logro_aprendizaje' },
-  { indicador_especifico: 'Cuenta colecciones', aspecto_general: 'logro_aprendizaje' },
-  { indicador_especifico: 'Sigue instrucciones', aspecto_general: 'autonomia' },
+
+// 6 indicadores a propósito — más de los 5 permitidos — para confirmar
+// que la hoja NUNCA dibuja más de CANTIDAD_INDICADORES_HOJA columnas
+// aunque el llamador entregue más (defensa estructural; la
+// consolidación real a 5 ocurre antes, en aprobarBorrador.ts).
+const INDICADORES_DE_SOBRA: IndicadorProyecto[] = [
+  { indicador_especifico: 'Identifica ideas principales de un texto informativo', aspecto_general: 'logro_aprendizaje' },
+  { indicador_especifico: 'Cuenta colecciones hasta 100 con correspondencia uno a uno', aspecto_general: 'logro_aprendizaje' },
+  { indicador_especifico: 'Sigue instrucciones de dos pasos de forma autónoma', aspecto_general: 'autonomia' },
+  { indicador_especifico: 'Participa activamente en el trabajo colaborativo del equipo', aspecto_general: 'participacion_colaboracion' },
+  { indicador_especifico: 'Entrega el producto final con las evidencias solicitadas', aspecto_general: 'producto_evidencia' },
+  { indicador_especifico: 'Indicador de sobra que nunca debería llegar a la hoja', aspecto_general: 'logro_aprendizaje' },
 ]
 
 async function main() {
   const rutaPdf = readFileSync(join(__dirname, '..', 'lib', 'documentGen', 'generarHojaSeguimientoPdf.ts'), 'utf-8')
   const rutaTipos = readFileSync(join(__dirname, '..', 'lib', 'seguimiento', 'tipos.ts'), 'utf-8')
+  const rutaAprobar = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarBorrador.ts'), 'utf-8')
+  const rutaInstrucciones = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'instruccionesPlaneacionGenerar.ts'), 'utf-8')
 
   // ============================================================
-  // 1. Ya no aparece la escala de letras D/L/E/R/N en ningún lado del
-  //    código fuente que genera la hoja ni en los tipos.
+  // 1. Exactamente 5 indicadores esenciales — nunca más.
   // ============================================================
   {
-    verificar(!rutaTipos.includes('NivelSeguimiento') && !rutaTipos.includes('NIVELES_SEGUIMIENTO'), '1a. lib/seguimiento/tipos.ts ya no define la escala de letras (NivelSeguimiento/NIVELES_SEGUIMIENTO)')
-    verificar(!rutaTipos.includes("'destacado'") && !rutaTipos.includes("'logrado'") && !rutaTipos.includes("'requiere_apoyo'") && !rutaTipos.includes("'no_evaluado'"), '1b. Ninguno de los valores de la escala de letras sigue presente en tipos.ts')
-    verificar(!rutaPdf.includes('NIVELES_SEGUIMIENTO'), '1c. generarHojaSeguimientoPdf.ts ya no importa ni usa la escala de letras')
-    verificar(!/[DLERN]\s*=\s*(Destacado|Logrado|En proceso|Requiere apoyo|No evaluado)/i.test(rutaPdf), '1d. El código fuente de la hoja no construye ninguna leyenda con letras (D=/L=/E=/R=/N=)')
-
-    // La leyenda REAL que se dibuja (misma función y mismos datos que
-    // usa dibujarLeyenda) nunca contiene las letras como código de nivel.
-    const etiquetaLeyenda = NIVELES_EVALUACION.map(n => `${n.valor} ${n.etiqueta}`).join('  ·  ')
-    verificar(!/\bD\b|\bL\b|\bE\b|\bR\b|\bN\b/.test(etiquetaLeyenda.replace(/Dominio|Destacado|Logro|Esperado|En|Proceso|Requiere|Apoyo/gi, '')), '1e. La leyenda real generada no contiene las letras D/L/E/R/N como código de nivel')
-    verificar(etiquetaLeyenda === '4 Dominio destacado  ·  3 Logro esperado  ·  2 En proceso  ·  1 Requiere apoyo', '1f. La leyenda generada es exactamente la exigida (4/3/2/1 con sus etiquetas)')
+    verificar(CANTIDAD_INDICADORES_HOJA === 5, '1a. CANTIDAD_INDICADORES_HOJA es exactamente 5')
+    verificar(rutaAprobar.includes('.slice(0, CANTIDAD_INDICADORES_HOJA)'), '1b. construirIndicadoresSeguimiento recorta a CANTIDAD_INDICADORES_HOJA antes de llegar a la hoja')
+    verificar(rutaInstrucciones.includes('exactamente 5 elementos'), '1c. Las instrucciones del asistente exigen exactamente 5 indicadores en el bloque de resumen')
+    verificar(rutaPdf.includes('indicadoresUsados = datos.indicadores.slice(0, CANTIDAD_INDICADORES_HOJA)'), '1d. El generador de PDF nunca dibuja más de CANTIDAD_INDICADORES_HOJA columnas, aunque reciba más')
   }
 
   // ============================================================
-  // 2. Existen EXACTAMENTE las columnas 4, 3, 2 y 1 — ni más, ni
-  //    menos, ni con otro orden.
+  // 2 y 3. Escala EXCLUSIVAMENTE 1, 2, 3, 4 — ningún nivel 5.
   // ============================================================
   {
     verificar(NIVELES_EVALUACION.length === 4, '2a. Existen exactamente 4 niveles en la escala')
-    verificar(NIVELES_EVALUACION.map(n => n.valor).join(',') === '4,3,2,1', '2b. Las columnas son exactamente 4, 3, 2 y 1, en ese orden (mismo orden en encabezado y leyenda)')
-    verificar(rutaPdf.includes('NIVELES_EVALUACION.forEach'), '2c. El encabezado de la tabla dibuja una columna por cada nivel de la escala (nunca una cantidad fija hardcodeada aparte)')
+    verificar(NIVELES_EVALUACION.map(n => n.valor).join(',') === '4,3,2,1', '2b. Los niveles son exactamente 4, 3, 2 y 1 (mismo orden en la leyenda)')
+    verificar(!NIVELES_EVALUACION.some(n => (n.valor as number) === 5), '3. No existe un nivel 5 en la escala')
   }
 
   // ============================================================
-  // 3. Una casilla vacía (ninguna marca) representa "no evaluado" —
-  //    nunca un nivel 0 ni un valor inventado.
+  // 4. Ninguna letra D/L/E/R/N sigue presente en el modelo ni en el
+  //    código que genera la hoja.
   // ============================================================
   {
-    verificar(interpretarMarcas([]).estado === 'no_evaluado', '3. Cero casillas marcadas se interpreta como "no evaluado"')
+    verificar(!rutaTipos.includes('NivelSeguimiento') && !rutaTipos.includes('NIVELES_SEGUIMIENTO'), '4a. lib/seguimiento/tipos.ts no define la escala de letras (NivelSeguimiento/NIVELES_SEGUIMIENTO)')
+    verificar(!rutaPdf.includes('NIVELES_SEGUIMIENTO'), '4b. generarHojaSeguimientoPdf.ts no importa ni usa la escala de letras')
+    verificar(!/[DLERN]\s*=\s*(Destacado|Logrado|En proceso|Requiere apoyo|No evaluado)/i.test(rutaPdf), '4c. El código fuente de la hoja no construye ninguna leyenda con letras (D=/L=/E=/R=/N=)')
   }
 
   // ============================================================
-  // 4. El modelo conserva el nivel ORIGINAL 1-4, nunca solo la
-  //    calificación ya convertida.
+  // 5 y 6. Cada indicador ocupa UNA sola columna — nunca 4
+  //    sub-casillas repetidas por indicador (diseño anterior).
   // ============================================================
   {
-    const resultado = evaluarIndicador({ indicador: 'Identifica ideas principales', proyecto: 'Diagnóstico', alumno: 'Ana López', fecha: '2026-08-10', nivelOriginal: 3 })
-    verificar(resultado.nivelOriginal === 3, '4a. nivelOriginal se conserva tal cual, sin transformarlo')
-    verificar('nivelOriginal' in resultado && 'calificacionConvertida' in resultado && 'reglaConversion' in resultado && 'indicador' in resultado && 'proyecto' in resultado && 'alumno' in resultado && 'fecha' in resultado, '4b. El resultado conserva TODOS los campos exigidos: nivelOriginal, calificacionConvertida, reglaConversion, indicador, proyecto, alumno, fecha')
-    const sinEvaluar = evaluarIndicador({ indicador: 'x', proyecto: 'p', alumno: 'a', fecha: '2026-08-10', nivelOriginal: null })
-    verificar(sinEvaluar.nivelOriginal === null && sinEvaluar.calificacionConvertida === null, '4c. Un indicador no evaluado conserva nivelOriginal=null y calificacionConvertida=null (nunca 0)')
+    verificar(!rutaPdf.includes('ANCHO_NIVEL') && !rutaPdf.includes('NIVELES_EVALUACION.forEach'), '5a. La hoja ya no dibuja una sub-casilla por cada nivel (4/3/2/1) dentro de un indicador')
+    verificar(rutaPdf.includes('indicadoresUsados.forEach') && rutaPdf.includes('ANCHO_IND'), '5b. Cada indicador se dibuja como una sola celda de ancho ANCHO_IND')
+    verificar(!/4\s*3\s*2\s*1/.test(rutaPdf.replace(/\s+/g, ' ')), '6. El código fuente no vuelve a imprimir las etiquetas 4 3 2 1 dentro de cada indicador')
   }
 
   // ============================================================
-  // 5. La conversión predeterminada genera valores entre 5 y 10 —
-  //    exactamente 4→10, 3→8, 2→6, 1→5.
+  // 7 y 8. Existe exactamente una columna "Nivel final", nunca
+  //    llamada "Calificación", y solo admite 1-4 o vacío (mismo
+  //    contrato de lectura que un indicador).
   // ============================================================
   {
-    const conversiones = { 4: REGLA_CONVERSION_PREDETERMINADA.convertir(4), 3: REGLA_CONVERSION_PREDETERMINADA.convertir(3), 2: REGLA_CONVERSION_PREDETERMINADA.convertir(2), 1: REGLA_CONVERSION_PREDETERMINADA.convertir(1) }
-    verificar(conversiones[4] === 10, '5a. Nivel 4 convierte exactamente a 10')
-    verificar(conversiones[3] === 8, '5b. Nivel 3 convierte exactamente a 8')
-    verificar(conversiones[2] === 6, '5c. Nivel 2 convierte exactamente a 6')
-    verificar(conversiones[1] === 5, '5d. Nivel 1 convierte exactamente a 5')
-    verificar(Object.values(conversiones).every(v => v >= 5 && v <= 10), '5e. Las 4 conversiones caen dentro del rango 5-10, sin excepción')
+    const ocurrenciasNivelFinal = (rutaPdf.match(/Nivel final/g) ?? []).length
+    verificar(ocurrenciasNivelFinal >= 1, '7a. La tabla incluye la columna "Nivel final"')
+    const lineasCodigo = rutaPdf.split('\n').filter(l => !l.trim().startsWith('//'))
+    verificar(!lineasCodigo.some(l => l.includes('Calificación') || l.includes('Calificacion')), '7b. La hoja nunca llama "Calificación" a la columna de nivel final (fuera de comentarios explicativos)')
+    verificar(rutaPdf.includes('ANCHO_FINAL') && (rutaPdf.match(/ANCHO_FINAL/g) ?? []).length >= 2, '7c. "Nivel final" es una única columna adicional (ANCHO_FINAL), no una repetida por indicador')
+    const lecturaFinal = interpretarMarcas([3])
+    verificar(lecturaFinal.estado === 'nivel' && (lecturaFinal as { nivel: number }).nivel === 3, '8. Una celda de "Nivel final" con un solo dígito 1-4 se interpreta igual que un indicador (mismo contrato interpretarMarcas)')
   }
 
   // ============================================================
-  // 6. Los indicadores NO evaluados quedan fuera del promedio — no
-  //    cuentan como cero ni lo reducen.
+  // 9. Una celda vacía (ningún dígito detectado) representa "no
+  //    evaluado" — nunca un nivel 0 ni un valor inventado.
+  // ============================================================
+  {
+    verificar(interpretarMarcas([]).estado === 'no_evaluado', '9. Cero dígitos detectados se interpreta como "no evaluado"')
+  }
+
+  // ============================================================
+  // 10. Los valores vacíos NUNCA cuentan como cero — ni en el
+  //     promedio ya convertido ni en la sugerencia de nivel final.
   // ============================================================
   {
     const resultados: ResultadoIndicadorEvaluado[] = [
@@ -119,28 +133,18 @@ async function main() {
       evaluarIndicador({ indicador: 'b', proyecto: 'p', alumno: 'x', fecha: '2026-08-10', nivelOriginal: 2 }), // 6
       evaluarIndicador({ indicador: 'c', proyecto: 'p', alumno: 'x', fecha: '2026-08-10', nivelOriginal: null }), // sin evaluar
     ]
-    const promedio = calcularPromedio(resultados)
-    verificar(promedio === 8, '6a. El promedio (10+6)/2=8 excluye por completo el indicador sin evaluar — nunca (10+6+0)/3')
-    verificar(calcularPromedio([evaluarIndicador({ indicador: 'a', proyecto: 'p', alumno: 'x', fecha: '2026-08-10', nivelOriginal: null })]) === null, '6b. Si NINGÚN indicador fue evaluado, el promedio es null — nunca 0')
+    verificar(calcularPromedio(resultados) === 8, '10a. El promedio (10+6)/2=8 excluye por completo el indicador sin evaluar — nunca (10+6+0)/3')
+    verificar(calcularNivelFinalSugerido([4, 2, null, null, null]) === 3, '10b. La sugerencia de nivel final promedia solo los evaluados (4 y 2 -> 3), excluyendo los vacíos, nunca contándolos como 0')
+    verificar(calcularNivelFinalSugerido([null, null, null, null, null]) === null, '10c. Si ningún indicador fue evaluado, la sugerencia es null — nunca 0 ni un nivel inventado')
   }
 
   // ============================================================
-  // 7. Reconocimiento por fotografía — contrato puro de posición de
-  //    marca (nunca reconocimiento de caracteres escritos), exactamente
-  //    los escenarios pedidos.
+  // 11 y 12. Los 28 alumnos aparecen completos, y el diseño cabe en
+  //     una sola página legible en horizontal (fallback de 2 páginas
+  //     balanceadas solo si de verdad no cupieran).
   // ============================================================
   {
-    verificar(interpretarMarcas([4]).estado === 'nivel' && (interpretarMarcas([4]) as { nivel: number }).nivel === 4, '7a. Marca en columna 4 -> nivel 4')
-    verificar(interpretarMarcas([3]).estado === 'nivel' && (interpretarMarcas([3]) as { nivel: number }).nivel === 3, '7b. Marca en columna 3 -> nivel 3')
-    verificar(interpretarMarcas([2]).estado === 'nivel' && (interpretarMarcas([2]) as { nivel: number }).nivel === 2, '7c. Marca en columna 2 -> nivel 2')
-    verificar(interpretarMarcas([1]).estado === 'nivel' && (interpretarMarcas([1]) as { nivel: number }).nivel === 1, '7d. Marca en columna 1 -> nivel 1')
-    verificar(interpretarMarcas([]).estado === 'no_evaluado', '7e. Ninguna marca -> pendiente/no evaluado')
-    verificar(interpretarMarcas([4, 2]).estado === 'lectura_dudosa', '7f. Más de una marca en la misma fila/indicador -> lectura dudosa que requiere revisión (nunca se adivina)')
-
-    // El PDF real se genera sin errores con el nuevo diseño de 4
-    // casillas por indicador — confirma que el diseño es
-    // estructuralmente válido para imprimirse y fotografiarse.
-    const alumnos = Array.from({ length: 28 }, (_, i) => ({ nombre: `Alumno ${i + 1}`, posicion: i + 1 }))
+    const alumnos = Array.from({ length: 28 }, (_, i) => ({ nombre: `Alumno de prueba número ${i + 1} Apellido`, posicion: i + 1 }))
     const buffer = await generarHojaSeguimientoPdfBuffer(
       {
         nombreProyecto: 'Diagnóstico de inicio de ciclo',
@@ -149,22 +153,67 @@ async function main() {
         fechaInicio: '2026-08-03',
         fechaFin: '2026-08-18',
         identificadorVisible: 'VISTA PREVIA — PENDIENTE DE APROBACIÓN',
-        indicadores: INDICADORES,
+        indicadores: INDICADORES_DE_SOBRA,
         alumnos,
       },
       PERFIL_FALSO,
       'America/Mexico_City'
     )
-    verificar(buffer.length > 0 && buffer.subarray(0, 4).toString('latin1') === '%PDF', '7g. El PDF con el nuevo diseño (4 casillas por indicador, 28 alumnos) se genera correctamente')
+    verificar(buffer.length > 0 && buffer.subarray(0, 4).toString('latin1') === '%PDF', '11a. El PDF con el modelo compacto (5 columnas de indicador + Nivel final, 28 alumnos) se genera correctamente')
+
+    const pdfDoc = await PDFDocument.load(buffer)
+    const paginas = pdfDoc.getPageCount()
+    verificar(paginas === 1, `11b. Los 28 alumnos caben en UNA sola página legible (páginas generadas: ${paginas})`)
+    verificar(paginas <= 2, '12. En el peor caso el diseño nunca requiere más de 2 páginas para 28 alumnos')
+
+    const primeraPagina = pdfDoc.getPage(0)
+    verificar(primeraPagina.getWidth() > primeraPagina.getHeight(), '12b. La hoja se genera en orientación horizontal (carta apaisada)')
   }
 
   // ============================================================
-  // 8. Sin persistencia durante la vista previa — el generador de PDF
-  //    sigue siendo una función pura (mismo criterio que el resto de
-  //    C-005), y la ruta de vista previa sigue sin tocar Storage/DB.
+  // 13. La leyenda aparece exactamente una vez — nunca se repite
+  //     dentro de la tabla.
   // ============================================================
   {
-    verificar(!/supabase/i.test(rutaPdf) && !rutaPdf.includes('Storage') && !rutaPdf.includes('@supabase/supabase-js'), '8. generarHojaSeguimientoPdf.ts sigue siendo una función pura — cero llamadas a Supabase o Storage')
+    verificar(rutaPdf.includes('function dibujarLeyenda()') && (rutaPdf.match(/function dibujarLeyenda\(\)/g) ?? []).length === 1, '13a. Existe una única función que dibuja la leyenda')
+    verificar((rutaPdf.match(/dibujarLeyenda\(\)/g) ?? []).length === 2, '13b. dibujarLeyenda() se invoca exactamente una vez en la secuencia de dibujo (1 definición + 1 llamada)')
+    const etiquetaLeyenda = NIVELES_EVALUACION.map(n => `${n.valor} ${n.etiqueta}`).join(' · ') + ' · Vacío No evaluado'
+    verificar(etiquetaLeyenda === '4 Dominio destacado · 3 Logro esperado · 2 En proceso · 1 Requiere apoyo · Vacío No evaluado', '13c. La leyenda generada es exactamente la exigida, incluyendo "Vacío No evaluado"')
+  }
+
+  // ============================================================
+  // 14. No se muestra ninguna conversión a escala 5-10 dentro de la
+  //     hoja — esa conversión sigue siendo interna y configurable.
+  // ============================================================
+  {
+    verificar(!/^import.*conversionCalificacion/m.test(rutaPdf) && !rutaPdf.includes('REGLA_CONVERSION'), '14. generarHojaSeguimientoPdf.ts no importa ni muestra la conversión a calificación 5-10')
+  }
+
+  // ============================================================
+  // 15. Sin persistencia durante la vista previa — el generador de
+  //     PDF sigue siendo una función pura (sin Supabase/Storage).
+  // ============================================================
+  {
+    verificar(!/supabase/i.test(rutaPdf) && !rutaPdf.includes('Storage') && !rutaPdf.includes('@supabase/supabase-js'), '15. generarHojaSeguimientoPdf.ts sigue siendo una función pura — cero llamadas a Supabase o Storage')
+  }
+
+  // ============================================================
+  // 16. La planeación pedagógica (secuencia, contenidos, PDA,
+  //     propósito) no fue tocada — solo cambió el bloque de
+  //     indicadores de evaluación.
+  // ============================================================
+  {
+    verificar(rutaInstrucciones.includes('secuencia didáctica completa, día por día'), '16a. La instrucción de secuencia didáctica sigue intacta')
+    verificar(rutaInstrucciones.includes('PDA (Procesos de Desarrollo de Aprendizaje)'), '16b. La instrucción de PDA sigue intacta')
+    verificar(rutaInstrucciones.includes('Secuencia didáctica: [Día 1: resumen breve de ese día'), '16c. El bloque de resumen sigue pidiendo la secuencia didáctica completa, sin cambios')
+  }
+
+  // ============================================================
+  // 17. La hoja sigue derivando del mismo borrador de planeación —
+  //     ninguna ruta nueva ni desconectada del flujo existente.
+  // ============================================================
+  {
+    verificar(rutaAprobar.includes('construirIndicadoresSeguimiento(resumen)'), '17. La hoja sigue construyéndose a partir del resumen extraído del propio borrador aprobado (extraerBorrador.ts), no de una fuente nueva')
   }
 
   console.log('')

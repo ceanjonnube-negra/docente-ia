@@ -40,7 +40,7 @@ import { extraerResumenBorrador, tieneBloqueResumen, type ResumenBorrador } from
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
-import { CAMPOS_FORMATIVOS, type IndicadorProyecto } from '../seguimiento/tipos'
+import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import type { Planeacion } from './tipos'
 
 export type CodigoErrorAprobacion =
@@ -113,7 +113,16 @@ function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorPro
   // clasificado — 'logro_aprendizaje' es el valor por defecto más
   // aplicable de los 5 reales (ver lib/seguimiento/tipos.ts), nunca un
   // valor inventado fuera del enum.
-  return resumen.indicadores.map((texto) => ({ indicador_especifico: texto, aspecto_general: 'logro_aprendizaje' }))
+  //
+  // Tope defensivo a CANTIDAD_INDICADORES_HOJA (5): las instrucciones
+  // del asistente (lib/asistente/instruccionesPlaneacionGenerar.ts) ya
+  // le piden a Claude exactamente 5, pero la hoja (una columna por
+  // indicador) nunca debe recibir más de 5 aunque el texto libre traiga
+  // otra cantidad. Nunca se rellena con indicadores inventados si
+  // llegaran menos de 5 — se usan los que realmente hay.
+  return resumen.indicadores
+    .slice(0, CANTIDAD_INDICADORES_HOJA)
+    .map((texto) => ({ indicador_especifico: texto, aspecto_general: 'logro_aprendizaje' }))
 }
 
 type FilaHuella = { id: string; version: number }
