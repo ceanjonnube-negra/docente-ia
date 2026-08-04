@@ -83,10 +83,13 @@ function ListaPageContent() {
   const cargarTodo = async () => {
     setCargando(true)
 
+    // Sin sesión válida — nunca mostrar Lista con ceros ni un mensaje
+    // ambiguo (ver "CORRECCIÓN CRÍTICA — DOCENTE NO IDENTIFICADO"):
+    // redirige directo a iniciar sesión, la misma pantalla que ya
+    // existe, sin inventar ningún dato.
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
-      setMensaje('No se pudo identificar al maestro.')
-      setCargando(false)
+      router.push('/login')
       return
     }
 
