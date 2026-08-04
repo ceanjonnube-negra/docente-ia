@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
+import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
   actualizarPerfilDocente,
   calendarioCicloCompleto,
@@ -283,7 +284,7 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
 }
 
 export async function POST(req: NextRequest) {
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -384,11 +385,39 @@ export async function POST(req: NextRequest) {
   // auth.uid() funcione dentro de las RPC del Motor de Contexto).
   // supabaseRAG (service role) se sigue usando solo para RAG y
   // procesos_activos, sin cambios.
-  const supabaseUser = accessToken
-    ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
-        global: { headers: { Authorization: `Bearer ${accessToken}` } },
-      })
+  //
+  // Identidad autoritativa resuelta EN EL SERVIDOR contra el propio
+  // accessToken (mismo patrón ya sancionado de lib/server/authApi.ts
+  // que usan los endpoints nuevos de C-005) — CAUSA RAÍZ real
+  // confirmada ("CORRECCIÓN CRÍTICA C-005 — contexto real del
+  // docente"): antes, supabaseUser se autenticaba con accessToken pero
+  // userId se tomaba tal cual del cuerpo de la petición, resuelto en
+  // el cliente con una llamada APARTE a supabase.auth.getUser()
+  // (validación de red independiente de session.access_token — ver
+  // lib/asistente/perfilDocente.ts). Si esa llamada del cliente fallaba
+  // o se demoraba (blip de red, típico justo después de un refresh de
+  // token), el cliente mandaba userId=null aunque accessToken siguiera
+  // siendo válido, y toda la sesión de contexto (grupo activo,
+  // calendario, alumnos) se perdía en el servidor sin ningún error
+  // visible — el Chat IA respondía como si no tuviera acceso a nada.
+  // Resolver aquí, contra el mismo accessToken que ya se usa para las
+  // consultas, elimina esa dependencia innecesaria y evita confiar en
+  // un userId no verificado que manda el cliente.
+  const autenticacion = accessToken
+    ? await conLimiteDeTiempo(autenticarRequestApi(accessToken), TIMEOUT_SESION_MS, 'Tiempo de espera agotado validando la sesión').catch(
+        () => ({ ok: false as const, status: 401 as const, mensaje: 'Tiempo de espera agotado validando la sesión' })
+      )
     : null
+  const supabaseUser = autenticacion?.ok ? autenticacion.supabase : null
+  const userId = autenticacion?.ok ? autenticacion.user.id : null
+
+  // Indicadores seguros de diagnóstico (nunca tokens, claves ni cookies
+  // completas) — permite confirmar en los logs de producción, sin
+  // exponer nada sensible, en qué punto se pierde el contexto si vuelve
+  // a pasar (ver "DIAGNÓSTICO OBLIGATORIO" en la corrección crítica).
+  console.log(
+    `[AUTH][chat] accessTokenPresente=${!!accessToken} usuarioPresente=${!!autenticacion?.ok} docenteIdPresente=${!!userId}${userIdCliente && userId && userIdCliente !== userId ? ' userIdClienteNoCoincide=true' : ''}`
+  )
 
   // FINALIZAR ARCHIVO — cuando el maestro pide el documento activo en un
   // formato real (Word/PDF/PowerPoint/Excel), se genera y sube el
@@ -527,6 +556,13 @@ export async function POST(req: NextRequest) {
         return null
       })
     : null
+
+  // Indicadores seguros de diagnóstico — mismo criterio que el log
+  // [AUTH][chat] de arriba, nunca datos sensibles (ver "DIAGNÓSTICO
+  // OBLIGATORIO" en la corrección crítica de contexto).
+  console.log(
+    `[SESION][chat] sesionPresente=${!!sesion} grupoIdPresente=${!!sesion?.grupo_activo_id} cicloEscolarPresente=${!!sesion?.ciclo_escolar_id} cantidadAlumnos=${sesion?.alumnos_del_grupo_activo.length ?? 0}`
+  )
 
   // Resumen SIEMPRE disponible del grupo activo y su lista de alumnos —
   // se inyecta en DATOS DEL MAESTRO más abajo pase lo que pase, sin
@@ -1008,6 +1044,9 @@ export async function POST(req: NextRequest) {
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
             esTurnoDeBorradorPlaneacion = true
+            console.log(
+              `[NIVEL4][planeacion_generar] calendarioConsultado=true diasExcluidosPorCalendario=${resultadoGeneracion.eventosCalendarioDelPeriodo.length} cicloEscolarPresente=${!!sesion.ciclo_escolar_id} periodoEvaluacionPresente=${!!resultadoGeneracion.periodoEvaluacionActual} conflicto=${resultadoGeneracion.fechas.conflicto} totalDiasEfectivos=${resultadoGeneracion.fechas.totalDiasEfectivos}`
+            )
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el
@@ -1560,7 +1599,7 @@ Grado: [grado] | Grupo: [grupo]
               const input = JSON.parse(toolUseActivo.inputJson)
               console.log(`[REGISTRO_ESCOLAR] tipo=${input.tipo} registros=${input.registros?.length}`)
 
-              const resultadoGuardado = await ejecutarRegistroEscolar(supabaseUser!, userId, sesion!.grupo_activo_id!, input.tipo, input.registros)
+              const resultadoGuardado = await ejecutarRegistroEscolar(supabaseUser!, userId!, sesion!.grupo_activo_id!, input.tipo, input.registros)
 
               const streamContinuacion = await conReintento(
                 () => client.messages.create({
