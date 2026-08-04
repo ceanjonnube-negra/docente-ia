@@ -17,20 +17,29 @@
 // "diseño compatible con reconocimiento mediante cámara").
 //
 // MODELO COMPACTO ("AJUSTE DEFINITIVO C-005 — modelo compacto de hoja
-// de evaluación con 5 indicadores y escala 1-4"): reemplaza el diseño
-// anterior de 4 sub-casillas por indicador. Ahora cada hoja evalúa
+// de evaluación con 5 indicadores y escala 1-4"): cada hoja evalúa
 // EXACTAMENTE 5 indicadores esenciales (ver CANTIDAD_INDICADORES_HOJA
 // en lib/seguimiento/tipos.ts) y cada uno ocupa UNA sola columna: el
 // docente escribe a mano un único dígito (4, 3, 2 o 1) dentro de una
-// celda cuadrada vacía — nunca marca una de varias casillas por
-// posición. Una celda vacía sigue significando "no evaluado" (igual
-// que antes), solo que ahora la ausencia es la de un dígito escrito,
-// no la de una marca de posición. La tabla agrega además una columna
-// "Nivel final" (más ancha, también un solo dígito 1-4 o vacía) que el
-// docente puede llenar o dejar en blanco para que la app sugiera un
-// nivel más adelante — nunca se le llama "Calificación" en esta hoja
-// ni se muestra aquí la conversión a escala 5-10 (ver
-// lib/seguimiento/conversionCalificacion.ts).
+// celda vacía — nunca marca una de varias casillas por posición. Una
+// celda vacía sigue significando "no evaluado". La tabla agrega
+// además una columna "Nivel final" (más ancha, también un solo
+// dígito 1-4 o vacía) que el docente puede llenar o dejar en blanco
+// para que la app sugiera un nivel más adelante — nunca se le llama
+// "Calificación" en esta hoja ni se muestra aquí la conversión a
+// escala 5-10 (ver lib/seguimiento/conversionCalificacion.ts).
+//
+// MAQUETACIÓN FINAL ("AJUSTE AISLADO C-005 — maquetación final de la
+// hoja de evaluación compacta"): la altura de fila y el ancho de las
+// celdas de indicador YA NO son constantes adivinadas — se calculan
+// en tiempo real a partir del espacio que de verdad queda después de
+// dibujar todo el encabezado (institucional, proyecto, leyenda y los
+// 5 indicadores), para que las 28 filas usen el máximo alto posible
+// sin dejar espacio en blanco entre la última fila y el margen
+// inferior, y sin arriesgarse a no caber. ALTO_FILA_MINIMO/MAXIMO
+// acotan ese cálculo: nunca por debajo de lo que ya se probó legible,
+// ni tan alto que un grupo con pocos alumnos deje celdas
+// desproporcionadas.
 
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { prepararEncabezado } from './encabezadoDocumento'
@@ -38,13 +47,13 @@ import { NIVELES_EVALUACION, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto }
 
 const ANCHO_PAGINA = 792 // carta apaisada (11in), en puntos
 const ALTO_PAGINA = 612 // carta apaisada (8.5in)
-const MARGEN = 26
+const MARGEN = 24 // margen seguro de impresión en los 4 lados (~0.33in, por encima del mínimo típico de 0.25in)
 const ANCHO_CONTENIDO = ANCHO_PAGINA - MARGEN * 2
 
 const COLOR_TITULO = rgb(0.122, 0.161, 0.216) // #1F2937
 const COLOR_TEXTO = rgb(0.216, 0.255, 0.318) // #374151
 const COLOR_TEXTO_SUAVE = rgb(0.42, 0.447, 0.502) // #6B7280
-const COLOR_BORDE = rgb(0.62, 0.64, 0.67) // más marcado que generarPdfServidor — necesita verse bien en foto
+const COLOR_BORDE = rgb(0.5, 0.52, 0.55) // visible al imprimir y fotografiar, sin volverse pesado
 
 function sanearParaWinAnsi(texto: string): string {
   return texto
@@ -78,6 +87,13 @@ export type DatosHojaSeguimiento = {
   alumnos: AlumnoHoja[]
 }
 
+// Cota inferior: nunca una fila más baja que la primera versión del
+// modelo compacto (15pt) — sigue siendo legible pero es el piso.
+// Cota superior: evita filas exageradamente altas cuando el grupo
+// tiene pocos alumnos y sobra alto de página.
+export const ALTO_FILA_MINIMO = 15
+export const ALTO_FILA_MAXIMO = 26
+
 export async function generarHojaSeguimientoPdfBuffer(
   datos: DatosHojaSeguimiento,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -97,21 +113,16 @@ export async function generarHojaSeguimientoPdfBuffer(
   const indicadoresUsados = datos.indicadores.slice(0, CANTIDAD_INDICADORES_HOJA)
 
   const ANCHO_NUM = 20
-  const ANCHO_IND = 22 // celda cuadrada (ver ALTO_FILA) para un solo dígito 1-4 escrito a mano
-  const ANCHO_FINAL = 38 // "Nivel final" — ligeramente más ancha que una celda de indicador
-  const ANCHO_NOMBRE = 240
-  const ALTO_FILA = 15
-  const ALTO_ENCABEZADO_TABLA = 18 // una sola fila: # | Alumno | I1..I5 | Nivel final — nunca repite la escala aquí
-
-  const anchoTabla = ANCHO_NUM + ANCHO_NOMBRE + indicadoresUsados.length * ANCHO_IND + ANCHO_FINAL
-  const X_TABLA = MARGEN + Math.max(0, (ANCHO_CONTENIDO - anchoTabla) / 2)
+  const ANCHO_NOMBRE = 240 // suficiente para nombre(s) y dos apellidos completos
+  const ALTO_ENCABEZADO_TABLA = 20 // una sola fila: # | Alumno | I1..I5 | Nivel final — nunca repite la escala aquí
+  const RESERVA_INFERIOR_TABLA = 4 // colchón extra bajo la última fila, además del margen — el borde de la tabla nunca queda pegado al límite de impresión
 
   let pagina: PDFPage = pdfDoc.addPage([ANCHO_PAGINA, ALTO_PAGINA])
-  let y = ALTO_PAGINA - MARGEN
+  let y = ALTO_PAGINA - MARGEN - 3 // pequeño respiro respecto al borde superior, nunca pegado al margen exacto
 
   function nuevaPagina() {
     pagina = pdfDoc.addPage([ANCHO_PAGINA, ALTO_PAGINA])
-    y = ALTO_PAGINA - MARGEN
+    y = ALTO_PAGINA - MARGEN - 3
   }
 
   function asegurarEspacio(alturaNecesaria: number) {
@@ -124,27 +135,27 @@ export async function generarHojaSeguimientoPdfBuffer(
       { texto: `Docente: ${enc.docente}    Grado: ${enc.grado}    Grupo: ${enc.grupo}    Ciclo: ${enc.cicloEscolar}`, font: regular, tamano: 8, color: COLOR_TEXTO_SUAVE },
     ]
     for (const l of lineas) {
-      const limpio = sanearParaWinAnsi(l.texto)
+      const limpio = truncarConEllipsis(l.texto, l.font, l.tamano, ANCHO_CONTENIDO)
       pagina.drawText(limpio, { x: MARGEN, y: y - l.tamano, size: l.tamano, font: l.font, color: l.color })
-      y -= l.tamano * 1.4
+      y -= l.tamano * 1.3
     }
   }
 
   function dibujarIdentificador() {
     const texto = datos.identificadorVisible
-    const tamano = 14
+    const tamano = 13
     const ancho = negrita.widthOfTextAtSize(texto, tamano)
     pagina.drawRectangle({
       x: ANCHO_PAGINA - MARGEN - ancho - 14,
-      y: ALTO_PAGINA - MARGEN - 20,
+      y: ALTO_PAGINA - MARGEN - 19,
       width: ancho + 14,
-      height: 22,
+      height: 21,
       borderColor: COLOR_TITULO,
       borderWidth: 1,
     })
     pagina.drawText(texto, {
       x: ANCHO_PAGINA - MARGEN - ancho - 7,
-      y: ALTO_PAGINA - MARGEN - 15,
+      y: ALTO_PAGINA - MARGEN - 14,
       size: tamano,
       font: negrita,
       color: COLOR_TITULO,
@@ -152,16 +163,16 @@ export async function generarHojaSeguimientoPdfBuffer(
   }
 
   function dibujarMetadatosProyecto() {
-    y -= 4
-    pagina.drawText(sanearParaWinAnsi(datos.nombreProyecto), { x: MARGEN, y: y - 12, size: 12, font: negrita, color: COLOR_TITULO })
-    y -= 15
+    y -= 2
+    pagina.drawText(truncarConEllipsis(datos.nombreProyecto, negrita, 11, ANCHO_CONTENIDO), { x: MARGEN, y: y - 11, size: 11, font: negrita, color: COLOR_TITULO })
+    y -= 14
     const metaPartes = [
       datos.camposFormativos.join(' / '),
       datos.trimestreNombre ? `Trimestre: ${datos.trimestreNombre}` : null,
       datos.fechaInicio && datos.fechaFin ? `${datos.fechaInicio} — ${datos.fechaFin}` : null,
     ].filter(Boolean)
-    pagina.drawText(sanearParaWinAnsi(metaPartes.join('    ·    ')), { x: MARGEN, y: y - 9, size: 8.5, font: regular, color: COLOR_TEXTO })
-    y -= 12
+    pagina.drawText(truncarConEllipsis(metaPartes.join('    ·    '), regular, 8, ANCHO_CONTENIDO), { x: MARGEN, y: y - 8, size: 8, font: regular, color: COLOR_TEXTO })
+    y -= 10.5
   }
 
   // Leyenda ÚNICA y compacta — nunca se repite dentro de la tabla
@@ -171,59 +182,85 @@ export async function generarHojaSeguimientoPdfBuffer(
   // otra leyenda aparte.
   function dibujarLeyenda() {
     const etiqueta = NIVELES_EVALUACION.map(n => `${n.valor} ${n.etiqueta}`).join(' · ') + ' · Vacío No evaluado'
-    pagina.drawText(sanearParaWinAnsi(etiqueta), { x: MARGEN, y: y - 8, size: 8, font: regular, color: COLOR_TEXTO_SUAVE })
-    y -= 12
+    pagina.drawText(truncarConEllipsis(etiqueta, regular, 8, ANCHO_CONTENIDO), { x: MARGEN, y: y - 8, size: 8, font: regular, color: COLOR_TEXTO_SUAVE })
+    y -= 10.5
   }
 
-  // Lista numerada de los indicadores (1 a 5) en dos columnas, para no
-  // consumir una línea completa por indicador — el texto completo vive
-  // aquí, la tabla de abajo solo repite "I1".."I5" como referencia a
-  // esta lista.
+  // Los 5 indicadores numerados, en 3 columnas (nunca más de 2 filas
+  // para hasta 6 indicadores) — el texto completo vive aquí; la tabla
+  // de abajo solo repite "I1".."I5" como referencia a esta lista. Sin
+  // título aparte ("Indicadores"): la numeración y la leyenda de
+  // arriba ya dejan claro qué es esta lista, y ahorra una línea
+  // completa de alto que se reinvierte en las filas de alumnos.
   function dibujarListaIndicadores() {
-    pagina.drawText('Indicadores', { x: MARGEN, y: y - 9, size: 9, font: negrita, color: COLOR_TITULO })
-    y -= 11
+    const COLUMNAS = 3
+    const gap = 10
+    const anchoColumna = (ANCHO_CONTENIDO - gap * (COLUMNAS - 1)) / COLUMNAS
     const yListaInicio = y
-    const anchoColumna = ANCHO_CONTENIDO / 2 - 8
-    let filasIzquierda = 0
-    let filasDerecha = 0
+    const filasPorColumna = new Array(COLUMNAS).fill(0)
     indicadoresUsados.forEach((ind, i) => {
-      const esIzquierda = i % 2 === 0
-      const fila = esIzquierda ? filasIzquierda++ : filasDerecha++
-      const x = esIzquierda ? MARGEN : MARGEN + ANCHO_CONTENIDO / 2 + 8
+      const columna = i % COLUMNAS
+      const fila = filasPorColumna[columna]++
+      const x = MARGEN + columna * (anchoColumna + gap)
       const texto = `${i + 1}. ${ind.indicador_especifico}`
       pagina.drawText(truncarConEllipsis(texto, regular, 8, anchoColumna), {
         x,
-        y: yListaInicio - fila * 10 - 8,
+        y: yListaInicio - fila * 10.5 - 8,
         size: 8,
         font: regular,
         color: COLOR_TEXTO,
       })
     })
-    const filas = Math.max(filasIzquierda, filasDerecha, 1)
-    y = yListaInicio - filas * 10 - 6
+    const filas = Math.max(...filasPorColumna, 1)
+    y = yListaInicio - filas * 10.5 - 6
   }
+
+  dibujarEncabezadoInstitucional()
+  dibujarIdentificador()
+  dibujarMetadatosProyecto()
+  dibujarLeyenda()
+  dibujarListaIndicadores()
+
+  // A partir de aquí se reparte TODO el alto que sobró entre las
+  // filas de alumnos — nunca un número fijo adivinado. Así la tabla
+  // aprovecha el máximo alto disponible sin dejar espacio en blanco
+  // entre la última fila y el margen inferior, y las celdas I1-I5 se
+  // dibujan visualmente cuadradas (mismo ancho que ese alto).
+  const alturaDisponibleFilas = y - ALTO_ENCABEZADO_TABLA - MARGEN - RESERVA_INFERIOR_TABLA
+  const cantidadFilas = Math.max(datos.alumnos.length, 1)
+  const ALTO_FILA = Math.min(ALTO_FILA_MAXIMO, Math.max(ALTO_FILA_MINIMO, alturaDisponibleFilas / cantidadFilas))
+  const ANCHO_IND = ALTO_FILA // celda cuadrada para un solo dígito 1-4 escrito a mano
+
+  const TEXTO_NIVEL_FINAL = 'Nivel final'
+  const TAMANO_NIVEL_FINAL = 8
+  const anchoTextoNivelFinal = negrita.widthOfTextAtSize(TEXTO_NIVEL_FINAL, TAMANO_NIVEL_FINAL)
+  // "Nivel final" siempre completo y sin recortar: el ancho de la
+  // columna se calcula a partir del texto real, nunca al revés — y
+  // además queda ligeramente más ancha que una celda de indicador.
+  const ANCHO_FINAL = Math.max(anchoTextoNivelFinal + 14, ANCHO_IND * 1.6)
+
+  const anchoTabla = ANCHO_NUM + ANCHO_NOMBRE + indicadoresUsados.length * ANCHO_IND + ANCHO_FINAL
+  const X_TABLA = MARGEN + Math.max(0, (ANCHO_CONTENIDO - anchoTabla) / 2)
 
   function dibujarEncabezadoTabla() {
     asegurarEspacio(ALTO_ENCABEZADO_TABLA + ALTO_FILA)
     const yInicio = y
     let x = X_TABLA
     pagina.drawRectangle({ x, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_NUM, height: ALTO_ENCABEZADO_TABLA, borderColor: COLOR_BORDE, borderWidth: 1 })
-    pagina.drawText('#', { x: x + 6, y: yInicio - 13, size: 8.5, font: negrita, color: COLOR_TITULO })
+    pagina.drawText('#', { x: x + 6, y: yInicio - 14, size: 8.5, font: negrita, color: COLOR_TITULO })
     x += ANCHO_NUM
     pagina.drawRectangle({ x, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_NOMBRE, height: ALTO_ENCABEZADO_TABLA, borderColor: COLOR_BORDE, borderWidth: 1 })
-    pagina.drawText('Alumno', { x: x + 5, y: yInicio - 13, size: 8.5, font: negrita, color: COLOR_TITULO })
+    pagina.drawText('Alumno', { x: x + 5, y: yInicio - 14, size: 8.5, font: negrita, color: COLOR_TITULO })
     x += ANCHO_NOMBRE
     indicadoresUsados.forEach((_, i) => {
       pagina.drawRectangle({ x, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_IND, height: ALTO_ENCABEZADO_TABLA, borderColor: COLOR_BORDE, borderWidth: 1 })
       const etiqueta = `I${i + 1}`
-      const anchoEtiqueta = negrita.widthOfTextAtSize(etiqueta, 8)
-      pagina.drawText(etiqueta, { x: x + (ANCHO_IND - anchoEtiqueta) / 2, y: yInicio - 13, size: 8, font: negrita, color: COLOR_TITULO })
+      const anchoEtiqueta = negrita.widthOfTextAtSize(etiqueta, 8.5)
+      pagina.drawText(etiqueta, { x: x + (ANCHO_IND - anchoEtiqueta) / 2, y: yInicio - 14, size: 8.5, font: negrita, color: COLOR_TITULO })
       x += ANCHO_IND
     })
     pagina.drawRectangle({ x, y: yInicio - ALTO_ENCABEZADO_TABLA, width: ANCHO_FINAL, height: ALTO_ENCABEZADO_TABLA, borderColor: COLOR_BORDE, borderWidth: 1 })
-    const etiquetaFinal = 'Nivel final'
-    const anchoFinal = regular.widthOfTextAtSize(etiquetaFinal, 6.5)
-    pagina.drawText(etiquetaFinal, { x: x + Math.max(2, (ANCHO_FINAL - anchoFinal) / 2), y: yInicio - 13, size: 6.5, font: negrita, color: COLOR_TITULO })
+    pagina.drawText(TEXTO_NIVEL_FINAL, { x: x + Math.max(2, (ANCHO_FINAL - anchoTextoNivelFinal) / 2), y: yInicio - 14, size: TAMANO_NIVEL_FINAL, font: negrita, color: COLOR_TITULO })
     y -= ALTO_ENCABEZADO_TABLA
   }
 
@@ -234,11 +271,12 @@ export async function generarHojaSeguimientoPdfBuffer(
     asegurarEspacio(ALTO_FILA)
     const yInicio = y
     let x = X_TABLA
+    const yTexto = yInicio - ALTO_FILA / 2 - 3
     pagina.drawRectangle({ x, y: yInicio - ALTO_FILA, width: ANCHO_NUM, height: ALTO_FILA, borderColor: COLOR_BORDE, borderWidth: 0.75 })
-    pagina.drawText(String(alumno.posicion), { x: x + 5, y: yInicio - 11, size: 7.5, font: regular, color: COLOR_TEXTO })
+    pagina.drawText(String(alumno.posicion), { x: x + 5, y: yTexto, size: 7.5, font: regular, color: COLOR_TEXTO })
     x += ANCHO_NUM
     pagina.drawRectangle({ x, y: yInicio - ALTO_FILA, width: ANCHO_NOMBRE, height: ALTO_FILA, borderColor: COLOR_BORDE, borderWidth: 0.75 })
-    pagina.drawText(truncarConEllipsis(alumno.nombre, regular, 8, ANCHO_NOMBRE - 8), { x: x + 4, y: yInicio - 11, size: 8, font: regular, color: COLOR_TEXTO })
+    pagina.drawText(truncarConEllipsis(alumno.nombre, regular, 8, ANCHO_NOMBRE - 8), { x: x + 4, y: yTexto, size: 8, font: regular, color: COLOR_TEXTO })
     x += ANCHO_NOMBRE
     indicadoresUsados.forEach(() => {
       pagina.drawRectangle({ x, y: yInicio - ALTO_FILA, width: ANCHO_IND, height: ALTO_FILA, borderColor: COLOR_BORDE, borderWidth: 0.75 })
@@ -248,11 +286,6 @@ export async function generarHojaSeguimientoPdfBuffer(
     y -= ALTO_FILA
   }
 
-  dibujarEncabezadoInstitucional()
-  dibujarIdentificador()
-  dibujarMetadatosProyecto()
-  dibujarLeyenda()
-  dibujarListaIndicadores()
   dibujarEncabezadoTabla()
   for (const alumno of datos.alumnos) {
     // Si la página cambió a media tabla, repite el encabezado de
