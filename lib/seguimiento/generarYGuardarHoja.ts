@@ -38,7 +38,11 @@ export type DatosGenerarHoja = {
 }
 
 export type ResultadoGenerarHoja =
-  | { ok: true; hojaId: string; identificadorVisible: string; url: string }
+  // urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+  // PDF'"): segunda URL firmada del MISMO pdf, sin `download` — usada
+  // por el botón "Ver PDF" de la tarjeta. `url` sigue siendo,
+  // exactamente igual que antes, la URL de descarga forzada.
+  | { ok: true; hojaId: string; identificadorVisible: string; url: string; urlVer: string }
   | { ok: false; error: string }
 
 export async function generarYGuardarHojaSeguimiento(
@@ -69,8 +73,9 @@ export async function generarYGuardarHojaSeguimiento(
     // Ya estaba completamente lista de un intento anterior — nunca se
     // regenera ni se vuelve a subir, solo se confirma el vínculo.
     const url = await crearUrlFirmada(sb, hojaExistente.storage_path, nombreArchivoHoja(hojaExistente.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
+    const urlVer = await crearUrlFirmada(sb, hojaExistente.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
     await sb.from('proyectos_seguimiento').update({ hoja_id: hojaExistente.id, estado: 'hoja_generada', actualizado_en: new Date().toISOString() }).eq('id', datos.proyectoId)
-    return { ok: true, hojaId: hojaExistente.id, identificadorVisible: hojaExistente.identificador_visible, url }
+    return { ok: true, hojaId: hojaExistente.id, identificadorVisible: hojaExistente.identificador_visible, url, urlVer }
   }
 
   if (hojaExistente) {
@@ -132,5 +137,6 @@ export async function generarYGuardarHojaSeguimiento(
   await sb.from('proyectos_seguimiento').update({ hoja_id: hojaId, estado: 'hoja_generada', actualizado_en: new Date().toISOString() }).eq('id', datos.proyectoId)
 
   const url = await crearUrlFirmada(sb, ruta, nombreArchivoHoja(identificadorVisible), BUCKET_HOJAS_SEGUIMIENTO)
-  return { ok: true, hojaId, identificadorVisible, url }
+  const urlVer = await crearUrlFirmada(sb, ruta, undefined, BUCKET_HOJAS_SEGUIMIENTO)
+  return { ok: true, hojaId, identificadorVisible, url, urlVer }
 }

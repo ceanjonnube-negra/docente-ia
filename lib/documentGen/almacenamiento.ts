@@ -50,6 +50,13 @@ export type ArchivoGenerado = {
   // gratis (ya mide buffer.length para verificar la firma binaria) y lo
   // incluye siempre. La tarjeta universal del Chat IA lo muestra si viene.
   tamanoBytes?: number
+  // urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+  // PDF'"): segunda URL firmada del MISMO archivo, sin la opción
+  // `download` (por lo tanto sin Content-Disposition:attachment) —
+  // solo la rellena ejecutarHerramientaDocumento para tipo==='pdf'.
+  // `url` sigue siendo, sin ningún cambio, la URL firmada de descarga
+  // de siempre (con `download`).
+  urlVer?: string
 }
 
 export function rutaArchivo(userId: string, nombreArchivo: string): string {

@@ -205,13 +205,30 @@ export async function ejecutarHerramientaDocumento(
 
   console.log(`[DOWNLOAD_READY] ${etiqueta} — ${nombre} verificado y listo para el maestro`)
 
+  // ETAPA 7.6 (solo pdf) — segunda URL firmada del MISMO archivo, SIN
+  // `download` (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+  // PDF'"): TarjetaDescarga la usa para el botón "Ver PDF" (abre el
+  // pdf en el visor del navegador) — nunca sustituye a `url`, que
+  // sigue siendo la URL de descarga forzada de siempre. Mejor
+  // esfuerzo: si falla, se omite urlVer y el documento sigue siendo
+  // válido (solo con descarga, como antes de este ajuste) — nunca
+  // bloquea la entrega del archivo ya generado y verificado.
+  let urlVer: string | undefined
+  if (tipo === 'pdf') {
+    try {
+      urlVer = await medirEtapa(`${etiqueta}:url-firmada-ver`, () => crearUrlFirmada(sb, ruta))
+    } catch (err) {
+      console.error(`[PIPELINE ${etiqueta}:url-firmada-ver] No se pudo generar la URL de visualización (no bloquea):`, err)
+    }
+  }
+
   // ETAPA 8 (entrega al usuario) ocurre en app/api/chat/route.ts, al
   // devolver este resultado envuelto en el marcador
   // [[DOCUMENTO_ARCHIVO:...]] — se registra ahí mismo. tamanoBytes sale
   // gratis (buffer.length ya se calculó arriba para la verificación de
   // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
   // tamaño real sin pedirle nada más a Storage.
-  return { tipo, nombre, url, tamanoBytes: buffer.length }
+  return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer }
 }
 
 function medirEtapaSync<T>(etiqueta: string, fn: () => T): T {

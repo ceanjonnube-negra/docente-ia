@@ -41,9 +41,25 @@ export async function GET(req: NextRequest) {
   try {
     const token = req.nextUrl.searchParams.get('token')
     const datosCodificados = req.nextUrl.searchParams.get('datos')
+    // Validación explícita del tipo de documento (corrección "el
+    // adjunto de planeación abre la hoja de evaluación") — esta ruta
+    // SOLO genera el instrumento grupal; nunca decide qué generar solo
+    // por a qué endpoint llegó la petición ni por el nombre del
+    // archivo. Un tipoDocumento ausente o distinto de "hoja_evaluacion"
+    // es un error controlado, nunca un valor por defecto silencioso.
+    const tipoDocumento = req.nextUrl.searchParams.get('tipoDocumento')
+    if (tipoDocumento !== 'hoja_evaluacion') {
+      return NextResponse.json({ error: 'Tipo de documento inválido para esta vista previa.' }, { status: 400 })
+    }
     if (!token || !datosCodificados) {
       return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
     }
+    // modo — mismo criterio que la hermana vista-previa-documento
+    // (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar PDF'"):
+    // 'ver' sirve el mismo pdf en línea; 'descargar' (default) fuerza
+    // la descarga con application/octet-stream. Nunca cambia el
+    // buffer generado, solo las cabeceras de la respuesta.
+    const modo = req.nextUrl.searchParams.get('modo') === 'ver' ? 'ver' : 'descargar'
 
     const auth = await autenticarRequestApi(token)
     if (!auth.ok) {
@@ -111,11 +127,17 @@ export async function GET(req: NextRequest) {
 
     return new NextResponse(new Uint8Array(bufferPdf), {
       status: 200,
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': 'attachment; filename="vista-previa-hoja-evaluacion.pdf"',
-        'Cache-Control': 'no-store',
-      },
+      headers: modo === 'ver'
+        ? {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': 'inline; filename="vista-previa-hoja-evaluacion.pdf"',
+            'Cache-Control': 'no-store',
+          }
+        : {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': 'attachment; filename="vista-previa-hoja-evaluacion.pdf"',
+            'Cache-Control': 'no-store',
+          },
     })
   } catch (err) {
     console.error('Error en GET /api/planeaciones/vista-previa-hoja:', err)

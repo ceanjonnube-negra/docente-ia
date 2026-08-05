@@ -56,7 +56,11 @@ export type CodigoErrorAprobacion =
 // subido a Storage — mismo shape que ArchivoGenerado
 // (lib/documentGen/almacenamiento.ts), reducido a lo que la tarjeta
 // del Chat IA necesita mostrar.
-export type DocumentoPlaneacionGenerado = { nombre: string; url: string; tamanoBytes?: number }
+// urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar PDF'"):
+// solo presente en el pdf — segunda URL firmada del mismo archivo sin
+// `download`, para el botón "Ver PDF". `url` sigue siendo, sin ningún
+// cambio, la URL de descarga forzada de siempre.
+export type DocumentoPlaneacionGenerado = { nombre: string; url: string; tamanoBytes?: number; urlVer?: string }
 
 export type ResultadoAprobacion =
   // duracionDias viaja solo para el mensaje de confirmación (nunca es
@@ -69,7 +73,7 @@ export type ResultadoAprobacion =
   // completa (la planeación y la hoja ya quedaron guardadas) — el
   // docente siempre puede pedir el archivo después escribiendo en el
   // chat, igual que antes de que existiera esta mejora.
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
 
 type TurnoHistorial = { role: string; content: string }
@@ -340,7 +344,13 @@ export async function aprobarBorradorPlaneacion(
     // esta MISMA huella ya generó ambos formatos (evaluacion.documento_word/
     // documento_pdf ya presentes), se reutilizan tal cual — nunca se
     // regeneran ni se duplican archivos en Storage.
-    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number }
+    // url_ver (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+    // PDF'"): solo presente en documento_pdf — segunda URL firmada sin
+    // `download`, para el botón "Ver PDF". Opcional: una planeación
+    // aprobada antes de este ajuste puede tener documento_pdf sin
+    // url_ver — TarjetaDescarga simplemente sigue mostrando el botón
+    // único de siempre para esos casos, sin romper nada.
+    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string }
     const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado } } | null)?.evaluacion
     let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
     let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
@@ -355,7 +365,7 @@ export async function aprobarBorradorPlaneacion(
           }
           if (!documentoPdf) {
             const generado = await ejecutarHerramientaDocumento('pdf', textoCompleto, perfil, null, sb, sesion.docente_id)
-            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes }
+            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, url_ver: generado.urlVer }
           }
         } else {
           console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omite Word/PDF definitivos')
@@ -403,11 +413,11 @@ export async function aprobarBorradorPlaneacion(
       ok: true,
       planeacion: confirmada.datos,
       duracionDias: resumen.duracionDias,
-      hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url },
+      hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url, urlVer: resultadoHoja.urlVer },
       documentoPlaneacion: documentoWord && documentoPdf
         ? {
             word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes },
-            pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes },
+            pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes, urlVer: documentoPdf.url_ver },
           }
         : null,
     }

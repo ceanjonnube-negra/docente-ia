@@ -954,10 +954,10 @@ export async function POST(req: NextRequest) {
           if (resultado.documentoPlaneacion) {
             const archivoWord = { tipo: 'word', nombre: resultado.documentoPlaneacion.word.nombre, url: resultado.documentoPlaneacion.word.url, tipoDocumento: 'planeacion' as const }
             marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`)
-            const archivoPdfPlaneacion = { tipo: 'pdf', nombre: resultado.documentoPlaneacion.pdf.nombre, url: resultado.documentoPlaneacion.pdf.url, tipoDocumento: 'planeacion' as const }
+            const archivoPdfPlaneacion = { tipo: 'pdf', nombre: resultado.documentoPlaneacion.pdf.nombre, url: resultado.documentoPlaneacion.pdf.url, urlVer: resultado.documentoPlaneacion.pdf.urlVer, tipoDocumento: 'planeacion' as const }
             marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoPdfPlaneacion), 'utf-8').toString('base64')}]]`)
           }
-          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, tipoDocumento: 'hoja_evaluacion' as const }
+          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, urlVer: resultado.hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const }
           marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
           return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcadores.join('\n')}`)
         } catch (e) {
@@ -1778,11 +1778,18 @@ Grado: [grado] | Grupo: [grupo]
               controller.enqueue(encoder.encode(`\n\n${marcadorWord}`))
               cantidadAdjuntos++
 
-              const urlDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              // modo=ver / modo=descargar (CORRECCIÓN AISLADA — "separar
+              // 'Ver PDF' de 'Descargar PDF'"): misma ruta, mismo
+              // `datos` comprimido (nunca se regenera contenido
+              // distinto) — solo cambian las cabeceras de respuesta
+              // según el modo, ver vista-previa-documento/route.ts.
+              const urlDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}&modo=descargar`
+              const urlVerDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}&modo=ver`
               const archivoDocumento = {
                 tipo: 'pdf',
                 nombre: 'vista-previa-planeacion.pdf',
                 url: urlDocumento,
+                urlVer: urlVerDocumento,
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
               }
@@ -1830,11 +1837,15 @@ Grado: [grado] | Grupo: [grupo]
               // adjunto de la planeación — la ruta lo exige y lo valida
               // antes de generar nada (ver corrección "el adjunto de
               // planeación abre la hoja de evaluación").
-              const url = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}`
+              // modo=ver / modo=descargar — mismo criterio que la
+              // planeación arriba, ver vista-previa-hoja/route.ts.
+              const url = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}&modo=descargar`
+              const urlVer = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}&modo=ver`
               const archivo = {
                 tipo: 'pdf',
                 nombre: 'vista-previa-hoja-evaluacion.pdf',
                 url,
+                urlVer,
                 tipoDocumento: 'hoja_evaluacion' as const,
                 descripcion: `${sesion.alumnos_del_grupo_activo.length} alumno${sesion.alumnos_del_grupo_activo.length === 1 ? '' : 's'} · ${resumenBorrador.indicadores.length} indicador${resumenBorrador.indicadores.length === 1 ? '' : 'es'}`,
               }

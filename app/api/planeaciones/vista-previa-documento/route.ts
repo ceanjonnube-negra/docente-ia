@@ -44,6 +44,15 @@ export async function GET(req: NextRequest) {
     if (!token || !datosComprimidos) {
       return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
     }
+    // modo (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+    // PDF'"): 'ver' sirve el MISMO pdf en línea (para abrir en una
+    // pestaña nueva sin forzar descarga); 'descargar' (default,
+    // comportamiento previo) fuerza la descarga con
+    // application/octet-stream — Safari en iPhone trata ese
+    // Content-Type como binario genérico en vez de intentar mostrarlo
+    // en su visor integrado. Nunca cambia el buffer generado, solo las
+    // cabeceras de la respuesta.
+    const modo = req.nextUrl.searchParams.get('modo') === 'ver' ? 'ver' : 'descargar'
 
     const auth = await autenticarRequestApi(token)
     if (!auth.ok) {
@@ -79,11 +88,17 @@ export async function GET(req: NextRequest) {
 
     return new NextResponse(new Uint8Array(bufferPdf), {
       status: 200,
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${nombreSugerido}"`,
-        'Cache-Control': 'no-store',
-      },
+      headers: modo === 'ver'
+        ? {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `inline; filename="${nombreSugerido}"`,
+            'Cache-Control': 'no-store',
+          }
+        : {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${nombreSugerido}"`,
+            'Cache-Control': 'no-store',
+          },
     })
   } catch (err) {
     console.error('Error en GET /api/planeaciones/vista-previa-documento:', err)

@@ -138,12 +138,21 @@ async function main() {
     // del nuevo diseño agrupado. Aquí solo importa que TODOS sigan
     // siendo de solo-lectura sobre el archivo (descarga/compartir),
     // nunca una llamada al chat.
-    const onClicksMultilinea = cuerpoTarjeta.match(/onClick=\{\(\)\s*=>\s*(descargarArchivo|compartirArchivo|setMostrarCompartir|setVencido)\([^]*?\}\}/g) ?? []
+    // CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar PDF'":
+    // dos patrones nuevos y legítimos se suman a la lista de
+    // identificadores seguros — window.open(archivo.urlVer, ...) para
+    // "Ver PDF" (solo abre el pdf en una pestaña, nunca navega al
+    // chat) y descargarArchivoForzado (la variante de descarga con
+    // Blob type "application/octet-stream", ver el propio componente)
+    // para "Descargar PDF". Ninguno de los dos toca AsistenteService,
+    // sendMessage ni el historial — ya lo confirma 9b sobre TODO el
+    // cuerpo de la tarjeta.
+    const onClicksMultilinea = cuerpoTarjeta.match(/onClick=\{async \(\)\s*=>\s*\{[^]*?descargarArchivoForzado\([^]*?\}\}/g) ?? []
     const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
     verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
     verificar(
-      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir/.test(c)) || onClicksMultilinea.length > 0,
-      '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|window\.open\(archivo\.urlVer/.test(c)) || onClicksMultilinea.length > 0,
+      '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo, abren "Ver PDF" o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
     )
   }
 

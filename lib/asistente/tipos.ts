@@ -36,6 +36,15 @@ export type ArchivoGeneradoInfo = {
   tamanoBytes?: number
   tipoDocumento?: TipoDocumentoPlaneacion
   descripcion?: string
+  // urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+  // PDF'"): URL alterna EXCLUSIVA para visualización en línea de un
+  // PDF (Content-Disposition: inline) — solo presente cuando el
+  // documento es planeación/hoja de evaluación en PDF. `url` sigue
+  // siendo, sin ningún cambio, la ruta de DESCARGA forzada (la que ya
+  // usaba TarjetaDescarga antes de este ajuste). Un pdf sin urlVer
+  // (documento genérico de FINALIZAR ARCHIVO fuera de
+  // planeación/hoja) sigue mostrando el botón único de siempre.
+  urlVer?: string
 }
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo

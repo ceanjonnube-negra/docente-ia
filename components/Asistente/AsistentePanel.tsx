@@ -162,6 +162,42 @@ async function descargarArchivo(url: string, nombreSugerido: string) {
   }
 }
 
+// Descarga FORZADA de PDF (CORRECCIÓN AISLADA — "separar 'Ver PDF' de
+// 'Descargar PDF' y forzar descarga real en iPhone"): evidencia
+// confirmada en producción — un <a download> sobre un blob con type
+// "application/pdf" (el camino de descargarArchivo de arriba) sigue
+// terminando en el visor integrado de Safari en iPhone en vez de
+// descargar, sin importar el Content-Disposition que mande el
+// servidor. La única señal que Safari respeta de forma consistente
+// para blobs locales es el propio `type` del Blob — reconstruir el
+// blob con "application/octet-stream" (sin importar qué Content-Type
+// haya mandado la respuesta real) hace que Safari lo trate como
+// binario genérico y dispare la descarga real, nunca la vista previa.
+// A propósito NUNCA usa window.open/window.location/router.push ni
+// reutiliza descargarArchivo: si el fetch falla, se lo dice al
+// docente (mensaje de error real, ver CLAUDE.md regla 13) en vez de
+// caer a abrir la URL directa — abrir la URL directa aquí volvería a
+// producir exactamente el problema que este ajuste corrige.
+async function descargarArchivoForzado(url: string, nombreSugerido: string): Promise<{ ok: true } | { ok: false }> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Descarga respondió ${res.status}`)
+    const buffer = await res.arrayBuffer()
+    const blob = new Blob([buffer], { type: 'application/octet-stream' })
+    const objectUrl = URL.createObjectURL(blob)
+    const enlace = document.createElement('a')
+    enlace.href = objectUrl
+    enlace.download = nombreSugerido
+    document.body.appendChild(enlace)
+    enlace.click()
+    enlace.remove()
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 10000)
+    return { ok: true }
+  } catch {
+    return { ok: false }
+  }
+}
+
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
   const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
   try {
@@ -222,6 +258,12 @@ function TarjetaDescarga({
 }) {
   const [enlaceCopiado, setEnlaceCopiado] = useState(false)
   const [mostrarCompartir, setMostrarCompartir] = useState(false)
+  // Error de "Descargar PDF" (ver descargarArchivoForzado más arriba)
+  // — a propósito nunca cae a window.open si el fetch falla, así que
+  // el docente necesita un aviso real en pantalla (CLAUDE.md regla 13:
+  // "mostrar errores claros al usuario, no dejar fallas únicamente en
+  // consola").
+  const [errorDescargaPdf, setErrorDescargaPdf] = useState(false)
   // Date.now() no puede llamarse en el cuerpo del render (impuro para
   // el linter de React) — se calcula una sola vez al montar/cambiar
   // creadoEn. No necesita reactividad en vivo (nadie espera que la
@@ -263,14 +305,49 @@ function TarjetaDescarga({
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
           {archivos.map((archivo) => (
-            <button
-              key={archivo.tipo}
-              onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
-              className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
-            >
-              ⬇️ {etiquetaDescargar(archivo.tipo)}
-            </button>
+            // "Ver PDF" y "Descargar PDF" (CORRECCIÓN AISLADA —
+            // "separar 'Ver PDF' de 'Descargar PDF' y forzar descarga
+            // real en iPhone"): dos botones y dos callbacks distintos,
+            // solo para el pdf de planeación/hoja de evaluación
+            // (único caso con urlVer real, ver agruparArchivosPorDocumento
+            // y las rutas de vista-previa/Storage que lo generan). Un
+            // pdf genérico sin urlVer (FINALIZAR ARCHIVO fuera de
+            // planeación/hoja) sigue mostrando el botón único de
+            // siempre, sin ningún cambio.
+            archivo.tipo === 'pdf' && archivo.tipoDocumento && archivo.urlVer ? (
+              <div key={archivo.tipo} className="flex gap-1.5">
+                <button
+                  onClick={() => window.open(archivo.urlVer, '_blank')}
+                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
+                >
+                  👁️ Ver PDF
+                </button>
+                <button
+                  onClick={async () => {
+                    const resultado = await descargarArchivoForzado(archivo.url, archivo.nombre)
+                    if (!resultado.ok) {
+                      setErrorDescargaPdf(true)
+                      setTimeout(() => setErrorDescargaPdf(false), 5000)
+                    }
+                  }}
+                  className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
+                >
+                  ⬇️ Descargar PDF
+                </button>
+              </div>
+            ) : (
+              <button
+                key={archivo.tipo}
+                onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
+                className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
+              >
+                ⬇️ {etiquetaDescargar(archivo.tipo)}
+              </button>
+            )
           ))}
+          {errorDescargaPdf && (
+            <p className="text-[11px] text-red-600 text-center">No se pudo descargar el PDF. Intenta de nuevo.</p>
+          )}
           {archivos.length === 1 ? (
             <button
               onClick={() => compartirArchivo(archivos[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
