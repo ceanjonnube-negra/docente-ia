@@ -38,7 +38,6 @@ import type {
   Herramienta,
   MensajeConversacion,
   MotorConversacional,
-  ParametrosConversionDocumento,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
@@ -148,10 +147,9 @@ export type EstadoAsistente = {
   // Id del mensaje que sostiene el Documento Activo — null cuando no
   // hay ninguno. Solo el id (no el objeto completo): la tarjeta
   // universal (TarjetaDescarga) lo usa únicamente para saber si SU
-  // mensaje es el activo (mostrar el distintivo "Documento activo" y
-  // habilitar "Convertir a..."), nunca para leer el texto del
-  // documento — ver "Ajustes sobre el sistema de generación y manejo
-  // de documentos".
+  // mensaje es el activo (mostrar el distintivo "Documento activo"),
+  // nunca para leer el texto del documento — ver "Ajustes sobre el
+  // sistema de generación y manejo de documentos".
   documentoActivoId: string | null
   // Única fuente de verdad para nombre/escuela/grado/grupo en TODA la
   // interfaz — menú lateral (AsistentePanel), /dashboard/inicio, y
@@ -262,13 +260,6 @@ class AsistenteServiceImpl {
   // mensajes de una conversación, solo cuando el docente la abre — nunca
   // al montar el servicio.
   private documentoActivo: DocumentoActivoGuardado | null = null
-  // Conversiones de tarjeta EN CURSO ("idDocumento:tipo") — ver
-  // "corrección funcional de tarjetas de documentos": evita que un
-  // segundo toque sobre el mismo botón mientras la primera conversión
-  // todavía no termina dispare una segunda generación (archivo
-  // duplicado). Vive aparte de documentoActivo.archivosGenerados
-  // porque ESE cache es "ya terminado"; esto es "todavía en vuelo".
-  private conversionesEnCurso = new Set<string>()
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -1426,10 +1417,12 @@ class AsistenteServiceImpl {
   // Camino EXCLUSIVO del mensaje de texto normal ("conviértelo a PDF"
   // escrito por el docente) — SÍ crea una burbuja real porque el
   // docente sí escribió algo (ver reutilizarArchivoExistente/
-  // enviarComoFinalizacion más abajo). convertirDocumento (botón
-  // "Convertir a..." de la tarjeta universal) NUNCA llama a esta
-  // función — tiene su propia lógica de caché/finalización, silenciosa
-  // y sin burbuja, a propósito separada de esta.
+  // enviarComoFinalizacion más abajo). Ver "CONTENCIÓN DEFINITIVA —
+  // retirar temporalmente Convertir de todas las tarjetas de
+  // documentos": el botón "Convertir" de la tarjeta universal fue
+  // retirado por completo (ya no existe ningún callback de conversión
+  // disparado por botón); este es ahora el ÚNICO camino de conversión
+  // de formato que queda en la aplicación.
   private async ejecutarConversionFormato(tipoResuelto: TipoHerramienta, textoVisible: string) {
     if (!this.documentoActivo) return
     const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
@@ -1438,118 +1431,6 @@ class AsistenteServiceImpl {
       return
     }
     await this.enviarComoFinalizacion(this.documentoActivo.id, textoVisible, tipoResuelto, this.documentoActivo.texto)
-  }
-
-  // Los 4 formatos reales que esta acción puede producir — cualquier
-  // otro valor de formatoDestino se rechaza antes de tocar nada (ver
-  // convertirDocumento). No importa TipoHerramienta aquí a propósito:
-  // esta lista es la que de verdad importa en tiempo de EJECUCIÓN
-  // (TipoHerramienta ya protege en tiempo de COMPILACIÓN a quien llame
-  // con el tipo correcto — esto es la segunda capa, por si algún día
-  // algo construye ParametrosConversionDocumento sin pasar por TS).
-  private static readonly FORMATOS_CONVERSION_VALIDOS = new Set<TipoHerramienta>(['word', 'pdf', 'powerpoint', 'excel'])
-
-  // El docente tocó un formato en el menú "Convertir" de la tarjeta
-  // universal del documento (ver TarjetaDescarga en AsistentePanel.tsx)
-  // — CORRECCIÓN REAL DE PRODUCCIÓN ("los botones Word y PDF crean
-  // mensajes falsos del docente"): a diferencia de escribir
-  // "conviértelo a X" en el chat (ver ejecutarConversionFormato más
-  // arriba, que SÍ crea una burbuja real porque el docente sí escribió
-  // algo), esto es una acción ESTRUCTURADA disparada por un botón —
-  // recibe un objeto de datos planos (ParametrosConversionDocumento),
-  // NUNCA un string de texto conversacional, y NUNCA tiene acceso a
-  // enviarMensaje/sendMessage ni a nada que pueda escribir el campo de
-  // texto del chat. No crea una burbuja del usuario, no vuelve a
-  // mostrar el documento completo, no pasa por el modelo pedagógico. El
-  // estado "Convirtiendo…"/error y el resultado viven enteramente
-  // dentro de la tarjeta que lo pidió (ver marcarEstadoConversion/
-  // agregarArchivoATarjeta). Solo actúa si archivoId sigue siendo el
-  // Documento Activo: evita convertir el documento equivocado si el
-  // docente generó otro distinto entre que vio la tarjeta y tocó el
-  // botón (doble toque tardío, tarjeta vieja en pantalla mientras se
-  // hace scroll hacia arriba, etc.).
-  async convertirDocumento(params: ParametrosConversionDocumento) {
-    const { archivoId, formatoDestino } = params
-    if (!AsistenteServiceImpl.FORMATOS_CONVERSION_VALIDOS.has(formatoDestino as TipoHerramienta)) return
-    const tipo = formatoDestino as TipoHerramienta
-    const idDocumento = archivoId
-    if (!this.documentoActivo || this.documentoActivo.id !== idDocumento) return
-
-    const clave = `${idDocumento}:${tipo}`
-    if (this.conversionesEnCurso.has(clave)) return // ya en curso — un segundo toque no duplica la conversión
-
-    const archivoExistente = this.documentoActivo.archivosGenerados?.[tipo]
-    if (archivoExistente) {
-      // Ya se había generado antes (mismo documento, sin cambios) — se
-      // reutiliza tal cual, sin red y sin burbuja, igual que
-      // reutilizarArchivoExistente pero sin narrar nada en el chat.
-      this.agregarArchivoATarjeta(idDocumento, archivoExistente)
-      return
-    }
-
-    this.conversionesEnCurso.add(clave)
-    this.marcarEstadoConversion(idDocumento, tipo, 'convirtiendo')
-    const documentoTexto = this.documentoActivo.texto
-    try {
-      const motorTexto = await this.asegurarMotorTexto()
-      const archivo = await motorTexto.generarArchivoDirecto(tipo, documentoTexto)
-      // Solo cachea en documentoActivo si sigue siendo el mismo
-      // documento sin cambios — nunca contamina el archivosGenerados de
-      // un documento distinto si el docente ya generó/editó otro
-      // mientras esta conversión seguía en vuelo.
-      if (this.documentoActivo?.id === idDocumento && this.documentoActivo.texto === documentoTexto) {
-        this.actualizarDocumentoActivo(idDocumento, documentoTexto, archivo)
-      }
-      this.agregarArchivoATarjeta(idDocumento, archivo)
-      this.marcarEstadoConversion(idDocumento, tipo, null)
-    } catch (err) {
-      console.error('[CONVERSION] fallo convirtiendo documento:', err)
-      this.marcarEstadoConversion(idDocumento, tipo, 'error')
-    } finally {
-      this.conversionesEnCurso.delete(clave)
-    }
-  }
-
-  // Agrega el archivo convertido como UN ADJUNTO MÁS del mensaje —
-  // nunca reemplaza los que ya tenía (ver "mantener intacto el archivo
-  // original"), mismo campo `archivos` que ya usa el turno de
-  // planeación + hoja de evaluación (ver lib/asistente/tipos.ts). Si ya
-  // existía un archivo de ESE MISMO formato (ej. el docente tocó
-  // "Word" dos veces), se reemplaza in place — nunca se agrega una
-  // segunda tarjeta idéntica.
-  private agregarArchivoATarjeta(idMensaje: string, archivo: ArchivoGeneradoInfo) {
-    const idx = this.mensajes.findIndex(m => m.id === idMensaje)
-    if (idx === -1) return
-    const msg = this.mensajes[idx]
-    const existentes = msg.archivos && msg.archivos.length > 0 ? msg.archivos : msg.archivo ? [msg.archivo] : []
-    const yaExisteIdx = existentes.findIndex(a => a.tipo === archivo.tipo)
-    const nuevos = yaExisteIdx !== -1
-      ? existentes.map((a, i) => (i === yaExisteIdx ? archivo : a))
-      : [...existentes, archivo]
-    this.mensajes = [
-      ...this.mensajes.slice(0, idx),
-      { ...msg, archivo: msg.archivo ?? nuevos[0], archivos: nuevos },
-      ...this.mensajes.slice(idx + 1),
-    ]
-    this.notificar()
-  }
-
-  // Estado "Convirtiendo…"/error POR FORMATO, visible únicamente dentro
-  // de la tarjeta correspondiente (ver TarjetaDescarga) — estado=null
-  // limpia la marca (conversión terminada con éxito).
-  private marcarEstadoConversion(idMensaje: string, tipo: TipoHerramienta, estado: 'convirtiendo' | 'error' | null) {
-    const idx = this.mensajes.findIndex(m => m.id === idMensaje)
-    if (idx === -1) return
-    const msg = this.mensajes[idx]
-    const estados = { ...(msg.estadosConversion ?? {}) }
-    if (estado === null) delete estados[tipo]
-    else estados[tipo] = estado
-    this.mensajes = [
-      ...this.mensajes.slice(0, idx),
-      { ...msg, estadosConversion: estados },
-      ...this.mensajes.slice(idx + 1),
-    ]
-    this.notificar()
   }
 
   // Fuente única para "fijar" documentoActivo — un borrador nuevo, una

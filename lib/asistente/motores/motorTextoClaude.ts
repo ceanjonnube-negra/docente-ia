@@ -293,20 +293,18 @@ export class MotorTextoClaude implements MotorConversacional {
     }
   }
 
-  // Conversión SILENCIOSA de un documento ya existente a otro formato,
-  // disparada por el botón de una tarjeta (nunca por un mensaje escrito
-  // por el docente) — ver "corrección funcional de tarjetas de
-  // documentos": a diferencia de enviarTexto(), NUNCA emite eventos de
-  // chat (ni respuesta-parcial, ni respuesta-final) — el estado
-  // "Convirtiendo…" y el resultado viven enteramente dentro de la
-  // tarjeta que lo pidió (ver AsistenteService.convertirDocumento),
-  // nunca como una burbuja ni como una respuesta del asistente. Usa su
-  // PROPIO AbortController (nunca this.controlador) para no interferir
-  // con una conversación de texto que pueda estar en curso al mismo
-  // tiempo, y reutiliza el mismo endpoint/mecanismo de FINALIZAR
-  // ARCHIVO que ya usa enviarTexto — nunca un sistema paralelo: el
-  // servidor genera el archivo de forma mecánica, sin pasar por Claude
-  // (ver app/api/chat/route.ts, FINALIZAR ARCHIVO).
+  // Genera un documento existente en OTRO formato de forma mecánica
+  // (nunca pasa por Claude — reutiliza el mismo endpoint/mecanismo de
+  // FINALIZAR ARCHIVO que ya usa enviarTexto, ver app/api/chat/route.ts).
+  // NUNCA emite eventos de chat (ni respuesta-parcial, ni
+  // respuesta-final) y usa su PROPIO AbortController (nunca
+  // this.controlador) para no interferir con una conversación de texto
+  // en curso. Ver "CONTENCIÓN DEFINITIVA — retirar temporalmente
+  // Convertir de todas las tarjetas de documentos": el botón que
+  // llamaba a este método fue retirado de la interfaz; el método se
+  // conserva como infraestructura para la conversión directa real que
+  // se implementará más adelante, pero hoy ningún camino del
+  // renderizado actual lo invoca.
   async generarArchivoDirecto(tipo: string, documentoTexto: string): Promise<ArchivoGeneradoInfo> {
     const controlador = new AbortController()
     const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_FETCH_DOCUMENTO_MS)

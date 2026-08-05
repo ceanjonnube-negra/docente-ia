@@ -170,6 +170,25 @@ async function main() {
     verificar(definicionesTarjeta === 1, '7c. TarjetaDescarga sigue siendo un componente único (no se duplicó una variante "TarjetaPlaneacion")')
   }
 
+  // ============================================================
+  // 12. Ninguna tarjeta (planeación, hoja de evaluación o cualquier
+  //     otro documento) ofrece conversión de formato — ver "CONTENCIÓN
+  //     DEFINITIVA — retirar temporalmente Convertir de todas las
+  //     tarjetas de documentos" y scripts/verificar-tarjetas-sin-conversion.ts,
+  //     que cubre en detalle la retirada completa del menú (sin
+  //     eliminar Descargar/Abrir/Compartir).
+  // ============================================================
+  {
+    const iTarjeta = rutaPanel.indexOf('function TarjetaDescarga(')
+    const iFinTarjeta = rutaPanel.indexOf('\n// Vista previa de solo lectura del documento activo', iTarjeta)
+    const cuerpoTarjeta = rutaPanel.slice(iTarjeta, iFinTarjeta)
+    const codigoRealTarjeta = cuerpoTarjeta.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    verificar(!codigoRealTarjeta.includes('Convertir'), '12a. Ninguna tarjeta (planeación, hoja de evaluación o cualquier otro documento) muestra el menú "Convertir"')
+    verificar(!/Word|PDF como formato|PowerPoint|Excel como/.test(codigoRealTarjeta) && !cuerpoTarjeta.includes('onConvertir'), '12b. Ninguna tarjeta ofrece Word/PDF/PowerPoint/Excel como conversión — no queda ningún callback de conversión que reintroducir por accidente')
+    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('🔗 Abrir') && cuerpoTarjeta.includes('📤 Compartir'), '12b2. Descargar, Abrir y Compartir permanecen disponibles en la tarjeta')
+    verificar(!codigoRealTarjeta.includes('sendMessage') && !codigoRealTarjeta.includes('handleSend') && !codigoRealTarjeta.includes('enviarMensaje'), '12b3. No existe ningún fallback conversacional (sendMessage/handleSend/enviarMensaje) dentro de la tarjeta')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)

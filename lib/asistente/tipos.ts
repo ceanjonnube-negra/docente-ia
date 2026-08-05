@@ -19,30 +19,6 @@ export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 // él — la tarjeta universal simplemente no muestra el tamaño si falta.
 export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string; tamanoBytes?: number }
 
-// Acción ESTRUCTURADA que dispara un botón de conversión de formato
-// (ver "CORRECCIÓN REAL DE PRODUCCIÓN — los botones Word y PDF crean
-// mensajes falsos del docente"). Deliberadamente un objeto de datos
-// planos, sin un solo campo de texto libre ni de función: no existe
-// ningún campo aquí que pueda llevar un prompt conversacional, un
-// sendMessage o un handleSend — por construcción, un botón que arma
-// este objeto no puede fabricar una burbuja del docente. tipoDocumento
-// es `string` (no TipoDocumentoPlaneacion) a propósito: evita acoplar
-// este tipo a la diferenciación de documentos todavía pendiente.
-export type ParametrosConversionDocumento = {
-  // Id del mensaje/tarjeta que contiene el archivo — el modelo actual
-  // no tiene un id propio por archivo, así que la tarjeta se identifica
-  // por el mensaje que la muestra (igual que el resto de C-005).
-  archivoId: string
-  nombreArchivo: string
-  url: string
-  tipoDocumento?: string
-  formatoOrigen: string
-  formatoDestino: string
-  // Reservado para cuando exista conversión de una vista previa
-  // provisional (token-based, aún no persistida) — no se usa todavía.
-  tokenVistaPrevia?: string
-}
-
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
 // inteligente de actualización del Calendario Escolar") — el docente
 // confirma con un toque, sin tener que escribir. `estilo` decide el
@@ -105,15 +81,6 @@ export type MensajeConversacion = {
   // la vez — cuando trae exactamente uno, sigue viajando únicamente en
   // `archivo`, igual que siempre.
   archivos?: ArchivoGeneradoInfo[]
-  // Estado de conversión EN CURSO por formato para este mensaje (ver
-  // "corrección funcional de tarjetas de documentos" — los botones de
-  // conversión ya NO crean una burbuja del usuario ni "Generando…" a
-  // nivel de chat): TarjetaDescarga usa esto para mostrar "Convirtiendo
-  // a X…" o un error breve con "Reintentar" dentro de SU PROPIA
-  // tarjeta, nunca como un mensaje nuevo en la conversación. Ausente o
-  // sin la clave del formato = sin conversión en curso para ese
-  // formato.
-  estadosConversion?: Record<string, 'convirtiendo' | 'error'>
   // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
   // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
   // que la burbuja lo siga mostrando después de restaurar la
