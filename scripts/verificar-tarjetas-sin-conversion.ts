@@ -102,7 +102,13 @@ async function main() {
   //      completo de esa decisión.
   // ============================================================
   {
-    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('descargarArchivo(archivo.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
+    // La etiqueta exacta ahora depende del formato (etiquetaDescargar) —
+    // ver AJUSTE DE NOMENCLATURA en el propio componente: "Descargar
+    // Word" para Word, "Ver / Descargar PDF" para PDF (diagnóstico real
+    // en iPhone Safari, donde el PDF se abre en el visor en vez de
+    // descargarse directo) — el mecanismo real (descargarArchivo) no
+    // cambió en ningún caso.
+    verificar(cuerpoTarjeta.includes('etiquetaDescargar(archivo.tipo)') && cuerpoTarjeta.includes('descargarArchivo(archivo.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
     verificar(!codigoRealTarjeta.includes('🔗 Abrir'), '7. El botón "Abrir" fue retirado intencionalmente (decisión de producto posterior) — la vista previa ya está dentro del chat')
     verificar(cuerpoTarjeta.includes('📤 Compartir') && cuerpoTarjeta.includes('compartirArchivo(archivo'), '8. El botón "Compartir" sigue presente y sigue llamando a compartirArchivo con el archivo real')
   }

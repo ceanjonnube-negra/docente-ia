@@ -288,7 +288,7 @@ async function main() {
     // ("descarga real en Word y PDF, sin botones redundantes" — la
     // vista previa ya vive dentro del chat) — no es una regresión de
     // esta sección, ver scripts/verificar-descarga-word-pdf.ts.
-    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('📤 Compartir'), '12b2. Descargar y Compartir permanecen disponibles en la tarjeta')
+    verificar(cuerpoTarjeta.includes('etiquetaDescargar(archivo.tipo)') && cuerpoTarjeta.includes('📤 Compartir'), '12b2. Descargar y Compartir permanecen disponibles en la tarjeta')
     verificar(!codigoRealTarjeta.includes('sendMessage') && !codigoRealTarjeta.includes('handleSend') && !codigoRealTarjeta.includes('enviarMensaje'), '12b3. No existe ningún fallback conversacional (sendMessage/handleSend/enviarMensaje) dentro de la tarjeta')
     verificar(rutaPanel.includes('TITULO_TIPO_DOCUMENTO'), '12c. Las tarjetas de planeación/hoja muestran un título legible en vez del nombre técnico del archivo')
   }

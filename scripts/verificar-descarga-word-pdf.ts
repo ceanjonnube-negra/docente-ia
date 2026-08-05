@@ -75,7 +75,13 @@ async function main() {
   //      evaluación ofrece solamente PDF.
   // ============================================================
   {
-    verificar(cuerpoTarjeta.includes('⬇️ Descargar {NOMBRE_FORMATO[archivo.tipo]'), '3-4. El botón "Descargar" usa el nombre real del formato (Word/PDF) por cada archivo del grupo — no un botón fijo único')
+    verificar(cuerpoTarjeta.includes('⬇️ {etiquetaDescargar(archivo.tipo)}'), '3-4. El botón "Descargar" usa el nombre real del formato (Word/PDF) por cada archivo del grupo — no un botón fijo único')
+    // AJUSTE DE NOMENCLATURA (diagnóstico real en iPhone Safari): el
+    // PDF se abre en el visor de Safari en vez de descargarse directo
+    // (comportamiento propio de WebKit, no un error de la app) — la
+    // etiqueta del botón ahora lo refleja ("Ver / Descargar PDF"),
+    // aunque el comportamiento real (descargarArchivo) no cambió.
+    verificar(rutaPanel.includes("if (tipo === 'pdf') return 'Ver / Descargar PDF'"), '3-4b. La etiqueta del PDF es "Ver / Descargar PDF" — Word conserva "Descargar Word" sin cambios')
     verificar(rutaPanel.includes('function agruparArchivosPorDocumento'), '3b. Existe la función que agrupa Word+PDF de la planeación en UNA sola tarjeta (nunca dos tarjetas separadas para el mismo documento)')
     verificar(rutaPanel.includes('archivo.tipoDocumento) {') && rutaPanel.includes('grupos[indiceExistente].push(archivo)'), '3c. El agrupamiento realmente junta archivos que comparten tipoDocumento, en vez de crear un grupo por archivo')
     // La hoja de evaluación solo emite un marcador 'pdf' — nunca 'word' — en las 2 rutas donde se adjunta (aprobación y vista previa).

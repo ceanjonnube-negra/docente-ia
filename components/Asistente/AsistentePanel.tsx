@@ -37,6 +37,22 @@ const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', po
 // disponible en la tarjeta, nunca un menú de conversión.
 const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
 
+// Etiqueta del botón principal de descarga (AJUSTE DE NOMENCLATURA —
+// diagnóstico real en iPhone Safari: "Descargar Word" sí descarga un
+// .docx real, pero en un PDF Safari toma el control y lo abre en su
+// visor integrado en vez de descargarlo directo, sin importar el
+// mecanismo de blob+<a download> ni el Content-Disposition del
+// servidor — es un comportamiento propio de WebKit con PDFs, no un
+// error de esta app). Nunca se cambió el comportamiento real (el botón
+// sigue llamando a descargarArchivo tal cual): el docente puede
+// guardar o compartir el PDF desde esa misma vista, así que solo hacía
+// falta que la etiqueta dejara de prometer una descarga directa que
+// Safari no siempre entrega.
+function etiquetaDescargar(tipo: string): string {
+  if (tipo === 'pdf') return 'Ver / Descargar PDF'
+  return `Descargar ${NOMBRE_FORMATO[tipo] || tipo.toUpperCase()}`
+}
+
 // Título legible para los documentos de planeación/hoja de evaluación
 // (ver "corrección final — el adjunto de planeación abre la hoja de
 // evaluación"): reemplaza el nombre técnico del archivo SOLO cuando
@@ -252,7 +268,7 @@ function TarjetaDescarga({
               onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
               className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
             >
-              ⬇️ Descargar {NOMBRE_FORMATO[archivo.tipo] || archivo.tipo.toUpperCase()}
+              ⬇️ {etiquetaDescargar(archivo.tipo)}
             </button>
           ))}
           {archivos.length === 1 ? (
