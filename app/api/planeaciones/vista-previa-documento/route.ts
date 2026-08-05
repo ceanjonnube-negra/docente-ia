@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gunzipSync } from 'node:zlib'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { generarPdfBuffer, nombreArchivoPdf } from '@/lib/documentGen/generarPdfServidor'
+import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 
 export const runtime = 'nodejs'
 
@@ -30,6 +31,16 @@ export async function GET(req: NextRequest) {
   try {
     const token = req.nextUrl.searchParams.get('token')
     const datosComprimidos = req.nextUrl.searchParams.get('datos')
+    // Validación explícita del tipo de documento (corrección "el
+    // adjunto de planeación abre la hoja de evaluación") — esta ruta
+    // SOLO genera la planeación completa; nunca decide qué generar
+    // solo por a qué endpoint llegó la petición ni por el nombre del
+    // archivo. Un tipoDocumento ausente o distinto de "planeacion" es
+    // un error controlado, nunca un valor por defecto silencioso.
+    const tipoDocumento = req.nextUrl.searchParams.get('tipoDocumento')
+    if (tipoDocumento !== 'planeacion') {
+      return NextResponse.json({ error: 'Tipo de documento inválido para esta vista previa.' }, { status: 400 })
+    }
     if (!token || !datosComprimidos) {
       return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
     }
@@ -62,12 +73,15 @@ export async function GET(req: NextRequest) {
     const textoConMarca = `${texto}\n\n${IDENTIFICADOR_VISTA_PREVIA}`
 
     const bufferPdf = await generarPdfBuffer(textoConMarca, perfil, zonaHoraria)
+    // Nombre real del proyecto (no un nombre técnico genérico) — mismo
+    // criterio que la hermana Word, ver vista-previa-documento-word/route.ts.
+    const nombreSugerido = nombreArchivoPdf(extraerTitulo(texto))
 
     return new NextResponse(new Uint8Array(bufferPdf), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${nombreArchivoPdf('vista-previa-planeacion')}"`,
+        'Content-Disposition': `attachment; filename="${nombreSugerido}"`,
         'Cache-Control': 'no-store',
       },
     })

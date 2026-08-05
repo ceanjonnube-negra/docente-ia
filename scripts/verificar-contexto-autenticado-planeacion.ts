@@ -339,16 +339,27 @@ Indicadores de evaluación: Identifica ideas principales; Cuenta colecciones; Si
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     verificar(ruta.includes("clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id"), '20. planeacion_generar sigue usando sesion.grupo_activo_id (fuente única) para decidir si enriquecer con datos reales')
 
-    // Exactamente un descriptor PDF por turno: la rama de aprobación
+    // Descriptores solo del turno de aprobación: la rama
     // (accion_planeacion_generar==='aprobar') SIEMPRE hace return antes
-    // de llegar a Claude/streaming, así que nunca puede coexistir en el
-    // mismo turno con el marcador de vista previa (que solo se construye
-    // después del streaming, cuando esTurnoDeBorradorPlaneacion es true)
-    // — son mutuamente excluyentes por construcción, no por casualidad.
+    // de llegar a Claude/streaming, así que sus marcadores nunca pueden
+    // coexistir en el mismo turno con los de vista previa (que solo se
+    // construyen después del streaming, cuando esTurnoDeBorradorPlaneacion
+    // es true) — son mutuamente excluyentes por construcción, no por
+    // casualidad. AJUSTE AISLADO — "descarga real en Word y PDF": esta
+    // rama ahora puede adjuntar hasta 3 documentos (Word + PDF de la
+    // planeación, más la hoja de evaluación) en un arreglo `marcadores`,
+    // en vez de un único `const marcador` — se verifica que siga
+    // devolviendo su respuesta con un solo `return respuestaTexto` (la
+    // condición de exclusión mutua real).
     const inicioBloqueAprobar = ruta.indexOf("accion_planeacion_generar === 'aprobar'")
-    const bloqueAprobar = ruta.slice(inicioBloqueAprobar, inicioBloqueAprobar + 1500)
-    const construccionesMarcador = (bloqueAprobar.match(/const marcador = `\[\[DOCUMENTO_ARCHIVO:/g) || []).length
-    verificar(construccionesMarcador === 1 && /return respuestaTexto/.test(bloqueAprobar), '21. La rama de aprobación construye exactamente un descriptor PDF y hace return antes de llegar a Claude — nunca puede coexistir con el de vista previa en el mismo turno')
+    const bloqueAprobar = ruta.slice(inicioBloqueAprobar, inicioBloqueAprobar + 3200)
+    const construccionesMarcador = (bloqueAprobar.match(/marcadores\.push\(`\[\[DOCUMENTO_ARCHIVO:/g) || []).length
+    // >=1 return respuestaTexto: cubre tanto el retorno temprano
+    // (resultado.ok === false) como el retorno final de éxito — lo que
+    // importa es que TODOS los caminos de esta rama terminan en un
+    // return respuestaTexto propio, nunca cayendo hacia Claude/streaming.
+    const returnsRespuestaTexto = (bloqueAprobar.match(/return respuestaTexto/g) || []).length
+    verificar(construccionesMarcador >= 1 && construccionesMarcador <= 3 && returnsRespuestaTexto >= 1, '21. La rama de aprobación construye entre 1 y 3 descriptores (Word/PDF de planeación + hoja) y siempre hace return antes de llegar a Claude — nunca puede coexistir con los de vista previa en el mismo turno')
   }
 
   // 22. No preguntar de nuevo lo que ya existe — instrucciones

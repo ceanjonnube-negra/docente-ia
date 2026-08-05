@@ -36,11 +36,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
 import { resolverPeriodoEvaluacionActual } from './generarBorrador'
-import { extraerResumenBorrador, tieneBloqueResumen, type ResumenBorrador } from './extraerBorrador'
+import { extraerResumenBorrador, extraerTextoCompletoBorrador, tieneBloqueResumen, type ResumenBorrador } from './extraerBorrador'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
+import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
 import type { Planeacion } from './tipos'
 
 export type CodigoErrorAprobacion =
@@ -51,13 +52,24 @@ export type CodigoErrorAprobacion =
   | 'YA_GUARDADA'
   | 'ERROR_GUARDADO'
 
+// Un formato definitivo (Word o PDF) de la planeación ya generado y
+// subido a Storage — mismo shape que ArchivoGenerado
+// (lib/documentGen/almacenamiento.ts), reducido a lo que la tarjeta
+// del Chat IA necesita mostrar.
+export type DocumentoPlaneacionGenerado = { nombre: string; url: string; tamanoBytes?: number }
+
 export type ResultadoAprobacion =
   // duracionDias viaja solo para el mensaje de confirmación (nunca es
   // una columna real de `planeaciones`) — sale del propio resumen ya
   // extraído, no se recalcula. hoja va siempre que ok:true — la
   // aprobación no se considera completa sin ella (ver "operación
-  // lógica única" en el diseño).
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string } }
+  // lógica única" en el diseño). documentoPlaneacion es MEJOR ESFUERZO
+  // (ver Fase 4.5): si Word/PDF no se pudieron generar por cualquier
+  // razón transitoria, la aprobación de todos modos se considera
+  // completa (la planeación y la hoja ya quedaron guardadas) — el
+  // docente siempre puede pedir el archivo después escribiendo en el
+  // chat, igual que antes de que existiera esta mejora.
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
 
 type TurnoHistorial = { role: string; content: string }
@@ -227,10 +239,13 @@ export async function aprobarBorradorPlaneacion(
       planeacionId = creado.datos.id
     }
 
-    // Fase 2: planeacion_proyectos — se crea solo si no existe ya (recuperación).
+    // Fase 2: planeacion_proyectos — se crea solo si no existe ya
+    // (recuperación). Se trae también `evaluacion` (no solo `id`) para
+    // que la Fase 4.5 pueda saber si un intento anterior YA generó el
+    // Word/PDF definitivos, y así nunca regenerarlos ni duplicarlos.
     const { data: proyectoPlaneacionExistente, error: errorBusquedaProyecto } = await sb
       .from('planeacion_proyectos')
-      .select('id')
+      .select('id, evaluacion')
       .eq('planeacion_id', planeacionId)
       .maybeSingle()
     if (errorBusquedaProyecto) {
@@ -310,8 +325,49 @@ export async function aprobarBorradorPlaneacion(
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
 
-    // Fase 5: vincular la hoja real dentro de planeacion_proyectos —
-    // único lugar del vínculo, sin relación improvisada nueva.
+    // Fase 4.5: Word + PDF DEFINITIVOS de la planeación (AJUSTE
+    // AISLADO — "descarga real en Word y PDF") — mismo generador real
+    // ya usado por FINALIZAR ARCHIVO (ejecutarHerramientaDocumento,
+    // lib/documentGen/herramientas.ts: sube a Storage y devuelve una
+    // URL firmada real, nunca una vista previa por token), aplicado a
+    // los DOS formatos desde el MISMO texto completo del borrador —
+    // nunca una conversión iniciada por botón ni un segundo paso
+    // aparte. A diferencia de la hoja (Fase 4), esto es MEJOR ESFUERZO:
+    // si falla, NO se aborta la aprobación — la planeación y la hoja ya
+    // son válidas por sí solas, y el docente siempre puede pedir el
+    // archivo después escribiendo en el chat (mismo camino que existía
+    // antes de esta mejora). Idempotente: si un intento anterior de
+    // esta MISMA huella ya generó ambos formatos (evaluacion.documento_word/
+    // documento_pdf ya presentes), se reutilizan tal cual — nunca se
+    // regeneran ni se duplican archivos en Storage.
+    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number }
+    const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado } } | null)?.evaluacion
+    let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
+    let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
+    if (!documentoWord || !documentoPdf) {
+      try {
+        const ultimoTurno = historial[historial.length - 1]
+        const textoCompleto = ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : ''
+        if (textoCompleto) {
+          if (!documentoWord) {
+            const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
+            documentoWord = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes }
+          }
+          if (!documentoPdf) {
+            const generado = await ejecutarHerramientaDocumento('pdf', textoCompleto, perfil, null, sb, sesion.docente_id)
+            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes }
+          }
+        } else {
+          console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omite Word/PDF definitivos')
+        }
+      } catch (e) {
+        console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo generando Word/PDF definitivos de la planeación (no bloquea la aprobación):', e)
+      }
+    }
+
+    // Fase 5: vincular la hoja real y el documento real (si se logró
+    // generar) dentro de planeacion_proyectos — único lugar del
+    // vínculo, sin relación improvisada nueva.
     const { error: errorVinculo } = await sb
       .from('planeacion_proyectos')
       .update({
@@ -323,6 +379,8 @@ export async function aprobarBorradorPlaneacion(
           proyecto_seguimiento_id: proyectoSeguimientoId,
           hoja_id: resultadoHoja.hojaId,
           hoja_identificador_visible: resultadoHoja.identificadorVisible,
+          ...(documentoWord ? { documento_word: documentoWord } : {}),
+          ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
         },
         actualizado_en: new Date().toISOString(),
       })
@@ -346,6 +404,12 @@ export async function aprobarBorradorPlaneacion(
       planeacion: confirmada.datos,
       duracionDias: resumen.duracionDias,
       hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url },
+      documentoPlaneacion: documentoWord && documentoPdf
+        ? {
+            word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes },
+            pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes },
+          }
+        : null,
     }
   } catch (e) {
     console.error('[PLANEACION_GENERAR][aprobar] excepción no controlada:', e)

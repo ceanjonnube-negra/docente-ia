@@ -17,7 +17,26 @@ export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 // tamanoBytes es opcional: los archivos generados antes de este campo
 // (ya guardados en conversaciones existentes) siguen restaurándose sin
 // él — la tarjeta universal simplemente no muestra el tamaño si falta.
-export type ArchivoGeneradoInfo = { tipo: string; nombre: string; url: string; tamanoBytes?: number }
+//
+// tipoDocumento/descripcion (corrección "el adjunto de planeación abre
+// la hoja de evaluación"): campos opcionales y aditivos, solo los usan
+// los documentos de planeación/hoja de evaluación — cuando están
+// presentes, la tarjeta muestra un título legible ("📘 Planeación
+// didáctica") en vez del nombre técnico del archivo. tipoDocumento
+// además viaja como parámetro explícito en la URL de vista previa
+// (nunca se infiere solo de a qué ruta se llegó ni del nombre del
+// archivo) — cada ruta de vista previa lo valida server-side antes de
+// generar nada, para que un documento nunca pueda servir el contenido
+// del otro.
+export type TipoDocumentoPlaneacion = 'planeacion' | 'hoja_evaluacion'
+export type ArchivoGeneradoInfo = {
+  tipo: string
+  nombre: string
+  url: string
+  tamanoBytes?: number
+  tipoDocumento?: TipoDocumentoPlaneacion
+  descripcion?: string
+}
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
 // inteligente de actualización del Calendario Escolar") — el docente

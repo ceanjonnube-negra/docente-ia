@@ -940,11 +940,26 @@ export async function POST(req: NextRequest) {
           console.log(`[NIVEL0] planeacion_generar — aprobación OK, planeacion_id=${p.id}, hoja=${resultado.hoja.identificadorVisible}`)
           const mensajeVoz = `Listo, guardé la planeación de ${p.nombre}${duracion}${fechas}.`
           const mensajeTexto = `${mensajeVoz} Ya aparece en Planeación, queda disponible para consulta, y la hoja de evaluación se utilizará al finalizar el proyecto.`
-          // Hoja de evaluación DEFINITIVA — mismo marcador [[DOCUMENTO_ARCHIVO:...]]
-          // que la vista previa, ahora con la URL firmada real de Storage.
-          const archivo = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url }
-          const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
-          return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcador}`)
+          // Documento(s) DEFINITIVO(s) — mismo marcador [[DOCUMENTO_ARCHIVO:...]]
+          // que la vista previa, ahora con URLs firmadas reales de
+          // Storage (nunca tokens de vista previa). AJUSTE AISLADO —
+          // "descarga real en Word y PDF": si Fase 4.5 de
+          // aprobarBorradorPlaneacion logró generar ambos formatos de
+          // la planeación, se adjuntan los DOS con tipoDocumento='planeacion'
+          // (TarjetaDescarga los agrupa en una sola tarjeta); si no
+          // (mejor esfuerzo, ver esa función), se omiten sin bloquear
+          // nada — el docente puede pedirlos después escribiendo en el
+          // chat. La hoja de evaluación sigue siendo solo PDF.
+          const marcadores: string[] = []
+          if (resultado.documentoPlaneacion) {
+            const archivoWord = { tipo: 'word', nombre: resultado.documentoPlaneacion.word.nombre, url: resultado.documentoPlaneacion.word.url, tipoDocumento: 'planeacion' as const }
+            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`)
+            const archivoPdfPlaneacion = { tipo: 'pdf', nombre: resultado.documentoPlaneacion.pdf.nombre, url: resultado.documentoPlaneacion.pdf.url, tipoDocumento: 'planeacion' as const }
+            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoPdfPlaneacion), 'utf-8').toString('base64')}]]`)
+          }
+          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, tipoDocumento: 'hoja_evaluacion' as const }
+          marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
+          return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcadores.join('\n')}`)
         } catch (e) {
           console.error('[NIVEL0] planeacion_generar — excepción aprobando el borrador:', e)
           return respuestaTexto('No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.')
@@ -1720,25 +1735,61 @@ Grado: [grado] | Grupo: [grupo]
         // planeación": el borrador completo (no solo su hoja de
         // evaluación) también se adjunta como documento descargable en
         // el MISMO turno, sin persistir nada (no sube a Storage, no
-        // crea filas en ninguna tabla) — reutiliza generarPdfBuffer
-        // (el mismo generador ya usado para Word/PDF/PPT/Excel de
-        // cualquier documento formal, ver lib/documentGen/generarPdfServidor.ts),
-        // nunca un generador nuevo. Va PRIMERO (planeación, luego
-        // hoja) para que la tarjeta de la planeación aparezca antes en
-        // pantalla, tal como se pidió.
+        // crea filas en ninguna tabla) — reutiliza generarPdfBuffer/
+        // generarWordBuffer (los mismos generadores ya usados para
+        // Word/PDF/PPT/Excel de cualquier documento formal), nunca un
+        // generador nuevo. Va PRIMERO (planeación, luego hoja) para
+        // que la tarjeta de la planeación aparezca antes en pantalla,
+        // tal como se pidió.
+        //
+        // AJUSTE AISLADO — "descarga real en Word y PDF, sin botones
+        // redundantes": se emiten DOS marcadores (Word y PDF) con el
+        // MISMO tipoDocumento='planeacion' — TarjetaDescarga los agrupa
+        // en una sola tarjeta con un botón por formato (nunca dos
+        // tarjetas separadas para el mismo documento lógico). Ninguno
+        // de los dos pasa por un botón de conversión ni por el modelo:
+        // ambos se generan aquí, directo desde el mismo texto completo
+        // del borrador, en el mismo turno en que Claude lo redactó.
         if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
           try {
             const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
             console.log(`[STREAM][chat] borradorExtraido=${!!textoCompleto}`)
             if (textoCompleto) {
+              const resumenParaTitulo = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
               const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null }
               const datosComprimidos = gzipSync(Buffer.from(JSON.stringify(datosDocumento), 'utf-8')).toString('base64url')
-              const urlDocumento = `/api/planeaciones/vista-previa-documento?token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
-              const archivoDocumento = { tipo: 'pdf', nombre: 'vista-previa-planeacion.pdf', url: urlDocumento }
+              const descripcionPlaneacion = resumenParaTitulo
+                ? `${resumenParaTitulo.periodoTexto || 'Sin periodo asignado'} · ${resumenParaTitulo.duracionDias ?? '—'} días efectivos`
+                : undefined
+              // tipoDocumento viaja EXPLÍCITO en la URL (corrección "el
+              // adjunto de planeación abre la hoja de evaluación") — la
+              // ruta de vista previa lo exige y lo valida antes de
+              // generar nada, nunca lo infiere solo de a qué endpoint
+              // llegó la petición.
+              const urlWord = `/api/planeaciones/vista-previa-documento-word?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              const archivoWord = {
+                tipo: 'word',
+                nombre: 'vista-previa-planeacion.docx',
+                url: urlWord,
+                tipoDocumento: 'planeacion' as const,
+                descripcion: descripcionPlaneacion,
+              }
+              const marcadorWord = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`
+              controller.enqueue(encoder.encode(`\n\n${marcadorWord}`))
+              cantidadAdjuntos++
+
+              const urlDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              const archivoDocumento = {
+                tipo: 'pdf',
+                nombre: 'vista-previa-planeacion.pdf',
+                url: urlDocumento,
+                tipoDocumento: 'planeacion' as const,
+                descripcion: descripcionPlaneacion,
+              }
               const marcadorDocumento = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoDocumento), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcadorDocumento}`))
               cantidadAdjuntos++
-              console.log('[STREAM][chat] planeacionPdfGenerado=true')
+              console.log('[STREAM][chat] planeacionPdfGenerado=true planeacionWordGenerado=true')
             }
           } catch (e) {
             // Nunca rompe la respuesta del borrador por esto — el
@@ -1775,8 +1826,18 @@ Grado: [grado] | Grupo: [grupo]
                 zonaHoraria: zonaHoraria ?? null,
               }
               const datosCodificados = Buffer.from(JSON.stringify(datosVistaPrevia), 'utf-8').toString('base64')
-              const url = `/api/planeaciones/vista-previa-hoja?token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}`
-              const archivo = { tipo: 'pdf', nombre: 'vista-previa-hoja-evaluacion.pdf', url }
+              // tipoDocumento explícito en la URL, igual que en el
+              // adjunto de la planeación — la ruta lo exige y lo valida
+              // antes de generar nada (ver corrección "el adjunto de
+              // planeación abre la hoja de evaluación").
+              const url = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}`
+              const archivo = {
+                tipo: 'pdf',
+                nombre: 'vista-previa-hoja-evaluacion.pdf',
+                url,
+                tipoDocumento: 'hoja_evaluacion' as const,
+                descripcion: `${sesion.alumnos_del_grupo_activo.length} alumno${sesion.alumnos_del_grupo_activo.length === 1 ? '' : 's'} · ${resumenBorrador.indicadores.length} indicador${resumenBorrador.indicadores.length === 1 ? '' : 'es'}`,
+              }
               const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcador}`))
               cantidadAdjuntos++

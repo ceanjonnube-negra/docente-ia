@@ -78,19 +78,32 @@ async function main() {
     verificar(!codigoRealTarjeta.includes('Convertir'), '1. TarjetaDescarga ya no contiene el texto "Convertir" en ninguna forma (ni botón ni menú), fuera de comentarios explicativos')
     verificar(!cuerpoTarjeta.includes('mostrarConvertir'), '1b. El estado exclusivo del desplegable (mostrarConvertir) fue eliminado')
     verificar(!cuerpoTarjeta.includes('otrosFormatos'), '1c. El cálculo de "otros formatos disponibles" fue eliminado del componente')
-    verificar(!rutaPanel.includes('NOMBRE_FORMATO'), '2. No existe ninguna tabla NOMBRE_FORMATO (Word/PDF/PowerPoint/Excel) usada para ofrecer conversión')
+    // NOMBRE_FORMATO fue REINTRODUCIDA por "AJUSTE AISLADO DE
+    // DOCUMENTOS — descarga real en Word y PDF" para las etiquetas
+    // "Descargar Word"/"Descargar PDF"/"Compartir Word" — un uso
+    // legítimo y distinto del que tenía en el menú "Convertir" ya
+    // retirado; lo que debe seguir sin existir es cualquier uso de esa
+    // tabla para OFRECER una conversión (nunca junto a "Convertir" ni a
+    // onConvertir).
+    verificar(!/Convertir[\s\S]{0,80}NOMBRE_FORMATO|NOMBRE_FORMATO[\s\S]{0,80}Convertir/.test(codigoRealTarjeta), '2. NOMBRE_FORMATO no se usa junto a ningún texto/menú "Convertir" — solo para etiquetar los botones reales de Descargar/Compartir')
     verificar(!rutaPanel.includes('FORMATOS_CONVERTIBLES'), '3. La lista de los 4 formatos convertibles fue eliminada — ya no se usa para nada')
     verificar(!rutaPanel.includes('FORMATOS_POR_TIPO_DOCUMENTO'), '4. La tabla de formatos permitidos por tipo de documento fue eliminada')
     verificar(!rutaPanel.includes('formatosDisponiblesPara'), '5. La función que calculaba los formatos ofrecidos (Word/PDF/PowerPoint/Excel) fue eliminada por completo')
   }
 
   // ============================================================
-  // 6-8. Descargar, Abrir y Compartir siguen disponibles, sin cambios
-  //      de comportamiento.
+  // 6-8. Descargar y Compartir siguen disponibles. "Abrir" fue
+  //      retirado por una decisión de producto POSTERIOR ("AJUSTE
+  //      AISLADO DE DOCUMENTOS — descarga real en Word y PDF, sin
+  //      botones redundantes": la vista previa ya vive dentro del Chat
+  //      IA, así que un botón que solo la reabre es redundante) — no es
+  //      una regresión de esta corrección, ver
+  //      scripts/verificar-descarga-word-pdf.ts para el detalle
+  //      completo de esa decisión.
   // ============================================================
   {
-    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes("window.open(archivo.url, '_blank')"), '6. El botón "Descargar" sigue presente y sigue abriendo la URL real del archivo')
-    verificar(cuerpoTarjeta.includes('🔗 Abrir'), '7. El botón "Abrir" sigue presente')
+    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('descargarArchivo(archivo.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
+    verificar(!codigoRealTarjeta.includes('🔗 Abrir'), '7. El botón "Abrir" fue retirado intencionalmente (decisión de producto posterior) — la vista previa ya está dentro del chat')
     verificar(cuerpoTarjeta.includes('📤 Compartir') && cuerpoTarjeta.includes('compartirArchivo(archivo'), '8. El botón "Compartir" sigue presente y sigue llamando a compartirArchivo con el archivo real')
   }
 
@@ -113,9 +126,19 @@ async function main() {
   // ============================================================
   {
     verificar(!cuerpoTarjeta.includes("rol: 'usuario'") && !cuerpoTarjeta.includes('rol:"usuario"'), '10a. Ningún onClick dentro de TarjetaDescarga construye un mensaje con rol "usuario"')
-    const onClicks = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
-    verificar(onClicks.length === 3, `10b. TarjetaDescarga tiene exactamente 3 manejadores onClick (Descargar, Abrir, Compartir) — encontrados: ${onClicks.length}`)
-    verificar(onClicks.every(c => /window\.open|compartirArchivo|setEnlaceCopiado/.test(c)), '10c. Los 3 onClick restantes solo abren la URL del archivo o comparten/copian el enlace — ninguno toca AsistenteService ni el chat')
+    // El número de onClick ya no es fijo: hay uno por formato en
+    // `archivos` (1 a 3, según el grupo) más el/los de Compartir — ver
+    // scripts/verificar-descarga-word-pdf.ts para la cobertura completa
+    // del nuevo diseño agrupado. Aquí solo importa que TODOS sigan
+    // siendo de solo-lectura sobre el archivo (descarga/compartir),
+    // nunca una llamada al chat.
+    const onClicksMultilinea = cuerpoTarjeta.match(/onClick=\{\(\)\s*=>\s*(descargarArchivo|compartirArchivo|setMostrarCompartir|setVencido)\([^]*?\}\}/g) ?? []
+    const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
+    verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
+    verificar(
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir/.test(c)) || onClicksMultilinea.length > 0,
+      '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
+    )
   }
 
   // ============================================================

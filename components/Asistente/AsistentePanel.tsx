@@ -31,11 +31,49 @@ import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
 const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
-// Extensión real del archivo — el botón principal dice "Descargar
-// (.docx)" en vez de "Descargar Word": con varios formatos posibles a
-// la vez, la extensión es lo que de verdad distingue un archivo de
-// otro (ver "Tarjeta universal de documentos").
-const EXTENSION_FORMATO: Record<string, string> = { word: '.docx', pdf: '.pdf', powerpoint: '.pptx', excel: '.xlsx' }
+// Nombre corto del formato para las etiquetas "Descargar Word"/
+// "Descargar PDF"/"Compartir Word" (AJUSTE AISLADO — "descarga real en
+// Word y PDF, sin botones redundantes") — un botón por formato real
+// disponible en la tarjeta, nunca un menú de conversión.
+const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
+
+// Título legible para los documentos de planeación/hoja de evaluación
+// (ver "corrección final — el adjunto de planeación abre la hoja de
+// evaluación"): reemplaza el nombre técnico del archivo SOLO cuando
+// archivo.tipoDocumento viene marcado — cualquier otro documento
+// (Word/PDF/PPT/Excel de "FINALIZAR ARCHIVO", ficha_descriptiva...)
+// sigue mostrando su nombre real, sin ningún cambio.
+const TITULO_TIPO_DOCUMENTO: Record<string, string> = {
+  planeacion: '📘 Planeación didáctica',
+  hoja_evaluacion: '📄 Hoja de evaluación final',
+}
+
+// Agrupa los archivos de un mismo turno por tipoDocumento (AJUSTE
+// AISLADO — "descarga real en Word y PDF, sin botones redundantes"):
+// dos o más archivos que comparten el mismo tipoDocumento (ej. la
+// planeación en Word y en PDF) son EL MISMO documento lógico y deben
+// mostrarse en una sola tarjeta con un botón por formato, nunca en
+// tarjetas separadas. Un archivo sin tipoDocumento (documento genérico:
+// Word/PDF/PPT/Excel de FINALIZAR ARCHIVO, ficha_descriptiva...) forma
+// su propio grupo de 1, igual que siempre. Conserva el orden de
+// llegada de los grupos (el primer archivo de cada tipoDocumento fija
+// la posición de su tarjeta).
+function agruparArchivosPorDocumento(archivos: ArchivoGeneradoInfo[]): ArchivoGeneradoInfo[][] {
+  const grupos: ArchivoGeneradoInfo[][] = []
+  const indicePorTipo = new Map<string, number>()
+  for (const archivo of archivos) {
+    if (archivo.tipoDocumento) {
+      const indiceExistente = indicePorTipo.get(archivo.tipoDocumento)
+      if (indiceExistente !== undefined) {
+        grupos[indiceExistente].push(archivo)
+        continue
+      }
+      indicePorTipo.set(archivo.tipoDocumento, grupos.length)
+    }
+    grupos.push([archivo])
+  }
+  return grupos
+}
 
 function formatearTamano(bytes?: number): string | null {
   if (!bytes || bytes <= 0) return null
@@ -73,6 +111,41 @@ function iconoAdjunto(tipo: string): string {
 // duplicar.
 const VENCIMIENTO_URL_MS = 7 * 24 * 60 * 60 * 1000
 
+// Descarga forzada, robusta en Safari de iPhone (AJUSTE AISLADO —
+// "descarga real en Word y PDF, sin botones redundantes"): el servidor
+// YA manda Content-Type/Content-Disposition:attachment correctos (ver
+// las rutas vista-previa-documento(-word)/route.ts y el pipeline real
+// de FINALIZAR ARCHIVO), pero no depender ÚNICAMENTE de eso — un
+// simple window.open(url) puede terminar ABRIENDO el PDF/Word en la
+// vista Quick Look de iOS en vez de descargarlo, y el atributo HTML
+// `download` en un <a> apuntando a una URL cross-context no es
+// confiable en Safari. En vez de eso: se trae el archivo como blob
+// (mismas cabeceras reales del servidor) y se dispara la descarga
+// desde un <a> temporal con un object URL del propio blob — al ser un
+// blob local, el navegador SIEMPRE lo trata como "hay que guardar
+// esto", nunca como "hay que mostrar esto".
+async function descargarArchivo(url: string, nombreSugerido: string) {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Descarga respondió ${res.status}`)
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const enlace = document.createElement('a')
+    enlace.href = objectUrl
+    enlace.download = nombreSugerido
+    document.body.appendChild(enlace)
+    enlace.click()
+    enlace.remove()
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 10000)
+  } catch {
+    // Última red de seguridad si el fetch falla (sin red, CORS
+    // inesperado): al menos abre la URL real — el servidor sigue
+    // mandando Content-Disposition:attachment aunque este camino sea
+    // menos confiable en iOS que el de arriba.
+    window.open(url, '_blank')
+  }
+}
+
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
   const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
   try {
@@ -102,26 +175,37 @@ async function compartirArchivo(archivo: { tipo: string; nombre: string; url: st
   }
 }
 
+// AJUSTE AISLADO — "descarga real en Word y PDF, sin botones
+// redundantes": esta tarjeta ahora recibe TODOS los formatos del MISMO
+// documento lógico (ej. planeación en Word + PDF) como un solo grupo
+// — nunca dos tarjetas separadas para un mismo documento — y muestra
+// un botón "Descargar {Formato}" por cada uno. Ya no existe "Abrir"
+// (la vista previa del documento ya vive dentro del Chat IA, ver
+// VistaPreviaDocumento más abajo — un botón que solo reabre lo mismo
+// que ya está en pantalla es redundante). "Compartir" comparte
+// directo si solo hay un formato, o despliega un selector local
+// (Compartir Word / Compartir PDF) si hay más de uno — nunca crea
+// ningún mensaje en el chat.
 function TarjetaDescarga({
-  archivo, creadoEn, esActivo, className = '', resaltado = false,
+  archivos, creadoEn, esActivo, className = '', resaltado = false,
 }: {
-  archivo: ArchivoGeneradoInfo
+  // 1 o más formatos del MISMO documento lógico — agrupados por
+  // tipoDocumento antes de llegar aquí (ver el render de mensajes más
+  // abajo). Un documento genérico sin tipoDocumento (Word/PDF/PPT/Excel
+  // de FINALIZAR ARCHIVO, ficha_descriptiva...) sigue llegando como un
+  // grupo de 1, sin ningún cambio de comportamiento.
+  archivos: ArchivoGeneradoInfo[]
   creadoEn: number
   // esActivo: solo hace falta para el indicador "· Documento activo"
   // (llega como prop en vez de que la tarjeta llame useAsistente() por
   // su cuenta, para no duplicar la suscripción que ya tiene
-  // AsistentePanel). Ver "CONTENCIÓN DEFINITIVA — retirar temporalmente
-  // Convertir de todas las tarjetas de documentos": esta tarjeta ya NO
-  // ofrece conversión de formato — únicamente Descargar/Abrir/Compartir
-  // sobre el archivo tal como se generó. La conversión directa real se
-  // implementará más adelante como una capacidad independiente; hasta
-  // entonces, esta tarjeta no debe tener ningún control ni callback que
-  // dependa del flujo conversacional del chat.
+  // AsistentePanel).
   esActivo: boolean
   className?: string
   resaltado?: boolean
 }) {
   const [enlaceCopiado, setEnlaceCopiado] = useState(false)
+  const [mostrarCompartir, setMostrarCompartir] = useState(false)
   // Date.now() no puede llamarse en el cuerpo del render (impuro para
   // el linter de React) — se calcula una sola vez al montar/cambiar
   // creadoEn. No necesita reactividad en vivo (nadie espera que la
@@ -133,19 +217,26 @@ function TarjetaDescarga({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- valor derivado de Date.now() (impuro por definición); solo se necesita una vez al montar, no reactividad continua.
     setVencido(Date.now() - creadoEn > VENCIMIENTO_URL_MS)
   }, [creadoEn])
-  const extension = EXTENSION_FORMATO[archivo.tipo] || ''
-  const tamano = formatearTamano(archivo.tamanoBytes)
+  const principal = archivos[0]
+  const tamano = formatearTamano(principal.tamanoBytes)
   const fecha = formatearFecha(new Date(creadoEn), obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short' })
+  const titulo = (principal.tipoDocumento && TITULO_TIPO_DOCUMENTO[principal.tipoDocumento]) || principal.nombre
 
   return (
     <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
       <div className="px-4 py-3 flex items-center gap-2.5">
-        <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[archivo.tipo] || '📄'}</span>
+        <span className="text-xl flex-shrink-0">{ICONO_ARCHIVO[principal.tipo] || '📄'}</span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-gray-900 truncate">{archivo.nombre}</p>
+          <p className="text-sm font-bold text-gray-900 truncate">{titulo}</p>
           <p className="text-[11px] text-gray-400 flex items-center gap-1 flex-wrap">
-            <span>{fecha}</span>
-            {tamano && <span>· {tamano}</span>}
+            {principal.descripcion ? (
+              <span>{principal.descripcion}</span>
+            ) : (
+              <>
+                <span>{fecha}</span>
+                {tamano && <span>· {tamano}</span>}
+              </>
+            )}
             {esActivo && <span className="text-purple-600 font-semibold">· Documento activo</span>}
           </p>
           <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
@@ -155,20 +246,45 @@ function TarjetaDescarga({
       </div>
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
-          <button onClick={() => window.open(archivo.url, '_blank')} className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700">
-            ⬇️ Descargar ({extension})
-          </button>
-          <div className="flex gap-1.5">
-            <button onClick={() => window.open(archivo.url, '_blank')} className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50">
-              🔗 Abrir
-            </button>
+          {archivos.map((archivo) => (
             <button
-              onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
-              className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
+              key={archivo.tipo}
+              onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
+              className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
+            >
+              ⬇️ Descargar {NOMBRE_FORMATO[archivo.tipo] || archivo.tipo.toUpperCase()}
+            </button>
+          ))}
+          {archivos.length === 1 ? (
+            <button
+              onClick={() => compartirArchivo(archivos[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+              className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
             >
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
             </button>
-          </div>
+          ) : (
+            <div>
+              <button
+                onClick={() => setMostrarCompartir((v) => !v)}
+                className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
+              >
+                📤 Compartir {mostrarCompartir ? '▴' : '▾'}
+              </button>
+              {mostrarCompartir && (
+                <div className="flex gap-1.5 flex-wrap pt-1.5">
+                  {archivos.map((archivo) => (
+                    <button
+                      key={archivo.tipo}
+                      onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+                      className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
+                    >
+                      {enlaceCopiado ? '✅ Enlace copiado' : `Compartir ${NOMBRE_FORMATO[archivo.tipo] || archivo.tipo}`}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -658,17 +774,20 @@ export default function AsistentePanel() {
                       archivo, la tarjeta oficial de descarga se
                       renderiza — la vista previa nunca la sustituye. Un
                       turno puede traer más de un adjunto relacionado
-                      (ej. planeación + hoja de evaluación en la misma
-                      respuesta) — se renderiza una tarjeta por cada uno,
-                      en el mismo orden en que llegaron (ver
-                      procesarMarcadorDeArchivo en motorTextoClaude.ts).
-                      Mensajes de un solo documento (el caso de siempre)
-                      solo tienen `archivo`, nunca `archivos` — ese caso
-                      sigue rindiendo exactamente igual que antes. */}
-                  {(m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []).map((archivo, idxArchivo) => (
+                      (ej. planeación en Word + PDF, más la hoja de
+                      evaluación, en la misma respuesta) — se renderiza
+                      una tarjeta por cada DOCUMENTO LÓGICO, agrupando
+                      los formatos que comparten el mismo tipoDocumento
+                      (ver agruparArchivosPorDocumento) en vez de una
+                      tarjeta separada por formato. Mensajes de un solo
+                      documento sin tipoDocumento (el caso de siempre:
+                      Word/PDF/PPT/Excel de FINALIZAR ARCHIVO,
+                      ficha_descriptiva...) siguen rindiendo un grupo de
+                      1, exactamente igual que antes. */}
+                  {agruparArchivosPorDocumento(m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []).map((grupo, idxGrupo) => (
                     <TarjetaDescarga
-                      key={`${m.id}-archivo-${idxArchivo}`}
-                      archivo={archivo}
+                      key={`${m.id}-archivo-${idxGrupo}`}
+                      archivos={grupo}
                       creadoEn={m.creadoEn}
                       esActivo={asistente.documentoActivoId === m.id}
                       resaltado={asistente.archivoReutilizadoId === m.id}

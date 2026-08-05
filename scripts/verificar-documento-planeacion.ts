@@ -17,7 +17,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
+import { NextRequest } from 'next/server'
 import { extraerTextoCompletoBorrador } from '../lib/planeacion/extraerBorrador'
+import { generarPdfBuffer } from '../lib/documentGen/generarPdfServidor'
+import { generarHojaSeguimientoPdfBuffer } from '../lib/documentGen/generarHojaSeguimientoPdf'
+import { GET as GET_vistaPreviaDocumento } from '../app/api/planeaciones/vista-previa-documento/route'
+import { GET as GET_vistaPreviaHoja } from '../app/api/planeaciones/vista-previa-hoja/route'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -67,6 +72,7 @@ Indicadores de evaluación: Identifica ideas principales; Cuenta colecciones; Si
 async function main() {
   const rutaChat = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
   const rutaDocumento = readFileSync(join(__dirname, '..', 'app', 'api', 'planeaciones', 'vista-previa-documento', 'route.ts'), 'utf-8')
+  const rutaHoja = readFileSync(join(__dirname, '..', 'app', 'api', 'planeaciones', 'vista-previa-hoja', 'route.ts'), 'utf-8')
   const rutaMotor = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'motores', 'motorTextoClaude.ts'), 'utf-8')
   const rutaPanel = readFileSync(join(__dirname, '..', 'components', 'Asistente', 'AsistentePanel.tsx'), 'utf-8')
   const rutaTipos = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'tipos.ts'), 'utf-8')
@@ -126,8 +132,8 @@ async function main() {
   //    nunca impide el otro).
   // ============================================================
   {
-    const iPlaneacion = rutaChat.indexOf('vista-previa-documento?token=')
-    const iHoja = rutaChat.indexOf('vista-previa-hoja?token=')
+    const iPlaneacion = rutaChat.indexOf('vista-previa-documento?tipoDocumento=planeacion&token=')
+    const iHoja = rutaChat.indexOf('vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=')
     verificar(iPlaneacion !== -1 && iHoja !== -1, '5a. route.ts construye una URL de vista previa para AMBOS documentos (planeación y hoja)')
     verificar(iPlaneacion < iHoja, '5b. El adjunto de la planeación se construye ANTES que el de la hoja (aparece primero en pantalla)')
 
@@ -155,7 +161,7 @@ async function main() {
     verificar(rutaMotor.includes('return { texto, archivo: archivos[0], archivos }'), '6e. El primer archivo sigue viajando también en el campo singular `archivo`, para no romper ningún flujo existente de un solo documento')
 
     verificar(rutaPanel.includes('m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []'), '6f. AsistentePanel.tsx renderiza una tarjeta por cada adjunto del turno, sin dejar de soportar el caso de un solo archivo')
-    verificar(rutaPanel.includes('key={`${m.id}-archivo-${idxArchivo}`}'), '6g. Cada tarjeta de adjunto tiene una key única y estable (evita advertencias de React y renders incorrectos con 2+ adjuntos)')
+    verificar(rutaPanel.includes('key={`${m.id}-archivo-${idxGrupo}`}'), '6g. Cada tarjeta de adjunto tiene una key única y estable (evita advertencias de React y renders incorrectos con 2+ adjuntos) — ahora por grupo de documento, ver "descarga real en Word y PDF"')
   }
 
   // ============================================================
@@ -171,13 +177,106 @@ async function main() {
   }
 
   // ============================================================
+  // CORRECCIÓN FINAL — "el adjunto de planeación abre la hoja de
+  // evaluación": diferenciación explícita y verificada de extremo a
+  // extremo entre los dos documentos, generados desde el MISMO
+  // borrador normalizado.
+  // ============================================================
+
+  // 8. Los dos descriptores que construye route.ts tienen tipoDocumento
+  //    explícito y diferente — nunca se infiere solo del nombre del
+  //    archivo ni de a qué endpoint apunta la URL.
+  {
+    verificar(rutaChat.includes("tipoDocumento: 'planeacion' as const"), '8a. El descriptor de la planeación declara tipoDocumento="planeacion" explícitamente')
+    verificar(rutaChat.includes("tipoDocumento: 'hoja_evaluacion' as const"), '8b. El descriptor de la hoja declara tipoDocumento="hoja_evaluacion" explícitamente')
+    verificar(rutaChat.includes('tipoDocumento=planeacion&token='), '8c. La URL de la planeación lleva tipoDocumento=planeacion como parámetro explícito, no solo en el descriptor')
+    verificar(rutaChat.includes('tipoDocumento=hoja_evaluacion&token='), '8d. La URL de la hoja lleva tipoDocumento=hoja_evaluacion como parámetro explícito')
+  }
+
+  // 9. Cada ruta de vista previa VALIDA explícitamente su tipoDocumento
+  //    ANTES de generar nada — nunca usa la hoja de evaluación (ni
+  //    ningún otro generador) como valor por defecto silencioso. Se
+  //    invoca la ruta real (sin red: la validación ocurre antes de
+  //    llamar a autenticarRequestApi, así que un token falso basta
+  //    para probar que el rechazo ocurre primero).
+  {
+    const reqSinTipo = new NextRequest('http://localhost/api/planeaciones/vista-previa-documento?token=falso&datos=falso')
+    const resSinTipo = await GET_vistaPreviaDocumento(reqSinTipo)
+    verificar(resSinTipo.status === 400, '9a. vista-previa-documento responde 400 si falta tipoDocumento — nunca genera nada por defecto')
+
+    const reqTipoIncorrecto = new NextRequest('http://localhost/api/planeaciones/vista-previa-documento?tipoDocumento=hoja_evaluacion&token=falso&datos=falso')
+    const resTipoIncorrecto = await GET_vistaPreviaDocumento(reqTipoIncorrecto)
+    verificar(resTipoIncorrecto.status === 400, '9b. vista-previa-documento rechaza tipoDocumento="hoja_evaluacion" — nunca genera la hoja bajo esta ruta')
+
+    const reqHojaSinTipo = new NextRequest('http://localhost/api/planeaciones/vista-previa-hoja?token=falso&datos=falso')
+    const resHojaSinTipo = await GET_vistaPreviaHoja(reqHojaSinTipo)
+    verificar(resHojaSinTipo.status === 400, '9c. vista-previa-hoja responde 400 si falta tipoDocumento')
+
+    const reqHojaTipoIncorrecto = new NextRequest('http://localhost/api/planeaciones/vista-previa-hoja?tipoDocumento=planeacion&token=falso&datos=falso')
+    const resHojaTipoIncorrecto = await GET_vistaPreviaHoja(reqHojaTipoIncorrecto)
+    verificar(resHojaTipoIncorrecto.status === 400, '9d. vista-previa-hoja rechaza tipoDocumento="planeacion" — nunca genera la planeación bajo esta ruta')
+  }
+
+  // 10. Los buffers PDF finales de ambos documentos son real y
+  //     verificablemente distintos — no una suposición: se generan
+  //     ambos de verdad (pdf-lib es una librería pura, sin red) a
+  //     partir del MISMO borrador (mismo nombre de proyecto, mismo
+  //     grupo, mismas fechas) y se comparan byte a byte.
+  {
+    const PERFIL_FALSO = { nombre: 'Docente de prueba', escuela: 'Escuela de prueba', grado: '4°', grupo: 'B' }
+    const TEXTO_PLANEACION = extraerTextoCompletoBorrador(BORRADOR_EJEMPLO)
+    const bufferPlaneacion = await generarPdfBuffer(`${TEXTO_PLANEACION}\n\nVISTA PREVIA — PENDIENTE DE APROBACIÓN`, PERFIL_FALSO, 'America/Mexico_City')
+
+    const alumnos = Array.from({ length: 28 }, (_, i) => ({ nombre: `Alumno ${i + 1}`, posicion: i + 1 }))
+    const bufferHoja = await generarHojaSeguimientoPdfBuffer(
+      {
+        nombreProyecto: 'Diagnóstico de inicio de ciclo',
+        camposFormativos: ['Lenguajes', 'Saberes y pensamiento científico'],
+        trimestreNombre: 'Primer trimestre',
+        fechaInicio: '2026-08-03',
+        fechaFin: '2026-08-18',
+        identificadorVisible: 'VISTA PREVIA — PENDIENTE DE APROBACIÓN',
+        indicadores: [
+          { indicador_especifico: 'Identifica ideas principales', aspecto_general: 'logro_aprendizaje' },
+          { indicador_especifico: 'Cuenta colecciones', aspecto_general: 'logro_aprendizaje' },
+        ],
+        alumnos,
+      },
+      PERFIL_FALSO,
+      'America/Mexico_City'
+    )
+
+    verificar(bufferPlaneacion.length > 0 && bufferHoja.length > 0, '10a. Ambos PDF se generan realmente (buffers no vacíos)')
+    verificar(!bufferPlaneacion.equals(bufferHoja), '10b. Los buffers finales son diferentes — la planeación y la hoja NUNCA son el mismo archivo')
+    // Tamaño real, no solo "distintos" — una tabla de 28 alumnos x
+    // varios indicadores en 2 páginas pesa notoriamente más que un
+    // documento de texto corrido de una sola vista previa.
+    verificar(Math.abs(bufferPlaneacion.length - bufferHoja.length) > 100, '10c. La diferencia de tamaño entre ambos PDF es sustancial (no una coincidencia de un byte)')
+  }
+
+  // 11. Contenido esperado: el texto FUENTE de la planeación (lo que
+  //     realmente se dibuja en su PDF) incluye sus secciones propias y
+  //     NUNCA una tabla de alumnos — la hoja nunca fetchea alumnos en
+  //     esta ruta porque no tiene ningún código para hacerlo.
+  {
+    const textoPlaneacion = extraerTextoCompletoBorrador(BORRADOR_EJEMPLO)
+    verificar(textoPlaneacion.includes('Secuencia didáctica'), '11a. El texto fuente de la planeación incluye "Secuencia didáctica"')
+    verificar(textoPlaneacion.includes('Propósito'), '11b. El texto fuente de la planeación incluye "Propósito"')
+    verificar(textoPlaneacion.includes('Campos formativos'), '11c. El texto fuente de la planeación incluye "Campos formativos"')
+    verificar(!/alumno\s*\d+/i.test(textoPlaneacion) && !textoPlaneacion.includes('28 alumnos'), '11d. El texto fuente de la planeación NUNCA incluye una lista o tabla de alumnos')
+    verificar(!rutaDocumento.includes('obtenerRosterConPosicion') && !rutaDocumento.includes('.from(\'inscripciones\')'), '11e. vista-previa-documento/route.ts no tiene ningún código capaz de traer la lista de alumnos — estructuralmente no puede generar la hoja')
+    verificar(rutaHoja.includes('obtenerRosterConPosicion'), '11f. vista-previa-hoja/route.ts sigue trayendo la lista real de alumnos (sin cambios en su funcionamiento)')
+    verificar(rutaHoja.includes('generarHojaSeguimientoPdfBuffer'), '11g. vista-previa-hoja/route.ts sigue generando el instrumento grupal real, no un texto genérico')
+  }
+
   // 12. Ninguna tarjeta (planeación, hoja de evaluación o cualquier
   //     otro documento) ofrece conversión de formato — ver "CONTENCIÓN
   //     DEFINITIVA — retirar temporalmente Convertir de todas las
   //     tarjetas de documentos" y scripts/verificar-tarjetas-sin-conversion.ts,
   //     que cubre en detalle la retirada completa del menú (sin
-  //     eliminar Descargar/Abrir/Compartir).
-  // ============================================================
+  //     eliminar Descargar/Abrir/Compartir ni el título legible por
+  //     tipo de documento, que siguen siendo responsabilidad de esta
+  //     sección — ver 12c más abajo).
   {
     const iTarjeta = rutaPanel.indexOf('function TarjetaDescarga(')
     const iFinTarjeta = rutaPanel.indexOf('\n// Vista previa de solo lectura del documento activo', iTarjeta)
@@ -185,8 +284,13 @@ async function main() {
     const codigoRealTarjeta = cuerpoTarjeta.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
     verificar(!codigoRealTarjeta.includes('Convertir'), '12a. Ninguna tarjeta (planeación, hoja de evaluación o cualquier otro documento) muestra el menú "Convertir"')
     verificar(!/Word|PDF como formato|PowerPoint|Excel como/.test(codigoRealTarjeta) && !cuerpoTarjeta.includes('onConvertir'), '12b. Ninguna tarjeta ofrece Word/PDF/PowerPoint/Excel como conversión — no queda ningún callback de conversión que reintroducir por accidente')
-    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('🔗 Abrir') && cuerpoTarjeta.includes('📤 Compartir'), '12b2. Descargar, Abrir y Compartir permanecen disponibles en la tarjeta')
+    // "Abrir" fue retirado por una decisión de producto posterior
+    // ("descarga real en Word y PDF, sin botones redundantes" — la
+    // vista previa ya vive dentro del chat) — no es una regresión de
+    // esta sección, ver scripts/verificar-descarga-word-pdf.ts.
+    verificar(cuerpoTarjeta.includes('⬇️ Descargar') && cuerpoTarjeta.includes('📤 Compartir'), '12b2. Descargar y Compartir permanecen disponibles en la tarjeta')
     verificar(!codigoRealTarjeta.includes('sendMessage') && !codigoRealTarjeta.includes('handleSend') && !codigoRealTarjeta.includes('enviarMensaje'), '12b3. No existe ningún fallback conversacional (sendMessage/handleSend/enviarMensaje) dentro de la tarjeta')
+    verificar(rutaPanel.includes('TITULO_TIPO_DOCUMENTO'), '12c. Las tarjetas de planeación/hoja muestran un título legible en vez del nombre técnico del archivo')
   }
 
   console.log('')
