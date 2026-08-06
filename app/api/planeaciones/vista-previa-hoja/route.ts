@@ -136,7 +136,8 @@ export async function GET(req: NextRequest) {
         : {
             'Content-Type': 'application/octet-stream',
             'Content-Disposition': 'attachment; filename="vista-previa-hoja-evaluacion.pdf"',
-            'Cache-Control': 'no-store',
+            'Cache-Control': 'private, no-store, max-age=0',
+            'X-Content-Type-Options': 'nosniff',
           },
     })
   } catch (err) {
