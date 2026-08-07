@@ -73,7 +73,15 @@ export async function GET(req: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'Content-Disposition': `attachment; filename="${nombreSugerido}"`,
+        // filename* (UTF-8) además del filename clásico — AJUSTE
+        // AISLADO "corregir únicamente el nombre del archivo Word":
+        // nombreSugerido ya es un slug solo-ASCII (nombreArchivoWordServidor
+        // quita acentos y sustituye cualquier carácter fuera de
+        // [a-zA-Z0-9] por "_"), así que hoy ambos valores son
+        // idénticos — se agrega igual como compatibilidad explícita
+        // para clientes que prefieren la variante UTF-8 del estándar
+        // (RFC 6266), sin cambiar el nombre real en ningún caso.
+        'Content-Disposition': `attachment; filename="${nombreSugerido}"; filename*=UTF-8''${encodeURIComponent(nombreSugerido)}`,
         'Cache-Control': 'no-store',
       },
     })

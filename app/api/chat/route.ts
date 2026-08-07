@@ -30,6 +30,8 @@ import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta }
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
+import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
+import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -1767,9 +1769,27 @@ Grado: [grado] | Grupo: [grupo]
               // generar nada, nunca lo infiere solo de a qué endpoint
               // llegó la petición.
               const urlWord = `/api/planeaciones/vista-previa-documento-word?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              // AJUSTE AISLADO — "corregir únicamente el nombre del
+              // archivo Word de la planeación": antes este nombre venía
+              // hardcodeado ('vista-previa-planeacion.docx'), sin
+              // ninguna relación con el nombre real que
+              // vista-previa-documento-word/route.ts calcula y manda en
+              // su propio Content-Disposition (nombreArchivoWordServidor
+              // (extraerTitulo(texto)), la MISMA fuente que ya usa esa
+              // ruta) — como descargarArchivo() en AsistentePanel.tsx
+              // trae el Word por blob (a diferencia del PDF, que ya
+              // descarga por enlace directo), el nombre visible al
+              // guardar sale del atributo `download` del propio
+              // navegador, es decir de este campo `nombre`, NUNCA del
+              // Content-Disposition del fetch original — por eso el
+              // desajuste era 100% visible aunque el servidor ya
+              // mandara el nombre correcto. Se computa aquí con la
+              // MISMA función (nombreArchivoWordServidor) sobre el
+              // MISMO texto (textoCompleto) que ya usa esa ruta —
+              // fuente única, nunca puede desalinearse.
               const archivoWord = {
                 tipo: 'word',
-                nombre: 'vista-previa-planeacion.docx',
+                nombre: nombreArchivoWordServidor(extraerTitulo(textoCompleto)),
                 url: urlWord,
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
