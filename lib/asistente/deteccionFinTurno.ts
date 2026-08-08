@@ -36,7 +36,19 @@ export const CONFIG_FIN_TURNO = {
   // (una pausa de "respiro" normal después de un punto cabe en 2s), pero
   // dobla el margen frente al valor anterior. Validar en dispositivo
   // real — no hay forma de medir la pausa humana real sin probarlo.
-  silencioFraseCompletaMs: 2000,
+  //
+  // AJUSTE (CORRECCIÓN AISLADA — "evitar envío prematuro y
+  // fragmentación del dictado de voz"): 2000 → 2500ms — pequeña
+  // ventana de tolerancia adicional, pedida explícitamente para no
+  // cerrar el turno con una configuración de endpointing demasiado
+  // agresiva. El caso reportado (instrucción con una pausa real de
+  // 1-2s a la mitad) ya debería quedar cubierto por CASO B
+  // (silencioFraseIncompletaMs, 3500ms, porque la frase corta a la
+  // mitad de una idea normalmente termina en un conector colgante —
+  // ver CONECTORES_COLGANTES abajo) — este margen extra en CASO A es
+  // una capa adicional de tolerancia para el caso borde en que Whisper
+  // puntúa el fragmento parcial como si ya hubiera cerrado una idea.
+  silencioFraseCompletaMs: 2500,
   // CASO B — no hay señal clara de que la idea haya terminado (sin
   // puntuación de cierre, o termina en una palabra que normalmente
   // introduce algo más). Se espera más antes de cerrar, dándole al

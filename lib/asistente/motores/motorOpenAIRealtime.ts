@@ -98,6 +98,12 @@ const ICE_SERVERS: RTCIceServer[] = [
 // de inmediato (ver manejarEventoServidor). Transcribir unos segundos de
 // audio con Whisper normalmente toma bastante menos de esto.
 const ESPERA_MAXIMA_COMMIT_MS = 1200
+// CORRECCIÓN AISLADA — "evitar envío prematuro y fragmentación del
+// dictado de voz": cuánto esperar antes de reintentar cerrar un turno
+// nuevo cuando el ANTERIOR todavía sigue esperando su respuesta
+// completa (ver finalizarTurno) — corto a propósito, es solo un
+// reintento barato, nunca una espera perceptible por el docente.
+const REINTENTO_FIN_TURNO_MS = 400
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type EventoServidor = Record<string, any>
@@ -249,6 +255,24 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // ventana adaptativa vencieran casi al mismo tiempo) — eso mandaría
   // dos turnos del mismo texto.
   private finalizandoTurno = false
+  // CORRECCIÓN AISLADA — "evitar envío prematuro y fragmentación del
+  // dictado de voz": CAUSA RAÍZ real de "la segunda parte del dictado
+  // quedó en el input y nunca se envió" — finalizarTurno() espera la
+  // respuesta COMPLETA (enviarComoMensaje = AsistenteService.
+  // enviarMensaje solo resuelve cuando el streaming entero terminó),
+  // así que finalizandoTurno sigue en true por 1-varios segundos
+  // reales. Si el docente sigue hablando y ESE fragmento nuevo termina
+  // de transcribirse y programa su propio cierre MIENTRAS el turno
+  // anterior todavía sigue esperando esa respuesta, el guard de arriba
+  // antes simplemente descartaba la llamada (`return` sin más) — el
+  // texto ya acumulado (ej. "y unos dibujos bonitos para el examen")
+  // se quedaba huérfano para siempre, nadie volvía a intentar
+  // mandarlo. Este temporizador reintenta solo, sin perder nada: si al
+  // reintentar ya no queda texto nuevo que mandar (el turno anterior
+  // ya se resolvió y este era justo ese mismo turno), finalizarTurno()
+  // ya sabe no hacer nada (ver el `if (!textoFinal) return` de abajo)
+  // — nunca produce un envío duplicado.
+  private reintentoFinTurno: ReturnType<typeof setTimeout> | null = null
 
   private registrar(etapa: string, detalle: unknown) {
     console.log(`[VOZ][${etapa}]`, detalle)
@@ -847,6 +871,10 @@ export class MotorOpenAIRealtime implements MotorConversacional {
     this.resolverCommitFinal = null
     this.huboAudioSinConfirmar = false
     this.finalizandoTurno = false
+    // Evita que un reintento de finalizarTurno() programado (ver
+    // REINTENTO_FIN_TURNO_MS) dispare tras colgar — sería un evento
+    // tardío intentando mandar un mensaje a una sesión que ya cerró.
+    if (this.reintentoFinTurno) { clearTimeout(this.reintentoFinTurno); this.reintentoFinTurno = null }
     this.cancelarTemporizadorFinTurno()
     if (this.temporizadorSilencio) { clearTimeout(this.temporizadorSilencio); this.temporizadorSilencio = null }
     this.leyendoRespuestaClaude = false
@@ -1010,10 +1038,26 @@ export class MotorOpenAIRealtime implements MotorConversacional {
   // programarEvaluacionFinTurno()/reiniciarTemporizadorSilencio() — no
   // hace falta ningún toque del docente para cerrar un turno.
   async finalizarTurno() {
-    // Ya hay un finalizarTurno() en vuelo — ignorar esta llamada extra
-    // en vez de duplicar el turno (puede pasar si el techo de silencio
-    // y la ventana adaptativa vencieran casi al mismo tiempo).
-    if (this.finalizandoTurno) return
+    // Ya hay un finalizarTurno() en vuelo — puede ser el MISMO turno
+    // (el techo de silencio y la ventana adaptativa vencieron casi al
+    // mismo tiempo — no reintentar, es exactamente el mismo texto) o
+    // un turno NUEVO que el docente terminó de decir mientras el
+    // anterior todavía esperaba su respuesta completa (ver
+    // reintentoFinTurno arriba) — nunca se puede distinguir cuál es
+    // desde aquí, así que NUNCA se descarta en silencio: se reintenta
+    // en un momento; si para entonces ya no queda texto nuevo que
+    // mandar, el propio chequeo de textoFinal vacío más abajo lo
+    // resuelve sin producir ningún envío de más.
+    if (this.finalizandoTurno) {
+      this.registrar('turno-fin-ocupado', 'Un turno anterior todavía espera su respuesta — reintentando en breve')
+      this.debug('turno-fin-ocupado', 'info', `reintentando en ${REINTENTO_FIN_TURNO_MS}ms`)
+      if (this.reintentoFinTurno) clearTimeout(this.reintentoFinTurno)
+      this.reintentoFinTurno = setTimeout(() => {
+        this.reintentoFinTurno = null
+        this.finalizarTurno()
+      }, REINTENTO_FIN_TURNO_MS)
+      return
+    }
     this.finalizandoTurno = true
     this.cancelarTemporizadorFinTurno()
     if (this.temporizadorSilencio) { clearTimeout(this.temporizadorSilencio); this.temporizadorSilencio = null }
