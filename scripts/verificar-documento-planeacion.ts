@@ -74,6 +74,13 @@ async function main() {
   const rutaDocumento = readFileSync(join(__dirname, '..', 'app', 'api', 'planeaciones', 'vista-previa-documento', 'route.ts'), 'utf-8')
   const rutaHoja = readFileSync(join(__dirname, '..', 'app', 'api', 'planeaciones', 'vista-previa-hoja', 'route.ts'), 'utf-8')
   const rutaMotor = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'motores', 'motorTextoClaude.ts'), 'utf-8')
+  // ARQUITECTURA DURABLE — Vercel Workflow + turnos_chat: la extracción
+  // de marcadores (procesarMarcadorDeArchivo y hermanas) se movió a un
+  // módulo puro reutilizable por el Workflow durable — mismo
+  // comportamiento exacto, solo cambió dónde vive el código (ver
+  // motorTextoClaude.ts, que ahora solo importa y llama estas mismas
+  // funciones).
+  const rutaMarcadores = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'marcadoresRespuesta.ts'), 'utf-8')
   const rutaPanel = readFileSync(join(__dirname, '..', 'components', 'Asistente', 'AsistentePanel.tsx'), 'utf-8')
   const rutaTipos = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'tipos.ts'), 'utf-8')
 
@@ -156,9 +163,10 @@ async function main() {
     verificar(rutaTipos.includes('archivos?: ArchivoGeneradoInfo[]'), '6a. El tipo de mensaje admite varios archivos por turno (campo nuevo y aditivo)')
     verificar(rutaTipos.includes("archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]"), '6b. El evento respuesta-final expone tanto el archivo singular (compatibilidad) como el arreglo completo')
 
-    verificar(/\[\[DOCUMENTO_ARCHIVO:\(\[\^\\\]\]\+\)\\\]\\\]\/g/.test(rutaMotor) || rutaMotor.includes('DOCUMENTO_ARCHIVO:([^\\]]+)\\]\\]/g'), '6c. motorTextoClaude.ts extrae TODOS los marcadores de archivo del mensaje (regex global), no solo el primero')
-    verificar(rutaMotor.includes('while ((match = regex.exec(respuesta)) !== null)'), '6d. La extracción de marcadores recorre el texto completo en un bucle, nunca se detiene en el primer adjunto encontrado')
-    verificar(rutaMotor.includes('return { texto, archivo: archivos[0], archivos }'), '6e. El primer archivo sigue viajando también en el campo singular `archivo`, para no romper ningún flujo existente de un solo documento')
+    verificar(/\[\[DOCUMENTO_ARCHIVO:\(\[\^\\\]\]\+\)\\\]\\\]\/g/.test(rutaMarcadores) || rutaMarcadores.includes('DOCUMENTO_ARCHIVO:([^\\]]+)\\]\\]/g'), '6c. marcadoresRespuesta.ts extrae TODOS los marcadores de archivo del mensaje (regex global), no solo el primero')
+    verificar(rutaMarcadores.includes('while ((match = regex.exec(respuesta)) !== null)'), '6d. La extracción de marcadores recorre el texto completo en un bucle, nunca se detiene en el primer adjunto encontrado')
+    verificar(rutaMarcadores.includes('return { texto, archivo: archivos[0], archivos }'), '6e. El primer archivo sigue viajando también en el campo singular `archivo`, para no romper ningún flujo existente de un solo documento')
+    verificar(rutaMotor.includes("procesarMarcadorDeArchivo,") && rutaMotor.includes("from '../marcadoresRespuesta'"), '6f. motorTextoClaude.ts importa procesarMarcadorDeArchivo del módulo compartido en vez de redefinirlo — comportamiento idéntico, sin duplicación')
 
     verificar(rutaPanel.includes('m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []'), '6f. AsistentePanel.tsx renderiza una tarjeta por cada adjunto del turno, sin dejar de soportar el caso de un solo archivo')
     verificar(rutaPanel.includes('key={`${m.id}-archivo-${idxGrupo}`}'), '6g. Cada tarjeta de adjunto tiene una key única y estable (evita advertencias de React y renders incorrectos con 2+ adjuntos) — ahora por grupo de documento, ver "descarga real en Word y PDF"')

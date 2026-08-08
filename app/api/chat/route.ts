@@ -6,6 +6,9 @@ import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
+import { start } from 'workflow/api'
+import { generarTurnoChat } from '@/app/workflows/generarTurnoChat'
+import { crearOTurnoRecuperarPorRequestId } from '@/lib/turnosChat'
 import {
   actualizarPerfilDocente,
   calendarioCicloCompleto,
@@ -322,7 +325,54 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, requestId, esTurnoInterno } = await req.json()
+
+  // ARQUITECTURA DURABLE — Vercel Workflow + turnos_chat ("la
+  // generación del Chat IA no debe cancelarse al salir de Safari/
+  // iPhone"): rama NUEVA y ADITIVA — nunca se ejecuta a menos que el
+  // cliente mande `requestId` explícitamente, así que ningún llamador
+  // existente (voz, o cualquier mensaje de texto que todavía no use
+  // este flujo) pasa por aquí ni cambia de comportamiento.
+  // `esTurnoInterno` es la señal de que ESTA petición viene del propio
+  // Workflow durable (ver app/workflows/generarTurnoChat.ts), no de un
+  // navegador — en ese caso se salta esta rama por completo y cae
+  // directo al código de generación de siempre, sin ningún cambio: el
+  // Workflow reutiliza el 100% de la lógica existente (Nivel 0,
+  // Herramientas, MODO DOCUMENTO, generación de documentos), nunca la
+  // duplica.
+  //
+  // Alcance V1 (deliberado, ver informe de la implementación): solo
+  // cubre el mensaje de texto simple (sin imagen adjunta, sin edición
+  // de documento activo, fuera del canal de voz) — exactamente el
+  // caso reportado ("Hazme la planeación para..."). Los demás casos
+  // siguen exactamente como antes, sin pasar por aquí.
+  if (requestId && !esTurnoInterno) {
+    const auth = await autenticarRequestApi(accessToken)
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
+    }
+    const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+    try {
+      const { turno } = await crearOTurnoRecuperarPorRequestId(auth.supabase, auth.user.id, conversacionId, requestId)
+      // Idempotencia real (FASE 3): si el turno ya existía (mismo
+      // request_id — doble tap, reconexión que reenvía el mismo POST),
+      // NUNCA se vuelve a iniciar el Workflow — se devuelve el turnId
+      // existente tal cual, sin tocar nada más.
+      if (turno.estado === 'queued') {
+        const baseUrl = req.nextUrl.origin
+        await start(generarTurnoChat, [
+          turno.id,
+          { mensaje, historial, contexto, institucionId, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel },
+          accessToken,
+          baseUrl,
+        ])
+      }
+      return NextResponse.json({ turnoId: turno.id, estado: turno.estado })
+    } catch (e) {
+      console.error('[TURNOS_CHAT] Fallo creando/iniciando el turno durable:', e)
+      return NextResponse.json({ error: 'No fue posible iniciar la generación en este momento. Intenta de nuevo.' }, { status: 502 })
+    }
+  }
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia

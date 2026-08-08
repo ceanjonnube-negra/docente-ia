@@ -15,6 +15,15 @@ import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import {
+  iniciarTurnoDurable,
+  consultarTurno,
+  generarRequestId,
+  guardarTurnoActivo,
+  leerTurnoActivo,
+  limpiarTurnoActivo,
+  type EstadoTurnoConsultado,
+} from './turnoDurableCliente'
+import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
   crearNuevaConversacion,
@@ -260,6 +269,15 @@ class AsistenteServiceImpl {
   // mensajes de una conversación, solo cuando el docente la abre — nunca
   // al montar el servicio.
   private documentoActivo: DocumentoActivoGuardado | null = null
+  // ARQUITECTURA DURABLE — Vercel Workflow + turnos_chat: id del turno
+  // que se está siguiendo ahora mismo (queued/generating) — null el
+  // resto del tiempo. Es lo que hace que un evento tardío (polling que
+  // responde después de que el turno YA se hidrató) nunca produzca una
+  // segunda burbuja: hidratarTurnoCompletado/manejarTurnoFallido
+  // comprueban que turnoActivoId siga siendo EXACTAMENTE ese turno
+  // antes de tocar this.mensajes.
+  private turnoActivoId: string | null = null
+  private pollingTurnoTimer: ReturnType<typeof setTimeout> | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -541,6 +559,13 @@ class AsistenteServiceImpl {
     this.documentoActivo = datos.documentoActivo && datos.mensajes.some((m) => m.id === datos.documentoActivo!.id) ? datos.documentoActivo : null
     this.limpiarEstadoTransitorio()
     this.notificar()
+    // ARQUITECTURA DURABLE — FASE 8: si esta conversación tiene un
+    // turno pendiente de una sesión anterior (la app se cerró por
+    // completo mientras generaba), se retoma justo al abrirla — nunca
+    // antes, para respetar la regla de siempre de esta pantalla
+    // ("nunca se asigna sola" una conversación activa a partir de lo
+    // guardado, ver comentario de conversacionActivaId arriba).
+    this.reanudarTurnoPendienteSiExiste()
   }
 
   // Borra una conversación guardada de forma permanente — si era la
@@ -1200,6 +1225,20 @@ class AsistenteServiceImpl {
       return
     }
 
+    // ARQUITECTURA DURABLE — Vercel Workflow + turnos_chat ("la
+    // generación del Chat IA no debe cancelarse al salir de Safari/
+    // iPhone"): mensaje de texto simple, sin imagen adjunta, fuera del
+    // canal de voz — exactamente el caso reportado ("Hazme la
+    // planeación para..."). A partir de aquí la generación vive en un
+    // turno persistente en el servidor; el navegador deja de ser el
+    // dueño de la ejecución (ver informe de la implementación, alcance
+    // V1 — imagen adjunta y canal de voz siguen el camino síncrono de
+    // siempre, sin cambios).
+    if (!adjunto && canal !== 'voz') {
+      await this.enviarMensajeDurable(limpio)
+      return
+    }
+
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
@@ -1212,6 +1251,112 @@ class AsistenteServiceImpl {
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
+  }
+
+  // --- Turno durable (Vercel Workflow + turnos_chat) ---
+  // Ver informe de la implementación para el diseño completo. Reutiliza
+  // manejarEventoMotor({tipo:'error', ...}) para una falla REAL (nunca
+  // una desconexión: el POST de creación responde en milisegundos, ni
+  // siquiera espera a la IA) — mismo camino, mismo aviso, que ya usa el
+  // resto de la aplicación.
+  private async enviarMensajeDurable(texto: string) {
+    const historialPrevio = this.mensajes.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }]
+    this.turnoAbierto = null
+    this.generando = true
+    this.notificar()
+
+    const requestId = generarRequestId()
+    try {
+      const { turnoId } = await iniciarTurnoDurable(texto, this.contexto, historialPrevio, requestId, null)
+      this.turnoActivoId = turnoId
+      guardarTurnoActivo({ turnoId, requestId, conversacionId: this.conversacionActivaId })
+      this.notificar()
+      this.iniciarPollingTurno(turnoId)
+    } catch (err) {
+      this.generando = false
+      this.manejarEventoMotor({ tipo: 'error', mensaje: err instanceof Error ? err.message : 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    }
+  }
+
+  // FASE 6 — polling ligero (V1 prioriza robustez sobre streaming
+  // token por token, ver informe). Cada tick comprueba que
+  // turnoActivoId siga siendo EXACTAMENTE este turno antes de aplicar
+  // cualquier cambio — así un tick tardío después de que el turno ya
+  // se resolvió (o el docente ya mandó otro mensaje) nunca hace nada.
+  private iniciarPollingTurno(turnoId: string, intervaloMs = 2500) {
+    if (this.pollingTurnoTimer) clearTimeout(this.pollingTurnoTimer)
+    const tick = async () => {
+      if (this.turnoActivoId !== turnoId) return
+      try {
+        const { session } = await obtenerPerfilYSesion()
+        if (!session?.access_token) throw new Error('Sesión no encontrada.')
+        const turno = await consultarTurno(turnoId, session.access_token)
+        if (this.turnoActivoId !== turnoId) return
+        if (turno.estado === 'completed') { this.hidratarTurnoCompletado(turno); return }
+        if (turno.estado === 'failed') { this.manejarTurnoFallido(turno); return }
+      } catch {
+        // Fallo de RED consultando el estado (el docente sigue sin
+        // conexión) — nunca se marca failed solo por esto, se reintenta
+        // en el próximo tick. La fuente de verdad real sigue viva en
+        // el servidor sin importar cuántos ticks fallen aquí.
+      }
+      if (this.turnoActivoId === turnoId) {
+        this.pollingTurnoTimer = setTimeout(tick, intervaloMs)
+      }
+    }
+    this.pollingTurnoTimer = setTimeout(tick, intervaloMs)
+  }
+
+  // Hidrata la respuesta completa exactamente UNA vez — la comprobación
+  // de turnoActivoId (y ponerlo en null de inmediato) es lo que
+  // garantiza "máximo 1 respuesta lógica assistant" ante cualquier
+  // combinación de reintentos de polling / reconexiones repetidas.
+  private hidratarTurnoCompletado(turno: EstadoTurnoConsultado) {
+    if (this.turnoActivoId !== turno.id) return
+    this.turnoActivoId = null
+    this.generando = false
+    limpiarTurnoActivo()
+    const texto = turno.textoFinal?.trim() || 'No pude generar la respuesta. Intenta de nuevo.'
+    const idNuevo = nuevoId()
+    const archivo = turno.archivos.length > 0 ? turno.archivos[0] : undefined
+    this.mensajes = [
+      ...this.mensajes,
+      { id: idNuevo, rol: 'asistente', texto, creadoEn: Date.now(), archivo, archivos: turno.archivos.length > 0 ? turno.archivos : undefined },
+    ]
+    if (esDocumentoFormal(texto)) this.actualizarDocumentoActivo(idNuevo, texto, archivo)
+    this.notificar()
+  }
+
+  // TRATAMIENTO DEL ERROR (B) — falla real del backend/proveedor
+  // (estado=failed, con error técnico controlado ya guardado por el
+  // Workflow) — nunca por una simple desconexión del cliente, que ni
+  // siquiera llega hasta aquí (ver iniciarPollingTurno: un fallo de red
+  // consultando reintenta, no marca failed).
+  private manejarTurnoFallido(turno: EstadoTurnoConsultado) {
+    if (this.turnoActivoId !== turno.id) return
+    this.turnoActivoId = null
+    limpiarTurnoActivo()
+    this.manejarEventoMotor({ tipo: 'error', mensaje: turno.error || 'No fue posible generar la respuesta. Intenta de nuevo.' })
+  }
+
+  // FASE 8 — recuperación automática al volver (visibilitychange/
+  // pageshow/focus/online, ver los listeners al final de este
+  // archivo). Nunca crea una burbuja nueva ni reenvía el prompt: solo
+  // retoma el polling del turno que YA existe. Si el docente cambió a
+  // OTRA conversación mientras tanto, no se hidrata aquí a propósito
+  // (evitaría insertar la respuesta en la conversación equivocada) —
+  // se recoge la próxima vez que esta MISMA conversación esté activa
+  // y llegue un evento de reconexión.
+  reanudarTurnoPendienteSiExiste() {
+    if (this.turnoActivoId) return
+    const guardado = leerTurnoActivo()
+    if (!guardado || guardado.conversacionId !== this.conversacionActivaId) return
+    this.turnoActivoId = guardado.turnoId
+    this.generando = true
+    this.notificar()
+    this.iniciarPollingTurno(guardado.turnoId, 500)
   }
 
   // Mismo camino que el envío normal de arriba (asegurarMotor,
@@ -1622,8 +1767,35 @@ if (typeof document !== 'undefined') {
   // instante para no perder los últimos cambios si el sistema recarga la
   // página al volver.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) AsistenteService.guardarInmediatamente()
+    if (document.hidden) {
+      AsistenteService.guardarInmediatamente()
+    } else {
+      // ARQUITECTURA DURABLE — FASE 8: el docente vuelve a la app (sale
+      // de Safari, abre un PDF/Word, bloquea el iPhone y regresa) — si
+      // había un turno pendiente, se retoma solo, sin que el docente
+      // tenga que escribir nada.
+      AsistenteService.reanudarTurnoPendienteSiExiste()
+    }
   })
+  // pageshow cubre el caso de "volver a la página" desde la caché de
+  // retroceso/avance de Safari (bfcache) — visibilitychange no siempre
+  // se dispara igual en ese camino específico de iOS.
+  window.addEventListener('pageshow', () => AsistenteService.reanudarTurnoPendienteSiExiste())
+  window.addEventListener('focus', () => AsistenteService.reanudarTurnoPendienteSiExiste())
+  // "pérdida temporal de conexión" (FASE 8) — al recuperar red, si
+  // había un turno pendiente cuyo polling venía fallando en silencio
+  // (ver iniciarPollingTurno), esto da un chequeo inmediato en vez de
+  // esperar al siguiente intervalo.
+  window.addEventListener('online', () => AsistenteService.reanudarTurnoPendienteSiExiste())
+  // Nota: NO se llama reanudarTurnoPendienteSiExiste() aquí al cargar
+  // el módulo — conversacionActivaId todavía es null en ese instante
+  // (la vista inicial nunca selecciona sola una conversación, ver el
+  // comentario junto a ese campo) y el chequeo de abajo lo exige para
+  // no hidratar en la conversación equivocada. Para "la app se cerró
+  // por completo y se reabre", el punto real de recuperación es
+  // abrirConversacion() (ver ahí) — en cuanto el docente vuelve a esa
+  // conversación (a mano, o porque ya la tenía abierta y solo recargó
+  // la pestaña), el turno pendiente se retoma solo.
 }
 
 // Un dispositivo compartido entre dos docentes (equipo de la escuela)

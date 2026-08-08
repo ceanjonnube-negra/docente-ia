@@ -9,6 +9,12 @@
 import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import {
+  procesarMarcadorDeArchivo,
+  procesarMarcadorDeContenido,
+  procesarMarcadorDeNavegacion,
+  procesarMarcadorDePerfilActualizado,
+} from '../marcadoresRespuesta'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -253,10 +259,10 @@ export class MotorTextoClaude implements MotorConversacional {
       }
 
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
-      const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
-      const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
-      const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
-      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
+      const { texto: sinArchivo, archivo, archivos } = procesarMarcadorDeArchivo(respuestaSinProceso)
+      const { texto: sinContenido, contenidoOriginal } = procesarMarcadorDeContenido(sinArchivo)
+      const { texto: sinNavegacion, accionNavegacion } = procesarMarcadorDeNavegacion(sinContenido)
+      const { texto: respuestaLimpia, perfilActualizado } = procesarMarcadorDePerfilActualizado(sinNavegacion)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado })
 
@@ -350,7 +356,7 @@ export class MotorTextoClaude implements MotorConversacional {
           respuesta += decoder.decode(value, { stream: true })
         }
       }
-      const { archivo } = this.procesarMarcadorDeArchivo(respuesta)
+      const { archivo } = procesarMarcadorDeArchivo(respuesta)
       if (!archivo) throw new Error('El servidor no devolvió un archivo válido.')
       return archivo
     } finally {
@@ -358,85 +364,12 @@ export class MotorTextoClaude implements MotorConversacional {
     }
   }
 
-  // Marcador técnico con el archivo real ya generado y subido (ver
-  // FINALIZAR ARCHIVO en app/api/chat/route.ts) — mismo patrón que
-  // procesarMarcadorDeProceso: el docente nunca ve esta línea, se
-  // extrae y se quita del texto visible antes de mostrarlo.
-  // Un turno puede traer más de un adjunto (ej. planeación + hoja de
-  // evaluación en la misma respuesta, ver "corrección funcional — falta
-  // mostrar y descargar la planeación") — se extraen TODOS los
-  // marcadores presentes, no solo el primero. `archivo` (singular) se
-  // sigue devolviendo con el primero para que ningún flujo existente
-  // de un solo documento (Word/PDF/PPT/Excel, ficha_descriptiva...)
-  // tenga que cambiar.
-  private procesarMarcadorDeArchivo(respuesta: string): { texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[] } {
-    const regex = /\[\[DOCUMENTO_ARCHIVO:([^\]]+)\]\]/g
-    const archivos: ArchivoGeneradoInfo[] = []
-    let texto = respuesta
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(respuesta)) !== null) {
-      try {
-        const binario = atob(match[1])
-        const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-        archivos.push(JSON.parse(new TextDecoder('utf-8').decode(bytes)) as ArchivoGeneradoInfo)
-      } catch {
-        // marcador corrupto — se quita del texto igual, sin adjuntar nada por él
-      }
-      texto = texto.replace(match[0], '')
-    }
-    texto = texto.trim()
-    if (archivos.length === 0) return { texto }
-    return { texto, archivo: archivos[0], archivos }
-  }
-
-  // Marcador técnico con el contenido REAL redactado por Claude cuando
-  // CASO 3 (ver app/api/chat/route.ts) generó contenido y archivo en el
-  // mismo turno, sin documento previo que recuperar — nunca se muestra
-  // en pantalla, solo permite que AsistenteService guarde un
-  // documentoActivo con texto real, para que "ahora en PDF" después no
-  // se quede sin fuente que reutilizar.
-  private procesarMarcadorDeContenido(respuesta: string): { texto: string; contenidoOriginal?: string } {
-    const match = respuesta.match(/\[\[DOCUMENTO_CONTENIDO:([^\]]+)\]\]/)
-    if (!match) return { texto: respuesta }
-    try {
-      const binario = atob(match[1])
-      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-      const contenidoOriginal = new TextDecoder('utf-8').decode(bytes)
-      return { texto: respuesta.replace(match[0], '').trim(), contenidoOriginal }
-    } catch {
-      return { texto: respuesta.replace(match[0], '').trim() }
-    }
-  }
-
-  // Marcador técnico con la acción de navegación resuelta por el
-  // Clasificador de Nivel 0 (ver "consultar_alumno_lista" /
-  // "navegar_alumno_lista" en app/api/chat/route.ts) — mismo patrón
-  // que procesarMarcadorDeArchivo: el docente nunca ve esta línea.
-  private procesarMarcadorDeNavegacion(respuesta: string): { texto: string; accionNavegacion?: AccionNavegacion } {
-    const match = respuesta.match(/\[\[NAVEGACION:([^\]]+)\]\]/)
-    if (!match) return { texto: respuesta }
-    try {
-      const binario = atob(match[1])
-      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-      const accionNavegacion = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as AccionNavegacion
-      return { texto: respuesta.replace(match[0], '').trim(), accionNavegacion }
-    } catch {
-      return { texto: respuesta.replace(match[0], '').trim() }
-    }
-  }
-
-  // Marcador técnico sin datos propios (ver actualizar_perfil_docente en
-  // app/api/chat/route.ts) — su sola presencia es la señal de que
-  // perfiles_docentes cambió. El valor real nunca viaja en el marcador:
-  // AsistenteService vuelve a leer la MISMA fuente única
-  // (obtenerPerfilYSesion, ver lib/asistente/perfilDocente.ts) en vez de
-  // confiar en una copia serializada aquí, para que nunca puedan
-  // divergir dos representaciones del mismo perfil.
-  private procesarMarcadorDePerfilActualizado(respuesta: string): { texto: string; perfilActualizado: boolean } {
-    const match = respuesta.match(/\[\[PERFIL_ACTUALIZADO\]\]/)
-    if (!match) return { texto: respuesta, perfilActualizado: false }
-    return { texto: respuesta.replace(match[0], '').trim(), perfilActualizado: true }
-  }
+  // procesarMarcadorDeArchivo/DeContenido/DeNavegacion/DePerfilActualizado
+  // — EXTRAÍDAS a lib/asistente/marcadoresRespuesta.ts (ARQUITECTURA
+  // DURABLE — Vercel Workflow + turnos_chat), como funciones puras
+  // reutilizables por el Workflow durable además de por este motor —
+  // comportamiento idéntico al de antes, solo cambió dónde vive el
+  // código.
 
   // El modelo grande puede pedir continuar una tarea larga (varias fichas,
   // varios exámenes...) con un marcador técnico al final de su respuesta.
