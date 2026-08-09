@@ -64,14 +64,20 @@ async function main() {
   //    historialMensajes NUNCA debe ejecutarse cuando el mensaje
   //    describe un documento nuevo. Verificación estructural del
   //    punto exacto de la corrección.
+  //
+  //    NOTA (ver "fallo real confirmado otra vez en iPhone"): esta
+  //    guarda se reforzó en una ronda posterior para envolver TAMBIÉN
+  //    la rama finalizarArchivo, no solo la de historial — ver
+  //    scripts/verificar-finalizararchivo-no-confia-en-cliente.ts para
+  //    la verificación completa y actualizada de esa corrección.
   // ============================================================
   {
-    const inicioBloque = cuerpoChatRoute.indexOf("if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {\n      documentoTexto = finalizarArchivo.documentoTexto")
+    const inicioBloque = cuerpoChatRoute.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado) {')
     const finBloque = cuerpoChatRoute.indexOf('// ETAPA 1 (detección de la intención)', inicioBloque)
     verificar(inicioBloque !== -1 && finBloque !== -1, 'Se localiza el bloque completo de recuperación de documentoTexto en CASO 1/2')
     const bloque = cuerpoChatRoute.slice(inicioBloque, finBloque)
-    verificar(bloque.includes("} else if (!pareceNuevoDocumento(mensaje || '')) {"), 'La "red de seguridad" (búsqueda en historialMensajes) SOLO se ejecuta cuando el mensaje NO describe un documento nuevo — antes se ejecutaba siempre que se nombrara un formato, sin importar el contenido')
-    verificar(bloque.includes('[...historialMensajes].reverse().find'), 'La búsqueda en el historial real sigue existiendo (para el caso legítimo: "descárgalo" sin documentoActivo en memoria, ver comentario "2." original) — solo se acotó, no se eliminó')
+    verificar(bloque.includes("if (!pareceNuevoDocumento(mensaje || '')) {"), 'La recuperación de documentoTexto (cliente E historial) SOLO se ejecuta cuando el mensaje NO describe un documento nuevo')
+    verificar(bloque.includes('[...historialMensajes].reverse().find'), 'La búsqueda en el historial real sigue existiendo (para el caso legítimo: "descárgalo" sin documentoActivo en memoria) — solo se acotó, no se eliminó')
   }
   verificar(cuerpoChatRoute.includes("import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'"), 'route.ts importa pareceNuevoDocumento realmente desde lib/asistente/documentos.ts')
 

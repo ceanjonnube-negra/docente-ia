@@ -550,31 +550,38 @@ export async function POST(req: NextRequest) {
     let documentoTexto = ''
     let fuenteContenido: 'cliente' | 'historial' | 'ninguna' = 'ninguna'
 
-    if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
-      documentoTexto = finalizarArchivo.documentoTexto
-      fuenteContenido = 'cliente'
-    } else if (!pareceNuevoDocumento(mensaje || '')) {
-      // CAUSA RAÍZ real de "la guía ilustrada devolvió un documento
-      // viejo" (ver "corrección estructural: la guía siguió
-      // devolviendo un documento viejo o incorrecto"): esta "red de
-      // seguridad" busca en el HISTORIAL COMPLETO de la conversación
-      // cualquier mensaje anterior que "parezca documento formal" —
-      // completamente independiente de documentoActivo (que vive solo
-      // en el cliente). Un mensaje como "Hazme una guía... sobre el
-      // ciclo del agua... Genera también Word y PDF" nombra un formato
-      // real (dispara tipoHerramientaSolicitado) pero también describe
-      // contenido NUEVO — sin este chequeo, encontraba y reutilizaba
-      // CUALQUIER documento formal viejo de la conversación (lista de
-      // alumnos, una hoja de otro tema...) sin llegar a llamar a
-      // Claude ni una sola vez. pareceNuevoDocumento (mismo detector
-      // que ya usa AsistenteService.ts) evita esta búsqueda por
-      // completo cuando el mensaje describe algo nuevo — cae al flujo
-      // normal de abajo (CASO 3), que SÍ llama a Claude con el mensaje
-      // actual.
-      const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
-      if (ultimoDocumento) {
-        documentoTexto = ultimoDocumento.content
-        fuenteContenido = 'historial'
+    // CAUSA RAÍZ REAL, confirmada con evidencia de runtime (ver
+    // "fallo real confirmado otra vez en iPhone" — se descargó y leyó
+    // el .docx entregado de verdad, era la lista de alumnos, byte a
+    // byte): la corrección anterior solo protegía la rama de
+    // "historial" (abajo) con pareceNuevoDocumento — la rama de
+    // `finalizarArchivo` (el cliente manda el texto del documento
+    // activo directo) quedó SIN NINGUNA protección, confiando a
+    // ciegas en lo que el cliente mande. Si por cualquier razón el
+    // cliente manda finalizarArchivo con contenido viejo (bundle de
+    // navegador desactualizado, condición de carrera, o cualquier otro
+    // camino no previsto) mientras el mensaje ACTUAL describe un
+    // documento nuevo, el servidor lo aceptaba igual. Ahora NINGUNA de
+    // las dos fuentes (ni cliente ni historial) se usa cuando
+    // pareceNuevoDocumento(mensaje) es cierto — nunca se confía
+    // ciegamente en el cliente para decidir esto, es una validación
+    // real del servidor, independiente de lo que mande el navegador.
+    if (!pareceNuevoDocumento(mensaje || '')) {
+      if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
+        documentoTexto = finalizarArchivo.documentoTexto
+        fuenteContenido = 'cliente'
+      } else {
+        // "Red de seguridad": busca en el HISTORIAL COMPLETO de la
+        // conversación cualquier mensaje anterior que "parezca
+        // documento formal" — pensada para cuando el cliente perdió
+        // documentoActivo (recargó la página) pero el mensaje SÍ pide
+        // seguir trabajando sobre algo ya conversado. Nunca se ejecuta
+        // si el mensaje describe algo nuevo (ver arriba).
+        const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
+        if (ultimoDocumento) {
+          documentoTexto = ultimoDocumento.content
+          fuenteContenido = 'historial'
+        }
       }
     }
 
