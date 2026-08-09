@@ -53,6 +53,22 @@ export type DocumentoActivoGuardado = {
   archivosGenerados?: Record<string, ArchivoGeneradoInfo>
   ultimoFormatoGenerado?: string
 }
+// Imagen suelta activa (ver "Implementar en Docente IA la capacidad de
+// generar imágenes...", Fase 0+1) — paralelo a DocumentoActivoGuardado,
+// nunca lo reemplaza: una conversación puede tener un documento de
+// texto activo Y una imagen activa a la vez (por ejemplo, si el
+// docente generó una imagen ANTES de empezar un documento). id es la
+// fila real en assets_visuales (permite "regenerar" con versionado,
+// ver lib/assetsVisuales.ts). Opcional en ConversacionGuardada por la
+// misma razón que archivosGenerados/ultimoFormatoGenerado: código de
+// conversaciones guardadas antes de que existiera este campo debe
+// seguir restaurando sin él.
+export type MaterialVisualActivoGuardado = {
+  id: string
+  promptOriginal: string
+  url: string
+  nombre: string
+}
 export type ConversacionResumen = { id: string; titulo: string; actualizadaEn: number }
 
 type ConversacionGuardada = {
@@ -60,6 +76,7 @@ type ConversacionGuardada = {
   titulo: string
   mensajes: MensajeConversacion[]
   documentoActivo: DocumentoActivoGuardado | null
+  materialVisualActivo?: MaterialVisualActivoGuardado | null
   actualizadaEn: number
 }
 
@@ -164,7 +181,7 @@ function migrarFormatoViejoSiHaceFalta() {
     if (!Array.isArray(datosViejos.mensajes) || datosViejos.mensajes.length === 0) return
     const id = nuevoId()
     const titulo = derivarTitulo(datosViejos.mensajes)
-    guardarConversacion(id, datosViejos.mensajes, datosViejos.documentoActivo ?? null, titulo)
+    guardarConversacion(id, datosViejos.mensajes, datosViejos.documentoActivo ?? null, null, titulo)
     establecerConversacionActiva(id)
   } catch (e) {
     console.error('Error migrando la conversación del formato anterior:', e)
@@ -187,13 +204,13 @@ export function establecerConversacionActiva(id: string) {
   escribir(CLAVE_ACTIVA, id)
 }
 
-export function cargarConversacionPorId(id: string): { titulo: string; mensajes: MensajeConversacion[]; documentoActivo: DocumentoActivoGuardado | null } | null {
+export function cargarConversacionPorId(id: string): { titulo: string; mensajes: MensajeConversacion[]; documentoActivo: DocumentoActivoGuardado | null; materialVisualActivo: MaterialVisualActivoGuardado | null } | null {
   const crudo = leer(PREFIJO_CONVERSACION + id)
   if (!crudo) return null
   try {
     const datos = JSON.parse(crudo) as ConversacionGuardada
     if (datos.version !== VERSION || !Array.isArray(datos.mensajes)) return null
-    return { titulo: datos.titulo, mensajes: datos.mensajes, documentoActivo: datos.documentoActivo ?? null }
+    return { titulo: datos.titulo, mensajes: datos.mensajes, documentoActivo: datos.documentoActivo ?? null, materialVisualActivo: datos.materialVisualActivo ?? null }
   } catch (e) {
     console.error(`Error restaurando la conversación ${id}:`, e)
     return null
@@ -220,7 +237,7 @@ function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversaci
   })
 }
 
-export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado?: string) {
+export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, materialVisualActivo: MaterialVisualActivoGuardado | null, tituloForzado?: string) {
   if (mensajes.length === 0) return // conversación vacía: nada que guardar todavía
   const mensajesRecortados = mensajes.slice(-TOPE_MENSAJES)
   const titulo = tituloForzado ?? derivarTitulo(mensajesRecortados)
@@ -231,6 +248,7 @@ export function guardarConversacion(id: string, mensajes: MensajeConversacion[],
     titulo,
     mensajes: aligerarParaGuardar(mensajesRecortados),
     documentoActivo,
+    materialVisualActivo,
     actualizadaEn,
   }
   escribir(PREFIJO_CONVERSACION + id, JSON.stringify(datos))

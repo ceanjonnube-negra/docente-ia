@@ -8,8 +8,10 @@
 //
 // Imagen/audio/video están definidas como herramientas (el maestro puede
 // pedirlas y el sistema nunca debe fingir que no existen ni responder
-// con prosa) pero todavía no tienen proveedor/costo decidido — lanzan un
-// error honesto en vez de intentar generarlas.
+// con prosa). Imagen ya tiene proveedor real (ver "Implementar en
+// Docente IA la capacidad de generar imágenes...", Fase 0+1,
+// lib/imageGen/ImageGenerationService.ts) — audio/video siguen sin
+// decidir y lanzan un error honesto en vez de intentar generarlas.
 //
 // PIPELINE INSTRUMENTADO: cada etapa real se mide y se registra por
 // separado (éxito/error + tiempo) para poder localizar EXACTAMENTE dónde
@@ -32,8 +34,10 @@ import { generarWordBuffer, nombreArchivoWordServidor } from './generarWordServi
 import { generarPdfBuffer, nombreArchivoPdf } from './generarPdfServidor'
 import { generarPptxBuffer, nombreArchivoPptx } from './generarPptxServidor'
 import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
-import { subirBuffer, crearUrlFirmada, rutaArchivo, type ArchivoGenerado } from './almacenamiento'
+import { subirBuffer, crearUrlFirmada, rutaArchivo, BUCKET_IMAGENES_GENERADAS, type ArchivoGenerado } from './almacenamiento'
 import { extraerTitulo } from './parseContenido'
+import { generarImagen } from '../imageGen/ImageGenerationService'
+import { guardarAssetVisual } from '../assetsVisuales'
 
 export class HerramientaNoDisponibleError extends Error {}
 
@@ -114,7 +118,14 @@ export async function ejecutarHerramientaDocumento(
   perfil: any,
   zonaHoraria: string | null,
   sb: SupabaseClient,
-  userId: string
+  userId: string,
+  // Nuevos, solo usados por tipo==='imagen' (ver "Implementar en
+  // Docente IA la capacidad de generar imágenes...", Fase 0+1) —
+  // opcionales para no romper los llamadores existentes de
+  // word/pdf/powerpoint/excel, que nunca los necesitaron.
+  supabaseUser?: SupabaseClient,
+  conversacionId?: string | null,
+  versionAnteriorId?: string | null
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -122,9 +133,13 @@ export async function ejecutarHerramientaDocumento(
   // `texto` ya viene resuelto (recuperado del historial o redactado por
   // Claude en el CASO 3) — ver ese mismo archivo para el registro de esas
   // dos etapas.
-  if (tipo === 'imagen' || tipo === 'audio' || tipo === 'video') {
+  if (tipo === 'audio' || tipo === 'video') {
     console.error(`[PIPELINE ${ETIQUETA_MODULO[tipo]}:deteccion] Herramienta solicitada pero no implementada — falta proveedor.`)
     throw new HerramientaNoDisponibleError(`La generación de ${tipo} todavía no está disponible en esta aplicación — falta elegir proveedor.`)
+  }
+
+  if (tipo === 'imagen') {
+    return ejecutarGeneracionImagen(texto, perfil, sb, userId, supabaseUser, conversacionId ?? null, versionAnteriorId ?? null)
   }
 
   console.log(`[${ETIQUETA_EXPORT[tipo]}] userId=${userId} — solicitud de exportación recibida`)
@@ -229,6 +244,110 @@ export async function ejecutarHerramientaDocumento(
   // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
   // tamaño real sin pedirle nada más a Storage.
   return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer }
+}
+
+// Generación de imagen suelta (ver "Implementar en Docente IA la
+// capacidad de generar imágenes...", Fase 0+1) — mismo pipeline
+// instrumentado por etapas que word/pdf/powerpoint/excel arriba, pero
+// aparte: no hay conversión de texto a archivo (la "conversión" es la
+// llamada real al proveedor de imágenes) y agrega una etapa nueva
+// (persistencia en assets_visuales) que los demás formatos no tienen.
+async function ejecutarGeneracionImagen(
+  prompt: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  perfil: any,
+  sb: SupabaseClient,
+  userId: string,
+  supabaseUser: SupabaseClient | undefined,
+  conversacionId: string | null,
+  versionAnteriorId: string | null
+): Promise<ArchivoGenerado> {
+  console.log(`[IMAGEN_EXPORT] userId=${userId} — solicitud de generación de imagen recibida`)
+
+  let imagen: Awaited<ReturnType<typeof generarImagen>>
+  try {
+    imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt }))
+  } catch (err) {
+    console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
+    throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')
+  }
+
+  try {
+    medirEtapaSync('IMAGEN:verificacion', () => {
+      if (!imagen.buffer || imagen.buffer.length === 0) throw new Error('El buffer generado está vacío')
+      const firma = imagen.buffer.subarray(0, 4)
+      // Firma binaria real de PNG (0x89 'P' 'N' 'G') — mismo criterio
+      // que FIRMA_ESPERADA arriba, comparación byte a byte porque el
+      // primer byte (0x89) no es un carácter ASCII imprimible.
+      if (firma[0] !== 0x89 || firma[1] !== 0x50 || firma[2] !== 0x4e || firma[3] !== 0x47) {
+        throw new Error('Firma de archivo inesperada: no es un PNG válido')
+      }
+    })
+  } catch (err) {
+    console.error('[PIPELINE IMAGEN:verificacion] Buffer inválido tras la generación:', err)
+    throw new ErrorHerramientaDocumento('IMAGEN-VERIF', 'La imagen generada no es válida')
+  }
+
+  const nombre = `Imagen_${Date.now()}.png`
+  const ruta = rutaArchivo(userId, nombre)
+  try {
+    await medirEtapa('IMAGEN:subida', () => subirBuffer(sb, ruta, imagen.buffer, imagen.contentType, BUCKET_IMAGENES_GENERADAS))
+    console.log(`[UPLOAD] IMAGEN — ${nombre} subido a Storage`)
+  } catch (err) {
+    console.error(`[UPLOAD] IMAGEN — fallo subiendo ${nombre}:`, err)
+    throw new ErrorHerramientaDocumento('IMAGEN-SUB', 'Fallo subiendo la imagen')
+  }
+
+  let url: string
+  try {
+    url = await medirEtapa('IMAGEN:url-firmada', () => crearUrlFirmada(sb, ruta, nombre, BUCKET_IMAGENES_GENERADAS))
+    console.log(`[SIGNED_URL] IMAGEN — URL firmada obtenida para ${nombre}`)
+  } catch (err) {
+    console.error(`[SIGNED_URL] IMAGEN — fallo obteniendo la URL de ${nombre}:`, err)
+    throw new ErrorHerramientaDocumento('IMAGEN-URL', 'Fallo obteniendo la URL de la imagen')
+  }
+
+  try {
+    await medirEtapa('IMAGEN:verificacion-url', async () => {
+      const res = await fetch(url, { method: 'HEAD' })
+      if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
+    })
+  } catch (err) {
+    console.error('[PIPELINE IMAGEN:verificacion-url] La URL firmada no quedó accesible:', err)
+    throw new ErrorHerramientaDocumento('IMAGEN-URL-VERIF', 'La URL de la imagen no quedó accesible')
+  }
+
+  // Persistencia en assets_visuales — mejor esfuerzo real: si esto
+  // falla, la imagen YA está subida, verificada y accesible (lo que
+  // importa para el docente en este turno); lo único que se pierde es
+  // poder "regenerar" a partir de ella más tarde, nunca la imagen en
+  // sí. Requiere el cliente AUTENTICADO del docente (RLS), nunca
+  // service_role — mismo criterio que lib/turnosChat.ts.
+  let assetId: string | undefined
+  if (supabaseUser) {
+    try {
+      const guardado = await medirEtapa('IMAGEN:persistencia', () =>
+        guardarAssetVisual(supabaseUser, {
+          docenteId: userId,
+          conversacionId,
+          tipo: 'imagen',
+          formatoArchivo: 'png',
+          promptOriginal: imagen.promptUsado,
+          storagePath: ruta,
+          tamanoBytes: imagen.buffer.length,
+          grado: perfil?.grado || null,
+          grupo: perfil?.grupo || null,
+          versionAnteriorId,
+        })
+      )
+      assetId = guardado.id
+    } catch (err) {
+      console.error('[PIPELINE IMAGEN:persistencia] No se pudo guardar el registro del asset visual (no bloquea la entrega):', err)
+    }
+  }
+
+  console.log(`[DOWNLOAD_READY] IMAGEN — ${nombre} verificado y listo para el maestro`)
+  return { tipo: 'imagen', nombre, url, tamanoBytes: imagen.buffer.length, assetId }
 }
 
 function medirEtapaSync<T>(etiqueta: string, fn: () => T): T {

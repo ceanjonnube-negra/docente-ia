@@ -24,6 +24,7 @@ import {
   listarConversaciones,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
+  type MaterialVisualActivoGuardado,
 } from './persistencia'
 import type {
   AccionMensaje,
@@ -151,6 +152,10 @@ export type EstadoAsistente = {
   // nunca para leer el texto del documento — ver "Ajustes sobre el
   // sistema de generación y manejo de documentos".
   documentoActivoId: string | null
+  // Mismo criterio que documentoActivoId, para la imagen suelta activa
+  // (ver materialVisualActivo) — TarjetaDescarga lo usa para mostrar
+  // el distintivo de "activa" sobre la imagen correcta.
+  materialVisualActivoId: string | null
   // Única fuente de verdad para nombre/escuela/grado/grupo en TODA la
   // interfaz — menú lateral (AsistentePanel), /dashboard/inicio, y
   // cualquier otra pantalla que necesite mostrarlo. null mientras carga
@@ -260,6 +265,14 @@ class AsistenteServiceImpl {
   // mensajes de una conversación, solo cuando el docente la abre — nunca
   // al montar el servicio.
   private documentoActivo: DocumentoActivoGuardado | null = null
+  // Imagen suelta activa (ver "Implementar en Docente IA la capacidad
+  // de generar imágenes...", Fase 0+1) — paralelo a documentoActivo,
+  // nunca lo sustituye. Mientras exista y no haya documentoActivo, un
+  // mensaje de texto simple sin foto/voz se interpreta como
+  // "regenerar esta imagen" (ver enviarMensaje) — mismo criterio de
+  // "el mensaje siguiente trabaja sobre lo último activo" que ya usa
+  // documentoActivo, aplicado a imágenes.
+  private materialVisualActivo: MaterialVisualActivoGuardado | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -333,6 +346,7 @@ class AsistenteServiceImpl {
       accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
       accionNavegacionPendiente: this.accionNavegacionPendiente,
       documentoActivoId: this.documentoActivo?.id ?? null,
+      materialVisualActivoId: this.materialVisualActivo?.id ?? null,
       perfil: this.perfil,
     }
   }
@@ -473,7 +487,7 @@ class AsistenteServiceImpl {
     // sin mensajes: no hay nada que guardar — nunca se le pasa null a
     // guardarConversacion().
     if (!this.conversacionActivaId || this.mensajes.length === 0) return
-    guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo)
+    guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo, this.materialVisualActivo)
     this.listaConversaciones = listarConversaciones()
   }
 
@@ -539,6 +553,12 @@ class AsistenteServiceImpl {
     establecerConversacionActiva(id)
     this.mensajes = datos.mensajes
     this.documentoActivo = datos.documentoActivo && datos.mensajes.some((m) => m.id === datos.documentoActivo!.id) ? datos.documentoActivo : null
+    // A diferencia de documentoActivo.id (id de un MENSAJE), aquí id es
+    // el id real de la fila en assets_visuales — no hay un mensaje con
+    // ese mismo id contra el cual validar, así que se restaura tal
+    // cual (la imagen sigue existiendo en Storage/BD independientemente
+    // de qué mensaje la muestre en pantalla).
+    this.materialVisualActivo = datos.materialVisualActivo ?? null
     this.limpiarEstadoTransitorio()
     this.notificar()
   }
@@ -994,7 +1014,23 @@ class AsistenteServiceImpl {
         if (this.turnoAbierto) {
           const idx = this.mensajes.findIndex(m => m.id === this.turnoAbierto)
           const msg = idx !== -1 ? this.mensajes[idx] : undefined
-          if (msg && evento.archivo) {
+          if (msg && evento.archivo?.tipo === 'imagen') {
+            // Imagen suelta (ver "Implementar en Docente IA la
+            // capacidad de generar imágenes...", Fase 0+1) — NUNCA se
+            // trata como documentoActivo (texto): tiene su propio
+            // material activo (materialVisualActivo), para que el
+            // siguiente mensaje del docente pueda "regenerarla" sin
+            // arrastrar la maquinaria de edición de documentos de
+            // texto (construirPromptEdicion espera texto real de un
+            // documento, no una imagen). El prompt original es lo que
+            // el docente acaba de escribir (el mensaje justo antes de
+            // esta respuesta), no "Imagen generada correctamente.".
+            this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo, archivos: evento.archivos }, ...this.mensajes.slice(idx + 1)]
+            const promptOriginal = (idx > 0 ? this.mensajes[idx - 1]?.texto : undefined) || msg.texto
+            this.materialVisualActivo = evento.archivo.assetId
+              ? { id: evento.archivo.assetId, promptOriginal, url: evento.archivo.url, nombre: evento.archivo.nombre }
+              : null
+          } else if (msg && evento.archivo) {
             // CASO 3 (ver FINALIZAR ARCHIVO en app/api/chat/route.ts):
             // el maestro pidió el archivo real en el MISMO mensaje que
             // pidió el contenido ("hazme un examen y pásalo a Word"),
@@ -1197,6 +1233,20 @@ class AsistenteServiceImpl {
         return
       }
       await this.enviarComoEdicion(this.documentoActivo.id, limpio, this.construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
+      return
+    }
+
+    // Imagen suelta activa, sin documento de texto activo (ver
+    // "Implementar en Docente IA la capacidad de generar imágenes...",
+    // Fase 0+1): mismo criterio que documentoActivo arriba — mientras
+    // exista y el mensaje sea texto simple (sin foto, fuera de voz),
+    // se interpreta como "regenerar esta imagen" ("hazla más
+    // infantil", "menos color", "otra versión"), nunca como una
+    // pregunta nueva. Con foto adjunta o en voz, sigue el camino
+    // normal de abajo — regenerar imágenes queda fuera de esos dos
+    // casos en esta fase.
+    if (this.materialVisualActivo && !adjunto && canal !== 'voz') {
+      await this.enviarRegeneracionImagen(limpio)
       return
     }
 
@@ -1487,6 +1537,40 @@ ${instruccion}`
   // stateful del lado del servidor mientras dura la llamada).
   private sincronizarHistorialTexto() {
     this.motorTexto?.establecerHistorial(this.mensajes.slice(-20))
+  }
+
+  // Mismo criterio que construirPromptEdicion, aplicado a una imagen
+  // en vez de un documento de texto (ver "Implementar en Docente IA la
+  // capacidad de generar imágenes...", Fase 0+1): combina el prompt
+  // original con el ajuste pedido — el proveedor de imágenes recibe
+  // ambos, nunca solo la instrucción suelta ("hazla más infantil" por
+  // sí sola no describe ninguna imagen).
+  private construirPromptRegeneracionImagen(promptOriginal: string, instruccion: string): string {
+    return `${promptOriginal}. Ajuste solicitado por el maestro: ${instruccion}.`
+  }
+
+  // Mismo patrón que enviarComoEdicion: la burbuja del docente muestra
+  // su instrucción corta tal cual ("hazla más infantil"), pero el
+  // prompt real que recibe el generador es el original + el ajuste.
+  // Va DIRECTO al servidor con regenerarImagen (nunca pasa por
+  // Claude, ver REGENERAR IMAGEN en app/api/chat/route.ts) — acción
+  // mecánica, mismo criterio que FINALIZAR ARCHIVO.
+  private async enviarRegeneracionImagen(instruccion: string) {
+    await this.asegurarMotor()
+    this.sincronizarHistorialTexto()
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: instruccion, creadoEn: Date.now() }]
+    this.turnoAbierto = null
+    this.notificar()
+
+    const materialAnterior = this.materialVisualActivo
+    if (!materialAnterior) return // no debería pasar (guardado por enviarMensaje), pero nunca truena aquí
+    const promptCombinado = this.construirPromptRegeneracionImagen(materialAnterior.promptOriginal, instruccion)
+    try {
+      await (await this.motorDeContenido())?.enviarTexto(promptCombinado, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { assetIdAnterior: materialAnterior.id })
+    } catch {
+      this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    }
   }
 
   private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {

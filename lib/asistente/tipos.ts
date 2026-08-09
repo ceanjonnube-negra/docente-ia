@@ -45,6 +45,12 @@ export type ArchivoGeneradoInfo = {
   // (documento genérico de FINALIZAR ARCHIVO fuera de
   // planeación/hoja) sigue mostrando el botón único de siempre.
   urlVer?: string
+  // Id real de la fila en assets_visuales (ver lib/assetsVisuales.ts)
+  // — solo presente cuando tipo==='imagen' (ver "Implementar en
+  // Docente IA la capacidad de generar imágenes...", Fase 0+1). El
+  // cliente lo guarda en materialVisualActivo para poder "regenerar"
+  // más adelante conservando el versionado.
+  assetId?: string
 }
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
@@ -302,7 +308,13 @@ export interface MotorConversacional {
   // logs de telemetría temporal del servidor con los del cliente
   // (?voiceDebug=1). turnId nunca contiene datos del docente ni del
   // alumno, es un identificador corto generado localmente.
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean): Promise<void>
+  // regenerarImagen (ver "Implementar en Docente IA la capacidad de
+  // generar imágenes...", Fase 0+1): solo lo manda
+  // AsistenteService.enviarRegeneracionImagen — le dice a /api/chat
+  // que este turno es "regenerar la imagen activa con este prompt ya
+  // combinado", acción mecánica que nunca pasa por Claude (mismo
+  // criterio que finalizarArchivo).
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

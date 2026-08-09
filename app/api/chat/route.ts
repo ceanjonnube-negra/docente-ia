@@ -322,7 +322,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -470,6 +470,32 @@ export async function POST(req: NextRequest) {
   // explícito, nunca una degradación silenciosa.
   if (accessToken && !autenticacion?.ok) {
     return respuestaTexto('Inicia sesión para cargar tu grupo.')
+  }
+
+  // REGENERAR IMAGEN (ver "Implementar en Docente IA la capacidad de
+  // generar imágenes...", Fase 0+1) — mismo principio que FINALIZAR
+  // ARCHIVO más abajo: acción mecánica, nunca pasa por Claude. El
+  // cliente ya combinó el prompt original con la instrucción nueva
+  // (ver AsistenteService.construirPromptRegeneracionImagen) y manda
+  // ese texto ya combinado como `mensaje` — aquí solo se genera de
+  // nuevo con ese prompt y se versiona (nunca se borra la anterior,
+  // ver lib/assetsVisuales.ts).
+  if (supabaseUser && userId && regenerarImagen && typeof regenerarImagen === 'object' && typeof regenerarImagen.assetIdAnterior === 'string' && mensaje) {
+    console.log(`[IMAGEN_EXPORT] userId=${userId} — regeneración solicitada (assetIdAnterior=${regenerarImagen.assetIdAnterior})`)
+    try {
+      const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+      const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+      const archivo = await conReintento(
+        () => ejecutarHerramientaDocumento('imagen', mensaje, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, regenerarImagen.assetIdAnterior),
+        'regenerar-imagen'
+      )
+      const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+      return respuestaTexto(`Imagen generada correctamente.\n${marcador}`)
+    } catch (err) {
+      const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : 'IMAGEN-GEN'
+      console.error(`[IMAGEN_EXPORT] Error regenerando la imagen [${codigo}]:`, err)
+      return NextResponse.json({ error: 'No fue posible generar la imagen en este momento. Intenta de nuevo.' }, { status: 502 })
+    }
   }
 
   // FINALIZAR ARCHIVO — cuando el maestro pide el documento activo en un
@@ -1261,6 +1287,17 @@ Ejemplos: "¿Cuántos faltaron?" → "Faltaron cinco alumnos." "¿Cuántas niña
 
 CONSULTA DE INFORMACIÓN OFICIAL VIGENTE — este turno SÍ tiene acceso a la herramienta web_search, restringida por la propia plataforma a fuentes oficiales (gob.mx, sep.gob.mx, dof.gob.mx). Tienes terminantemente PROHIBIDO decir "no tengo acceso a internet" o cualquier frase equivalente — si la pregunta es sobre calendario escolar oficial, ciclo escolar, planes y programas, campos formativos, lineamientos, normas, trámites o acuerdos SEP/DOF, USA la herramienta antes de responder. Nunca respondas una fecha o dato oficial solo por tu conocimiento general ("normalmente termina a finales de julio") — usa siempre el resultado real de la búsqueda. Prioriza: 1) el documento oficial vigente más reciente, 2) su fecha de publicación o actualización, 3) la autoridad responsable (SEP federal vs. autoridad educativa estatal), 4) el ciclo escolar exacto que preguntó el maestro. Si el calendario federal y el estatal difieren, explica ambos con claridad e indica cuál aplica. En tu respuesta de chat escrito, cita la fuente y autoridad (ej. "Fuente: calendario oficial SEP, publicado el [fecha]"). Si la búsqueda no encuentra el dato o falla, dilo con honestidad ("No pude consultar la fuente oficial en este momento. No quiero darte una fecha sin verificar.") — nunca inventes una fecha para no dejar la pregunta sin respuesta.` : ''
 
+  // MODO IMAGEN (ver "Implementar en Docente IA la capacidad de
+  // generar imágenes...", Fase 0+1) — mismo criterio que bloqueVoz/
+  // bloqueConsultaOficial: instrucciones ADICIONALES solo para este
+  // turno, cuando ya se detectó que el maestro pide una imagen suelta
+  // (tipoHerramientaSolicitado==='imagen', ver CASO 3 más abajo). El
+  // prompt general NO se modifica — un turno normal nunca ve este
+  // bloque.
+  const bloqueModoImagen = tipoHerramientaSolicitado === 'imagen' ? `
+
+MODO IMAGEN ACTIVO — el maestro pidió una imagen suelta (no un documento). Tu ÚNICA salida en este turno debe ser una descripción visual clara y vívida de la ilustración, en un solo párrafo corto (2-4 frases), en español, lista para dársela directo a un generador de imágenes. NUNCA escribas título, emoji, viñetas, ni MODO DOCUMENTO. NUNCA escribas frases de confirmación ("Claro, aquí tienes...", "Perfecto...") ni expliques qué vas a hacer — tu respuesta ES la descripción, nada más. Enriquece la petición del maestro con detalle pedagógico útil (qué debe verse, qué elementos incluir, qué transmitir) pero sin inventar contenido ajeno a lo que pidió. Nunca digas que no puedes generar imágenes — esta aplicación sí genera la imagen real a partir de tu descripción.` : ''
+
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
   // el archivo en un solo mensaje, ver más abajo) — el único que cambia
@@ -1276,7 +1313,7 @@ CONSULTA DE INFORMACIÓN OFICIAL VIGENTE — este turno SÍ tiene acceso a la he
     max_tokens: 8000,
     system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos, y también su asesor pedagógico de confianza: el lugar donde consultan información oficial de la SEP, documentos internos de su escuela y los datos de su propio grupo, sin tener que buscar en otro lado.
 
-CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
+CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. También SÍ genera imágenes reales (ilustraciones, portadas, dibujos temáticos, apoyos gráficos) — nunca digas "no puedo generar imágenes" ni equivalentes; cuando el maestro pida una imagen suelta, esta aplicación intercepta tu respuesta y genera la imagen real a partir de la descripción que escribas (ver MODO IMAGEN más abajo). La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
 
 LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes). Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta, editar, ni ELIMINAR alumnos (ni uno solo ni el grupo completo), ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
 
@@ -1493,7 +1530,7 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}`,
     // "Consultar información oficial vigente de la SEP": la herramienta
     // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
     // autorizó este turno específico (requiereConsultaOficial) — nunca
@@ -1581,11 +1618,24 @@ Grado: [grado] | Grupo: [grupo]
       const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
 
-      if (texto && esDocumentoFormal(texto)) {
+      // Imagen suelta (ver "Implementar en Docente IA la capacidad de
+      // generar imágenes...", Fase 0+1): Claude no redacta un
+      // documento formal aquí — su única salida es una descripción
+      // visual refinada de una línea (ver instrucciones de MODO
+      // IMAGEN en el prompt de sistema), así que esDocumentoFormal
+      // (título en mayúsculas + emoji) no aplica; basta con que haya
+      // texto real.
+      const esImagenSuelta = tipoHerramientaSolicitado === 'imagen' && !!texto?.trim()
+
+      if (texto && (esImagenSuelta || esDocumentoFormal(texto))) {
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
         const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
         // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
-        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
+        const archivo = await conReintento(
+          () => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null),
+          'generar-archivo-combinado'
+        )
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         // El CASO 3 nunca manda el contenido redactado como texto plano
         // al chat (el maestro nunca lo ve en prosa) — pero sin él, el
@@ -1598,8 +1648,13 @@ Grado: [grado] | Grupo: [grupo]
         // documento. Este marcador es SOLO para eso: se decodifica en
         // el cliente para poblar documentoActivo.texto (fuente real
         // para conversiones futuras), nunca se muestra en pantalla.
-        const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(texto, 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
+        // La imagen no tiene "documento activo" de texto que recuperar
+        // después (ver AsistenteService.materialVisualActivo, que se
+        // arma directo del marcador de archivo) — DOCUMENTO_CONTENIDO
+        // es específico de word/pdf/powerpoint/excel.
+        if (esImagenSuelta) return respuestaTexto(`Imagen generada correctamente.\n${marcador}`)
+        const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(texto, 'utf-8').toString('base64')}]]`
         return respuestaTexto(`Documento generado correctamente.\n${marcador}\n${marcadorContenido}`)
       }
       console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)

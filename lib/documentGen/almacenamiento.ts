@@ -21,6 +21,11 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const BUCKET_DOCUMENTOS_GENERADOS = 'documentos-generados-ia'
 export const BUCKET_HOJAS_SEGUIMIENTO = 'hojas-seguimiento'
+// Imágenes generadas por el Chat IA (ver "Implementar en Docente IA la
+// capacidad de generar imágenes...") — bucket propio, mismo criterio
+// que hojas-seguimiento: un uso distinto no comparte bucket con los
+// documentos exportables.
+export const BUCKET_IMAGENES_GENERADAS = 'imagenes-generadas-ia'
 
 const VENCIMIENTO_URL_SEGUNDOS = 60 * 60 * 24 * 7 // 7 días — tiempo de sobra para que el maestro lo descargue y lo reintente si hace falta
 
@@ -38,7 +43,7 @@ async function asegurarBucket(sb: SupabaseClient, bucket: string) {
   bucketsAsegurados.add(bucket)
 }
 
-export type TipoArchivoGenerado = 'word' | 'pdf' | 'powerpoint' | 'excel'
+export type TipoArchivoGenerado = 'word' | 'pdf' | 'powerpoint' | 'excel' | 'imagen'
 
 export type ArchivoGenerado = {
   tipo: TipoArchivoGenerado
@@ -57,6 +62,11 @@ export type ArchivoGenerado = {
   // `url` sigue siendo, sin ningún cambio, la URL firmada de descarga
   // de siempre (con `download`).
   urlVer?: string
+  // Id real de la fila en assets_visuales (ver lib/assetsVisuales.ts)
+  // — solo lo rellena ejecutarHerramientaDocumento para tipo==='imagen'.
+  // El cliente lo guarda para poder pedir "regenerar" más adelante sin
+  // perder el versionado (ver AsistenteService.materialVisualActivo).
+  assetId?: string
 }
 
 export function rutaArchivo(userId: string, nombreArchivo: string): string {

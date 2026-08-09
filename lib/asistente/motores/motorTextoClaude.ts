@@ -142,7 +142,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -173,7 +173,10 @@ export class MotorTextoClaude implements MotorConversacional {
       // documento: el servidor procesa varios MB y Claude analiza
       // varias fotos a la vez, más lento que un turno de solo texto.
       const esVariasImagenes = !!adjuntos && adjuntos.length > 1
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
+      // regenerarImagen (Fase 0+1) también necesita el margen largo —
+      // generar una imagen real con el proveedor puede tardar tanto
+      // como un documento, nunca menos.
+      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes || regenerarImagen ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -203,6 +206,10 @@ export class MotorTextoClaude implements MotorConversacional {
           // en el servidor; ambos undefined en el chat escrito.
           turnId: turnId || undefined,
           voiceDebug: voiceDebug === true ? true : undefined,
+          // Ver "Implementar en Docente IA la capacidad de generar
+          // imágenes...", Fase 0+1 — solo presente cuando
+          // AsistenteService.enviarRegeneracionImagen arma este turno.
+          regenerarImagen: regenerarImagen || undefined,
         }),
         signal: this.controlador.signal,
       })

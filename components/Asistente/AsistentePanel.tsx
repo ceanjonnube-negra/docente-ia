@@ -30,12 +30,12 @@ import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
-const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈' }
+const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', powerpoint: '📊', excel: '📈', imagen: '🖼️' }
 // Nombre corto del formato para las etiquetas "Descargar Word"/
 // "Descargar PDF"/"Compartir Word" (AJUSTE AISLADO — "descarga real en
 // Word y PDF, sin botones redundantes") — un botón por formato real
 // disponible en la tarjeta, nunca un menú de conversión.
-const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
+const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel', imagen: 'Imagen' }
 
 // Etiqueta del botón principal de descarga (AJUSTE DE NOMENCLATURA —
 // diagnóstico real en iPhone Safari: "Descargar Word" sí descarga un
@@ -293,6 +293,16 @@ function TarjetaDescarga({
           </p>
         </div>
       </div>
+      {/* Vista previa real de la imagen (ver "Implementar en Docente IA
+          la capacidad de generar imágenes...", Fase 0+1) — a diferencia
+          de los demás formatos de documento, aquí SÍ tiene sentido
+          mostrar el contenido real dentro de la tarjeta, no solo un
+          ícono. */}
+      {!vencido && principal.tipo === 'imagen' && (
+        <div className="px-4 pb-2">
+          <img src={principal.url} alt={principal.descripcion || titulo} className="w-full rounded-xl border border-gray-100 object-contain max-h-64" />
+        </div>
+      )}
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
           {archivos.map((archivo) => (
@@ -864,7 +874,7 @@ export default function AsistentePanel() {
                       key={`${m.id}-archivo-${idxGrupo}`}
                       archivos={grupo}
                       creadoEn={m.creadoEn}
-                      esActivo={asistente.documentoActivoId === m.id}
+                      esActivo={asistente.documentoActivoId === m.id || grupo.some((a) => a.assetId && a.assetId === asistente.materialVisualActivoId)}
                       resaltado={asistente.archivoReutilizadoId === m.id}
                     />
                   ))}
