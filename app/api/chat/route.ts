@@ -26,7 +26,7 @@ import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { detectarHerramientaDocumento, esDocumentoFormal, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
+import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
@@ -1642,12 +1642,31 @@ Grado: [grado] | Grupo: [grupo]
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
         const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
         const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
-        // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
-        const archivo = await conReintento(
-          () => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null),
-          'generar-archivo-combinado'
+
+        // Varios formatos pedidos en el MISMO mensaje ("...Genera
+        // también Word y PDF.", ver "fallo crítico: guía ilustrada
+        // devolvió LISTA_OFICIAL_DE_ALUMNOS.docx" — punto 3, "si se
+        // pidió PDF también se genere y se entregue"): se generan
+        // TODOS, no solo tipoHerramientaSolicitado (el de mayor
+        // prioridad). Nunca aplica a imagen suelta (un solo formato
+        // siempre). allSettled — si un formato SECUNDARIO falla, los
+        // demás igual se entregan (mejor esfuerzo); si el PRIMARIO
+        // falla, sí se propaga como error real (ver catch abajo).
+        const formatosMultiples = esImagenSuelta ? [] : detectarFormatosExplicitosMultiples(mensaje || '')
+        const formatosAGenerar = formatosMultiples.length > 1 ? formatosMultiples : [tipoHerramientaSolicitado]
+        const resultados = await Promise.allSettled(
+          formatosAGenerar.map((tipo) =>
+            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null), `generar-archivo-combinado-${tipo}`)
+          )
         )
-        const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+        const primario = resultados[0]
+        if (primario.status === 'rejected') throw primario.reason
+        const archivos = resultados.flatMap((r, i) => {
+          if (r.status === 'fulfilled') return [r.value]
+          console.error(`[PIPELINE ${etiquetaCaso3}:entrega] Falló el formato secundario ${formatosAGenerar[i]} (no bloquea los demás):`, r.reason)
+          return []
+        })
+        const marcadores = archivos.map((archivo) => `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`).join('\n')
         // El CASO 3 nunca manda el contenido redactado como texto plano
         // al chat (el maestro nunca lo ve en prosa) — pero sin él, el
         // cliente no tiene NINGÚN contenido real que reutilizar si
@@ -1659,14 +1678,14 @@ Grado: [grado] | Grupo: [grupo]
         // documento. Este marcador es SOLO para eso: se decodifica en
         // el cliente para poblar documentoActivo.texto (fuente real
         // para conversiones futuras), nunca se muestra en pantalla.
-        console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivo.nombre}`)
+        console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivos.map((a) => a.nombre).join(', ')}`)
         // La imagen no tiene "documento activo" de texto que recuperar
         // después (ver AsistenteService.materialVisualActivo, que se
         // arma directo del marcador de archivo) — DOCUMENTO_CONTENIDO
         // es específico de word/pdf/powerpoint/excel.
-        if (esImagenSuelta) return respuestaTexto(`Imagen generada correctamente.\n${marcador}`)
+        if (esImagenSuelta) return respuestaTexto(`Imagen generada correctamente.\n${marcadores}`)
         const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(texto, 'utf-8').toString('base64')}]]`
-        return respuestaTexto(`Documento generado correctamente.\n${marcador}\n${marcadorContenido}`)
+        return respuestaTexto(`Documento generado correctamente.\n${marcadores}\n${marcadorContenido}`)
       }
       console.log(`[PIPELINE ${etiquetaCaso3}:contenido] Claude no produjo un documento formal — se entrega como respuesta normal`)
       // Claude no produjo un documento formal (era más bien una consulta

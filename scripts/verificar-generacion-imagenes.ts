@@ -190,7 +190,11 @@ async function main() {
   // ============================================================
   {
     const inicioEnviarMensaje = cuerpoAsistenteService.indexOf('async enviarMensaje(texto: string')
-    const inicioDocActivo = cuerpoAsistenteService.indexOf('if (this.documentoActivo) {', inicioEnviarMensaje)
+    // ver "fallo crítico: guía ilustrada devolvió
+    // LISTA_OFICIAL_DE_ALUMNOS.docx" — el gate ahora incluye
+    // !pareceNuevoDocumento(limpio), pero sigue siendo el mismo bloque,
+    // en la misma posición relativa a materialVisualActivo.
+    const inicioDocActivo = cuerpoAsistenteService.indexOf('if (this.documentoActivo && !pareceNuevoDocumento(limpio)) {', inicioEnviarMensaje)
     const inicioMaterialVisual = cuerpoAsistenteService.indexOf('if (this.materialVisualActivo', inicioEnviarMensaje)
     verificar(inicioDocActivo !== -1 && inicioMaterialVisual !== -1 && inicioDocActivo < inicioMaterialVisual, 'enviarMensaje() evalúa documentoActivo ANTES que materialVisualActivo — un documento de texto activo sigue ganando siempre, sin cambios de comportamiento para el caso ya existente')
   }

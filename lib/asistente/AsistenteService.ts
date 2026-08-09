@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -1205,19 +1205,19 @@ class AsistenteServiceImpl {
       return
     }
 
-    // Con un documento activo: primero se revisa si el mensaje nombra un
-    // formato de archivo real ("Word", "archivo Word", "DOCX", "a PDF",
-    // "descárgalo"...) — eso es FINALIZAR ARCHIVO, se genera el archivo
-    // real directo, sin pasar por el modelo grande (ver
-    // enviarComoFinalizacion), y NUNCA se vuelve a narrar el contenido en
-    // el chat. Si el mensaje NO pide un formato, se entiende como una
-    // MODIFICACIÓN de ese mismo documento — sin importar cómo esté
-    // redactada ("agrégale...", "que tenga...", "hazlo para tercer
-    // grado...", "corrige ortografía..."): mientras exista un documento
-    // activo, cualquier mensaje que no sea una petición de archivo
-    // trabaja sobre él, nunca abre uno nuevo ni exige un verbo
-    // específico al inicio.
-    if (this.documentoActivo) {
+    // CREACIÓN NUEVA — REGLA FUNCIONAL OBLIGATORIA (ver "fallo crítico:
+    // guía ilustrada devolvió LISTA_OFICIAL_DE_ALUMNOS.docx"): si el
+    // mensaje describe un documento NUEVO ("Hazme una guía... sobre el
+    // ciclo del agua" — verbo de generación + artículo indefinido "un/
+    // una" + tipo de documento, ver pareceNuevoDocumento), SIEMPRE se
+    // trata como creación nueva, incluso si ya existe un documento
+    // activo de un tema distinto — jamás se reutiliza ni se finaliza el
+    // documento viejo con contenido que no le corresponde. Se comprueba
+    // ANTES del bloque de abajo a propósito: así ni siquiera entra a la
+    // lógica de "documento activo" (tipoFinalizar/enviarComoEdicion),
+    // cae directo al camino normal (más abajo), exactamente como si no
+    // hubiera ningún documento activo.
+    if (this.documentoActivo && !pareceNuevoDocumento(limpio)) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un

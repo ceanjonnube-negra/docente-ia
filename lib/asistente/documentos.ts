@@ -127,6 +127,45 @@ export function detectarFormatoExplicito(texto: string): TipoHerramienta | null 
   return detectarGeneracionMultimedia(texto)
 }
 
+// Cuando el maestro pide MÁS DE UN formato real en el mismo mensaje
+// ("genera también Word y PDF") — ver "fallo crítico: guía ilustrada
+// devolvió LISTA_OFICIAL_DE_ALUMNOS.docx". detectarFormatoExplicito
+// por diseño solo regresa UNO (el de mayor prioridad, pensado para "un
+// archivo a la vez"); route.ts (CASO 3) usa esta función aparte para
+// generar TODOS los formatos que el maestro nombró explícitamente en
+// un documento nuevo, nunca solo el primero. Nunca incluye imagen/
+// audio/video — esos tienen su propio flujo completamente distinto.
+export function detectarFormatosExplicitosMultiples(texto: string): TipoHerramienta[] {
+  const formatos: TipoHerramienta[] = []
+  for (const { tipo, patron } of PATRONES_FORMATO) {
+    if (tipo === 'imagen' || tipo === 'audio' || tipo === 'video') continue
+    if (patron.test(texto)) formatos.push(tipo)
+  }
+  return formatos
+}
+
+// CREACIÓN NUEVA vs. edición/finalización del documento activo (ver
+// "fallo crítico: guía ilustrada devolvió LISTA_OFICIAL_DE_ALUMNOS.docx"
+// — REGLA FUNCIONAL OBLIGATORIA). Causa raíz real del fallo: mientras
+// existe documentoActivo, CUALQUIER mensaje que nombrara un formato
+// real ("...Genera también Word y PDF") se trataba como "finaliza EL
+// documento activo en ese formato" — incluso cuando el mensaje en
+// realidad describía un tema completamente distinto y nuevo ("Hazme
+// una guía... sobre el ciclo del agua"). Esta función detecta esa
+// intención de creación nueva de forma determinista: un verbo de
+// generación (VERBO_GENERAR, ya usado en el resto de este archivo) +
+// artículo INDEFINIDO ("un"/"una", que anuncia algo nuevo) justo antes
+// de un sustantivo de documento real — a propósito exige el artículo
+// indefinido para NO disparar con instrucciones que se refieren al
+// documento YA activo con artículo definido ("hazme EL examen en
+// blanco y negro", "cámbiale el título a LA guía" siguen siendo
+// ediciones reales, no creaciones nuevas).
+const SUSTANTIVOS_DOCUMENTO = 'gu[ií]a|ficha|examen|planeaci[oó]n|actividad(es)?|cuento|f[aá]bula|lectura|comunicado|citatorio|r[uú]brica|resumen|oficio|material(es)?|cuadernillo'
+const ARTICULO_INDEFINIDO_DOCUMENTO = new RegExp(`\\b(un|una)\\s+(${SUSTANTIVOS_DOCUMENTO})\\b`, 'i')
+export function pareceNuevoDocumento(texto: string): boolean {
+  return VERBO_GENERAR.test(texto) && ARTICULO_INDEFINIDO_DOCUMENTO.test(texto)
+}
+
 export function detectarHerramientaDocumento(texto: string): TipoHerramienta | null {
   const explicito = detectarFormatoExplicito(texto)
   if (explicito) return explicito
