@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -1237,15 +1237,26 @@ class AsistenteServiceImpl {
     }
 
     // Imagen suelta activa, sin documento de texto activo (ver
-    // "Implementar en Docente IA la capacidad de generar imágenes...",
-    // Fase 0+1): mismo criterio que documentoActivo arriba — mientras
-    // exista y el mensaje sea texto simple (sin foto, fuera de voz),
-    // se interpreta como "regenerar esta imagen" ("hazla más
-    // infantil", "menos color", "otra versión"), nunca como una
-    // pregunta nueva. Con foto adjunta o en voz, sigue el camino
-    // normal de abajo — regenerar imágenes queda fuera de esos dos
-    // casos en esta fase.
-    if (this.materialVisualActivo && !adjunto && canal !== 'voz') {
+    // "corrección — distinguir IMAGE_CREATE de IMAGE_EDIT"): tres
+    // casos, en este orden —
+    // 1. El mensaje nombra explícitamente una imagen NUEVA ("Hazme una
+    //    imagen de una granja" — mismo detector que ya usa el resto
+    //    del chat, detectarHerramientaDocumento/
+    //    detectarGeneracionMultimedia): IMAGE_CREATE real, cae al
+    //    camino normal de abajo — nunca edita la activa con un tema
+    //    distinto.
+    // 2. El mensaje es una referencia/instrucción de edición
+    //    ("hazla más infantil", "quítale la mariposa", "esa
+    //    imagen..." — ver pareceEdicionDeImagenActiva, detección
+    //    determinista): IMAGE_EDIT sobre materialVisualActivo.
+    // 3. Cualquier otra cosa (pregunta sin relación, ej. "¿qué
+    //    materiales necesito para esta actividad?"): NO toca
+    //    materialVisualActivo, cae al camino normal de abajo como
+    //    conversación de texto — evita que una pregunta cualquiera se
+    //    confunda con "editar la imagen".
+    // Con foto adjunta o en voz, también cae siempre al camino normal
+    // — editar imágenes queda fuera de esos dos casos en esta fase.
+    if (this.materialVisualActivo && !adjunto && canal !== 'voz' && detectarHerramientaDocumento(limpio) !== 'imagen' && pareceEdicionDeImagenActiva(limpio)) {
       await this.enviarRegeneracionImagen(limpio)
       return
     }
@@ -1539,22 +1550,18 @@ ${instruccion}`
     this.motorTexto?.establecerHistorial(this.mensajes.slice(-20))
   }
 
-  // Mismo criterio que construirPromptEdicion, aplicado a una imagen
-  // en vez de un documento de texto (ver "Implementar en Docente IA la
-  // capacidad de generar imágenes...", Fase 0+1): combina el prompt
-  // original con el ajuste pedido — el proveedor de imágenes recibe
-  // ambos, nunca solo la instrucción suelta ("hazla más infantil" por
-  // sí sola no describe ninguna imagen).
-  private construirPromptRegeneracionImagen(promptOriginal: string, instruccion: string): string {
-    return `${promptOriginal}. Ajuste solicitado por el maestro: ${instruccion}.`
-  }
-
   // Mismo patrón que enviarComoEdicion: la burbuja del docente muestra
-  // su instrucción corta tal cual ("hazla más infantil"), pero el
-  // prompt real que recibe el generador es el original + el ajuste.
-  // Va DIRECTO al servidor con regenerarImagen (nunca pasa por
-  // Claude, ver REGENERAR IMAGEN en app/api/chat/route.ts) — acción
-  // mecánica, mismo criterio que FINALIZAR ARCHIVO.
+  // su instrucción corta tal cual ("hazla más infantil"). Ver
+  // "corrección — edición real de imágenes con el asset visual
+  // anterior como entrada": a diferencia de la edición de documentos
+  // de texto (donde SÍ hace falta reconstruir el prompt con el
+  // contenido completo), aquí la instrucción viaja TAL CUAL — la
+  // composición la preserva la imagen real que el servidor descarga y
+  // edita (ver ejecutarGeneracionImagen en herramientas.ts), nunca un
+  // prompt de texto recompuesto. Va DIRECTO al servidor con
+  // regenerarImagen (nunca pasa por Claude, ver REGENERAR IMAGEN en
+  // app/api/chat/route.ts) — acción mecánica, mismo criterio que
+  // FINALIZAR ARCHIVO.
   private async enviarRegeneracionImagen(instruccion: string) {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
@@ -1565,9 +1572,8 @@ ${instruccion}`
 
     const materialAnterior = this.materialVisualActivo
     if (!materialAnterior) return // no debería pasar (guardado por enviarMensaje), pero nunca truena aquí
-    const promptCombinado = this.construirPromptRegeneracionImagen(materialAnterior.promptOriginal, instruccion)
     try {
-      await (await this.motorDeContenido())?.enviarTexto(promptCombinado, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { assetIdAnterior: materialAnterior.id })
+      await (await this.motorDeContenido())?.enviarTexto(instruccion, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { assetIdAnterior: materialAnterior.id })
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

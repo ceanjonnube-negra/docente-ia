@@ -133,3 +133,30 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
   const normalizado = normalizar(texto)
   return FRASES_FINALIZAR_DOCUMENTO.some((frase) => normalizado.includes(frase)) ? 'word' : null
 }
+
+// IMAGE_EDIT (ver "corrección — distinguir IMAGE_CREATE de
+// IMAGE_EDIT"): frases referenciales que indican que el maestro se
+// refiere a la IMAGEN activa ("hazla más colorida", "cámbiale el
+// fondo", "quítale la mariposa", "a esa imagen..."), nunca una
+// petición nueva ni una pregunta sin relación. Detección determinista
+// por palabra/raíz (mismo criterio que el resto de este archivo —
+// nunca una llamada a IA para clasificar), pero sin exigir coincidir
+// una frase completa exacta: basta con la raíz del verbo (cámbia-,
+// pon-, quita-, agrega-...) o una referencia directa ("esa imagen",
+// "la anterior", "esta imagen", "a esa"). AsistenteService.ts la usa
+// SOLO cuando ya existe materialVisualActivo Y el mensaje no nombra
+// explícitamente una imagen nueva (ver detectarHerramientaDocumento
+// arriba) — así una pregunta sin relación ("¿qué materiales
+// necesito?") nunca se confunde con una edición de la imagen.
+// Raíz del verbo + terminaciones reales de imperativo/infinitivo con
+// enclítico (poner->ponle/ponerle/pon, cambiar->cambiale/cambiarle...)
+// — cubre las variantes de conjugación/dictado más comunes sin
+// depender de una lista cerrada de frases completas.
+const REGEX_VERBOS_EDICION_IMAGEN =
+  /\b(pon(le|erle)?|cambi[ae](le|la|lo|rle)?|quita(le|rle)?|agreg[ae](le|la|lo|rle)?|a[ñn]ad[ae](le|la|lo|rle)?|convierte(la|lo)?|edita(la|lo|rla|rlo)?|modifica(la|lo|rla|rlo)?|ajusta(la|lo|rla|rlo)?|corrige(la|lo)?|mejora(la|lo)?|hazla|hazlo)\b/
+const FRASES_REFERENCIA_IMAGEN = ['esa imagen', 'esta imagen', 'la imagen anterior', 'la anterior', 'a esa', 'de esa imagen']
+export function pareceEdicionDeImagenActiva(texto: string): boolean {
+  const normalizado = normalizar(texto)
+  if (REGEX_VERBOS_EDICION_IMAGEN.test(normalizado)) return true
+  return FRASES_REFERENCIA_IMAGEN.some((frase) => normalizado.includes(frase))
+}

@@ -172,7 +172,12 @@ async function main() {
   //        Documento activo", nunca oculta Descargar/Abrir/Compartir.
   // ============================================================
   {
-    verificar(cuerpoTarjeta.includes("esActivo && <span className=\"text-purple-600 font-semibold\">· Documento activo</span>"), '13a. esActivo sigue mostrando el indicador informativo "Documento activo"')
+    // 13a actualizado (ver "corrección — un asset de tipo imagen no
+    // debe llamarse 'Documento activo'"): el indicador ahora distingue
+    // imagen ("Imagen activa") de documento de texto ("Documento
+    // activo") — Word/PDF/PowerPoint/Excel conservan exactamente el
+    // texto de siempre, solo cambia para tipo==='imagen'.
+    verificar(cuerpoTarjeta.includes("esActivo && <span className=\"text-purple-600 font-semibold\">· {principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'}</span>"), '13a. esActivo muestra "Documento activo" para Word/PDF/PowerPoint/Excel e "Imagen activa" para imágenes — nunca clasifica una imagen como documento')
     verificar(!/esActivo\s*&&\s*otrosFormatos/.test(cuerpoTarjeta), '13b. esActivo ya no condiciona ningún menú de conversión (ese bloque completo fue eliminado)')
     const iDescargar = cuerpoTarjeta.indexOf('⬇️ Descargar')
     const bloqueBotones = cuerpoTarjeta.slice(iDescargar - 200, iDescargar + 600)

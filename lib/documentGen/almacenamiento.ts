@@ -84,6 +84,17 @@ export async function subirBuffer(sb: SupabaseClient, ruta: string, buffer: Buff
   if (error) throw new Error(`Error subiendo archivo a Storage: ${error.message}`)
 }
 
+// Descarga el buffer real ya subido (ver "corrección — edición real de
+// imágenes con el asset visual anterior como entrada"): "regenerar" una
+// imagen necesita el ARCHIVO real, no solo su texto/metadata, para que
+// el proveedor pueda editarlo conservando composición en vez de
+// reinterpretar la escena desde cero con un prompt nuevo.
+export async function descargarBuffer(sb: SupabaseClient, ruta: string, bucket: string = BUCKET_DOCUMENTOS_GENERADOS): Promise<Buffer> {
+  const { data, error } = await sb.storage.from(bucket).download(ruta)
+  if (error || !data) throw new Error(`Error descargando archivo de Storage: ${error?.message || 'sin datos'}`)
+  return Buffer.from(await data.arrayBuffer())
+}
+
 // Etapa "URL firmada" aislada — nunca pública ni permanente (ver arriba).
 // `nombreDescarga` fuerza Content-Disposition: attachment con ese nombre
 // de archivo — sin esto, Safari/Chrome en el celular a veces solo abren

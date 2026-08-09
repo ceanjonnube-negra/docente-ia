@@ -286,7 +286,7 @@ function TarjetaDescarga({
                 {tamano && <span>· {tamano}</span>}
               </>
             )}
-            {esActivo && <span className="text-purple-600 font-semibold">· Documento activo</span>}
+            {esActivo && <span className="text-purple-600 font-semibold">· {principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'}</span>}
           </p>
           <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
             {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}

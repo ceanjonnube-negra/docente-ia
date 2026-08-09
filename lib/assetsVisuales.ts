@@ -40,6 +40,22 @@ export type AssetVisualGuardado = {
   storagePath: string
 }
 
+// Ver "corrección — edición real de imágenes con el asset visual
+// anterior como entrada": antes de editar, el pipeline necesita el
+// storagePath REAL del asset anterior para descargar el archivo (ver
+// lib/documentGen/almacenamiento.ts descargarBuffer) — no basta con
+// promptOriginal como se hacía antes. null si el id no existe o no le
+// pertenece al docente autenticado (RLS ya lo garantiza vía sb).
+export async function obtenerAssetVisualPorId(sb: SupabaseClient, id: string): Promise<AssetVisualGuardado | null> {
+  const { data, error } = await sb
+    .from('assets_visuales')
+    .select('id, version, prompt_original, storage_path')
+    .eq('id', id)
+    .maybeSingle()
+  if (error || !data) return null
+  return { id: data.id, version: data.version, promptOriginal: data.prompt_original, storagePath: data.storage_path }
+}
+
 export async function guardarAssetVisual(sb: SupabaseClient, datos: AssetVisualNuevo): Promise<AssetVisualGuardado> {
   let version = 1
   if (datos.versionAnteriorId) {

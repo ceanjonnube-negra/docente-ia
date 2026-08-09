@@ -85,3 +85,18 @@ export function tamanoParaFormato(formato: SolicitudImagen['formato']): '1024x10
   if (formato === 'vertical') return '1024x1536'
   return '1024x1024'
 }
+
+const REGLAS_FIJAS_PARA_EDICION =
+  'Apropiada para educación básica en México: sin violencia, sin contenido sexual, sin texto ilegible, sin marcas de agua, sin logotipos de marcas reales.'
+
+// Prompt de EDICIÓN (ver "corrección — edición real de imágenes con el
+// asset visual anterior como entrada"): a diferencia de
+// construirPromptFinal (genera desde cero), aquí la imagen original YA
+// viaja como entrada visual real al proveedor — este prompt nunca
+// vuelve a describir la escena completa, solo dice QUÉ cambiar y
+// ordena EXPLÍCITAMENTE conservar todo lo demás. Sin esta instrucción
+// explícita, el modelo puede reinterpretar libremente lo que el
+// maestro no mencionó.
+export function construirPromptEdicionImagen(instruccion: string): string {
+  return `Edita esta imagen exacta siguiendo esta instrucción: ${instruccion.trim()}. Conserva la MISMA composición, encuadre, elementos principales, su posición relativa y las proporciones generales de la imagen original — cambia ÚNICAMENTE lo que la instrucción pide, nunca reinterpretes ni rediseñes la escena desde cero. ${REGLAS_FIJAS_PARA_EDICION}`
+}

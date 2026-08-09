@@ -20,9 +20,11 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 // NUNCA se importa herramientas.ts/ImageGenerationService.ts/
 // AsistenteService.ts aquí — todos transitivamente tocan un cliente
-// real (Supabase u OpenAI) o el navegador. reglasVisuales.ts SÍ es
-// seguro: puro, sin red, sin `process.env` en el módulo.
+// real (Supabase u OpenAI) o el navegador. reglasVisuales.ts y
+// lib/asistente/documentos.ts SÍ son seguros: puros, sin imports, sin
+// red, sin `process.env` en el módulo.
 import { construirPromptFinal, tamanoParaFormato } from '../lib/imageGen/reglasVisuales'
+import { pareceEdicionDeImagenActiva, detectarHerramientaDocumento } from '../lib/asistente/documentos'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -99,6 +101,28 @@ async function main() {
   verificar(cuerpoHerramientas.includes('No se pudo guardar el registro del asset visual (no bloquea la entrega)'), 'Un fallo guardando el registro en BD nunca bloquea la entrega de la imagen ya generada y verificada (mejor esfuerzo real, no un requisito duro)')
 
   // ============================================================
+  // 3b. EDICIÓN real con la imagen anterior como entrada (ver
+  //     "corrección — edición real de imágenes con el asset visual
+  //     anterior como entrada"): con versionAnteriorId, el pipeline
+  //     DESCARGA el archivo real y lo edita — nunca regenera desde
+  //     cero con solo texto.
+  // ============================================================
+  {
+    const inicioFn = cuerpoHerramientas.indexOf('async function ejecutarGeneracionImagen(')
+    const finFn = cuerpoHerramientas.indexOf('\nfunction medirEtapaSync', inicioFn)
+    const cuerpoFn = cuerpoHerramientas.slice(inicioFn, finFn)
+    verificar(cuerpoFn.includes('if (versionAnteriorId) {'), 'ejecutarGeneracionImagen distingue explícitamente el caso de edición (versionAnteriorId presente) del de generación nueva')
+    verificar(cuerpoFn.includes('obtenerAssetVisualPorId(supabaseUser, versionAnteriorId)'), 'La edición busca la fila real del asset anterior (para obtener su storagePath) — nunca reconstruye el archivo solo a partir de metadata')
+    verificar(cuerpoFn.includes('descargarBuffer(sb, assetAnterior.storagePath, BUCKET_IMAGENES_GENERADAS)'), 'La edición DESCARGA el buffer real de la imagen anterior desde Storage')
+    verificar(cuerpoFn.includes('editarImagen(bufferOriginal, prompt)'), 'La edición llama a editarImagen() con el buffer REAL descargado — nunca a generarImagen() (texto→imagen desde cero) cuando hay versionAnteriorId')
+    const iRamaEdicion = cuerpoFn.indexOf('if (versionAnteriorId) {')
+    const iElse = cuerpoFn.indexOf('} else {', iRamaEdicion)
+    const ramaEdicionSola = cuerpoFn.slice(iRamaEdicion, iElse)
+    verificar(iRamaEdicion !== -1 && iElse !== -1 && !ramaEdicionSola.includes('generarImagen({ prompt })'), 'La rama de edición (antes del else) nunca cae en generarImagen() (generación desde cero) — están completamente separadas')
+  }
+  verificar(cuerpoHerramientas.includes('descargarBuffer') && cuerpoHerramientas.includes('obtenerAssetVisualPorId'), 'herramientas.ts importa las funciones reales de descarga/consulta necesarias para editar')
+
+  // ============================================================
   // 4. almacenamiento.ts — bucket nuevo, tipo extendido, assetId
   //    aditivo (nunca rompe ArchivoGenerado/ArchivoGeneradoInfo
   //    existentes, ambos opcionales).
@@ -106,6 +130,18 @@ async function main() {
   verificar(cuerpoAlmacenamiento.includes("BUCKET_IMAGENES_GENERADAS = 'imagenes-generadas-ia'"), 'Bucket propio para imágenes, mismo patrón que BUCKET_HOJAS_SEGUIMIENTO')
   verificar(cuerpoAlmacenamiento.includes("TipoArchivoGenerado = 'word' | 'pdf' | 'powerpoint' | 'excel' | 'imagen'"), "TipoArchivoGenerado extendido de forma aditiva con 'imagen'")
   verificar(cuerpoAlmacenamiento.includes('assetId?: string'), 'assetId es opcional en ArchivoGenerado — nunca rompe los generadores existentes que no lo usan')
+  verificar(cuerpoAlmacenamiento.includes('export async function descargarBuffer('), 'Existe descargarBuffer() — necesaria para poder editar una imagen ya generada')
+  verificar(cuerpoAssetsVisuales.includes('export async function obtenerAssetVisualPorId('), 'Existe obtenerAssetVisualPorId() — necesaria para recuperar el storagePath real del asset anterior antes de editarlo')
+
+  // ============================================================
+  // 4b. ImageGenerationService/openaiImagenes — editar() es una
+  //     operación real imagen→imagen (images.edit), NUNCA
+  //     images.generate reetiquetado.
+  // ============================================================
+  verificar(cuerpoImageService.includes('editar(bufferOriginal: Buffer, promptFinal: string)') && cuerpoImageService.includes('export async function editarImagen('), 'ProveedorImagenes.editar() recibe el buffer REAL de la imagen anterior — la abstracción ya contempla edición, no solo generación')
+  verificar(cuerpoProveedorOpenAI.includes('.images.edit({') && cuerpoProveedorOpenAI.includes("image: archivoOriginal"), 'editarImagenOpenAI llama a client.images.edit() con la imagen real como parámetro `image` — nunca client.images.generate()')
+  verificar(cuerpoProveedorOpenAI.includes("input_fidelity: 'high'"), 'editarImagenOpenAI pide input_fidelity alto — el proveedor debe esforzarse en conservar el estilo/composición de la imagen de entrada')
+  verificar(cuerpoProveedorOpenAI.includes("import OpenAI, { toFile } from 'openai'") && cuerpoProveedorOpenAI.includes('await toFile(bufferOriginal,'), 'El buffer se convierte a un archivo real (toFile) antes de mandarlo — mismo SDK oficial, sin reimplementar multipart a mano')
 
   // ============================================================
   // 5. Migración assets_visuales — 100% aditiva, RLS "solo titular",
@@ -159,9 +195,34 @@ async function main() {
     verificar(inicioDocActivo !== -1 && inicioMaterialVisual !== -1 && inicioDocActivo < inicioMaterialVisual, 'enviarMensaje() evalúa documentoActivo ANTES que materialVisualActivo — un documento de texto activo sigue ganando siempre, sin cambios de comportamiento para el caso ya existente')
   }
   verificar(cuerpoAsistenteService.includes('private materialVisualActivo: MaterialVisualActivoGuardado | null = null'), 'Existe el campo materialVisualActivo, separado de documentoActivo')
-  verificar(cuerpoAsistenteService.includes('await this.enviarRegeneracionImagen(limpio)'), 'Un mensaje de texto simple con materialVisualActivo activo (sin documentoActivo) se enruta a regeneración')
-  verificar(cuerpoAsistenteService.includes('construirPromptRegeneracionImagen(materialAnterior.promptOriginal, instruccion)'), 'La regeneración combina el prompt original con el ajuste pedido — nunca manda la instrucción suelta al proveedor')
+  verificar(cuerpoAsistenteService.includes('await this.enviarRegeneracionImagen(limpio)'), 'Un mensaje de texto simple con materialVisualActivo activo (sin documentoActivo) puede enrutarse a edición')
+  verificar(!cuerpoAsistenteService.includes('construirPromptRegeneracionImagen'), 'Ya NO existe construirPromptRegeneracionImagen (texto) — la composición ahora la preserva la imagen real, no un prompt recompuesto (ver corrección de edición real)')
+  verificar(/await \(await this\.motorDeContenido\(\)\)\?\.\s*enviarTexto\(instruccion,/.test(cuerpoAsistenteService), 'enviarRegeneracionImagen manda la instrucción del docente TAL CUAL (sin combinarla con texto previo)')
   verificar(cuerpoAsistenteService.includes("evento.archivo?.tipo === 'imagen'") , 'La respuesta de una imagen suelta (CASO 3) NUNCA se trata como documentoActivo — tiene su propia rama')
+
+  // ============================================================
+  // 8b. Clasificación IMAGE_CREATE / IMAGE_EDIT / conversación normal
+  //     (ver "corrección — distinguir IMAGE_CREATE de IMAGE_EDIT" y
+  //     "el docente pregunta algo sin relación con materialVisualActivo
+  //     activo no debe editar la imagen").
+  // ============================================================
+  {
+    const lineaGate = "if (this.materialVisualActivo && !adjunto && canal !== 'voz' && detectarHerramientaDocumento(limpio) !== 'imagen' && pareceEdicionDeImagenActiva(limpio)) {"
+    verificar(cuerpoAsistenteService.includes(lineaGate), 'Existe un único gate de enrutamiento para materialVisualActivo, con las 4 condiciones combinadas (activo, sin foto, sin voz, no es imagen nueva, sí parece edición)')
+    verificar(cuerpoAsistenteService.includes(lineaGate) , "El gate excluye explícitamente los mensajes que nombran una imagen NUEVA (IMAGE_CREATE, detectarHerramientaDocumento(limpio) !== 'imagen') — nunca los trata como edición de la activa")
+    verificar(cuerpoAsistenteService.includes(lineaGate), 'El gate exige que el mensaje sea realmente una referencia/instrucción de edición (pareceEdicionDeImagenActiva) — una pregunta sin relación NUNCA entra aquí, cae a la conversación normal de abajo sin tocar materialVisualActivo')
+  }
+  {
+    // Ejecución REAL de pareceEdicionDeImagenActiva/detectarHerramientaDocumento
+    // contra el escenario exacto reportado — sin mockear nada, son
+    // funciones puras.
+    verificar(pareceEdicionDeImagenActiva('Ahora hazla como dibujo para colorear.'), 'IMAGE_EDIT real: "hazla como dibujo para colorear" se detecta como edición')
+    verificar(pareceEdicionDeImagenActiva('Ahora vuelve a ponerle color, pero en tonos pastel.'), 'IMAGE_EDIT real: "ponerle color" (conjugación con -erle) se detecta como edición')
+    verificar(pareceEdicionDeImagenActiva('Cámbiale el fondo'), 'IMAGE_EDIT real: "Cámbiale" (con acento/mayúscula) se detecta pese a la normalización')
+    verificar(pareceEdicionDeImagenActiva('Quítale la mariposa') && pareceEdicionDeImagenActiva('Agrégale un árbol'), 'IMAGE_EDIT real: "Quítale"/"Agrégale" se detectan')
+    verificar(detectarHerramientaDocumento('Hazme una imagen de una granja.') === 'imagen', 'IMAGE_CREATE real: "Hazme una imagen de una granja" se detecta como imagen NUEVA (el gate de arriba la excluye de edición)')
+    verificar(!pareceEdicionDeImagenActiva('¿Qué materiales necesito para trabajar esta actividad?'), 'Conversación normal real: una pregunta sin relación NO se detecta como edición de imagen — nunca contamina materialVisualActivo')
+  }
   verificar(!/this\.actualizarDocumentoActivo\([^)]*\)\s*\n\s*\} else if \(msg && evento\.archivo\)/.test(cuerpoAsistenteService), 'La rama de imagen no cae accidentalmente en actualizarDocumentoActivo (documentoActivo sigue siendo exclusivamente para documentos de texto)')
   verificar(cuerpoAsistenteService.includes('guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo, this.materialVisualActivo)'), 'materialVisualActivo se persiste junto con la conversación — sobrevive a recargar la app (regla general del proyecto: guardar de forma permanente)')
   verificar(cuerpoAsistenteService.includes('this.materialVisualActivo = datos.materialVisualActivo'), 'abrirConversacion() restaura materialVisualActivo al reabrir una conversación guardada')
@@ -185,6 +246,11 @@ async function main() {
     const cuerpoTarjeta = cuerpoPanel.slice(iTarjeta, iFinTarjeta)
     verificar(cuerpoTarjeta.includes("principal.tipo === 'imagen'") && cuerpoTarjeta.includes('<img'), 'La tarjeta muestra una vista previa real (<img>) cuando el archivo es una imagen')
     verificar(!/sendMessage|handleSend|enviarMensaje|setInput|AsistenteService\./.test(cuerpoTarjeta), 'La vista previa de imagen NO agrega ningún botón/acción que llame a AsistenteService/enviarMensaje — la tarjeta sigue siendo de solo lectura, regenerar se pide escribiendo, igual que editar un documento de texto')
+    // Ver "corrección — un asset de tipo imagen no debe llamarse
+    // 'Documento activo'": el indicador distingue imagen de documento,
+    // sin tocar el resto de la tarjeta (Word/PDF/PowerPoint/Excel
+    // conservan el texto de siempre).
+    verificar(cuerpoTarjeta.includes("principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'"), '10b. El indicador "activo" dice "Imagen activa" para imágenes y "Documento activo" para el resto — una imagen nunca se rotula como documento')
   }
 
   console.log('')

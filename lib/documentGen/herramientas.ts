@@ -34,10 +34,10 @@ import { generarWordBuffer, nombreArchivoWordServidor } from './generarWordServi
 import { generarPdfBuffer, nombreArchivoPdf } from './generarPdfServidor'
 import { generarPptxBuffer, nombreArchivoPptx } from './generarPptxServidor'
 import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
-import { subirBuffer, crearUrlFirmada, rutaArchivo, BUCKET_IMAGENES_GENERADAS, type ArchivoGenerado } from './almacenamiento'
+import { subirBuffer, crearUrlFirmada, descargarBuffer, rutaArchivo, BUCKET_IMAGENES_GENERADAS, type ArchivoGenerado } from './almacenamiento'
 import { extraerTitulo } from './parseContenido'
-import { generarImagen } from '../imageGen/ImageGenerationService'
-import { guardarAssetVisual } from '../assetsVisuales'
+import { generarImagen, editarImagen } from '../imageGen/ImageGenerationService'
+import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
 
 export class HerramientaNoDisponibleError extends Error {}
 
@@ -262,14 +262,40 @@ async function ejecutarGeneracionImagen(
   conversacionId: string | null,
   versionAnteriorId: string | null
 ): Promise<ArchivoGenerado> {
-  console.log(`[IMAGEN_EXPORT] userId=${userId} — solicitud de generación de imagen recibida`)
+  console.log(`[IMAGEN_EXPORT] userId=${userId} — solicitud de ${versionAnteriorId ? 'EDICIÓN' : 'generación'} de imagen recibida`)
 
+  // EDICIÓN real (ver "corrección — edición real de imágenes con el
+  // asset visual anterior como entrada"): con versionAnteriorId, la
+  // imagen ORIGINAL (el archivo real, descargado de Storage) viaja
+  // como entrada visual al proveedor — nunca se regenera desde cero
+  // con texto, así se conserva la composición real en vez de
+  // reinterpretar la escena. `prompt` aquí es la instrucción corta del
+  // maestro ("hazla más colorida"), no un prompt recompuesto.
   let imagen: Awaited<ReturnType<typeof generarImagen>>
-  try {
-    imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt }))
-  } catch (err) {
-    console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
-    throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')
+  if (versionAnteriorId) {
+    if (!supabaseUser) throw new ErrorHerramientaDocumento('IMAGEN-EDIT-SESION', 'No fue posible identificar la sesión para editar la imagen')
+    const assetAnterior = await obtenerAssetVisualPorId(supabaseUser, versionAnteriorId)
+    if (!assetAnterior) throw new ErrorHerramientaDocumento('IMAGEN-EDIT-NOENCONTRADO', 'No se encontró la imagen original a editar')
+    let bufferOriginal: Buffer
+    try {
+      bufferOriginal = await medirEtapa('IMAGEN:descarga-original', () => descargarBuffer(sb, assetAnterior.storagePath, BUCKET_IMAGENES_GENERADAS))
+    } catch (err) {
+      console.error('[PIPELINE IMAGEN:descarga-original] Falló descargando la imagen original a editar:', err)
+      throw new ErrorHerramientaDocumento('IMAGEN-EDIT-DESCARGA', 'Fallo recuperando la imagen original a editar')
+    }
+    try {
+      imagen = await medirEtapa('IMAGEN:edicion', () => editarImagen(bufferOriginal, prompt))
+    } catch (err) {
+      console.error('[PIPELINE IMAGEN:edicion] Falló editando la imagen:', err)
+      throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo editando la imagen')
+    }
+  } else {
+    try {
+      imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt }))
+    } catch (err) {
+      console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
+      throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')
+    }
   }
 
   try {
