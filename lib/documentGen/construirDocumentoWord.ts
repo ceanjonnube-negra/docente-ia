@@ -56,11 +56,13 @@ const esBullet = (linea: string): boolean => {
 }
 
 // Marcador de ilustración (ver "Documentos ilustrados...", Fase 2A) —
-// mismo patrón que REGEX_MARCADOR_IMAGEN en parseContenido.ts, pero
-// este archivo tiene su propio parseo de línea (no usa
-// analizarContenido), así que se repite aquí en vez de compartir un
-// tipo LineaDocumento que este archivo no usa.
-const REGEX_MARCADOR_IMAGEN = /^\[\[IMAGEN:\s*(.+?)\]\]$/
+// mismo patrón que REGEX_MARCADOR_IMAGEN en parseContenido.ts (sin
+// anclas ^/$ a propósito, ver ese archivo — nunca deja la sintaxis
+// cruda [[IMAGEN:...]] visible en el documento aunque Claude anteponga
+// texto en la misma línea), pero este archivo tiene su propio parseo
+// de línea (no usa analizarContenido), así que se repite aquí en vez
+// de compartir un tipo LineaDocumento que este archivo no usa.
+const REGEX_MARCADOR_IMAGEN = /\[\[IMAGEN:\s*(.+?)\]\]/
 const esImagen = (linea: string): string | null => linea.trim().match(REGEX_MARCADOR_IMAGEN)?.[1]?.trim() ?? null
 
 // "EQUIPO 1", "EQUIPO 2"... — un tipo de sección aparte del título

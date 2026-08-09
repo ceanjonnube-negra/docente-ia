@@ -20,7 +20,14 @@ export type LineaDocumento =
 // quiereIlustracion). herramientas.ts genera la imagen real para cada
 // descripción ANTES de armar el documento final — este archivo solo
 // necesita reconocer dónde va cada una.
-const REGEX_MARCADOR_IMAGEN = /^\[\[IMAGEN:\s*(.+?)\]\]$/
+// Sin anclas ^/$ a propósito (ver "corrección estructural: nunca dejar
+// el prompt textual visible en el documento final si el marcador no
+// vino perfectamente aislado en su propia línea", requisito 5): si
+// Claude antepone texto ("Ilustración: [[IMAGEN: ...]]") el marcador
+// se sigue reconociendo en cualquier parte de la línea — la línea
+// COMPLETA se trata como imagen (nunca se imprime la sintaxis cruda
+// [[IMAGEN:...]] ni ningún texto que la acompañe).
+const REGEX_MARCADOR_IMAGEN = /\[\[IMAGEN:\s*(.+?)\]\]/
 
 export function analizarContenido(texto: string): LineaDocumento[] {
   const lineas = texto

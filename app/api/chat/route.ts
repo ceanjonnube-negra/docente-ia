@@ -26,7 +26,7 @@ import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
+import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
@@ -553,7 +553,24 @@ export async function POST(req: NextRequest) {
     if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
       documentoTexto = finalizarArchivo.documentoTexto
       fuenteContenido = 'cliente'
-    } else {
+    } else if (!pareceNuevoDocumento(mensaje || '')) {
+      // CAUSA RAÍZ real de "la guía ilustrada devolvió un documento
+      // viejo" (ver "corrección estructural: la guía siguió
+      // devolviendo un documento viejo o incorrecto"): esta "red de
+      // seguridad" busca en el HISTORIAL COMPLETO de la conversación
+      // cualquier mensaje anterior que "parezca documento formal" —
+      // completamente independiente de documentoActivo (que vive solo
+      // en el cliente). Un mensaje como "Hazme una guía... sobre el
+      // ciclo del agua... Genera también Word y PDF" nombra un formato
+      // real (dispara tipoHerramientaSolicitado) pero también describe
+      // contenido NUEVO — sin este chequeo, encontraba y reutilizaba
+      // CUALQUIER documento formal viejo de la conversación (lista de
+      // alumnos, una hoja de otro tema...) sin llegar a llamar a
+      // Claude ni una sola vez. pareceNuevoDocumento (mismo detector
+      // que ya usa AsistenteService.ts) evita esta búsqueda por
+      // completo cuando el mensaje describe algo nuevo — cae al flujo
+      // normal de abajo (CASO 3), que SÍ llama a Claude con el mensaje
+      // actual.
       const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
       if (ultimoDocumento) {
         documentoTexto = ultimoDocumento.content
@@ -1307,7 +1324,11 @@ MODO IMAGEN ACTIVO — el maestro pidió una imagen suelta (no un documento). Tu
   const esDocumentoIlustrado = (tipoHerramientaSolicitado === 'word' || tipoHerramientaSolicitado === 'pdf') && quiereIlustracion(mensaje || '')
   const bloqueDocumentoIlustrado = esDocumentoIlustrado ? `
 
-MODO DOCUMENTO ILUSTRADO ACTIVO — el maestro pidió este documento CON ilustraciones. Sigue exactamente las reglas de MODO DOCUMENTO de abajo (título en mayúsculas y emoji, secciones, viñetas), pero además: en los puntos donde una ilustración realmente ayude a entender o hacer más atractivo el contenido (nunca decorativa sin propósito), inserta una línea SOLA con este formato exacto: [[IMAGEN: descripción clara y específica de qué debe mostrar la ilustración, en español]]. Máximo 4 líneas [[IMAGEN:...]] en todo el documento — nunca satures de imágenes, prioriza equilibrio entre texto e imagen. Cada descripción debe ser específica y apropiada para el grado/tema del documento (ej. estilo infantil y simple para primaria baja, ilustraciones didácticas para ciencias, línea limpia para material "para colorear" si el maestro lo pidió así). La línea [[IMAGEN:...]] va SOLA, nunca junto con otro texto en la misma línea, y nunca la menciones ni la expliques en prosa — esta aplicación la reemplaza automáticamente por la imagen real al generar el archivo.` : ''
+MODO DOCUMENTO ILUSTRADO ACTIVO — el maestro pidió este documento CON ilustraciones. Sigue exactamente las reglas de MODO DOCUMENTO de abajo (título en mayúsculas y emoji, secciones, viñetas), pero además: en los puntos donde una ilustración realmente ayude a entender o hacer más atractivo el contenido (nunca decorativa sin propósito), inserta una línea SOLA con EXACTAMENTE este formato, sin variaciones:
+[[IMAGEN: descripción clara y específica de qué debe mostrar la ilustración, en español]]
+Ejemplo real de una línea correcta, tal cual, en su propio renglón, sin nada antes ni después:
+[[IMAGEN: dibujo infantil y colorido de una planta señalando raíz, tallo, hoja y flor, fondo blanco]]
+Máximo 4 líneas [[IMAGEN:...]] en todo el documento — nunca satures de imágenes, prioriza equilibrio entre texto e imagen. Cada descripción debe ser específica y apropiada para el grado/tema del documento (ej. estilo infantil y simple para primaria baja, ilustraciones didácticas para ciencias, línea limpia para material "para colorear" si el maestro lo pidió así). PROHIBIDO escribir "Ilustración:", "Imagen:", una descripción en prosa, o cualquier otra variante fuera de los corchetes dobles [[IMAGEN:...]] — esa línea nunca debe ser legible como texto normal para el maestro, es un marcador técnico que esta aplicación reemplaza automáticamente por la imagen real al generar el archivo.` : ''
 
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
