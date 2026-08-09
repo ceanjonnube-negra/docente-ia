@@ -103,7 +103,7 @@ async function main() {
   //    ANTES de decidir editar/finalizar el documento activo.
   // ============================================================
   verificar(cuerpoAsistenteService.includes('if (this.documentoActivo && !pareceNuevoDocumento(limpio)) {'), 'enviarMensaje() excluye explícitamente los mensajes de creación nueva del bloque de documento activo — nunca los trata como edición/finalización del documento viejo')
-  verificar(cuerpoAsistenteService.includes("pareceNuevoDocumento, type TipoHerramienta } from './documentos'"), 'pareceNuevoDocumento se importa realmente desde lib/asistente/documentos.ts (no una copia local)')
+  verificar(/import \{[^}]*\bpareceNuevoDocumento\b[^}]*\} from '\.\/documentos'/.test(cuerpoAsistenteService), 'pareceNuevoDocumento se importa realmente desde lib/asistente/documentos.ts (no una copia local)')
 
   // ============================================================
   // 6. app/api/chat/route.ts — CASO 3 genera TODOS los formatos

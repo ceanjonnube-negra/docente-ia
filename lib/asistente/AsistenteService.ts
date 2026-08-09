@@ -10,10 +10,19 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
+import {
+  iniciarTrabajoDocumento,
+  consultarTrabajo,
+  generarRequestId as generarRequestIdTrabajo,
+  guardarTrabajoActivo,
+  leerTrabajoActivo,
+  limpiarTrabajoActivo,
+  type EstadoTrabajoConsultado,
+} from './trabajoDocumentoCliente'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -273,6 +282,15 @@ class AsistenteServiceImpl {
   // "el mensaje siguiente trabaja sobre lo último activo" que ya usa
   // documentoActivo, aplicado a imágenes.
   private materialVisualActivo: MaterialVisualActivoGuardado | null = null
+  // Ver "corrección: timeout en documentos ilustrados largos" — id del
+  // trabajo asíncrono que se está siguiendo ahora mismo (queued/
+  // generando), null el resto del tiempo. Mismo criterio que
+  // turnoActivoId en la arquitectura durable del chat (rama aparte,
+  // nunca importada aquí): comprobar que siga siendo EXACTAMENTE este
+  // trabajo antes de tocar this.mensajes evita que un tick de polling
+  // tardío produzca una segunda burbuja.
+  private trabajoDocumentoActivoId: string | null = null
+  private pollingTrabajoTimer: ReturnType<typeof setTimeout> | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -561,6 +579,11 @@ class AsistenteServiceImpl {
     this.materialVisualActivo = datos.materialVisualActivo ?? null
     this.limpiarEstadoTransitorio()
     this.notificar()
+    // Ver "corrección: timeout en documentos ilustrados largos" — si
+    // esta conversación tiene un trabajo de documento pendiente de una
+    // sesión anterior (la app se cerró por completo mientras
+    // generaba), se retoma justo al abrirla.
+    this.reanudarTrabajoDocumentoPendienteSiExiste()
   }
 
   // Borra una conversación guardada de forma permanente — si era la
@@ -1261,6 +1284,21 @@ class AsistenteServiceImpl {
       return
     }
 
+    // Documento ilustrado o de varios formatos a la vez (ver
+    // "corrección: timeout en documentos ilustrados largos") — Claude
+    // redactando una guía larga + hasta 4 ilustraciones reales puede
+    // tardar más de lo que Safari/iPhone espera en una sola respuesta
+    // bloqueante. Se detecta con las MISMAS funciones deterministas
+    // que ya usa el servidor para decidir si activa MODO DOCUMENTO
+    // ILUSTRADO/genera varios formatos — nunca una heurística nueva.
+    // Un mensaje normal (sin mención de ilustración, un solo formato)
+    // sigue exactamente el camino síncrono de siempre, sin pasar por
+    // aquí — cero cambio de comportamiento para el caso común.
+    if (!adjunto && canal !== 'voz' && (quiereIlustracion(limpio) || detectarFormatosExplicitosMultiples(limpio).length > 1)) {
+      await this.enviarComoTrabajoDocumento(limpio)
+      return
+    }
+
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
@@ -1579,6 +1617,117 @@ ${instruccion}`
     }
   }
 
+  // --- Trabajo asíncrono de documento (ver "corrección: timeout en
+  // documentos ilustrados largos") ---
+  // Reutiliza manejarEventoMotor({tipo:'error', ...}) para una falla
+  // REAL (nunca una desconexión: el POST de creación responde en
+  // milisegundos, ni siquiera espera a que empiece la generación) —
+  // mismo camino, mismo aviso, que ya usa el resto de la aplicación.
+  private async enviarComoTrabajoDocumento(texto: string) {
+    const historialPrevio = this.mensajes.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }]
+    this.turnoAbierto = null
+    this.generando = true
+    this.notificar()
+
+    const requestId = generarRequestIdTrabajo()
+    try {
+      const { trabajoId } = await iniciarTrabajoDocumento(texto, this.contexto, historialPrevio, requestId, null)
+      this.trabajoDocumentoActivoId = trabajoId
+      guardarTrabajoActivo({ trabajoId, requestId, conversacionId: this.conversacionActivaId })
+      this.notificar()
+      this.iniciarPollingTrabajoDocumento(trabajoId)
+    } catch (err) {
+      this.generando = false
+      this.manejarEventoMotor({ tipo: 'error', mensaje: err instanceof Error ? err.message : 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    }
+  }
+
+  // Polling ligero — cada tick comprueba que trabajoDocumentoActivoId
+  // siga siendo EXACTAMENTE este trabajo antes de aplicar cualquier
+  // cambio, así un tick tardío (después de que el trabajo ya se
+  // hidrató, o el docente ya mandó otro mensaje) nunca hace nada.
+  private iniciarPollingTrabajoDocumento(trabajoId: string, intervaloMs = 3000) {
+    if (this.pollingTrabajoTimer) clearTimeout(this.pollingTrabajoTimer)
+    const tick = async () => {
+      if (this.trabajoDocumentoActivoId !== trabajoId) return
+      try {
+        const { session } = await obtenerPerfilYSesion()
+        if (!session?.access_token) throw new Error('Sesión no encontrada.')
+        const trabajo = await consultarTrabajo(trabajoId, session.access_token)
+        if (this.trabajoDocumentoActivoId !== trabajoId) return
+        if (trabajo.estado === 'completado') { this.hidratarTrabajoDocumentoCompletado(trabajo); return }
+        if (trabajo.estado === 'fallido') { this.manejarTrabajoDocumentoFallido(trabajo); return }
+      } catch {
+        // Fallo de RED consultando el estado (el docente sigue sin
+        // conexión) — nunca se marca fallido solo por esto, se
+        // reintenta en el próximo tick. La fuente de verdad real sigue
+        // viva en el servidor sin importar cuántos ticks fallen aquí.
+      }
+      if (this.trabajoDocumentoActivoId === trabajoId) {
+        this.pollingTrabajoTimer = setTimeout(tick, intervaloMs)
+      }
+    }
+    this.pollingTrabajoTimer = setTimeout(tick, intervaloMs)
+  }
+
+  // Hidrata la respuesta completa exactamente UNA vez. Mismo criterio
+  // que evento.archivo en manejarEventoMotor: si el resultado trae
+  // contenidoOriginal (ver [[DOCUMENTO_CONTENIDO:...]] en route.ts),
+  // se usa ESE para fijar documentoActivo.texto — nunca el texto
+  // envoltorio ("Documento generado correctamente."), o las ediciones
+  // futuras ("agrégale una sección al final") partirían de un texto
+  // vacío de contenido real.
+  private hidratarTrabajoDocumentoCompletado(trabajo: EstadoTrabajoConsultado) {
+    if (this.trabajoDocumentoActivoId !== trabajo.id) return
+    this.trabajoDocumentoActivoId = null
+    this.generando = false
+    limpiarTrabajoActivo()
+    const texto = trabajo.resultado?.mensaje?.trim() || 'No pude generar el documento. Intenta de nuevo.'
+    const archivos = trabajo.resultado?.archivos ?? []
+    const archivo = archivos.length > 0 ? archivos[0] : undefined
+    const idNuevo = nuevoId()
+    this.mensajes = [
+      ...this.mensajes,
+      { id: idNuevo, rol: 'asistente', texto, creadoEn: Date.now(), archivo, archivos: archivos.length > 0 ? archivos : undefined },
+    ]
+    const contenidoReal = trabajo.resultado?.contenidoOriginal
+    if (contenidoReal) this.actualizarDocumentoActivo(idNuevo, contenidoReal, archivo)
+    else if (esDocumentoFormal(texto)) this.actualizarDocumentoActivo(idNuevo, texto, archivo)
+    this.notificar()
+  }
+
+  // Falla REAL del backend/proveedor (estado=fallido, con error
+  // técnico controlado ya guardado por el endpoint) — nunca por una
+  // simple desconexión del cliente, que ni siquiera llega hasta aquí
+  // (ver iniciarPollingTrabajoDocumento: un fallo de red consultando
+  // reintenta, no marca fallido).
+  private manejarTrabajoDocumentoFallido(trabajo: EstadoTrabajoConsultado) {
+    if (this.trabajoDocumentoActivoId !== trabajo.id) return
+    this.trabajoDocumentoActivoId = null
+    this.generando = false
+    limpiarTrabajoActivo()
+    this.manejarEventoMotor({ tipo: 'error', mensaje: trabajo.error || 'No fue posible generar el documento. Intenta de nuevo.' })
+  }
+
+  // Recuperación automática al volver (visibilitychange/pageshow/
+  // focus/online, ver los listeners al final de este archivo, y
+  // abrirConversacion). Nunca crea una burbuja nueva ni reenvía el
+  // prompt: solo retoma el polling del trabajo que YA existe. Si el
+  // docente cambió a OTRA conversación mientras tanto, no se hidrata
+  // aquí a propósito — se recoge la próxima vez que esta MISMA
+  // conversación esté activa y llegue un evento de reconexión.
+  reanudarTrabajoDocumentoPendienteSiExiste() {
+    if (this.trabajoDocumentoActivoId) return
+    const guardado = leerTrabajoActivo()
+    if (!guardado || guardado.conversacionId !== this.conversacionActivaId) return
+    this.trabajoDocumentoActivoId = guardado.trabajoId
+    this.generando = true
+    this.notificar()
+    this.iniciarPollingTrabajoDocumento(guardado.trabajoId, 500)
+  }
+
   private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
@@ -1712,8 +1861,26 @@ if (typeof document !== 'undefined') {
   // instante para no perder los últimos cambios si el sistema recarga la
   // página al volver.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) AsistenteService.guardarInmediatamente()
+    if (document.hidden) {
+      AsistenteService.guardarInmediatamente()
+    } else {
+      // Ver "corrección: timeout en documentos ilustrados largos" — el
+      // docente vuelve a la app (sale de Safari, abre otra app, bloquea
+      // el iPhone y regresa) — si había un trabajo de documento
+      // pendiente, se retoma solo, sin que el docente tenga que
+      // escribir nada.
+      AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste()
+    }
   })
+  // pageshow cubre "recargar la página"/volver desde la caché de
+  // retroceso de Safari (bfcache) — visibilitychange no siempre se
+  // dispara igual en ese camino específico de iOS.
+  window.addEventListener('pageshow', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
+  window.addEventListener('focus', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
+  // Pérdida temporal de conexión — al recuperar red, si había un
+  // trabajo pendiente cuyo polling venía fallando en silencio, esto da
+  // un chequeo inmediato en vez de esperar al siguiente intervalo.
+  window.addEventListener('online', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
 }
 
 // Un dispositivo compartido entre dos docentes (equipo de la escuela)

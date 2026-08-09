@@ -28,10 +28,10 @@ import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
-import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
+import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
-import { extraerTitulo } from '@/lib/documentGen/parseContenido'
+import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from '@/lib/documentGen/parseContenido'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -1704,9 +1704,27 @@ Grado: [grado] | Grupo: [grupo]
         // falla, sí se propaga como error real (ver catch abajo).
         const formatosMultiples = esImagenSuelta ? [] : detectarFormatosExplicitosMultiples(mensaje || '')
         const formatosAGenerar = formatosMultiples.length > 1 ? formatosMultiples : [tipoHerramientaSolicitado]
+
+        // Ver "corrección: timeout en documentos ilustrados largos" —
+        // cuando se piden VARIOS formatos (Word y PDF) del mismo
+        // documento ilustrado, las ilustraciones se generan UNA sola
+        // vez aquí y se reutilizan para ambos (antes cada formato las
+        // regeneraba por su cuenta: el doble de tiempo/costo, y con
+        // riesgo real de que Word y PDF terminaran con dibujos
+        // distintos, ya que la generación de imágenes no es
+        // determinista). Nunca aplica a imagen suelta ni a documentos
+        // sin líneas [[IMAGEN:...]] — ahí este bloque no hace nada.
+        let imagenesPreGeneradas: Map<string, { buffer: Buffer; ancho: number; alto: number }> | undefined
+        if (!esImagenSuelta && (formatosAGenerar.includes('word') || formatosAGenerar.includes('pdf'))) {
+          const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
+          if (descripciones.length > 0) {
+            imagenesPreGeneradas = await generarImagenesParaDocumento(descripciones, perfil, supabaseRAG, userId, supabaseUser, conversacionId)
+          }
+        }
+
         const resultados = await Promise.allSettled(
           formatosAGenerar.map((tipo) =>
-            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null), `generar-archivo-combinado-${tipo}`)
+            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas), `generar-archivo-combinado-${tipo}`)
           )
         )
         const primario = resultados[0]

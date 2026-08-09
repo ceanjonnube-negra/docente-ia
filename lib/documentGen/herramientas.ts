@@ -44,7 +44,7 @@ import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
 // SATURAR" del diseño aprobado) y contra generaciones lentas/costosas:
 // nunca se generan más de esta cantidad de ilustraciones para UN
 // documento, sin importar cuántas líneas [[IMAGEN:...]] escriba Claude.
-const MAX_IMAGENES_POR_DOCUMENTO = 4
+export const MAX_IMAGENES_POR_DOCUMENTO = 4
 
 export class HerramientaNoDisponibleError extends Error {}
 
@@ -132,7 +132,18 @@ export async function ejecutarHerramientaDocumento(
   // word/pdf/powerpoint/excel, que nunca los necesitaron.
   supabaseUser?: SupabaseClient,
   conversacionId?: string | null,
-  versionAnteriorId?: string | null
+  versionAnteriorId?: string | null,
+  // Ver "corrección: timeout en documentos ilustrados largos" — cuando
+  // el maestro pide Word Y PDF del mismo documento ilustrado en un
+  // solo mensaje, route.ts genera AMBOS formatos y antes cada uno
+  // llamaba a este mismo pipeline por separado, así que las MISMAS
+  // ilustraciones se generaban dos veces de forma independiente
+  // (el doble de tiempo/costo, y con el riesgo real de que Word y PDF
+  // terminaran con dibujos distintos para el mismo documento, ya que
+  // la generación de imágenes no es determinista). Si quien llama ya
+  // generó las imágenes (ver route.ts, CASO 3), las pasa aquí y este
+  // pipeline NUNCA vuelve a generarlas — las reutiliza tal cual.
+  imagenesPreGeneradas?: Map<string, { buffer: Buffer; ancho: number; alto: number }>
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -161,8 +172,8 @@ export async function ejecutarHerramientaDocumento(
   // parseContenido.ts). Si el texto no trae ninguna línea de imagen,
   // este bloque no hace NADA — un documento normal sigue el camino
   // exacto de siempre, sin ninguna llamada extra.
-  let imagenesPorDescripcion: Map<string, { buffer: Buffer; ancho: number; alto: number }> | undefined
-  if (tipo === 'word' || tipo === 'pdf') {
+  let imagenesPorDescripcion: Map<string, { buffer: Buffer; ancho: number; alto: number }> | undefined = imagenesPreGeneradas
+  if (!imagenesPorDescripcion && (tipo === 'word' || tipo === 'pdf')) {
     const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
     if (descripciones.length > 0) {
       imagenesPorDescripcion = await generarImagenesParaDocumento(descripciones, perfil, sb, userId, supabaseUser, conversacionId ?? null)
@@ -338,7 +349,11 @@ async function generarUnaIlustracion(
 // tumba la generación del documento completo (ver dibujarImagen en
 // generarPdfServidor.ts / la rama esImagen en construirDocumentoWord.ts,
 // ambas omiten en silencio una descripción sin imagen en el mapa).
-async function generarImagenesParaDocumento(
+// Exportada (ver "corrección: timeout en documentos ilustrados
+// largos") para que route.ts pueda generarlas UNA sola vez y pasar el
+// mismo mapa a cada formato pedido (Word y PDF) vía imagenesPreGeneradas
+// en ejecutarHerramientaDocumento — nunca duplica la generación.
+export async function generarImagenesParaDocumento(
   descripciones: string[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   perfil: any,

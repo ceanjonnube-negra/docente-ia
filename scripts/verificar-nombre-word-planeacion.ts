@@ -69,7 +69,7 @@ async function main() {
   verificar(cuerpoChat.includes('nombre: nombreArchivoWordServidor(extraerTitulo(textoCompleto))'), '2. El marcador de vista previa calcula el nombre real con nombreArchivoWordServidor(extraerTitulo(textoCompleto))')
   verificar(cuerpoVistaPreviaWord.includes('nombreArchivoWordServidor(extraerTitulo(texto))'), '2b. vista-previa-documento-word/route.ts sigue calculando su Content-Disposition con la MISMA función — ambos nunca pueden desalinearse')
   verificar(cuerpoChat.includes("import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'"), '2c. chat/route.ts importa nombreArchivoWordServidor del módulo real de generación (no reinventa el slug)')
-  verificar(cuerpoChat.includes("import { extraerTitulo } from '@/lib/documentGen/parseContenido'"), '2d. chat/route.ts importa extraerTitulo del módulo real de parseo (no reinventa la extracción del título)')
+  verificar(/import \{[^}]*\bextraerTitulo\b[^}]*\} from '@\/lib\/documentGen\/parseContenido'/.test(cuerpoChat), '2d. chat/route.ts importa extraerTitulo del módulo real de parseo (no reinventa la extracción del título)')
 
   // ============================================================
   // 5. La ruta real produce exactamente "PLANEACION_DIDACTICA.docx"

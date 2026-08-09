@@ -116,7 +116,7 @@ Introducción breve sobre el tema.
   //    nunca bloquea el documento si una ilustración falla.
   // ============================================================
   verificar(cuerpoHerramientas.includes('const MAX_IMAGENES_POR_DOCUMENTO = 4'), 'Existe un tope duro de imágenes por documento (principio "NO SATURAR" del diseño aprobado)')
-  verificar(/if \(tipo === 'word' \|\| tipo === 'pdf'\) \{/.test(cuerpoHerramientas), 'La generación de ilustraciones de documento SOLO se activa para word/pdf — powerpoint/excel quedan fuera de alcance de esta fase')
+  verificar(/tipo === 'word' \|\| tipo === 'pdf'/.test(cuerpoHerramientas), 'La generación de ilustraciones de documento SOLO se activa para word/pdf — powerpoint/excel quedan fuera de alcance de esta fase')
   verificar(cuerpoHerramientas.includes('.slice(0, MAX_IMAGENES_POR_DOCUMENTO)'), 'Las descripciones se recortan al tope ANTES de generar nada — nunca se generan más de las permitidas aunque Claude escriba más líneas')
   verificar(cuerpoHerramientas.includes('if (descripciones.length > 0)'), 'Si el texto no trae ninguna línea [[IMAGEN:...]], NO se llama a generarImagenesParaDocumento — cero llamadas extra para un documento normal')
   verificar(cuerpoHerramientas.includes('generarWordBuffer(texto, perfil, zonaHoraria, imagenesPorDescripcion)') && cuerpoHerramientas.includes('generarPdfBuffer(texto, perfil, zonaHoraria, imagenesPorDescripcion)'), 'El mapa de imágenes generadas se pasa a los generadores reales de Word/PDF')
