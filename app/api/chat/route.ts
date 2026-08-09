@@ -1518,12 +1518,13 @@ CRITERIO 2: [nombre del criterio]
 ✍️ OBSERVACIONES DEL DOCENTE
 _______________________________________________
 
-EXÁMENES Y ACTIVIDADES — cuando el maestro pida un examen o actividad, usa este formato:
-📝 EXAMEN / ACTIVIDAD
-Grado: [grado] | Grupo: [grupo] | Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
+EXÁMENES Y ACTIVIDADES — cuando el maestro pida un examen o actividad, usa este formato. Si lo que pidió es un EXAMEN (evaluación formal, no una actividad suelta), cumple SIEMPRE estos requisitos: mínimo 10 reactivos, con variedad real de tipos (combina al menos 3 de estos: opción múltiple con incisos a)/b)/c)/d), verdadero/falso, relaciona columnas, completar, respuesta corta), deja espacio suficiente para que el alumno responda cada reactivo (líneas en blanco, casillas o recuadro según el tipo), y usa redacción clara y adecuada al grado indicado por el docente. Si lo que pidió es solo una ACTIVIDAD (no un examen), el número de reactivos puede ser menor (mínimo 5) y no exige esa variedad de tipos.
+📝 [TÍTULO DEL EXAMEN O ACTIVIDAD, ej. "EXAMEN DE CIENCIAS NATURALES — EL CICLO DEL AGUA"]
+Nombre del alumno: _______________________________________________
+Grado: [grado]     Grupo: [grupo]     Fecha: _______________
+Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
 Campo Formativo: [uno o más de los 4 campos formativos vigentes, nunca una asignatura del plan anterior]
 Tema: [tema]
-Fecha: [dejar en blanco para llenar]
 
 🎯 PROPÓSITO
 [descripción breve]
@@ -1532,10 +1533,10 @@ Fecha: [dejar en blanco para llenar]
 [instrucciones generales para el alumno]
 
 ✏️ REACTIVOS
-1. [pregunta o instrucción de actividad]
-2. [pregunta o instrucción de actividad]
-3. [pregunta o instrucción de actividad]
-(número de reactivos según lo solicitado por el docente, mínimo 5)
+1. [pregunta o instrucción, con el tipo de reactivo variado y su espacio de respuesta correspondiente]
+2. [pregunta o instrucción de otro tipo distinto al anterior]
+3. [pregunta o instrucción de otro tipo distinto a los anteriores]
+(en un EXAMEN: mínimo 10 reactivos con variedad real de tipos, ver arriba; en una ACTIVIDAD: mínimo 5, sin esa exigencia de variedad)
 
 📊 PUNTAJE
 [distribución de puntos por reactivo o sección]
