@@ -429,6 +429,14 @@ function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto:
               </p>
             )
           }
+          // Ver "Documentos ilustrados...", Fase 2A — mientras el
+          // documento se sigue redactando, la línea [[IMAGEN:...]]
+          // todavía es texto crudo (la imagen real se genera después,
+          // ver herramientas.ts); se muestra como un aviso ligero en
+          // vez del marcador técnico o un renglón vacío.
+          if (l.tipo === 'imagen') {
+            return <p key={idx} className="text-xs text-purple-500 italic">🖼️ Ilustración: {l.descripcion}</p>
+          }
           return <p key={idx} className="text-xs text-gray-600 leading-relaxed">{l.texto}</p>
         })}
         {escribiendo && (

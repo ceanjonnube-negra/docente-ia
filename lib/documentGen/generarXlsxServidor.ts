@@ -38,7 +38,11 @@ export async function generarXlsxBuffer(texto: string, perfil: any, zonaHoraria:
       columna.width = 22
     })
   } else {
-    const lineas = analizarContenido(texto)
+    // tipo==='imagen' (ver "Documentos ilustrados...", Fase 2A) se
+    // omite aquí a propósito — Excel no tiene forma de mostrar una
+    // ilustración embebida útil en una celda de texto; fuera de
+    // alcance de esta fase, nunca rompe la generación existente.
+    const lineas = analizarContenido(texto).filter((l) => l.tipo !== 'imagen')
     for (const l of lineas) {
       const fila = hoja.addRow([l.tipo === 'bullet' ? `• ${l.texto}` : l.texto])
       if (l.tipo === 'titulo') {

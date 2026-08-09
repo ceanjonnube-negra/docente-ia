@@ -160,3 +160,23 @@ export function pareceEdicionDeImagenActiva(texto: string): boolean {
   if (REGEX_VERBOS_EDICION_IMAGEN.test(normalizado)) return true
   return FRASES_REFERENCIA_IMAGEN.some((frase) => normalizado.includes(frase))
 }
+
+// MODO DOCUMENTO ILUSTRADO (ver "Documentos ilustrados + guías
+// completas e ilustradas", Fase 2A): detección determinista de si el
+// maestro pidió un documento CON ilustraciones (no una imagen suelta
+// — eso ya lo cubre detectarGeneracionMultimedia/'imagen' arriba).
+// app/api/chat/route.ts la usa junto con tipoHerramientaSolicitado
+// (word/pdf) para activar el bloque de sistema que le dice a Claude
+// que inserte líneas [[IMAGEN:...]] — un documento normal (sin
+// ninguna de estas frases) nunca activa este bloque, se comporta
+// exactamente igual que siempre.
+const FRASES_DOCUMENTO_ILUSTRADO = [
+  'ilustrada', 'ilustrado', 'ilustradas', 'ilustrados', 'ilustraciones', 'ilustracion',
+  'con dibujos', 'con imagenes', 'con imagen', 'con figuras',
+  'para colorear', 'para pintar', 'dibujos para colorear',
+  'con portada', 'guia completa', 'guia detallada', 'bien ilustrada',
+]
+export function quiereIlustracion(texto: string): boolean {
+  const normalizado = normalizar(texto)
+  return FRASES_DOCUMENTO_ILUSTRADO.some((frase) => normalizado.includes(frase))
+}

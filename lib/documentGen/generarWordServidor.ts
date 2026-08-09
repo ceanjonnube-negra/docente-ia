@@ -7,11 +7,11 @@
 // en Storage antes de que la respuesta llegue al chat.
 
 import { Packer } from 'docx'
-import { construirDocumentoWord } from './construirDocumentoWord'
+import { construirDocumentoWord, type ImagenParaDocumentoWord } from './construirDocumentoWord'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function generarWordBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
-  const doc = construirDocumentoWord(texto, perfil, zonaHoraria)
+export async function generarWordBuffer(texto: string, perfil: any, zonaHoraria: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Promise<Buffer> {
+  const doc = construirDocumentoWord(texto, perfil, zonaHoraria, imagenesPorDescripcion)
   return Packer.toBuffer(doc)
 }
 

@@ -35,9 +35,16 @@ import { generarPdfBuffer, nombreArchivoPdf } from './generarPdfServidor'
 import { generarPptxBuffer, nombreArchivoPptx } from './generarPptxServidor'
 import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
 import { subirBuffer, crearUrlFirmada, descargarBuffer, rutaArchivo, BUCKET_IMAGENES_GENERADAS, type ArchivoGenerado } from './almacenamiento'
-import { extraerTitulo } from './parseContenido'
+import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from './parseContenido'
 import { generarImagen, editarImagen } from '../imageGen/ImageGenerationService'
 import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
+
+// Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
+// — tope duro contra documentos saturados de imágenes (principio "NO
+// SATURAR" del diseño aprobado) y contra generaciones lentas/costosas:
+// nunca se generan más de esta cantidad de ilustraciones para UN
+// documento, sin importar cuántas líneas [[IMAGEN:...]] escriba Claude.
+const MAX_IMAGENES_POR_DOCUMENTO = 4
 
 export class HerramientaNoDisponibleError extends Error {}
 
@@ -146,9 +153,25 @@ export async function ejecutarHerramientaDocumento(
 
   const etiqueta = ETIQUETA_MODULO[tipo]
   const titulo = extraerTitulo(texto)
+
+  // Documento ilustrado (ver "Documentos ilustrados + guías completas
+  // e ilustradas", Fase 2A) — solo word/pdf saben embeber imágenes
+  // (ver construirDocumentoWord.ts/generarPdfServidor.ts); powerpoint/
+  // excel ignoran las líneas [[IMAGEN:...]] (fuera de alcance, ver
+  // parseContenido.ts). Si el texto no trae ninguna línea de imagen,
+  // este bloque no hace NADA — un documento normal sigue el camino
+  // exacto de siempre, sin ninguna llamada extra.
+  let imagenesPorDescripcion: Map<string, { buffer: Buffer; ancho: number; alto: number }> | undefined
+  if (tipo === 'word' || tipo === 'pdf') {
+    const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
+    if (descripciones.length > 0) {
+      imagenesPorDescripcion = await generarImagenesParaDocumento(descripciones, perfil, sb, userId, supabaseUser, conversacionId ?? null)
+    }
+  }
+
   const generadores = {
-    word: async () => ({ buffer: await generarWordBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoWordServidor(titulo) }),
-    pdf: async () => ({ buffer: await generarPdfBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoPdf(titulo) }),
+    word: async () => ({ buffer: await generarWordBuffer(texto, perfil, zonaHoraria, imagenesPorDescripcion), nombre: nombreArchivoWordServidor(titulo) }),
+    pdf: async () => ({ buffer: await generarPdfBuffer(texto, perfil, zonaHoraria, imagenesPorDescripcion), nombre: nombreArchivoPdf(titulo) }),
     powerpoint: async () => ({ buffer: await generarPptxBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoPptx(titulo) }),
     excel: async () => ({ buffer: await generarXlsxBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoXlsx(titulo) }),
   } as const
@@ -244,6 +267,94 @@ export async function ejecutarHerramientaDocumento(
   // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
   // tamaño real sin pedirle nada más a Storage.
   return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer }
+}
+
+// Genera + sube + persiste UNA ilustración para un documento (ver
+// "Documentos ilustrados + guías completas e ilustradas", Fase 2A) —
+// aislada de ejecutarGeneracionImagen (imagen SUELTA del chat) porque
+// esta nunca se entrega como su propia tarjeta ni acepta edición
+// directa todavía (eso es Fase 2B): solo produce el buffer que
+// construirDocumentoWord.ts/generarPdfServidor.ts necesitan para
+// embeber, y dejan un registro real en assets_visuales
+// (tipo_uso='ilustracion_documento') para poder asociarla/editarla
+// más adelante sin duplicar generación.
+async function generarUnaIlustracion(
+  descripcion: string,
+  orden: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  perfil: any,
+  sb: SupabaseClient,
+  userId: string,
+  supabaseUser: SupabaseClient | undefined,
+  conversacionId: string | null
+): Promise<{ descripcion: string; buffer: Buffer; ancho: number; alto: number } | null> {
+  let imagen: Awaited<ReturnType<typeof generarImagen>>
+  try {
+    imagen = await medirEtapa(`IMAGEN-DOC:generacion[${orden}]`, () => generarImagen({ prompt: descripcion, nivelEscolar: perfil?.grado || undefined }))
+  } catch (err) {
+    console.error(`[PIPELINE IMAGEN-DOC:generacion] Falló generando la ilustración ${orden} ("${descripcion.slice(0, 60)}"):`, err)
+    return null
+  }
+
+  const nombre = `Ilustracion_${Date.now()}_${orden}.png`
+  const ruta = rutaArchivo(userId, nombre)
+  try {
+    await medirEtapa(`IMAGEN-DOC:subida[${orden}]`, () => subirBuffer(sb, ruta, imagen.buffer, imagen.contentType, BUCKET_IMAGENES_GENERADAS))
+  } catch (err) {
+    console.error(`[PIPELINE IMAGEN-DOC:subida] Falló subiendo la ilustración ${orden}:`, err)
+    return null
+  }
+
+  // Persistencia — mismo criterio de "mejor esfuerzo" que
+  // ejecutarGeneracionImagen: si falla, la imagen YA está subida y se
+  // puede embeber igual; solo se pierde poder asociarla/editarla
+  // después.
+  if (supabaseUser) {
+    try {
+      await medirEtapa(`IMAGEN-DOC:persistencia[${orden}]`, () =>
+        guardarAssetVisual(supabaseUser, {
+          docenteId: userId,
+          conversacionId,
+          tipo: 'imagen',
+          formatoArchivo: 'png',
+          promptOriginal: imagen.promptUsado,
+          storagePath: ruta,
+          tamanoBytes: imagen.buffer.length,
+          grado: perfil?.grado || null,
+          grupo: perfil?.grupo || null,
+        })
+      )
+    } catch (err) {
+      console.error(`[PIPELINE IMAGEN-DOC:persistencia] No se pudo guardar el registro de la ilustración ${orden} (no bloquea):`, err)
+    }
+  }
+
+  return { descripcion, buffer: imagen.buffer, ancho: imagen.ancho, alto: imagen.alto }
+}
+
+// Genera todas las ilustraciones que un documento necesita, en
+// paralelo (ya acotadas a MAX_IMAGENES_POR_DOCUMENTO por quien llama).
+// Una ilustración que falla simplemente no aparece en el mapa — nunca
+// tumba la generación del documento completo (ver dibujarImagen en
+// generarPdfServidor.ts / la rama esImagen en construirDocumentoWord.ts,
+// ambas omiten en silencio una descripción sin imagen en el mapa).
+async function generarImagenesParaDocumento(
+  descripciones: string[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  perfil: any,
+  sb: SupabaseClient,
+  userId: string,
+  supabaseUser: SupabaseClient | undefined,
+  conversacionId: string | null
+): Promise<Map<string, { buffer: Buffer; ancho: number; alto: number }>> {
+  const resultados = await Promise.all(
+    descripciones.map((descripcion, orden) => generarUnaIlustracion(descripcion, orden, perfil, sb, userId, supabaseUser, conversacionId))
+  )
+  const mapa = new Map<string, { buffer: Buffer; ancho: number; alto: number }>()
+  for (const r of resultados) {
+    if (r) mapa.set(r.descripcion, { buffer: r.buffer, ancho: r.ancho, alto: r.alto })
+  }
+  return mapa
 }
 
 // Generación de imagen suelta (ver "Implementar en Docente IA la

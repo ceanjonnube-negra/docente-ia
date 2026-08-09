@@ -20,6 +20,13 @@ import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { analizarContenido } from './parseContenido'
 import { prepararEncabezado } from './encabezadoDocumento'
 
+// Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
+// — mapa descripción→imagen ya generada por herramientas.ts ANTES de
+// llamar aquí (generarImagen() es async y usa red; este archivo solo
+// dibuja). Opcional: un documento sin líneas [[IMAGEN:...]] nunca
+// pasa por este camino, se comporta exactamente igual que siempre.
+export type ImagenParaDocumento = { buffer: Buffer; ancho: number; alto: number }
+
 // Igual que en el motor anterior: los emoji del formato MODO DOCUMENTO
 // (📋, 🎯, 📅...) no tienen glifo en las fuentes estándar — se quitan
 // del texto visible antes de dibujar nada.
@@ -87,7 +94,7 @@ function envolverTexto(texto: string, font: PDFFont, tamano: number, anchoMax: n
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
+export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumento>): Promise<Buffer> {
   const enc = prepararEncabezado(perfil, zonaHoraria)
   const pdfDoc = await PDFDocument.create()
   const fuentes: Fuentes = {
@@ -169,7 +176,32 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
   const integrantesPorEquipo: { numero: string; total: number }[] = []
   let equipoActual: { numero: string; total: number } | null = null
 
+  // Ilustración embebida (ver "Documentos ilustrados...", Fase 2A) —
+  // escalada para caber en el ancho de contenido sin distorsionar
+  // proporciones; si la descripción no tiene imagen en el mapa (falló
+  // su generación o no se pidió embeber), se omite en silencio y el
+  // resto del documento sigue exactamente igual — nunca rompe la
+  // generación completa por una sola ilustración faltante.
+  async function dibujarImagen(descripcion: string) {
+    const imagen = imagenesPorDescripcion?.get(descripcion)
+    if (!imagen) return
+    const png = await pdfDoc.embedPng(imagen.buffer)
+    const anchoMax = ANCHO_CONTENIDO * 0.85
+    const altoMax = 260
+    const escala = Math.min(anchoMax / png.width, altoMax / png.height, 1)
+    const anchoDibujo = png.width * escala
+    const altoDibujo = png.height * escala
+    asegurarEspacio(altoDibujo + 16)
+    y -= 8
+    pagina.drawImage(png, { x: (ANCHO_PAGINA - anchoDibujo) / 2, y: y - altoDibujo, width: anchoDibujo, height: altoDibujo })
+    y -= altoDibujo + 12
+  }
+
   for (const l of lineas) {
+    if (l.tipo === 'imagen') {
+      await dibujarImagen(l.descripcion)
+      continue
+    }
     const contenido = quitarEmoji(l.texto)
     if (!contenido) continue
 

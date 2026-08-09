@@ -11,6 +11,16 @@ export type LineaDocumento =
   | { tipo: 'seccion'; texto: string }
   | { tipo: 'bullet'; texto: string }
   | { tipo: 'parrafo'; texto: string }
+  | { tipo: 'imagen'; descripcion: string }
+
+// Marcador de ilustración dentro de MODO DOCUMENTO (ver "Documentos
+// ilustrados + guías completas e ilustradas", Fase 2A) — Claude lo
+// escribe como una línea suelta cuando el prompt de sistema activa
+// MODO DOCUMENTO ILUSTRADO (ver app/api/chat/route.ts,
+// quiereIlustracion). herramientas.ts genera la imagen real para cada
+// descripción ANTES de armar el documento final — este archivo solo
+// necesita reconocer dónde va cada una.
+const REGEX_MARCADOR_IMAGEN = /^\[\[IMAGEN:\s*(.+?)\]\]$/
 
 export function analizarContenido(texto: string): LineaDocumento[] {
   const lineas = texto
@@ -38,6 +48,16 @@ export function analizarContenido(texto: string): LineaDocumento[] {
   let tituloUsado = false
   let esPrimeraLinea = true
   for (const linea of lineas) {
+    // Marcador de ilustración — se comprueba ANTES que título/bullet a
+    // propósito: nunca debe consumir "es la primera línea" (el título
+    // real del documento sigue siendo la primera línea de TEXTO, ver
+    // MODO DOCUMENTO — Claude siempre abre con título+emoji, nunca con
+    // una imagen).
+    const marcadorImagen = linea.match(REGEX_MARCADOR_IMAGEN)
+    if (marcadorImagen) {
+      resultado.push({ tipo: 'imagen', descripcion: marcadorImagen[1].trim() })
+      continue
+    }
     // La primera línea del documento siempre es su encabezado principal
     // (📋/📊/📝/📨/📄/📖 + título) aunque el título en sí —como el de un
     // cuento o fábula generado por el modelo— no venga en mayúsculas.
@@ -66,7 +86,10 @@ export type Diapositiva = { titulo: string; contenido: string[] }
 export function agruparEnDiapositivas(lineas: LineaDocumento[]): Diapositiva[] {
   const diapositivas: Diapositiva[] = []
   let actual: Diapositiva | null = null
-  for (const l of lineas) {
+  // tipo==='imagen' (ver "Documentos ilustrados...", Fase 2A) se omite
+  // aquí a propósito — PowerPoint no forma parte de esta fase; fuera
+  // de alcance, nunca rompe la generación existente.
+  for (const l of lineas.filter((l) => l.tipo !== 'imagen')) {
     if (l.tipo === 'titulo' || l.tipo === 'seccion') {
       actual = { titulo: l.texto, contenido: [] }
       diapositivas.push(actual)
@@ -78,6 +101,16 @@ export function agruparEnDiapositivas(lineas: LineaDocumento[]): Diapositiva[] {
     }
   }
   return diapositivas
+}
+
+// Descripciones únicas de ilustración (ver "Documentos ilustrados...",
+// Fase 2A) — herramientas.ts genera una imagen real por cada una ANTES
+// de armar el documento. Tope duro aparte (ver MAX_IMAGENES_POR_DOCUMENTO
+// en herramientas.ts) — esta función solo deduplica, nunca decide
+// cuántas generar de verdad.
+export function extraerDescripcionesDeImagen(lineas: LineaDocumento[]): string[] {
+  const descripciones = lineas.filter((l): l is { tipo: 'imagen'; descripcion: string } => l.tipo === 'imagen').map((l) => l.descripcion)
+  return Array.from(new Set(descripciones))
 }
 
 // Para Excel: si el contenido trae líneas separadas por "|" (el formato

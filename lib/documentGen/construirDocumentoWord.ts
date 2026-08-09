@@ -8,8 +8,21 @@
 // en ambos lados — la única diferencia es cómo se empaqueta y entrega el
 // resultado, que SÍ es específico de cada entorno (navegador vs Node).
 
-import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType } from 'docx'
+import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType, ImageRun } from 'docx'
 import { prepararEncabezado } from './encabezadoDocumento'
+
+// Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
+// — mismo tipo que ImagenParaDocumento en generarPdfServidor.ts (buffer
+// ya generado por herramientas.ts, ancho/alto reales para no distorsionar
+// proporciones al escalar).
+export type ImagenParaDocumentoWord = { buffer: Buffer; ancho: number; alto: number }
+
+// docx ImageRun.transformation.width/height son píxeles (96 DPI) — con
+// márgenes de 900 twips por lado sobre carta (12240 twips de ancho), el
+// área de contenido real son ~522pt (~696px); se deja margen visual
+// extra para que la imagen nunca toque el borde del texto.
+const ANCHO_MAX_IMAGEN_WORD = 460
+const ALTO_MAX_IMAGEN_WORD = 320
 
 const preprocesarTexto = (texto: string): string[] => {
   return texto
@@ -41,6 +54,14 @@ const esTitulo = (linea: string): boolean => {
 const esBullet = (linea: string): boolean => {
   return /^-\s+/.test(linea.trim())
 }
+
+// Marcador de ilustración (ver "Documentos ilustrados...", Fase 2A) —
+// mismo patrón que REGEX_MARCADOR_IMAGEN en parseContenido.ts, pero
+// este archivo tiene su propio parseo de línea (no usa
+// analizarContenido), así que se repite aquí en vez de compartir un
+// tipo LineaDocumento que este archivo no usa.
+const REGEX_MARCADOR_IMAGEN = /^\[\[IMAGEN:\s*(.+?)\]\]$/
+const esImagen = (linea: string): string | null => linea.trim().match(REGEX_MARCADOR_IMAGEN)?.[1]?.trim() ?? null
 
 // "EQUIPO 1", "EQUIPO 2"... — un tipo de sección aparte del título
 // genérico: cada uno abre con una línea divisoria real (no caracteres
@@ -94,7 +115,7 @@ const generarTablaAlumnos = (lineas: string[]): Table => {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null): Document {
+export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Document {
   const enc = prepararEncabezado(perfil, zonaHoraria)
 
   // Encabezado institucional — UNO solo, siempre igual, nunca lo
@@ -126,6 +147,28 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
     elementos.push(generarTablaAlumnos(lineas))
   } else {
     for (const linea of lineas) {
+      // Marcador de ilustración — se comprueba ANTES que equipo/título/
+      // bullet (ver mismo orden en parseContenido.ts). Si la
+      // descripción no tiene imagen en el mapa (falló su generación o
+      // no se pidió embeber), se omite en silencio — nunca rompe el
+      // resto del documento por una sola ilustración faltante.
+      const descripcionImagen = esImagen(linea)
+      if (descripcionImagen) {
+        const imagen = imagenesPorDescripcion?.get(descripcionImagen)
+        if (imagen) {
+          const escala = Math.min(ANCHO_MAX_IMAGEN_WORD / imagen.ancho, ALTO_MAX_IMAGEN_WORD / imagen.alto, 1)
+          elementos.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 200, after: 200 },
+            children: [new ImageRun({
+              type: 'png',
+              data: imagen.buffer,
+              transformation: { width: Math.round(imagen.ancho * escala), height: Math.round(imagen.alto * escala) },
+            })],
+          }))
+        }
+        continue
+      }
       const matchEquipo = esEquipo(linea)
       if (matchEquipo) {
         equipoActual = { numero: matchEquipo[1], total: 0 }
