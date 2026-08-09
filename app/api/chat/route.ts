@@ -712,12 +712,34 @@ export async function POST(req: NextRequest) {
   // intercepta aquí — se deja pasar al Clasificador de Nivel 0, que sí
   // sabe enrutarlo a la Herramienta real (ver
   // lib/asistente/herramientasModulo.ts).
+  // CAUSA RAÍZ REAL de "la guía ilustrada devolvió LISTA_OFICIAL_DE_
+  // ALUMNOS.docx" (ver "sigue fallando la prueba en iPhone" —
+  // confirmado con evidencia de runtime: se descargó el .docx real
+  // entregado y era la lista de alumnos, byte a byte): NINGUNA de las
+  // correcciones anteriores (CASO 1/2) podía arreglar esto porque el
+  // problema real vive AQUÍ, en un interceptor completamente distinto
+  // que corre ANTES — "lista" en español también es un ADJETIVO común
+  // ("ready", como en "...limpia y lista para imprimir"), no solo el
+  // sustantivo "una lista de alumnos". El patrón suelto de abajo
+  // (`/\blista(do)?\b|\bpadr[oó]n\b/i`) no distinguía entre ambos usos:
+  // cualquier mensaje que nombrara un formato Y contuviera la palabra
+  // "lista" EN CUALQUIER SENTIDO disparaba esta rama — incluida una
+  // guía sobre el ciclo del agua que de pura casualidad terminaba con
+  // "...lista para imprimir. Genera también Word y PDF." Se agrega
+  // `(?!\s+para\b)` para excluir el uso adjetivo más común ("lista
+  // para X"), y — como defensa adicional, mismo criterio ya aplicado
+  // en CASO 1/2 — pareceNuevoDocumento(mensaje) para que NINGÚN
+  // interceptor temprano (este incluido) pueda sustituir un documento
+  // nuevo real por otra cosa, sin importar qué palabra suelta
+  // contenga.
   const PARECE_CONSULTA_DE_ASISTENCIA = /asistenc|\bfalt(a|as|ó|aron)\b|retardo|presente(s)?|ausente(s)?/i
+  const PATRON_LISTA_SUELTA = /\b(lista(do)?|padr[oó]n)\b(?!\s+para\b)/i
   const pideListaAlumnos =
     !esEdicionDocumento &&
+    !pareceNuevoDocumento(mensaje || '') &&
     !PARECE_CONSULTA_DE_ASISTENCIA.test(mensaje || '') &&
     (SOLICITA_LISTA_ALUMNOS.test(mensaje || '') ||
-      (Boolean(tipoHerramientaSolicitado) && /\blista(do)?\b|\bpadr[oó]n\b/i.test(mensaje || '')))
+      (Boolean(tipoHerramientaSolicitado) && PATRON_LISTA_SUELTA.test(mensaje || '')))
 
   if (supabaseUser && userId && sesion?.grupo_activo_id && pideListaAlumnos) {
     console.log(`[LISTA_ALUMNOS] detección determinista — tipoHerramientaSolicitado=${tipoHerramientaSolicitado ?? 'ninguno'} alumnos=${sesion.alumnos_del_grupo_activo.length}`)
