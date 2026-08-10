@@ -71,7 +71,7 @@ async function main() {
     const finMulti = cuerpoChatRoute.indexOf('const primario = resultados[0]')
     const bloqueMulti = cuerpoChatRoute.slice(inicioMulti, finMulti)
     verificar(bloqueMulti.includes('let imagenesPreGeneradas') && bloqueMulti.includes('generarImagenesParaDocumento('), 'route.ts (CASO 3) genera las imágenes UNA sola vez antes de generar los formatos')
-    verificar(bloqueMulti.includes('ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas)'), 'El MISMO mapa de imágenes se pasa a CADA formato (Word y PDF comparten exactamente las mismas ilustraciones)')
+    verificar(/ejecutarHerramientaDocumento\(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas(?:, \w+)?\)/.test(bloqueMulti), 'El MISMO mapa de imágenes se pasa a CADA formato (Word y PDF comparten exactamente las mismas ilustraciones)')
   }
 
   // ============================================================

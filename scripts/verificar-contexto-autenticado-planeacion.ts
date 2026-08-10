@@ -246,6 +246,9 @@ async function main() {
       institucion_id: 'institucion-real-1',
       ciclo_escolar_id: CICLO_ID,
       grupo_activo_id: GRUPO_ID,
+      nivel_educativo_grupo: null,
+      grado_grupo: null,
+      grupo_letra: null,
       fecha_actual: HOY,
       alumnos_del_grupo_activo: [
         { alumno_id: 'alumno-1', nombre_completo: 'Ana López', sexo: 'M', numero_lista: 1 },

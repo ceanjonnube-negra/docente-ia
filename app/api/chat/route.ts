@@ -32,6 +32,8 @@ import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerram
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from '@/lib/documentGen/parseContenido'
+import { resolverNivelEducativo } from '@/lib/documentGen/nivelEducativo'
+import { obtenerPerfilNivel } from '@/lib/documentGen/perfilNivelEducativo'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -1351,6 +1353,27 @@ MODO IMAGEN ACTIVO — el maestro pidió una imagen suelta (no un documento). Tu
   // (ver quiereIlustracion). Un documento normal (sin esas palabras)
   // nunca ve este bloque — sigue exactamente igual que siempre.
   const esDocumentoIlustrado = (tipoHerramientaSolicitado === 'word' || tipoHerramientaSolicitado === 'pdf') && quiereIlustracion(mensaje || '')
+
+  // NIVEL EDUCATIVO (ver "Ilustraciones por nivel educativo, Fase 1 —
+  // diseño + implementación base"): resuelto de forma determinista
+  // (nunca por IA) a partir de lo que el maestro escribió en ESTE
+  // mensaje, o si no dijo nada, del grupo activo real (ver
+  // lib/sesionContexto.ts — nivel_educativo_grupo/grado_grupo, ya
+  // existían en la tabla grupos y ahora se leen de vuelta). null
+  // (ningún nivel resuelto) preserva el comportamiento anterior
+  // exacto: sin bloque de sistema extra, sin estilo visual forzado.
+  const nivelEducativoResuelto = resolverNivelEducativo({
+    textoMensaje: mensaje || '',
+    grupoActivo: sesion ? { nivelEducativoGrupo: sesion.nivel_educativo_grupo, gradoGrupo: sesion.grado_grupo } : undefined,
+  })
+  const perfilNivelEducativo = nivelEducativoResuelto ? obtenerPerfilNivel(nivelEducativoResuelto) : null
+  // Usado más abajo (CASO 3) para las ilustraciones de este documento
+  // — undefined cuando no se resolvió nivel, que es exactamente lo que
+  // generarImagen() ya interpreta como "usa el estilo por defecto".
+  const estiloVisualNivelEducativo = perfilNivelEducativo?.estiloVisual
+  const bloqueNivelEducativo = perfilNivelEducativo ? `
+
+NIVEL EDUCATIVO DETECTADO PARA ESTE DOCUMENTO: ${perfilNivelEducativo.etiqueta}. Cuando redactes un documento educativo en este turno (examen, guía, ficha, hoja de actividades, material ilustrado), ajusta el tono y la densidad de texto a este nivel: ${perfilNivelEducativo.instruccionRedaccion} Tipos de actividad apropiados para este nivel, cuando el tipo de documento lo permita: ${perfilNivelEducativo.tiposActividadSugeridos.join(', ')}. Esto NUNCA cambia el formato fijo de cada tipo de documento (título, estructura y secciones ya definidas abajo) — solo ajusta el tono, la extensión y el estilo de redacción dentro de ese formato.` : ''
   const bloqueDocumentoIlustrado = esDocumentoIlustrado ? `
 
 MODO DOCUMENTO ILUSTRADO ACTIVO — el maestro pidió este documento CON ilustraciones. Sigue exactamente las reglas de MODO DOCUMENTO de abajo (título en mayúsculas y emoji, secciones, viñetas), pero además: en los puntos donde una ilustración realmente ayude a entender o hacer más atractivo el contenido (nunca decorativa sin propósito), inserta una línea SOLA con EXACTAMENTE este formato, sin variaciones:
@@ -1592,7 +1615,7 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}`,
     // "Consultar información oficial vigente de la SEP": la herramienta
     // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
     // autorizó este turno específico (requiereConsultaOficial) — nunca
@@ -1719,13 +1742,13 @@ Grado: [grado] | Grupo: [grupo]
         if (!esImagenSuelta && (formatosAGenerar.includes('word') || formatosAGenerar.includes('pdf'))) {
           const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
           if (descripciones.length > 0) {
-            imagenesPreGeneradas = await generarImagenesParaDocumento(descripciones, perfil, supabaseRAG, userId, supabaseUser, conversacionId)
+            imagenesPreGeneradas = await generarImagenesParaDocumento(descripciones, perfil, supabaseRAG, userId, supabaseUser, conversacionId, estiloVisualNivelEducativo)
           }
         }
 
         const resultados = await Promise.allSettled(
           formatosAGenerar.map((tipo) =>
-            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas), `generar-archivo-combinado-${tipo}`)
+            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas, estiloVisualNivelEducativo), `generar-archivo-combinado-${tipo}`)
           )
         )
         const primario = resultados[0]

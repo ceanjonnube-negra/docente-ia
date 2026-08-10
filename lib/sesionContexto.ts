@@ -21,6 +21,16 @@ export type SesionContexto = {
   institucion_id: string | null;
   ciclo_escolar_id: string | null;
   grupo_activo_id: string | null;
+  // Ver "Ilustraciones por nivel educativo, Fase 1" — nivel_educativo
+  // y grado YA existían en la tabla grupos (capturados al crear el
+  // grupo, ver app/dashboard/grupos/nuevo/page.tsx) pero nunca se
+  // leían de vuelta hacia el Chat/generación de documentos. Fuente de
+  // verdad real para resolverNivelEducativo (lib/documentGen/
+  // nivelEducativo.ts) — nunca perfiles_docentes.grado, que solo
+  // admite primaria.
+  nivel_educativo_grupo: string | null;
+  grado_grupo: string | null;
+  grupo_letra: string | null;
   fecha_actual: string;
   alumnos_del_grupo_activo: AlumnoLigero[];
 };
@@ -35,6 +45,9 @@ export async function obtenerSesionContexto(
     institucion_id: null,
     ciclo_escolar_id: null,
     grupo_activo_id: null,
+    nivel_educativo_grupo: null,
+    grado_grupo: null,
+    grupo_letra: null,
     // Zona horaria real del dispositivo del docente — nunca la del
     // servidor (Vercel corre en UTC, que puede ya ser "mañana" respecto
     // al día real del docente en cualquier zona de México).
@@ -57,13 +70,13 @@ export async function obtenerSesionContexto(
   // caché aparte que puede desincronizarse en silencio.
   const { data: grupos } = await sb
     .from('grupos')
-    .select('id, institucion_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
+    .select('id, institucion_id, ciclo_escolar_id, creado_en, nivel_educativo, grado, grupo, ciclos_escolares!inner(activo)')
     .eq('docente_id', docenteId)
     .eq('ciclos_escolares.activo', true)
     .order('creado_en', { ascending: false })
     .limit(1);
 
-  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string } | undefined;
+  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string; nivel_educativo: string | null; grado: string | null; grupo: string | null } | undefined;
   if (!grupoActivo) {
     console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
     return base;
@@ -72,6 +85,9 @@ export async function obtenerSesionContexto(
   base.institucion_id = grupoActivo.institucion_id;
   base.ciclo_escolar_id = grupoActivo.ciclo_escolar_id;
   base.grupo_activo_id = grupoActivo.id;
+  base.nivel_educativo_grupo = grupoActivo.nivel_educativo;
+  base.grado_grupo = grupoActivo.grado;
+  base.grupo_letra = grupoActivo.grupo;
 
   // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
   // Lista y Chat IA en el resumen de asistencia") — mismo formato que

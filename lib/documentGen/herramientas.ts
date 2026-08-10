@@ -37,6 +37,7 @@ import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
 import { subirBuffer, crearUrlFirmada, descargarBuffer, rutaArchivo, BUCKET_IMAGENES_GENERADAS, type ArchivoGenerado } from './almacenamiento'
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from './parseContenido'
 import { generarImagen, editarImagen } from '../imageGen/ImageGenerationService'
+import type { EstiloVisual } from '../imageGen/reglasVisuales'
 import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
 
 // Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
@@ -143,7 +144,13 @@ export async function ejecutarHerramientaDocumento(
   // la generación de imágenes no es determinista). Si quien llama ya
   // generó las imágenes (ver route.ts, CASO 3), las pasa aquí y este
   // pipeline NUNCA vuelve a generarlas — las reutiliza tal cual.
-  imagenesPreGeneradas?: Map<string, { buffer: Buffer; ancho: number; alto: number }>
+  imagenesPreGeneradas?: Map<string, { buffer: Buffer; ancho: number; alto: number }>,
+  // Ver "Ilustraciones por nivel educativo, Fase 1" — resuelto por
+  // route.ts con resolverNivelEducativo/obtenerPerfilNivel antes de
+  // llamar aquí. undefined (sin nivel resuelto) preserva EXACTAMENTE
+  // el comportamiento anterior: generarImagen() cae a su propio
+  // ESTILO_POR_DEFECTO, igual que antes de esta fase.
+  estiloVisual?: EstiloVisual
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -176,7 +183,7 @@ export async function ejecutarHerramientaDocumento(
   if (!imagenesPorDescripcion && (tipo === 'word' || tipo === 'pdf')) {
     const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
     if (descripciones.length > 0) {
-      imagenesPorDescripcion = await generarImagenesParaDocumento(descripciones, perfil, sb, userId, supabaseUser, conversacionId ?? null)
+      imagenesPorDescripcion = await generarImagenesParaDocumento(descripciones, perfil, sb, userId, supabaseUser, conversacionId ?? null, estiloVisual)
     }
   }
 
@@ -297,11 +304,14 @@ async function generarUnaIlustracion(
   sb: SupabaseClient,
   userId: string,
   supabaseUser: SupabaseClient | undefined,
-  conversacionId: string | null
+  conversacionId: string | null,
+  // Ver "Ilustraciones por nivel educativo, Fase 1" — undefined
+  // preserva el ESTILO_POR_DEFECTO de siempre, sin cambiar nada.
+  estiloVisual: EstiloVisual | undefined
 ): Promise<{ descripcion: string; buffer: Buffer; ancho: number; alto: number } | null> {
   let imagen: Awaited<ReturnType<typeof generarImagen>>
   try {
-    imagen = await medirEtapa(`IMAGEN-DOC:generacion[${orden}]`, () => generarImagen({ prompt: descripcion, nivelEscolar: perfil?.grado || undefined }))
+    imagen = await medirEtapa(`IMAGEN-DOC:generacion[${orden}]`, () => generarImagen({ prompt: descripcion, nivelEscolar: perfil?.grado || undefined, estilo: estiloVisual }))
   } catch (err) {
     console.error(`[PIPELINE IMAGEN-DOC:generacion] Falló generando la ilustración ${orden} ("${descripcion.slice(0, 60)}"):`, err)
     return null
@@ -360,10 +370,11 @@ export async function generarImagenesParaDocumento(
   sb: SupabaseClient,
   userId: string,
   supabaseUser: SupabaseClient | undefined,
-  conversacionId: string | null
+  conversacionId: string | null,
+  estiloVisual?: EstiloVisual
 ): Promise<Map<string, { buffer: Buffer; ancho: number; alto: number }>> {
   const resultados = await Promise.all(
-    descripciones.map((descripcion, orden) => generarUnaIlustracion(descripcion, orden, perfil, sb, userId, supabaseUser, conversacionId))
+    descripciones.map((descripcion, orden) => generarUnaIlustracion(descripcion, orden, perfil, sb, userId, supabaseUser, conversacionId, estiloVisual))
   )
   const mapa = new Map<string, { buffer: Buffer; ancho: number; alto: number }>()
   for (const r of resultados) {
