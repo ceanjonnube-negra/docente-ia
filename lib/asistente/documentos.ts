@@ -160,7 +160,7 @@ export function detectarFormatosExplicitosMultiples(texto: string): TipoHerramie
 // documento YA activo con artículo definido ("hazme EL examen en
 // blanco y negro", "cámbiale el título a LA guía" siguen siendo
 // ediciones reales, no creaciones nuevas).
-const SUSTANTIVOS_DOCUMENTO = 'gu[ií]a|ficha|examen|planeaci[oó]n|actividad(es)?|cuento|f[aá]bula|lectura|comunicado|citatorio|r[uú]brica|resumen|oficio|material(es)?|cuadernillo'
+const SUSTANTIVOS_DOCUMENTO = 'gu[ií]a|ficha|examen|planeaci[oó]n|actividad(es)?|cuento|f[aá]bula|lectura|comunicado|citatorio|r[uú]brica|resumen|oficio|material(es)?|cuadernillo|hoja(s)?'
 const ARTICULO_INDEFINIDO_DOCUMENTO = new RegExp(`\\b(un|una)\\s+(${SUSTANTIVOS_DOCUMENTO})\\b`, 'i')
 export function pareceNuevoDocumento(texto: string): boolean {
   return VERBO_GENERAR.test(texto) && ARTICULO_INDEFINIDO_DOCUMENTO.test(texto)
