@@ -437,6 +437,23 @@ function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto:
           if (l.tipo === 'imagen') {
             return <p key={idx} className="text-xs text-purple-500 italic">🖼️ Ilustración: {l.descripcion}</p>
           }
+          // Ver "Pulido visual — tabla real en Word/PDF" — vista previa
+          // ligera mientras se redacta; la tabla real (con bordes) la
+          // arma construirDocumentoWord.ts/generarPdfServidor.ts al
+          // generar el archivo.
+          if (l.tipo === 'tabla') {
+            return (
+              <div key={idx} className="border border-gray-200 rounded-md overflow-hidden text-xs">
+                {l.filas.map((fila, filaIdx) => (
+                  <div key={filaIdx} className={`flex ${filaIdx === 0 ? 'bg-gray-50 font-semibold text-gray-700' : 'text-gray-600'} ${filaIdx > 0 ? 'border-t border-gray-100' : ''}`}>
+                    {fila.map((celda, celdaIdx) => (
+                      <span key={celdaIdx} className="flex-1 px-2 py-1 border-l border-gray-100 first:border-l-0">{celda}</span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )
+          }
           return <p key={idx} className="text-xs text-gray-600 leading-relaxed">{l.texto}</p>
         })}
         {escribiendo && (

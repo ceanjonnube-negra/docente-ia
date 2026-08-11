@@ -142,15 +142,29 @@ const generarTablaAlumnos = (lineas: string[]): Table => {
 // confunde con la lista de alumnos con CURP: esListaConCurp ya decide
 // eso antes, sobre el documento completo, y esta función nunca se
 // llama en ese caso.
+const BORDE_CELDA_TABLA = { style: BorderStyle.SINGLE, size: 4, color: COLOR_BORDE }
+
 const generarTablaGenerica = (filas: string[][]): Table => {
-  const numColumnas = Math.max(...filas.map(f => f.length))
-  const anchoColumna = Math.floor(100 / numColumnas)
+  const numColumnasOriginal = Math.max(...filas.map(f => f.length))
+  // Columnas totalmente vacías en TODAS las filas — típico espaciador
+  // que Claude agrega entre "Columna A" y "Columna B" en relaciona-
+  // columnas (ej. "| Columna A | | Columna B |") — se colapsan para
+  // que se vean como 2 columnas reales, no 3 con una tira vacía.
+  const columnasUtiles: number[] = []
+  for (let i = 0; i < numColumnasOriginal; i++) {
+    const todasVacias = filas.every(f => !(f[i] ?? '').trim())
+    if (!todasVacias) columnasUtiles.push(i)
+  }
+  const indices = columnasUtiles.length > 0 ? columnasUtiles : Array.from({ length: numColumnasOriginal }, (_, i) => i)
+  const anchoColumna = Math.floor(100 / indices.length)
   const filasTabla: TableRow[] = filas.map((fila, indice) => {
     const esEncabezado = indice === 0
-    const celdas = Array.from({ length: numColumnas }, (_, i) => fila[i] ?? '')
+    const celdas = indices.map(i => fila[i] ?? '')
     return new TableRow({
       children: celdas.map(texto => new TableCell({
         width: { size: anchoColumna, type: WidthType.PERCENTAGE },
+        margins: { top: 80, bottom: 80, left: 100, right: 100 },
+        borders: { top: BORDE_CELDA_TABLA, bottom: BORDE_CELDA_TABLA, left: BORDE_CELDA_TABLA, right: BORDE_CELDA_TABLA },
         children: [new Paragraph({ children: [new TextRun({ text: texto, bold: esEncabezado, size: 20, color: esEncabezado ? COLOR_TITULO : COLOR_TEXTO })] })],
         shading: esEncabezado ? { type: ShadingType.CLEAR, color: 'auto', fill: 'F3F4F6' } : undefined,
       })),
@@ -160,6 +174,18 @@ const generarTablaGenerica = (filas: string[][]): Table => {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Ver "Pulido visual — pie de página duplicado en exámenes/hojas de
+// actividades": examen/actividad (título con emoji 📝, mismo criterio
+// que PATRON_TITULO_DOCUMENTO en lib/asistente/documentos.ts) ya trae
+// su propio cierre redactado por Claude (puntaje, "Calificación: __/
+// __") — el pie de firma genérico de abajo (pensado para planeaciones/
+// documentos administrativos que el docente firma) quedaba duplicado y
+// a veces empujaba una página nueva casi vacía. Otros tipos de
+// documento (planeación 📋, rúbrica 📊, citatorio 📨, resumen 📄,
+// cuento/fábula/lectura 📖) conservan el pie de firma sin ningún
+// cambio.
+const esExamenOActividad = (texto: string): boolean => texto.trim().startsWith('📝')
+
 export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Document {
   const enc = prepararEncabezado(perfil, zonaHoraria)
 
@@ -301,7 +327,7 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
     }
   }
 
-  const piePagina = [
+  const piePagina = esExamenOActividad(texto) ? [] : [
     new Paragraph({ children: [new TextRun('')], spacing: { before: 480 } }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '______________________________', size: 20, color: COLOR_TEXTO_SUAVE })] }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: enc.docente, bold: true, size: 20, color: COLOR_TEXTO })], spacing: { before: 80 } }),

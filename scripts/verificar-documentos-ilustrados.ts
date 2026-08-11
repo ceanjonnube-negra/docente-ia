@@ -172,7 +172,7 @@ Introducción breve sobre el tema.
   //    líneas de imagen en vez de romper con ellas.
   // ============================================================
   verificar(cuerpoParseContenido.includes("lineas.filter((l) => l.tipo !== 'imagen')"), 'agruparEnDiapositivas (PowerPoint) filtra las líneas de imagen — fuera de alcance de esta fase, nunca rompe la generación de PPTX')
-  verificar(cuerpoXlsx.includes("analizarContenido(texto).filter((l) => l.tipo !== 'imagen')"), 'generarXlsxServidor.ts filtra las líneas de imagen — fuera de alcance de esta fase, nunca rompe la generación de Excel')
+  verificar(/analizarContenido\(texto\)\.filter\(\(l\) => l\.tipo !== 'imagen'[^)]*\)/.test(cuerpoXlsx), 'generarXlsxServidor.ts filtra las líneas de imagen — fuera de alcance de esta fase, nunca rompe la generación de Excel')
 
   // ============================================================
   // 7. app/api/chat/route.ts — MODO DOCUMENTO ILUSTRADO solo se activa

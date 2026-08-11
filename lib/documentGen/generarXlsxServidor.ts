@@ -38,11 +38,13 @@ export async function generarXlsxBuffer(texto: string, perfil: any, zonaHoraria:
       columna.width = 22
     })
   } else {
-    // tipo==='imagen' (ver "Documentos ilustrados...", Fase 2A) se
-    // omite aquí a propósito — Excel no tiene forma de mostrar una
-    // ilustración embebida útil en una celda de texto; fuera de
-    // alcance de esta fase, nunca rompe la generación existente.
-    const lineas = analizarContenido(texto).filter((l) => l.tipo !== 'imagen')
+    // tipo==='imagen' (ver "Documentos ilustrados...", Fase 2A) y
+    // tipo==='tabla' (ver "Pulido visual — tabla real en Word/PDF") se
+    // omiten aquí a propósito — un documento con tablas markdown reales
+    // ya las captura arriba vía extraerFilasTabulares (rama filasTabulares
+    // de esta misma función); este camino de prosa solo corre cuando NO
+    // hay suficientes filas tabulares, fuera de alcance de esta fase.
+    const lineas = analizarContenido(texto).filter((l) => l.tipo !== 'imagen' && l.tipo !== 'tabla')
     for (const l of lineas) {
       const fila = hoja.addRow([l.tipo === 'bullet' ? `• ${l.texto}` : l.texto])
       if (l.tipo === 'titulo') {

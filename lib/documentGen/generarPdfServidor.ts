@@ -93,6 +93,12 @@ function envolverTexto(texto: string, font: PDFFont, tamano: number, anchoMax: n
   return lineas
 }
 
+// Ver "Pulido visual — pie de página duplicado en exámenes/hojas de
+// actividades" (mismo criterio que construirDocumentoWord.ts).
+function esExamenOActividad(texto: string): boolean {
+  return texto.trim().startsWith('📝')
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumento>): Promise<Buffer> {
   const enc = prepararEncabezado(perfil, zonaHoraria)
@@ -197,9 +203,81 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
     y -= altoDibujo + 12
   }
 
+  // Tabla real (ver "Pulido visual — tabla real en PDF"): relaciona
+  // columnas, verdadero/falso, puntaje. Primera fila como encabezado
+  // (sombreado + negrita), igual criterio visual que
+  // construirDocumentoWord.ts. Columnas totalmente vacías en TODAS las
+  // filas (espaciador típico entre "Columna A"/"Columna B") se
+  // colapsan para que se vean como columnas reales, no con una tira
+  // vacía. Paginación por fila: si una fila no cabe, se abre página
+  // nueva ANTES de dibujarla (mismo criterio que el resto del archivo).
+  function dibujarTabla(filas: string[][]) {
+    const numColumnasOriginal = Math.max(...filas.map(f => f.length))
+    const columnasUtiles: number[] = []
+    for (let i = 0; i < numColumnasOriginal; i++) {
+      const todasVacias = filas.every(f => !(f[i] ?? '').trim())
+      if (!todasVacias) columnasUtiles.push(i)
+    }
+    const indices = columnasUtiles.length > 0 ? columnasUtiles : Array.from({ length: numColumnasOriginal }, (_, i) => i)
+    const numColumnas = indices.length
+    const anchoColumna = ANCHO_CONTENIDO / numColumnas
+    const PADDING_CELDA = 6
+    const TAMANO_TEXTO = 10
+    const INTERLINEADO_CELDA = TAMANO_TEXTO * 1.3
+
+    asegurarEspacio(20)
+    y -= 6
+
+    filas.forEach((fila, indiceFila) => {
+      const esEncabezado = indiceFila === 0
+      const font = esEncabezado ? fuentes.negrita : fuentes.regular
+      const celdasTexto = indices.map(i => sanearParaWinAnsi(fila[i] ?? ''))
+      const lineasPorCelda = celdasTexto.map(t => envolverTexto(t, font, TAMANO_TEXTO, anchoColumna - PADDING_CELDA * 2))
+      const maxLineas = Math.max(1, ...lineasPorCelda.map(l => l.length))
+      const alturaFila = maxLineas * INTERLINEADO_CELDA + PADDING_CELDA * 2
+
+      asegurarEspacio(alturaFila)
+      const yInicioFila = y
+
+      pagina.drawRectangle({
+        x: MARGEN,
+        y: yInicioFila - alturaFila,
+        width: ANCHO_CONTENIDO,
+        height: alturaFila,
+        color: esEncabezado ? rgb(0.953, 0.957, 0.965) : undefined,
+        borderColor: COLOR_BORDE,
+        borderWidth: 0.75,
+      })
+      for (let c = 1; c < numColumnas; c++) {
+        const xLinea = MARGEN + anchoColumna * c
+        pagina.drawLine({ start: { x: xLinea, y: yInicioFila }, end: { x: xLinea, y: yInicioFila - alturaFila }, thickness: 0.75, color: COLOR_BORDE })
+      }
+      lineasPorCelda.forEach((lineasCelda, c) => {
+        const xCelda = MARGEN + anchoColumna * c + PADDING_CELDA
+        lineasCelda.forEach((linea, li) => {
+          pagina.drawText(linea, {
+            x: xCelda,
+            y: yInicioFila - PADDING_CELDA - (li + 1) * INTERLINEADO_CELDA + TAMANO_TEXTO * 0.25,
+            size: TAMANO_TEXTO,
+            font,
+            color: esEncabezado ? COLOR_TITULO : COLOR_TEXTO,
+          })
+        })
+      })
+
+      y = yInicioFila - alturaFila
+    })
+
+    y -= 10
+  }
+
   for (const l of lineas) {
     if (l.tipo === 'imagen') {
       await dibujarImagen(l.descripcion)
+      continue
+    }
+    if (l.tipo === 'tabla') {
+      dibujarTabla(l.filas.map((fila) => fila.map((celda) => quitarEmoji(celda))))
       continue
     }
     const contenido = quitarEmoji(l.texto)
@@ -249,10 +327,12 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
     }
   }
 
-  y -= 24
-  dibujarLineaCentrada('______________________________', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
-  dibujarLineaCentrada(enc.docente, fuentes.negrita, 10, COLOR_TEXTO)
-  dibujarLineaCentrada('Docente de grupo', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+  if (!esExamenOActividad(texto)) {
+    y -= 24
+    dibujarLineaCentrada('______________________________', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+    dibujarLineaCentrada(enc.docente, fuentes.negrita, 10, COLOR_TEXTO)
+    dibujarLineaCentrada('Docente de grupo', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+  }
 
   const bytes = await pdfDoc.save()
   return Buffer.from(bytes)

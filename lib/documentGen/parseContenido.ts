@@ -12,6 +12,7 @@ export type LineaDocumento =
   | { tipo: 'bullet'; texto: string }
   | { tipo: 'parrafo'; texto: string }
   | { tipo: 'imagen'; descripcion: string }
+  | { tipo: 'tabla'; filas: string[][] }
 
 // Marcador de ilustración dentro de MODO DOCUMENTO (ver "Documentos
 // ilustrados + guías completas e ilustradas", Fase 2A) — Claude lo
@@ -29,26 +30,26 @@ export type LineaDocumento =
 // [[IMAGEN:...]] ni ningún texto que la acompañe).
 const REGEX_MARCADOR_IMAGEN = /\[\[IMAGEN:\s*(.+?)\]\]/
 
+// Fila de tabla markdown ("| Columna A | Columna B |") — ver
+// "Mecanismo B — tablas markdown se perdían en silencio" y "Pulido
+// visual — tabla real en PDF". Mismo criterio que esFilaTabla en
+// construirDocumentoWord.ts.
+const esFilaTabla = (linea: string): string[] | null => {
+  if (!linea.startsWith('|')) return null
+  const celdas = linea.split('|').map(c => c.trim()).filter(c => c.length > 0)
+  return celdas.length >= 2 ? celdas : null
+}
+
 export function analizarContenido(texto: string): LineaDocumento[] {
   const lineas = texto
     .split('\n')
     .map(l => l.trim())
-    // Ver "Mecanismo B — tablas markdown se perdían en silencio": antes
-    // CUALQUIER línea que empezara con "|" se descartaba aquí por
-    // completo (perdía el contenido real de reactivos de relaciona-
-    // columnas/verdadero-falso, no solo su formato de tabla). Ya no se
-    // descarta — se convierte a texto legible en el segundo .map() de
-    // abajo. Solo la fila separadora puramente decorativa
-    // ("|---|---|", sin ninguna letra) se sigue descartando aquí.
+    // Filas de tabla markdown reales se conservan tal cual (se agrupan
+    // más abajo) — solo la fila separadora puramente decorativa
+    // ("|---|---|", sin ninguna letra) se descarta aquí.
     .filter(l => l.length > 0 && !/^[-|:\s]+$/.test(l) && l !== '---' && !/^-{2,}$/.test(l))
     .map(l => {
-      if (l.startsWith('|')) {
-        // PDF/PowerPoint no arman una tabla real aquí (ver
-        // construirDocumentoWord.ts para la versión con tabla real) —
-        // mínimo garantizado: el contenido de cada celda se conserva,
-        // legible, en vez de desaparecer.
-        return l.split('|').map(celda => celda.trim()).filter(celda => celda.length > 0).join(' — ')
-      }
+      if (l.startsWith('|')) return l
       return l
         .replace(/\*\*(.*?)\*\*/g, '$1')
         .replace(/\*(.*?)\*/g, '$1')
@@ -68,7 +69,29 @@ export function analizarContenido(texto: string): LineaDocumento[] {
   const resultado: LineaDocumento[] = []
   let tituloUsado = false
   let esPrimeraLinea = true
-  for (const linea of lineas) {
+  let i = 0
+  while (i < lineas.length) {
+    const linea = lineas[i]
+
+    // Tabla markdown — se comprueba ANTES que imagen/título/bullet.
+    // Agrupa TODAS las filas consecutivas (encabezado + datos) en una
+    // sola línea de tipo 'tabla'.
+    const filaTabla = esFilaTabla(linea)
+    if (filaTabla) {
+      const filas: string[][] = [filaTabla]
+      let j = i + 1
+      while (j < lineas.length) {
+        const siguiente = esFilaTabla(lineas[j])
+        if (!siguiente) break
+        filas.push(siguiente)
+        j++
+      }
+      resultado.push({ tipo: 'tabla', filas })
+      esPrimeraLinea = false
+      i = j
+      continue
+    }
+
     // Marcador de ilustración — se comprueba ANTES que título/bullet a
     // propósito: nunca debe consumir "es la primera línea" (el título
     // real del documento sigue siendo la primera línea de TEXTO, ver
@@ -77,6 +100,7 @@ export function analizarContenido(texto: string): LineaDocumento[] {
     const marcadorImagen = linea.match(REGEX_MARCADOR_IMAGEN)
     if (marcadorImagen) {
       resultado.push({ tipo: 'imagen', descripcion: marcadorImagen[1].trim() })
+      i++
       continue
     }
     // La primera línea del documento siempre es su encabezado principal
@@ -93,6 +117,7 @@ export function analizarContenido(texto: string): LineaDocumento[] {
     } else {
       resultado.push({ tipo: 'parrafo', texto: linea })
     }
+    i++
   }
   return resultado
 }
@@ -114,6 +139,18 @@ export function agruparEnDiapositivas(lineas: LineaDocumento[]): Diapositiva[] {
     if (l.tipo === 'titulo' || l.tipo === 'seccion') {
       actual = { titulo: l.texto, contenido: [] }
       diapositivas.push(actual)
+    } else if (l.tipo === 'tabla') {
+      // PowerPoint no arma una tabla real aquí (ver
+      // construirDocumentoWord.ts / generarPdfServidor.ts para la
+      // versión con tabla real) — mismo mínimo garantizado de antes:
+      // el contenido de cada fila se conserva, legible, en vez de
+      // desaparecer.
+      const textoFilas = l.filas.map((fila) => fila.join(' — '))
+      if (actual) actual.contenido.push(...textoFilas)
+      else {
+        actual = { titulo: 'Contenido', contenido: textoFilas }
+        diapositivas.push(actual)
+      }
     } else if (actual) {
       actual.contenido.push(l.texto)
     } else {
