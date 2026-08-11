@@ -30,7 +30,14 @@ const preprocesarTexto = (texto: string): string[] => {
     .filter(linea => {
       const l = linea.trim()
       if (!l) return false
-      if (l.startsWith('|')) return false
+      // Ver "Mecanismo B — tablas markdown se perdían en silencio":
+      // antes CUALQUIER línea que empezara con "|" se descartaba aquí
+      // (incluidas filas reales de "relaciona columnas"/verdadero-falso
+      // que Claude escribe como tabla markdown) — ya NO se descarta:
+      // se agrupa y se convierte en una tabla real más abajo (ver
+      // esFilaTabla/generarTablaGenerica). Solo la fila separadora
+      // puramente decorativa ("|---|---|", sin ninguna letra) se sigue
+      // descartando, vía el filtro de abajo.
       if (/^[-|:\s]+$/.test(l)) return false
       if (l === '---') return false
       if (/^-{2,}$/.test(l)) return false
@@ -64,6 +71,19 @@ const esBullet = (linea: string): boolean => {
 // de compartir un tipo LineaDocumento que este archivo no usa.
 const REGEX_MARCADOR_IMAGEN = /\[\[IMAGEN:\s*(.+?)\]\]/
 const esImagen = (linea: string): string | null => linea.trim().match(REGEX_MARCADOR_IMAGEN)?.[1]?.trim() ?? null
+
+// Fila de tabla markdown ("| Columna A | Columna B |") — ver
+// "Mecanismo B — tablas markdown se perdían en silencio". Claude las
+// escribe para reactivos de relaciona-columnas, verdadero/falso y
+// comparativas simples (ver EXÁMENES Y ACTIVIDADES en
+// app/api/chat/route.ts). Se comprueba ANTES que equipo/título/bullet,
+// mismo orden de prioridad que esImagen.
+const esFilaTabla = (linea: string): string[] | null => {
+  const l = linea.trim()
+  if (!l.startsWith('|')) return null
+  const celdas = l.split('|').map(c => c.trim()).filter(c => c.length > 0)
+  return celdas.length >= 2 ? celdas : null
+}
 
 // "EQUIPO 1", "EQUIPO 2"... — un tipo de sección aparte del título
 // genérico: cada uno abre con una línea divisoria real (no caracteres
@@ -116,6 +136,29 @@ const generarTablaAlumnos = (lineas: string[]): Table => {
   return new Table({ rows: filas, width: { size: 100, type: WidthType.PERCENTAGE } })
 }
 
+// Tabla genérica de 2+ columnas (relaciona columnas, verdadero/falso,
+// comparativas simples — ver "Mecanismo B"). Primera fila como
+// encabezado, mismo criterio visual que generarTablaAlumnos. Nunca se
+// confunde con la lista de alumnos con CURP: esListaConCurp ya decide
+// eso antes, sobre el documento completo, y esta función nunca se
+// llama en ese caso.
+const generarTablaGenerica = (filas: string[][]): Table => {
+  const numColumnas = Math.max(...filas.map(f => f.length))
+  const anchoColumna = Math.floor(100 / numColumnas)
+  const filasTabla: TableRow[] = filas.map((fila, indice) => {
+    const esEncabezado = indice === 0
+    const celdas = Array.from({ length: numColumnas }, (_, i) => fila[i] ?? '')
+    return new TableRow({
+      children: celdas.map(texto => new TableCell({
+        width: { size: anchoColumna, type: WidthType.PERCENTAGE },
+        children: [new Paragraph({ children: [new TextRun({ text: texto, bold: esEncabezado, size: 20, color: esEncabezado ? COLOR_TITULO : COLOR_TEXTO })] })],
+        shading: esEncabezado ? { type: ShadingType.CLEAR, color: 'auto', fill: 'F3F4F6' } : undefined,
+      })),
+    })
+  })
+  return new Table({ rows: filasTabla, width: { size: 100, type: WidthType.PERCENTAGE } })
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Document {
   const enc = prepararEncabezado(perfil, zonaHoraria)
@@ -148,7 +191,29 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
   if (esListaConCurp(lineas)) {
     elementos.push(generarTablaAlumnos(lineas))
   } else {
-    for (const linea of lineas) {
+    let i = 0
+    while (i < lineas.length) {
+      const linea = lineas[i]
+
+      // Tabla markdown — se comprueba ANTES que todo lo demás (ver
+      // "Mecanismo B"). Agrupa TODAS las filas consecutivas (encabezado
+      // + datos) en una sola tabla real de Word.
+      const filaTabla = esFilaTabla(linea)
+      if (filaTabla) {
+        const filasTabla: string[][] = [filaTabla]
+        let j = i + 1
+        while (j < lineas.length) {
+          const siguienteFila = esFilaTabla(lineas[j])
+          if (!siguienteFila) break
+          filasTabla.push(siguienteFila)
+          j++
+        }
+        elementos.push(generarTablaGenerica(filasTabla))
+        elementos.push(new Paragraph({ children: [new TextRun('')], spacing: { after: 120 } }))
+        i = j
+        continue
+      }
+
       // Marcador de ilustración — se comprueba ANTES que equipo/título/
       // bullet (ver mismo orden en parseContenido.ts). Si la
       // descripción no tiene imagen en el mapa (falló su generación o
@@ -169,6 +234,7 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
             })],
           }))
         }
+        i++
         continue
       }
       const matchEquipo = esEquipo(linea)
@@ -210,6 +276,7 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
           spacing: { after: 120 }
         }))
       }
+      i++
     }
   }
 

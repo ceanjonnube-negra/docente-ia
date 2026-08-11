@@ -33,15 +33,29 @@ export function analizarContenido(texto: string): LineaDocumento[] {
   const lineas = texto
     .split('\n')
     .map(l => l.trim())
-    .filter(l => l.length > 0 && !l.startsWith('|') && !/^[-|:\s]+$/.test(l) && l !== '---' && !/^-{2,}$/.test(l))
-    .map(l =>
-      l
+    // Ver "Mecanismo B — tablas markdown se perdían en silencio": antes
+    // CUALQUIER línea que empezara con "|" se descartaba aquí por
+    // completo (perdía el contenido real de reactivos de relaciona-
+    // columnas/verdadero-falso, no solo su formato de tabla). Ya no se
+    // descarta — se convierte a texto legible en el segundo .map() de
+    // abajo. Solo la fila separadora puramente decorativa
+    // ("|---|---|", sin ninguna letra) se sigue descartando aquí.
+    .filter(l => l.length > 0 && !/^[-|:\s]+$/.test(l) && l !== '---' && !/^-{2,}$/.test(l))
+    .map(l => {
+      if (l.startsWith('|')) {
+        // PDF/PowerPoint no arman una tabla real aquí (ver
+        // construirDocumentoWord.ts para la versión con tabla real) —
+        // mínimo garantizado: el contenido de cada celda se conserva,
+        // legible, en vez de desaparecer.
+        return l.split('|').map(celda => celda.trim()).filter(celda => celda.length > 0).join(' — ')
+      }
+      return l
         .replace(/\*\*(.*?)\*\*/g, '$1')
         .replace(/\*(.*?)\*/g, '$1')
         .replace(/^#{1,6}\s+/, '')
         .replace(/^>\s+/, '')
         .trim()
-    )
+    })
     .filter(l => l.length > 0)
 
   // Algunos encabezados del formato real (ver MODO DOCUMENTO en

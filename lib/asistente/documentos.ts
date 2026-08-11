@@ -214,6 +214,14 @@ const FRASES_DOCUMENTO_ILUSTRADO = [
   'con dibujos', 'con imagenes', 'con imagen', 'con figuras',
   'para colorear', 'para pintar', 'dibujos para colorear',
   'con portada', 'guia completa', 'guia detallada', 'bien ilustrada',
+  // Ver "Mecanismo A — el marcador nunca se activa": lenguaje natural
+  // real con el que un docente pide un documento visualmente atractivo
+  // sin usar la palabra "ilustrado" — antes esto dejaba a Claude sin
+  // ninguna instrucción de imagen real, y terminaba improvisando texto
+  // o diagramas en ASCII en su lugar.
+  'bonito', 'bonita', 'bonitos', 'bonitas',
+  'atractivo', 'atractiva', 'atractivos', 'atractivas',
+  'visualmente atractivo', 'visualmente atractiva',
 ]
 export function quiereIlustracion(texto: string): boolean {
   const normalizado = normalizar(texto)
