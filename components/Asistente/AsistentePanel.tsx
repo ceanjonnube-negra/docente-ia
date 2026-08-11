@@ -195,6 +195,39 @@ function descargarPdfDirecto(url: string, nombreSugerido: string) {
   enlace.remove()
 }
 
+// Descarga REAL de PDF vía hoja nativa (CORRECCIÓN — "el botón de PDF
+// sigue solo abriendo, no descarga"): evidencia real confirmada dos
+// veces en iPhone — ni descargarArchivo (blob) ni descargarPdfDirecto
+// (navegación directa con Content-Disposition:attachment) logran que
+// Safari guarde el PDF; siempre lo abre en su visor integrado (Quick
+// Look), sin importar el mecanismo. Es un límite real de iOS Safari
+// con application/pdf, no algo que un truco más de JS pueda resolver
+// (ver AJUSTE DE NOMENCLATURA arriba). El único camino con evidencia
+// real de guardar el archivo de verdad es la hoja de compartir nativa
+// — "Guardar en Archivos" ahí SÍ produce un archivo real en el
+// dispositivo. Reutiliza el mismo patrón ya probado de compartirArchivo
+// (fetch → Blob → File → navigator.share), pero SOLO con archivos —
+// nunca cae al respaldo de "compartir la URL" (eso no es una
+// descarga) — si el navegador no soporta compartir archivos, el
+// último recurso es abrir el PDF directo (igual que "Ver").
+async function descargarPdfConHojaNativa(url: string, nombreSugerido: string) {
+  const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
+  try {
+    if (nav?.canShare) {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const file = new File([blob], nombreSugerido, { type: blob.type || 'application/pdf' })
+      if (nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file] })
+        return
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return // el docente canceló la hoja, no es un error
+  }
+  window.open(url, '_blank')
+}
+
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
   const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
   try {
@@ -316,6 +349,8 @@ function TarjetaDescarga({
             // planeación/hoja) sigue mostrando el botón único de
             // siempre, sin ningún cambio.
             archivo.tipo === 'pdf' && archivo.tipoDocumento && archivo.urlVer ? (
+              // Planeación / hoja de evaluación — conservan su flujo
+              // propio tal cual, sin ningún cambio.
               <div key={archivo.tipo} className="flex gap-1.5">
                 <button
                   onClick={() => window.open(archivo.urlVer, '_blank')}
@@ -330,16 +365,35 @@ function TarjetaDescarga({
                   ⬇️ Descargar PDF
                 </button>
               </div>
+            ) : archivo.tipo === 'pdf' ? (
+              // PDF genérico (examen, hoja de actividades, FINALIZAR
+              // ARCHIVO...) — ver "el botón de PDF sigue solo
+              // abriendo, no descarga". "Ver" abre el PDF directo
+              // (Safari lo muestra en su visor, que es exactamente lo
+              // que se espera de "ver"). "Descargar" usa la hoja
+              // nativa (descargarPdfConHojaNativa) — único mecanismo
+              // con evidencia real de guardar el archivo de verdad en
+              // iPhone; nunca el mismo botón que "Ver".
+              <div key={archivo.tipo} className="flex gap-1.5">
+                <button
+                  onClick={() => window.open(archivo.url, '_blank')}
+                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
+                >
+                  👁️ Ver PDF
+                </button>
+                <button
+                  onClick={() => descargarPdfConHojaNativa(archivo.url, archivo.nombre)}
+                  className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
+                >
+                  ⬇️ Descargar PDF
+                </button>
+              </div>
             ) : (
               <button
                 key={archivo.tipo}
-                // Ver "Descarga PDF en iPhone — causa raíz real":
-                // descargarArchivo (blob) falla en Safari/iPhone para
-                // PDF (WebKitBlobResource) y cae a solo abrirlo —
-                // descargarPdfDirecto ya existe y ya está probada para
-                // ese caso (planeación/hoja de evaluación). Word y los
-                // demás formatos conservan descargarArchivo tal cual.
-                onClick={() => archivo.tipo === 'pdf' ? descargarPdfDirecto(archivo.url, archivo.nombre) : descargarArchivo(archivo.url, archivo.nombre)}
+                // Word/Excel/PowerPoint y demás formatos — conservan
+                // descargarArchivo tal cual, sin ningún cambio.
+                onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}

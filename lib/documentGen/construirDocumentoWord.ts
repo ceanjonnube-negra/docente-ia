@@ -149,7 +149,11 @@ const generarTablaAlumnos = (lineas: string[]): Table => {
 const BORDE_CELDA_TABLA = { style: BorderStyle.SINGLE, size: 4, color: COLOR_BORDE }
 
 const generarTablaGenerica = (filas: string[][]): Table => {
-  const numColumnasOriginal = Math.max(...filas.map(f => f.length))
+  // Ver "PDF — Relaciona columnas: causa raíz real" — columnas
+  // definidas SIEMPRE por la fila de encabezado real (la primera),
+  // nunca por el máximo entre todas las filas. Con la agrupación de
+  // arriba ya corregida, esto es una segunda defensa.
+  const numColumnasOriginal = filas[0]?.length ?? 0
   // Columnas totalmente vacías en TODAS las filas — típico espaciador
   // que Claude agrega entre "Columna A" y "Columna B" en relaciona-
   // columnas (ej. "| Columna A | | Columna B |") — se colapsan para
@@ -247,11 +251,21 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
       // + datos) en una sola tabla real de Word.
       const filaTabla = esFilaTabla(linea)
       if (filaTabla) {
+        // Ver "PDF — Relaciona columnas: causa raíz real" (mismo
+        // defecto, nunca corregido aquí hasta ahora — confirmado con
+        // el bug real reportado: Word colapsando "Relaciona columnas"
+        // en columnas ultra-angostas). La forma de la fila de
+        // ENCABEZADO define la tabla — cualquier fila siguiente con
+        // una cantidad distinta de columnas reales nunca se agrupa
+        // con esta tabla, aunque siga empezando con "|": dos tablas
+        // markdown distintas pegadas sin un encabezado de sección
+        // entre medio NUNCA deben fusionarse en una sola.
+        const columnasEncabezado = filaTabla.length
         const filasTabla: string[][] = [filaTabla]
         let j = i + 1
         while (j < lineas.length) {
           const siguienteFila = esFilaTabla(lineas[j])
-          if (!siguienteFila) break
+          if (!siguienteFila || siguienteFila.length !== columnasEncabezado) break
           filasTabla.push(siguienteFila)
           j++
         }

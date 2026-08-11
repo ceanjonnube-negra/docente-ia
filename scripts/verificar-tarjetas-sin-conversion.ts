@@ -150,8 +150,15 @@ async function main() {
     // cuerpo de la tarjeta.
     const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
     verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
+    // CORRECCIÓN — "el botón de PDF sigue solo abriendo, no descarga":
+    // dos patrones nuevos y legítimos más — descargarPdfConHojaNativa
+    // (hoja de compartir nativa, único mecanismo con evidencia real de
+    // guardar un PDF en iPhone) para "Descargar PDF" genérico, y
+    // window.open(archivo.url, ...) para su "Ver PDF" (mismo criterio
+    // que ya existía para archivo.urlVer — solo abre, nunca navega al
+    // chat). Ninguno toca AsistenteService ni el historial.
     verificar(
-      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer/.test(c)),
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|descargarPdfConHojaNativa|window\.open\(archivo\.url/.test(c)),
       '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo, abren "Ver PDF" o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
     )
   }
