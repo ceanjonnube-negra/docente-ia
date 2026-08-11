@@ -203,6 +203,27 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
     y -= altoDibujo + 12
   }
 
+  // Altura estimada de una imagen SIN dibujarla (mismo cálculo de
+  // escala que dibujarImagen) — usada solo para decidir si el bloque
+  // completo "encabezado + imagen" cabe junto en la página actual, ver
+  // más abajo. Si la descripción no tiene imagen en el mapa, 0 (no
+  // afecta la estimación — la imagen se omitirá igual que siempre).
+  function alturaImagenEstimada(descripcion: string): number {
+    const imagen = imagenesPorDescripcion?.get(descripcion)
+    if (!imagen) return 0
+    const anchoMax = ANCHO_CONTENIDO * 0.85
+    const altoMax = 260
+    const escala = Math.min(anchoMax / imagen.ancho, altoMax / imagen.alto, 1)
+    return imagen.alto * escala + 16 + 12
+  }
+
+  // Altura estimada de un párrafo corto (mismo ajuste de línea real
+  // que dibujarParrafo) — usada junto con la de arriba.
+  function alturaParrafoEstimada(texto: string, font: PDFFont, tamano: number): number {
+    const lineasEnvueltas = envolverTexto(sanearParaWinAnsi(texto), font, tamano, ANCHO_CONTENIDO)
+    return lineasEnvueltas.length * (tamano * 1.4)
+  }
+
   // Tabla real (ver "Pulido visual — tabla real en PDF"): relaciona
   // columnas, verdadero/falso, puntaje. Primera fila como encabezado
   // (sombreado + negrita), igual criterio visual que
@@ -271,7 +292,8 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
     y -= 10
   }
 
-  for (const l of lineas) {
+  for (let indiceLinea = 0; indiceLinea < lineas.length; indiceLinea++) {
+    const l = lineas[indiceLinea]
     if (l.tipo === 'imagen') {
       await dibujarImagen(l.descripcion)
       continue
@@ -302,6 +324,27 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
       y -= 8
       primerTitulo = false
     } else if (l.tipo === 'seccion') {
+      // Ver "Pulido — mantener juntos título + instrucciones +
+      // ilustración de una actividad": antes cada elemento reservaba
+      // su propio espacio por separado, así que un encabezado que
+      // cabía al final de la página se quedaba ahí mientras su imagen
+      // brincaba a la siguiente. Ahora, si esta sección va seguida de
+      // cerca (la línea inmediata, o una instrucción corta y luego la
+      // imagen) por una ilustración, se reserva el espacio del BLOQUE
+      // COMPLETO antes de dibujar nada — si no cabe junto, el bloque
+      // entero pasa a la página nueva (nunca un salto forzado ni una
+      // página en blanco: es el mismo asegurarEspacio de siempre, solo
+      // con una altura mayor calculada por adelantado).
+      let alturaBloque = 13 * 1.4 + 12
+      const siguiente = lineas[indiceLinea + 1]
+      const subsiguiente = lineas[indiceLinea + 2]
+      if (siguiente?.tipo === 'imagen') {
+        alturaBloque += alturaImagenEstimada(siguiente.descripcion)
+      } else if (siguiente?.tipo === 'parrafo' && subsiguiente?.tipo === 'imagen') {
+        alturaBloque += alturaParrafoEstimada(quitarEmoji(siguiente.texto), fuentes.regular, 11) + 6
+        alturaBloque += alturaImagenEstimada(subsiguiente.descripcion)
+      }
+      asegurarEspacio(alturaBloque)
       y -= 6
       dibujarParrafo(contenido, fuentes.negrita, 13, COLOR_TITULO)
       y -= 6

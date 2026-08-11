@@ -218,6 +218,23 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
   let equipoActual: { numero: string; total: number } | null = null
   let primerEquipo = true
 
+  // Ver "Pulido — mantener juntos título + instrucciones + ilustración
+  // de una actividad": Word calcula su propia paginación al abrir el
+  // archivo, pero respeta keepNext (no separar este párrafo del
+  // siguiente) si se lo marcamos. true si la línea en `indice` es un
+  // encabezado/instrucción seguido de cerca (la línea inmediata, o una
+  // instrucción corta y luego la imagen) por un marcador [[IMAGEN:...]]
+  // — nunca fuerza un salto de página, solo evita que Word separe el
+  // bloque si de todas formas cabe seguir en la misma página.
+  const proximaLineaEsImagenCercana = (indice: number): boolean => {
+    const siguiente = lineas[indice + 1]
+    if (!siguiente) return false
+    if (esImagen(siguiente)) return true
+    const subsiguiente = lineas[indice + 2]
+    const siguienteEsTextoPlano = !esFilaTabla(siguiente) && !esImagen(siguiente) && !esEquipo(siguiente) && !esTitulo(siguiente) && !esBullet(siguiente)
+    return siguienteEsTextoPlano && !!subsiguiente && !!esImagen(subsiguiente)
+  }
+
   if (esListaConCurp(lineas)) {
     elementos.push(generarTablaAlumnos(lineas))
   } else {
@@ -289,7 +306,8 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
         } else {
           elementos.push(new Paragraph({
             children: [new TextRun({ text: linea, bold: true, size: 24, color: COLOR_TITULO })],
-            spacing: { before: 320, after: 160 }
+            spacing: { before: 320, after: 160 },
+            keepNext: proximaLineaEsImagenCercana(i),
           }))
         }
       } else if (esBullet(linea)) {
@@ -303,7 +321,8 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
         elementos.push(new Paragraph({
           alignment: AlignmentType.JUSTIFIED,
           children: [new TextRun({ text: linea, size: 22, color: COLOR_TEXTO })],
-          spacing: { after: 120 }
+          spacing: { after: 120 },
+          keepNext: !!lineas[i + 1] && esImagen(lineas[i + 1]) !== null,
         }))
       }
       i++
