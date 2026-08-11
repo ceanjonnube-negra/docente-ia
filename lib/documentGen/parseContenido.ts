@@ -46,8 +46,13 @@ export function analizarContenido(texto: string): LineaDocumento[] {
     .map(l => l.trim())
     // Filas de tabla markdown reales se conservan tal cual (se agrupan
     // más abajo) — solo la fila separadora puramente decorativa
-    // ("|---|---|", sin ninguna letra) se descarta aquí.
-    .filter(l => l.length > 0 && !/^[-|:\s]+$/.test(l) && l !== '---' && !/^-{2,}$/.test(l))
+    // ("|---|---|", sin ninguna letra) se descarta aquí. Ver
+    // "Pulido — relaciona columnas en ASCII/bloque de código": si
+    // Claude de todas formas envuelve algo en un bloque de código
+    // (```), el marcador de la valla nunca debe quedar como texto
+    // crudo visible en el documento — defensa adicional, no depende
+    // de que el prompt se cumpla siempre.
+    .filter(l => l.length > 0 && !/^[-|:\s]+$/.test(l) && l !== '---' && !/^-{2,}$/.test(l) && !/^```/.test(l))
     .map(l => {
       if (l.startsWith('|')) return l
       return l

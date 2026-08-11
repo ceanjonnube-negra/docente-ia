@@ -1560,6 +1560,13 @@ Tema: [tema]
 2. [pregunta o instrucción de otro tipo distinto al anterior]
 3. [pregunta o instrucción de otro tipo distinto a los anteriores]
 (en un EXAMEN: mínimo 10 reactivos con variedad real de tipos, ver arriba; en una ACTIVIDAD: mínimo 5, sin esa exigencia de variedad)
+RELACIONA COLUMNAS — formato OBLIGATORIO, sin ninguna variación, cuando incluyas este tipo de reactivo: una línea de instrucción, y luego una tabla markdown de 2 columnas con encabezado, EXACTAMENTE así:
+| Columna A | Columna B |
+|---|---|
+| 1. Evaporación | C. El agua se filtra en el suelo. |
+| 2. Condensación | A. El agua cae en forma de lluvia, nieve o granizo. |
+| 3. Precipitación | B. El vapor de agua se enfría y forma nubes. |
+Numera la Columna A con números (1, 2, 3...) y la Columna B con letras (A, B, C...) — MEZCLA el orden de la Columna B respecto a la Columna A (nunca en el mismo orden, o el ejercicio queda resuelto solo con leer de arriba a abajo). PROHIBIDO usar diagramas hechos de caracteres o arte ASCII/Unicode (líneas y cuadros como ┌─┐│└┘), bloques de código, o texto corrido con paréntesis (ej. "Evaporación ( ) Caída del agua...") — SIEMPRE usa exactamente el formato de tabla markdown de arriba, la única forma que esta aplicación convierte en una tabla real dentro del Word/PDF.
 
 📊 PUNTAJE
 [distribución de puntos por reactivo o sección]

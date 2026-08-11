@@ -41,6 +41,10 @@ const preprocesarTexto = (texto: string): string[] => {
       if (/^[-|:\s]+$/.test(l)) return false
       if (l === '---') return false
       if (/^-{2,}$/.test(l)) return false
+      // Ver "Pulido — relaciona columnas en ASCII/bloque de código":
+      // defensa adicional — un marcador de valla de código (```) nunca
+      // debe quedar como texto crudo visible en el documento.
+      if (/^```/.test(l)) return false
       return true
     })
     .map(linea =>
