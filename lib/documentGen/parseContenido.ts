@@ -83,11 +83,23 @@ export function analizarContenido(texto: string): LineaDocumento[] {
     // sola línea de tipo 'tabla'.
     const filaTabla = esFilaTabla(linea)
     if (filaTabla) {
+      // Ver "PDF — Relaciona columnas: causa raíz real". La forma de
+      // la fila de ENCABEZADO (la primera) define la tabla — cualquier
+      // fila siguiente con una cantidad distinta de columnas reales
+      // nunca se agrupa con esta tabla, sin importar si sigue
+      // empezando con "|": dos tablas markdown distintas (ej.
+      // "Relaciona columnas" seguida de cerca por otra tabla sin un
+      // encabezado de sección entre medio) NUNCA deben fusionarse en
+      // una sola — eso era lo que inflaba el número de columnas y
+      // encogía el ancho de cada una. La fila que rompe la agrupación
+      // se re-evalúa en la siguiente vuelta del bucle exterior como el
+      // posible inicio de su propia tabla nueva.
+      const columnasEncabezado = filaTabla.length
       const filas: string[][] = [filaTabla]
       let j = i + 1
       while (j < lineas.length) {
         const siguiente = esFilaTabla(lineas[j])
-        if (!siguiente) break
+        if (!siguiente || siguiente.length !== columnasEncabezado) break
         filas.push(siguiente)
         j++
       }

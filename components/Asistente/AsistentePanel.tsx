@@ -333,7 +333,13 @@ function TarjetaDescarga({
             ) : (
               <button
                 key={archivo.tipo}
-                onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
+                // Ver "Descarga PDF en iPhone — causa raíz real":
+                // descargarArchivo (blob) falla en Safari/iPhone para
+                // PDF (WebKitBlobResource) y cae a solo abrirlo —
+                // descargarPdfDirecto ya existe y ya está probada para
+                // ese caso (planeación/hoja de evaluación). Word y los
+                // demás formatos conservan descargarArchivo tal cual.
+                onClick={() => archivo.tipo === 'pdf' ? descargarPdfDirecto(archivo.url, archivo.nombre) : descargarArchivo(archivo.url, archivo.nombre)}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}

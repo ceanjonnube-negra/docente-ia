@@ -233,7 +233,14 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
   // vacía. Paginación por fila: si una fila no cabe, se abre página
   // nueva ANTES de dibujarla (mismo criterio que el resto del archivo).
   function dibujarTabla(filas: string[][]) {
-    const numColumnasOriginal = Math.max(...filas.map(f => f.length))
+    // Ver "PDF — Relaciona columnas: causa raíz real". La cantidad de
+    // columnas la define SIEMPRE la fila de encabezado real (la
+    // primera) — nunca el máximo entre todas las filas. Con la
+    // agrupación ya corregida en parseContenido.ts, todas las filas de
+    // esta tabla ya tienen la misma forma que el encabezado; este
+    // cálculo es una segunda defensa, no depende de que esa corrección
+    // sea perfecta en todos los casos.
+    const numColumnasOriginal = filas[0]?.length ?? 0
     const columnasUtiles: number[] = []
     for (let i = 0; i < numColumnasOriginal; i++) {
       const todasVacias = filas.every(f => !(f[i] ?? '').trim())
