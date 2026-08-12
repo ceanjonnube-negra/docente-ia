@@ -38,6 +38,7 @@ import {
   asistenciaGrupoResumen,
   calcularPorcentajeAsistencia,
   consultarAsistenciaAlumno,
+  contextoAlumno,
   documentosDelDocente,
   incidenciasAlumno,
   necesidadesApoyoGrupo,
@@ -468,10 +469,73 @@ const herramientaConsultarPlaneaciones = definir({
   },
 })
 
+// --- Dato individual confirmado de un alumno (CURP, sexo, fecha de
+// nacimiento) — ver "Consulta directa y segura de datos individuales
+// de alumnos". Reutiliza SIN MODIFICAR contextoAlumno() (y su RPC
+// contexto_alumno, ya con verificación de propiedad del docente) —
+// misma fuente que ya usa ficha_descriptiva, nunca una segunda
+// consulta paralela a Supabase ni un segundo mecanismo de resolución
+// de alumno. Consulta EXCLUSIVAMENTE al alumno ya resuelto por el
+// Clasificador de Nivel 0 (nunca al grupo completo) y extrae SOLO el
+// campo pedido antes de formatear la respuesta — ningún otro dato
+// personal, ni de este alumno ni de ningún otro, llega jamás al
+// modelo grande: esta Herramienta nunca pasa por Claude (ver
+// ejecutarHerramientaDeModulo, más abajo), así que tampoco hay una
+// llamada adicional a la IA solo para redactar la respuesta.
+type DatosPersonalesAlumno = { curp?: string | null; sexo?: string | null; fecha_nacimiento?: string | null }
+type CampoAlumnoConsultable = 'curp' | 'sexo' | 'fecha_nacimiento'
+
+const herramientaConsultarDatoAlumno = definir({
+  intent: 'consultar_dato_alumno',
+  puedeEjecutar: (clasificacion, ctx) => {
+    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
+    if (!clasificacion.campo_alumno_solicitado) return { listo: false, mensaje: '¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?' }
+    if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para consultar ese dato.' }
+    return { listo: true }
+  },
+  ejecutar: async (clasificacion, ctx) => {
+    try {
+      const datos = await contextoAlumno(ctx.sb, clasificacion.entidades_resueltas.alumno_id!, ctx.sesion.ciclo_escolar_id!)
+      const datosPersonales = (datos?.datos_personales ?? {}) as DatosPersonalesAlumno
+      return { exito: true, datos: datosPersonales }
+    } catch (e) {
+      console.error('[HERRAMIENTA] consultar_dato_alumno — fallo consultando:', e)
+      return { exito: false, error: 'No fue posible consultar ese dato' }
+    }
+  },
+  formatearRespuesta: (datos: DatosPersonalesAlumno, clasificacion, ctx) => {
+    const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+    const campo = clasificacion.campo_alumno_solicitado as CampoAlumnoConsultable
+    const valorCrudo = datos[campo]
+
+    // VERACIDAD DE DATOS, versión determinista (sin pasar por el
+    // modelo): si el campo viene null/vacío en la base, se dice con
+    // honestidad que no está registrado — NUNCA se infiere ni se
+    // completa.
+    if (valorCrudo === null || valorCrudo === undefined || valorCrudo === '') {
+      if (campo === 'curp') return `${nombre} no tiene CURP registrada en el sistema.`
+      if (campo === 'sexo') return `${nombre} no tiene sexo registrado en el sistema.`
+      return `${nombre} no tiene fecha de nacimiento registrada en el sistema.`
+    }
+
+    if (campo === 'curp') return `La CURP registrada de ${nombre} es ${valorCrudo}.`
+    if (campo === 'sexo') {
+      // Mismo criterio ya usado en app/dashboard/lista/[alumnoId]/page.tsx
+      // (pestaña Datos) — el código real ('M'/'H') nunca se muestra
+      // crudo, siempre como "Niña"/"Niño".
+      const etiquetaSexo = valorCrudo === 'M' ? 'Niña' : valorCrudo === 'H' ? 'Niño' : valorCrudo
+      return `El sexo registrado de ${nombre} es ${etiquetaSexo}.`
+    }
+    const fechaLegible = formatearFecha(valorCrudo, ctx.zonaHoraria, { day: 'numeric', month: 'long', year: 'numeric' })
+    return `La fecha de nacimiento registrada de ${nombre} es ${fechaLegible}.`
+  },
+})
+
 const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_asistencia: herramientaConsultarAsistencia,
   consultar_asistencia_grupo: herramientaConsultarAsistenciaGrupo,
   consultar_incidencias_alumno: herramientaConsultarIncidencias,
+  consultar_dato_alumno: herramientaConsultarDatoAlumno,
   consultar_apoyo: herramientaConsultarApoyo,
   consultar_documentos: herramientaConsultarDocumentos,
   planeacion_consultar: herramientaConsultarPlaneaciones,

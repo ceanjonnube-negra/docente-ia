@@ -847,6 +847,9 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('fecha_o_duracion')) {
           return respuestaTexto('¿Para cuántos días o qué fechas te gustaría esta planeación?')
         }
+        if (clasificacion.datos_faltantes.includes('campo_alumno')) {
+          return respuestaTexto('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?')
+        }
       }
 
       // Separación estricta entre conversación libre y consultas de

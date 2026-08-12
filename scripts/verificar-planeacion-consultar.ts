@@ -217,6 +217,7 @@ function clasificacion(overrides: Partial<ClasificacionNivel0> = {}): Clasificac
     requiere_contexto_memoria: true,
     entidades_resueltas: { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: false, opciones_alumno_ambiguo: [] },
     estado_asistencia_solicitado: null,
+    campo_alumno_solicitado: null,
     pestana_lista: null,
     filtro_lista: null,
     nivel_detalle_asistencia_grupo: null,
