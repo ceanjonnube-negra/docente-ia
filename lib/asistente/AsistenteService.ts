@@ -26,11 +26,21 @@ import {
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
-  crearNuevaConversacion,
   eliminarConversacion as eliminarConversacionGuardada,
   establecerConversacionActiva,
   guardarConversacion,
   listarConversaciones,
+  // PASO 3 — persistencia remota (Supabase), ver la sección dedicada
+  // más abajo en esta clase ("PASO 3 — integración con la persistencia
+  // remota"). Nunca sustituye a las funciones legacy de arriba
+  // (localStorage) en esta etapa — corren en paralelo.
+  crearConversacionRemota,
+  guardarMensajeRemoto,
+  obtenerConversacionRemota,
+  actualizarConversacionRemota,
+  listarConversacionesRemoto,
+  eliminarConversacionRemota,
+  derivarTitulo,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
   type MaterialVisualActivoGuardado,
@@ -239,6 +249,10 @@ class AsistenteServiceImpl {
     finalizarArchivo?: { tipo: TipoHerramienta; documentoTexto: string; textoOriginal: string }
   } | null = null
 
+  // PASO 3 — promesa compartida de "crear la conversación activa en
+  // Supabase", ver obtenerOCrearConversacionActivaRemota() más abajo.
+  private conversacionEnCreacion: Promise<string> | null = null
+
   private motor: MotorConversacional | null = null
   private motorTexto: MotorTextoClaude | null = null
   private motorVoz: MotorOpenAIRealtime | null = null
@@ -258,6 +272,11 @@ class AsistenteServiceImpl {
     // recarga dura de la página con sesión ya activa (el listener de
     // abajo, en 'SIGNED_IN'/'INITIAL_SESSION', cubre los demás casos).
     this.recargarPerfil()
+    // PASO 3 — combina la lista de Supabase con la ya restaurada de
+    // localStorage (ver refrescarListaConversacionesRemota más abajo).
+    // Async, sin bloquear: this.listaConversaciones ya arrancó con
+    // INDICE_CONVERSACIONES_INICIAL, esto solo la enriquece.
+    this.refrescarListaConversacionesRemota()
   }
 
   // Burbuja del asistente que sigue "abierta" para el turno actual — se
@@ -521,6 +540,97 @@ class AsistenteServiceImpl {
     this.guardarAhora()
   }
 
+  // -----------------------------------------------------------------
+  // PASO 3 — integración con la persistencia remota (Supabase) del
+  // PASO 2. Corre EN PARALELO a la persistencia legacy de arriba
+  // (localStorage, sin ningún cambio) — nunca la reemplaza todavía
+  // (ver PASO 4, la migración de lo que ya exista en localStorage).
+  // Cualquier fallo aquí se atrapa y se registra en consola, nunca
+  // rompe el chat: la fuente legacy sigue funcionando exactamente
+  // igual pase lo que pase con Supabase.
+  //
+  // Alcance de esta integración: el envío de texto normal
+  // (enviarMensaje) y el ciclo de vida de conversaciones (crear/abrir/
+  // listar/eliminar). Los caminos más específicos (voz, varias fotos,
+  // trabajo asíncrono de documentos, edición de documento activo,
+  // regeneración de imagen, acciones de calendario...) siguen
+  // exactamente igual que hoy, 100% sobre localStorage, hasta que se
+  // adapten en un paso posterior — ninguno de esos deja de funcionar,
+  // solo no persiste todavía en Supabase.
+
+  // Resuelve el id de la conversación activa, creándola en Supabase la
+  // primera vez que hace falta (mismo criterio que la vista inicial ya
+  // documentada arriba: escribir el primer mensaje ES la acción que
+  // crea la conversación). Comparte una única promesa en curso — dos
+  // llamadas casi simultáneas (doble tap, o un reintento mientras la
+  // primera creación sigue en vuelo) nunca crean dos conversaciones
+  // distintas, ambas esperan la MISMA.
+  private async obtenerOCrearConversacionActivaRemota(): Promise<string> {
+    if (this.conversacionActivaId) return this.conversacionActivaId
+    if (!this.conversacionEnCreacion) {
+      this.conversacionEnCreacion = crearConversacionRemota()
+        .then((id) => {
+          this.conversacionActivaId = id
+          this.listaConversaciones = [{ id, titulo: 'Nueva conversación', actualizadaEn: Date.now() }, ...this.listaConversaciones]
+          return id
+        })
+        .finally(() => { this.conversacionEnCreacion = null })
+    }
+    return this.conversacionEnCreacion
+  }
+
+  // Guarda UN mensaje ya terminado (nunca durante 'respuesta-parcial',
+  // ver los call-sites en manejarEventoMotor) y refresca título/
+  // actualizado_en de la conversación. Fire-and-forget desde quien
+  // llama a propósito: nunca bloquea el chat ni retrasa la siguiente
+  // acción del docente por la latencia de red de Supabase.
+  private persistirMensajeRemoto(conversacionId: string, mensaje: MensajeConversacion) {
+    guardarMensajeRemoto(conversacionId, mensaje)
+      .then(() => actualizarConversacionRemota(conversacionId, { titulo: derivarTitulo(this.mensajes) }))
+      .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo guardar el mensaje en Supabase (el chat sigue funcionando normalmente con localStorage):', e))
+  }
+
+  // PASO 3B — versión robusta de lo de arriba: asegura primero que
+  // exista una conversación remota (crea si hace falta, ver
+  // obtenerOCrearConversacionActivaRemota) ANTES de guardar el
+  // mensaje, en vez de asumir que this.conversacionActivaId ya está
+  // resuelto. Necesario para unificar el canal de voz (ver
+  // manejarEventoMotor, caso 'mensaje-usuario'): a diferencia de
+  // enviarMensaje() (texto), ahí this.conversacionActivaId puede
+  // seguir en null en el instante exacto en que aparece la burbuja del
+  // docente, porque ya no se pre-asigna de forma síncrona (ver ese
+  // caso). El resto de los canales adaptados en este paso (multifoto,
+  // trabajo asíncrono, calendario/navegación) siempre corren con la
+  // conversación YA activa, así que aquí simplemente no hacen ningún
+  // trabajo extra — obtenerOCrearConversacionActivaRemota() devuelve
+  // el id existente de inmediato. Fire-and-forget, mismo criterio que
+  // persistirMensajeRemoto: nunca bloquea, nunca rompe el chat.
+  private persistirMensajeAsegurandoConversacion(mensaje: MensajeConversacion) {
+    this.obtenerOCrearConversacionActivaRemota()
+      .then((conversacionId) => this.persistirMensajeRemoto(conversacionId, mensaje))
+      .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo asegurar la conversación remota para este mensaje:', e))
+  }
+
+  // Refresca la lista de conversaciones desde Supabase y la COMBINA
+  // con lo que ya hubiera en this.listaConversaciones (legacy/
+  // localStorage) — nunca la reemplaza de golpe: una conversación que
+  // solo exista en localStorage (todavía no migrada, ver PASO 4) nunca
+  // debe desaparecer de la barra lateral por esto. Se llama desde el
+  // constructor (junto a recargarPerfil) y queda disponible para
+  // refrescarse de nuevo cuando haga falta.
+  async refrescarListaConversacionesRemota() {
+    try {
+      const remotas = await listarConversacionesRemoto()
+      const idsRemotas = new Set(remotas.map((c) => c.id))
+      const combinadas = [...remotas, ...this.listaConversaciones.filter((c) => !idsRemotas.has(c.id))]
+      combinadas.sort((a, b) => b.actualizadaEn - a.actualizadaEn)
+      this.listaConversaciones = combinadas.slice(0, 30)
+      this.notificar()
+    } catch (e) {
+      console.error('[PERSISTENCIA_REMOTA] No se pudo listar conversaciones desde Supabase:', e)
+    }
+  }
+
   // Descarta cualquier estado transitorio (turno abierto, edición o
   // generación de archivo en curso, avisos) antes de cambiar de
   // conversación o vaciar la actual — ninguno de esos estados tiene
@@ -552,7 +662,14 @@ class AsistenteServiceImpl {
   nuevaConversacion() {
     if (this.persistenciaTimer) { clearTimeout(this.persistenciaTimer); this.persistenciaTimer = null }
     this.guardarAhora() // no perder los últimos cambios de la conversación que se deja
-    this.conversacionActivaId = crearNuevaConversacion()
+    // PASO 3 — ya NO se pre-asigna un id local aquí (antes:
+    // crearNuevaConversacion(), un id de localStorage que nunca sería
+    // un uuid válido para conversaciones_chat). Vuelve a null, la
+    // MISMA vista inicial de siempre — escribir el primer mensaje
+    // sigue siendo la acción real que crea la conversación (ver
+    // obtenerOCrearConversacionActivaRemota, llamado desde
+    // enviarMensaje), ahora también en Supabase.
+    this.conversacionActivaId = null
     this.mensajes = []
     this.documentoActivo = null
     this.limpiarEstadoTransitorio()
@@ -560,13 +677,26 @@ class AsistenteServiceImpl {
   }
 
   // Cambia a una conversación ya guardada — la restaura completa
-  // (mensajes, documento activo) y la deja como la activa.
-  abrirConversacion(id: string) {
+  // (mensajes, documento activo) y la deja como la activa. PASO 3:
+  // intenta Supabase primero (obtenerConversacionRemota); cualquier
+  // fallo (conversación que solo existe en localStorage con un id que
+  // ni siquiera es un uuid válido, sin red, etc.) cae al camino legacy
+  // exactamente como funcionaba antes — nunca deja de abrir una
+  // conversación que sí existe en localStorage.
+  async abrirConversacion(id: string) {
     if (id === this.conversacionActivaId) return
     if (this.persistenciaTimer) { clearTimeout(this.persistenciaTimer); this.persistenciaTimer = null }
     this.guardarAhora() // no perder los últimos cambios de la conversación que se deja
-    const datos = cargarConversacionPorId(id)
+
+    let datos: { titulo: string; mensajes: MensajeConversacion[]; documentoActivo: DocumentoActivoGuardado | null; materialVisualActivo: MaterialVisualActivoGuardado | null } | null = null
+    try {
+      datos = await obtenerConversacionRemota(id)
+    } catch (e) {
+      console.error('[PERSISTENCIA_REMOTA] No se pudo consultar la conversación en Supabase, se intenta localStorage:', e)
+    }
+    if (!datos) datos = cargarConversacionPorId(id)
     if (!datos) return
+
     this.conversacionActivaId = id
     establecerConversacionActiva(id)
     this.mensajes = datos.mensajes
@@ -589,8 +719,16 @@ class AsistenteServiceImpl {
   // Borra una conversación guardada de forma permanente — si era la
   // activa, la pantalla vuelve a la vista inicial (null), nunca genera
   // sola una conversación nueva: la existencia/ausencia de datos
-  // guardados no debe asignar activeConversationId por sí misma.
-  eliminarConversacion(id: string) {
+  // guardados no debe asignar activeConversationId por sí misma. PASO
+  // 3: intenta borrarla también de Supabase (best-effort — una
+  // conversación que solo existe en localStorage no está ahí, y eso es
+  // normal, no un error real) además del borrado legacy de siempre.
+  async eliminarConversacion(id: string) {
+    try {
+      await eliminarConversacionRemota(id)
+    } catch (e) {
+      console.error('[PERSISTENCIA_REMOTA] No se pudo borrar la conversación en Supabase (puede que nunca haya existido ahí):', e)
+    }
     eliminarConversacionGuardada(id)
     this.listaConversaciones = listarConversaciones()
     if (id === this.conversacionActivaId) {
@@ -881,22 +1019,28 @@ class AsistenteServiceImpl {
         // Igual que enviarMensaje(): si se llega aquí desde la vista
         // inicial (sin conversación seleccionada — ej. el docente activó
         // el modo voz directo desde el arranque), hablar por primera vez
-        // ES la acción que crea la conversación nueva.
-        if (!this.conversacionActivaId) {
-          this.conversacionActivaId = crearNuevaConversacion()
-        }
+        // ES la acción que crea la conversación nueva. PASO 3B — ya NO
+        // se pre-asigna aquí con crearNuevaConversacion() (legacy, un id
+        // que nunca sería un uuid válido para conversaciones_chat): la
+        // burbuja aparece igual de inmediato (sync, cero cambio de
+        // latencia), y persistirMensajeAsegurandoConversacion() de abajo
+        // resuelve/crea la conversación remota por su cuenta — mismo
+        // mecanismo, ya unificado, que texto/multifoto/etc.
         this.transcripcionParcial = ''
-        this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: evento.texto, creadoEn: Date.now() }]
+        const mensajeUsuarioVoz: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: evento.texto, creadoEn: Date.now() }
+        this.mensajes = [...this.mensajes, mensajeUsuarioVoz]
         this.turnoAbierto = null
         this.turnoUsuarioPendiente = false
         this.notificar()
+        this.persistirMensajeAsegurandoConversacion(mensajeUsuarioVoz)
 
         // Si la respuesta del asistente ya había llegado (o hasta
         // terminado) mientras esperábamos la transcripción, se vuelca
         // ahora de un jalón — la burbuja del docente ya quedó primero.
         if (this.textoAsistentePendiente) {
           this.turnoAbierto = nuevoId()
-          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: this.textoAsistentePendiente, creadoEn: Date.now() }]
+          const mensajeAsistenteVoz: MensajeConversacion = { id: this.turnoAbierto, rol: 'asistente', texto: this.textoAsistentePendiente, creadoEn: Date.now() }
+          this.mensajes = [...this.mensajes, mensajeAsistenteVoz]
           this.textoAsistentePendiente = ''
           if (this.finalPendiente) {
             this.generando = false
@@ -906,6 +1050,7 @@ class AsistenteServiceImpl {
             }
           }
           this.notificar()
+          this.persistirMensajeAsegurandoConversacion(mensajeAsistenteVoz)
         }
         break
       }
@@ -1012,6 +1157,11 @@ class AsistenteServiceImpl {
           // vez de partir de cero o de "Documento generado correctamente.".
           const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
           if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
+          // PASO 3 — el mensaje editado/finalizado ya quedó en su
+          // estado final (nunca durante streaming parcial): se guarda
+          // (upsert por id, ver guardarMensajeRemoto) tanto si es la
+          // primera vez como si es una edición sobre uno ya persistido.
+          if (doc) this.persistirMensajeAsegurandoConversacion(doc)
           this.editandoDocumentoId = null
           this.documentoFinalizandoId = null
           this.textoDocumentoFinalizando = null
@@ -1094,6 +1244,14 @@ class AsistenteServiceImpl {
             }
           }
         }
+        // PASO 3 — el turno del asistente ya quedó en su estado final
+        // (todas las mutaciones de arriba ya se aplicaron a
+        // this.mensajes): se relee fresco por id y se guarda UNA vez,
+        // nunca durante 'respuesta-parcial'.
+        if (this.turnoAbierto) {
+          const mensajeFinal = this.mensajes.find(m => m.id === this.turnoAbierto)
+          if (mensajeFinal) this.persistirMensajeAsegurandoConversacion(mensajeFinal)
+        }
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
         // alta la respuesta real que acaba de llegar (ver
         // MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el
@@ -1158,7 +1316,12 @@ class AsistenteServiceImpl {
           // motorTextoClaude.enviarTexto.
           if (this.intentarReintentoAutomatico(estabaFinalizandoArchivo, evento.mensaje)) break
         } else {
-          this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: Date.now() }]
+          const mensajeError: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: Date.now() }
+          this.mensajes = [...this.mensajes, mensajeError]
+          // PASO 3 — el error también queda en el historial (igual que
+          // ya persistía en localStorage), para que abrir esta
+          // conversación después muestre lo mismo que se vio en pantalla.
+          this.persistirMensajeAsegurandoConversacion(mensajeError)
         }
         // Un turno de voz que termina en error (red, timeout, HTTP de
         // /api/chat) nunca llega a 'respuesta-final' — sin esto, el
@@ -1195,9 +1358,12 @@ class AsistenteServiceImpl {
     // Vista inicial (sin conversación seleccionada): escribir el primer
     // mensaje ES la acción que crea la conversación nueva — ver
     // ARQUITECTURA: "al crear una conversación nueva: 1. crear un nuevo
-    // conversationId". Nunca pasa nada implícito antes de esto.
+    // conversationId". Nunca pasa nada implícito antes de esto. PASO 3:
+    // ahora crea la fila real en Supabase (antes: crearNuevaConversacion(),
+    // solo local/localStorage) — sigue siendo la ÚNICA acción que la
+    // dispara, nada la crea de antemano ni por adelantado.
     if (!this.conversacionActivaId) {
-      this.conversacionActivaId = crearNuevaConversacion()
+      this.conversacionActivaId = await this.obtenerOCrearConversacionActivaRemota()
     }
 
     // Verificación de calendario con foto — antes de cualquier otra
@@ -1302,9 +1468,13 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.notificar()
+    // PASO 3 — fire-and-forget: nunca retrasa el envío a Claude por la
+    // latencia de Supabase (ver persistirMensajeRemoto).
+    this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
 
     try {
       await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug)
@@ -1327,9 +1497,15 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagenes: adjuntos }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagenes: adjuntos }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.notificar()
+    // PASO 3B — la respuesta del asistente para este mensaje sigue el
+    // MISMO motor/pipeline que el texto normal, así que ya queda
+    // cubierta por la persistencia de 'respuesta-final' (ver
+    // manejarEventoMotor) — aquí solo hace falta el mensaje del docente.
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
 
     try {
       await (await this.motorDeContenido())?.enviarTexto(texto, undefined, undefined, false, adjuntos)
@@ -1348,9 +1524,15 @@ class AsistenteServiceImpl {
   // en un mensaje de error visible, nunca en generando=true para
   // siempre.
   private async analizarCalendarioDesdeImagen(texto: string, adjunto: AdjuntoImagen) {
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagen: adjunto }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagen: adjunto }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.generando = true
     this.notificar()
+    // PASO 3B — este flujo nunca pasa por el motor/pipeline normal
+    // (no hay streaming, ver el comentario de arriba de esta función),
+    // así que ni el mensaje del docente ni la respuesta de abajo
+    // quedarían cubiertos por la persistencia de 'respuesta-final'.
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
 
     const controlador = new AbortController()
     const temporizadorFetch = setTimeout(() => controlador.abort(), 55_000)
@@ -1385,18 +1567,19 @@ class AsistenteServiceImpl {
       const datosAccionCalendario: DiferenciaCalendario[] | undefined =
         Array.isArray(cuerpo.datosAccionCalendario) && cuerpo.datosAccionCalendario.length > 0 ? cuerpo.datosAccionCalendario : undefined
 
-      this.mensajes = [
-        ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '', creadoEn: Date.now(), acciones, datosAccionCalendario },
-      ]
+      const mensajeAsistente: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '', creadoEn: Date.now(), acciones, datosAccionCalendario }
+      this.mensajes = [...this.mensajes, mensajeAsistente]
+      this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
     } catch (err) {
-      const mensajeError =
+      const mensajeErrorTexto =
         err instanceof Error && err.name === 'AbortError'
           ? 'El análisis del calendario tardó demasiado. Intenta de nuevo.'
           : err instanceof Error
             ? err.message
             : 'No pude analizar la imagen del calendario. Intenta de nuevo.'
-      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: mensajeError, creadoEn: Date.now() }]
+      const mensajeError: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: mensajeErrorTexto, creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeError]
+      this.persistirMensajeAsegurandoConversacion(mensajeError)
     } finally {
       clearTimeout(temporizadorFetch)
       this.generando = false
@@ -1416,17 +1599,22 @@ class AsistenteServiceImpl {
     const mensaje = this.mensajes.find((m) => m.id === mensajeId)
     if (!mensaje || mensaje.accionElegida || this.generando) return
 
-    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, accionElegida: accionId } : m))
+    const mensajeConAccion: MensajeConversacion = { ...mensaje, accionElegida: accionId }
+    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? mensajeConAccion : m))
     this.notificar()
     this.persistirConversacion()
+    // PASO 3B — el mensaje con los botones ya existe en Supabase (se
+    // guardó como parte de 'respuesta-final' cuando llegó, ver
+    // manejarEventoMotor); esto solo actualiza su accionElegida ahí
+    // también (upsert por id, ver persistirMensajeRemoto/guardarMensajeRemoto).
+    this.persistirMensajeAsegurandoConversacion(mensajeConAccion)
 
     if (accionId === 'cancelar') {
-      this.mensajes = [
-        ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no realicé ningún cambio en el calendario.', creadoEn: Date.now() },
-      ]
+      const mensajeCancelado: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no realicé ningún cambio en el calendario.', creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeCancelado]
       this.notificar()
       this.persistirConversacion()
+      this.persistirMensajeAsegurandoConversacion(mensajeCancelado)
       return
     }
 
@@ -1434,12 +1622,11 @@ class AsistenteServiceImpl {
 
     const diferencias = mensaje.datosAccionCalendario
     if (!diferencias || diferencias.length === 0) {
-      this.mensajes = [
-        ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: 'No encontré los cambios pendientes de ese análisis. Envía de nuevo la foto del calendario.', creadoEn: Date.now() },
-      ]
+      const mensajeSinDiferencias: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'No encontré los cambios pendientes de ese análisis. Envía de nuevo la foto del calendario.', creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeSinDiferencias]
       this.notificar()
       this.persistirConversacion()
+      this.persistirMensajeAsegurandoConversacion(mensajeSinDiferencias)
       return
     }
 
@@ -1469,18 +1656,19 @@ class AsistenteServiceImpl {
       }
 
       const archivo: ArchivoGeneradoInfo | undefined = cuerpo.archivoRespaldo || undefined
-      this.mensajes = [
-        ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '✅ Calendario actualizado correctamente.', creadoEn: Date.now(), archivo },
-      ]
+      const mensajeExito: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '✅ Calendario actualizado correctamente.', creadoEn: Date.now(), archivo }
+      this.mensajes = [...this.mensajes, mensajeExito]
+      this.persistirMensajeAsegurandoConversacion(mensajeExito)
     } catch (err) {
-      const mensajeError =
+      const mensajeErrorTexto =
         err instanceof Error && err.name === 'AbortError'
           ? 'La actualización del calendario tardó demasiado. Intenta de nuevo.'
           : err instanceof Error
             ? err.message
             : 'No pude actualizar el calendario. Intenta de nuevo.'
-      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: `No pude actualizar el calendario: ${mensajeError}`, creadoEn: Date.now() }]
+      const mensajeError: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: `No pude actualizar el calendario: ${mensajeErrorTexto}`, creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeError]
+      this.persistirMensajeAsegurandoConversacion(mensajeError)
     } finally {
       clearTimeout(temporizadorFetch)
       this.detenerProgresoAccionCalendario()
@@ -1499,10 +1687,12 @@ class AsistenteServiceImpl {
   confirmarNavegacion(mensajeId: string) {
     const mensaje = this.mensajes.find((m) => m.id === mensajeId)
     if (!mensaje || mensaje.accionElegida || !mensaje.datosAccionNavegacion) return
-    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, accionElegida: 'abrir_en_lista' } : m))
+    const mensajeConAccion: MensajeConversacion = { ...mensaje, accionElegida: 'abrir_en_lista' }
+    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? mensajeConAccion : m))
     this.accionNavegacionPendiente = mensaje.datosAccionNavegacion
     this.notificar()
     this.persistirConversacion()
+    this.persistirMensajeAsegurandoConversacion(mensajeConAccion)
   }
 
   // AsistentePanel llama esto justo después de hacer router.push, para
@@ -1550,11 +1740,21 @@ class AsistenteServiceImpl {
   }
 
   // Edición manual directa (botón "Editar"): sobrescribe el texto sin
-  // pasar por el modelo.
+  // pasar por el modelo. PASO 3C — la edición también se sincroniza a
+  // Supabase: guardarMensajeRemoto ya es un upsert POR ID (ver
+  // persistencia.ts), así que reutilizarlo aquí actualiza exactamente
+  // la misma fila existente — nunca inserta una fila nueva ni cambia
+  // conversacion_id/creado_en (creado_en no se toca porque el upsert
+  // envía el mismo valor que ya traía el mensaje en memoria, nunca
+  // Date.now() de nuevo), preservando el orden real de la conversación.
   actualizarMensaje(id: string, nuevoTexto: string) {
-    this.mensajes = this.mensajes.map(m => (m.id === id ? { ...m, texto: nuevoTexto } : m))
+    const mensajeActualizado = this.mensajes.find(m => m.id === id)
+    if (!mensajeActualizado) return
+    const conMensajeNuevo: MensajeConversacion = { ...mensajeActualizado, texto: nuevoTexto }
+    this.mensajes = this.mensajes.map(m => (m.id === id ? conMensajeNuevo : m))
     if (this.documentoActivo?.id === id) this.actualizarDocumentoActivo(id, nuevoTexto)
     this.notificar()
+    this.persistirMensajeAsegurandoConversacion(conMensajeNuevo)
   }
 
   // Ampliado (ver "Motor de interpretación de intención y edición del
@@ -1604,9 +1804,11 @@ ${instruccion}`
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: instruccion, creadoEn: Date.now() }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: instruccion, creadoEn: Date.now() }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.notificar()
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
 
     const materialAnterior = this.materialVisualActivo
     if (!materialAnterior) return // no debería pasar (guardado por enviarMensaje), pero nunca truena aquí
@@ -1626,10 +1828,12 @@ ${instruccion}`
   private async enviarComoTrabajoDocumento(texto: string) {
     const historialPrevio = this.mensajes.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.generando = true
     this.notificar()
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
 
     const requestId = generarRequestIdTrabajo()
     try {
@@ -1688,14 +1892,16 @@ ${instruccion}`
     const archivos = trabajo.resultado?.archivos ?? []
     const archivo = archivos.length > 0 ? archivos[0] : undefined
     const idNuevo = nuevoId()
-    this.mensajes = [
-      ...this.mensajes,
-      { id: idNuevo, rol: 'asistente', texto, creadoEn: Date.now(), archivo, archivos: archivos.length > 0 ? archivos : undefined },
-    ]
+    const mensajeAsistente: MensajeConversacion = { id: idNuevo, rol: 'asistente', texto, creadoEn: Date.now(), archivo, archivos: archivos.length > 0 ? archivos : undefined }
+    this.mensajes = [...this.mensajes, mensajeAsistente]
     const contenidoReal = trabajo.resultado?.contenidoOriginal
     if (contenidoReal) this.actualizarDocumentoActivo(idNuevo, contenidoReal, archivo)
     else if (esDocumentoFormal(texto)) this.actualizarDocumentoActivo(idNuevo, texto, archivo)
     this.notificar()
+    // PASO 3B — este resultado llega por polling (GET /api/chat/
+    // trabajo-documento/[id]), nunca pasa por manejarEventoMotor, así
+    // que no queda cubierto por la persistencia de 'respuesta-final'.
+    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
   }
 
   // Falla REAL del backend/proveedor (estado=fallido, con error
@@ -1732,13 +1938,15 @@ ${instruccion}`
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.editandoDocumentoId = idDocumento
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion(). Se limpia solo cuando la edición
     // termina bien (ver 'respuesta-final').
     this.ultimoIntentoEdicion = { idDocumento, textoParaModelo, adjunto }
     this.notificar()
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
     await this.ejecutarEdicion(textoParaModelo, adjunto)
   }
 
@@ -1768,16 +1976,19 @@ ${instruccion}`
   // (no hay nada que pueda fallar aquí — el archivo ya existe).
   private reutilizarArchivoExistente(textoVisible: string, archivo: ArchivoGeneradoInfo) {
     const idMensaje = nuevoId()
-    this.mensajes = [
-      ...this.mensajes,
-      { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
-      { id: idMensaje, rol: 'asistente', texto: 'Ya puedes abrirlo, compartirlo o descargarlo.', creadoEn: Date.now(), archivo },
-    ]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }
+    const mensajeAsistente: MensajeConversacion = { id: idMensaje, rol: 'asistente', texto: 'Ya puedes abrirlo, compartirlo o descargarlo.', creadoEn: Date.now(), archivo }
+    this.mensajes = [...this.mensajes, mensajeUsuario, mensajeAsistente]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje
     // el scroll y resalte la tarjeta — ver mostrarArchivoReutilizado().
     this.mostrarArchivoReutilizado(idMensaje)
     this.notificar()
+    // PASO 3B — camino 100% síncrono, nunca pasa por el motor ni por
+    // 'respuesta-final' (el archivo ya existía, no se vuelve a pedir
+    // nada): ambos mensajes necesitan su propia persistencia aquí.
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
+    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
   }
 
   // Genera el archivo real del documento activo (Word/PDF/PowerPoint/
@@ -1791,7 +2002,8 @@ ${instruccion}`
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }]
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.editandoDocumentoId = idDocumento
     this.documentoFinalizandoId = idDocumento
     this.textoDocumentoFinalizando = documentoTexto
@@ -1802,6 +2014,7 @@ ${instruccion}`
     // ver reintentarGeneracion().
     this.ultimoIntentoEdicion = { idDocumento, textoParaModelo: '', finalizarArchivo: { tipo, documentoTexto, textoOriginal: textoVisible } }
     this.notificar()
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
     await this.ejecutarFinalizacion(tipo, documentoTexto, textoVisible)
   }
 

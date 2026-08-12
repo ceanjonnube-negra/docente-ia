@@ -18,9 +18,19 @@
 // dispositivo (igual que el resto del Chat IA). Para el caso real de un
 // dispositivo compartido entre dos docentes, ver AsistenteService: todo
 // esto se limpia por completo al cerrar sesión.
+//
+// ARCHIVO EN TRANSICIÓN (PASO 2 del plan de historial persistente en
+// Supabase): todo lo de ARRIBA de esta nota es LEGACY — localStorage,
+// tal cual ya funcionaba, SIN NINGÚN CAMBIO — y sigue siendo lo único
+// que usa AsistenteService.ts hasta el PASO 3. La sección nueva, al
+// final del archivo ("PASO 2 — Persistencia remota (Supabase)"), habla
+// directo con las tablas conversaciones_chat/mensajes_chat y es la
+// que se irá conectando en el paso siguiente — Supabase es su única
+// fuente de verdad, nunca localStorage.
 
 import { esDocumentoFormal } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
+import { supabase } from '../supabaseClient'
 import type { ArchivoGeneradoInfo, MensajeConversacion } from './tipos'
 
 const VERSION = 2
@@ -276,3 +286,177 @@ export function borrarTodasLasConversaciones() {
   borrar(CLAVE_ACTIVA)
   borrar(CLAVE_FORMATO_VIEJO)
 }
+
+// ---------------------------------------------------------------------
+// PASO 2 — Persistencia remota (Supabase): conversaciones_chat +
+// mensajes_chat (ver migración 20260811184000_crear_conversaciones_chat.sql).
+//
+// Ver "Nueva prueba real en iPhone — historial no persiste": localStorage
+// vive por origen, y cada Preview de Vercel usa un subdominio nuevo, así
+// que el historial quedaba inaccesible en cuanto cambiaba el deployment
+// (o el dispositivo). Todo lo de ARRIBA en este archivo (localStorage)
+// queda como LEGACY a partir de aquí — sigue en uso tal cual, sin
+// ningún cambio de comportamiento, únicamente porque AsistenteService.ts
+// todavía llama a esas funciones (se adapta en el PASO 3 del plan
+// autorizado, no en este). Ninguna función de esta sección toca
+// localStorage; Supabase es su única fuente de verdad.
+//
+// docente_id NUNCA se recibe como parámetro desde quien llama — se
+// resuelve siempre aquí adentro contra la sesión real
+// (supabase.auth.getUser()), igual que ya exige RLS del lado servidor.
+// Aceptarlo como argumento sería confiar en un dato que el propio
+// docente podría manipular antes de que RLS lo rechace.
+
+async function docenteIdActual(): Promise<string | null> {
+  const { data: { user } } = await supabase.auth.getUser()
+  return user?.id ?? null
+}
+
+// Separa los campos "núcleo" (columnas reales de mensajes_chat) del
+// resto de MensajeConversacion (archivo, archivos, imagen, imagenes,
+// acciones, accionElegida, datosAccionCalendario, datosAccionNavegacion)
+// — ese resto viaja completo en la columna `contenido` jsonb (mismo
+// criterio que trabajos_documento.resultado: evita una migración de
+// columna cada vez que se agregue un campo nuevo al tipo).
+// aligerarParaGuardar ya existe arriba y sigue aplicando aquí por la
+// misma razón de siempre: nunca guardar el base64 completo de un adjunto.
+function mensajeAFilaRemota(conversacionId: string, docenteId: string, mensaje: MensajeConversacion) {
+  const [ligero] = aligerarParaGuardar([mensaje])
+  const { id, rol, texto, creadoEn, ...contenido } = ligero
+  return {
+    id,
+    conversacion_id: conversacionId,
+    docente_id: docenteId,
+    rol,
+    texto,
+    contenido,
+    creado_en: new Date(creadoEn).toISOString(),
+  }
+}
+
+function filaAMensajeRemoto(fila: {
+  id: string
+  rol: MensajeConversacion['rol']
+  texto: string
+  creado_en: string
+  contenido: Record<string, unknown> | null
+}): MensajeConversacion {
+  return {
+    id: fila.id,
+    rol: fila.rol,
+    texto: fila.texto,
+    creadoEn: new Date(fila.creado_en).getTime(),
+    ...(fila.contenido ?? {}),
+  } as MensajeConversacion
+}
+
+// Crea la conversación en Supabase (fila real desde el primer
+// instante) y regresa su id. Lanza si no hay sesión real — a
+// diferencia de las funciones legacy de arriba (que nunca truenan por
+// diseño, para no romper localStorage), aquí un fallo real de
+// autenticación SÍ debe propagarse: escribir con un docente_id
+// inventado no es una opción.
+export async function crearConversacionRemota(): Promise<string> {
+  const docenteId = await docenteIdActual()
+  if (!docenteId) throw new Error('Sesión no encontrada.')
+  const id = crypto.randomUUID()
+  const { error } = await supabase.from('conversaciones_chat').insert({ id, docente_id: docenteId })
+  if (error) throw error
+  return id
+}
+
+// Recupera una conversación completa (título + documento/imagen
+// activos + TODOS sus mensajes, en orden real de creación) desde
+// Supabase. null si no existe o no pertenece al docente actual — RLS
+// ya lo filtra solo, esto nunca distingue "no existe" de "no es tuya"
+// (mismo criterio de no exponer información de otro docente que ya
+// sigue cargarConversacionPorId).
+export async function obtenerConversacionRemota(id: string): Promise<{
+  titulo: string
+  mensajes: MensajeConversacion[]
+  documentoActivo: DocumentoActivoGuardado | null
+  materialVisualActivo: MaterialVisualActivoGuardado | null
+} | null> {
+  const { data: conversacion, error: errorConversacion } = await supabase
+    .from('conversaciones_chat')
+    .select('titulo, documento_activo, material_visual_activo')
+    .eq('id', id)
+    .maybeSingle()
+  if (errorConversacion) throw errorConversacion
+  if (!conversacion) return null
+
+  const { data: filasMensajes, error: errorMensajes } = await supabase
+    .from('mensajes_chat')
+    .select('id, rol, texto, contenido, creado_en')
+    .eq('conversacion_id', id)
+    .order('creado_en', { ascending: false })
+    .limit(TOPE_MENSAJES)
+  if (errorMensajes) throw errorMensajes
+
+  const mensajes = (filasMensajes ?? []).map(filaAMensajeRemoto).reverse()
+  return {
+    titulo: conversacion.titulo,
+    mensajes,
+    documentoActivo: (conversacion.documento_activo as DocumentoActivoGuardado | null) ?? null,
+    materialVisualActivo: (conversacion.material_visual_activo as MaterialVisualActivoGuardado | null) ?? null,
+  }
+}
+
+// Guarda UN mensaje. upsert por id (no solo insert) a propósito:
+// permite que el mismo mensaje del asistente se actualice varias veces
+// mientras termina de redactarse/transmitirse sin crear filas
+// duplicadas — la política RLS de UPDATE ya existe para esto (ver
+// migración). Nunca reescribe los demás mensajes de la conversación, a
+// diferencia de guardarConversacion (legacy), que reescribía el
+// arreglo completo cada vez.
+export async function guardarMensajeRemoto(conversacionId: string, mensaje: MensajeConversacion): Promise<void> {
+  const docenteId = await docenteIdActual()
+  if (!docenteId) throw new Error('Sesión no encontrada.')
+  const fila = mensajeAFilaRemota(conversacionId, docenteId, mensaje)
+  const { error } = await supabase.from('mensajes_chat').upsert(fila, { onConflict: 'id' })
+  if (error) throw error
+}
+
+// Título / documento activo / imagen activa de la conversación.
+// actualizado_en se toca SIEMPRE, explícito — este proyecto no usa
+// triggers en ningún lado (ver la migración), mismo criterio que ya
+// usa lib/trabajosDocumento.ts para su propio actualizado_en.
+export async function actualizarConversacionRemota(
+  id: string,
+  cambios: { titulo?: string; documentoActivo?: DocumentoActivoGuardado | null; materialVisualActivo?: MaterialVisualActivoGuardado | null }
+): Promise<void> {
+  const docenteId = await docenteIdActual()
+  if (!docenteId) throw new Error('Sesión no encontrada.')
+  const filaCambios: Record<string, unknown> = { actualizado_en: new Date().toISOString() }
+  if (cambios.titulo !== undefined) filaCambios.titulo = cambios.titulo
+  if (cambios.documentoActivo !== undefined) filaCambios.documento_activo = cambios.documentoActivo
+  if (cambios.materialVisualActivo !== undefined) filaCambios.material_visual_activo = cambios.materialVisualActivo
+  const { error } = await supabase.from('conversaciones_chat').update(filaCambios).eq('id', id)
+  if (error) throw error
+}
+
+// Índice ligero para la barra lateral, más reciente primero. RLS ya
+// limita a las del docente actual; el .eq de abajo es solo claridad
+// adicional, mismo estilo que ya usa el resto del proyecto (ver
+// obtenerPerfilYSesion en perfilDocente.ts).
+export async function listarConversacionesRemoto(): Promise<ConversacionResumen[]> {
+  const docenteId = await docenteIdActual()
+  if (!docenteId) return []
+  const { data, error } = await supabase
+    .from('conversaciones_chat')
+    .select('id, titulo, actualizado_en')
+    .eq('docente_id', docenteId)
+    .order('actualizado_en', { ascending: false })
+    .limit(TOPE_CONVERSACIONES)
+  if (error) throw error
+  return (data ?? []).map((fila) => ({ id: fila.id, titulo: fila.titulo, actualizadaEn: new Date(fila.actualizado_en).getTime() }))
+}
+
+// Borra la conversación; mensajes_chat se vacía solo por el ON DELETE
+// CASCADE ya creado en la migración — nunca hace falta borrar los
+// mensajes aparte desde aquí.
+export async function eliminarConversacionRemota(id: string): Promise<void> {
+  const { error } = await supabase.from('conversaciones_chat').delete().eq('id', id)
+  if (error) throw error
+}
+
