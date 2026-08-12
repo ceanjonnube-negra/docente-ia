@@ -32,9 +32,28 @@ async function iniciarSesionComoDocenteReal() {
   return supabase
 }
 
-async function limpiarTodo() {
-  const { data } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  for (const fila of data ?? []) await sbAdmin.from('conversaciones_chat').delete().eq('id', fila.id)
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// BLINDAJE — ver "el script de prueba borró conversaciones reales":
+// limpiarTodo() (DELETE ... WHERE docente_id=DOCENTE_ID) se ELIMINÓ
+// por completo. DOCENTE_ID sigue usándose SOLO para iniciar sesión —
+// nunca más como filtro de un DELETE. La única identidad real de
+// "esto es un dato de esta corrida" es que su id está en
+// idsConversacionesCreadas.
+const idsConversacionesCreadas: string[] = []
+
+async function borrarSoloEstosIds(ids: string[]) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('SEGURIDAD: lista de ids a borrar vacía — abortando sin borrar nada (nunca se borra por docente_id ni con filtro vacío/general).')
+  }
+  for (const id of ids) {
+    if (typeof id !== 'string' || !UUID_REGEX.test(id)) {
+      throw new Error(`SEGURIDAD: id inválido en la lista de borrado ("${id}") — abortando sin borrar nada.`)
+    }
+  }
+  for (const id of ids) {
+    await sbAdmin.from('conversaciones_chat').delete().eq('id', id)
+  }
 }
 
 async function main() {
@@ -42,12 +61,16 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const svc = AsistenteService as any
 
-  await limpiarTodo()
+  // Ya NO hay limpieza previa "por si quedó algo de una corrida
+  // anterior" — esa limpieza era exactamente la que borraba por
+  // docente_id. Si quedó un residuo de una corrida anterior, este
+  // script ya no sabe cuáles eran sus ids y NO los toca.
 
   // A — crear conversación remota
   svc.conversacionActivaId = null
   svc.mensajes = []
   const idConv = await svc.obtenerOCrearConversacionActivaRemota()
+  idsConversacionesCreadas.push(idConv)
   verificar(typeof idConv === 'string' && idConv.length > 0, 'A. Conversación remota creada')
 
   // B — guardar varios mensajes
@@ -98,10 +121,10 @@ async function main() {
   const { data: sinSesion } = await supabaseAnon.from('mensajes_chat').select('id').eq('id', msg2.id)
   verificar((sinSesion?.length ?? 0) === 0, 'I. Sin la sesión del docente dueño, el mensaje editado no es visible (RLS)')
 
-  // J — limpiar todos los datos temporales
-  await limpiarTodo()
-  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  verificar((restos?.length ?? 0) === 0, 'J. Sin datos temporales restantes para el docente de prueba')
+  // J — limpiar ÚNICAMENTE los ids exactos que esta corrida creó
+  await borrarSoloEstosIds(idsConversacionesCreadas)
+  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').in('id', idsConversacionesCreadas)
+  verificar((restos?.length ?? 0) === 0, 'J. Ninguno de los ids creados por esta corrida sigue existiendo')
 
   const { supabase } = await import('../lib/supabaseClient')
   await supabase.auth.signOut()

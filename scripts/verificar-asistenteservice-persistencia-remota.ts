@@ -35,9 +35,35 @@ async function iniciarSesionComoDocenteReal() {
   return supabase
 }
 
-async function limpiarTodo() {
-  const { data } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  for (const fila of data ?? []) await sbAdmin.from('conversaciones_chat').delete().eq('id', fila.id)
+// BLINDAJE — ver "el script de prueba borró conversaciones reales":
+// limpiarTodo() (DELETE ... WHERE docente_id=DOCENTE_ID) se ELIMINÓ por
+// completo. DOCENTE_ID sigue usándose SOLO para iniciar sesión (es el
+// único docente real disponible para probar, no hay forma de evitarlo
+// sin una cuenta de prueba dedicada) — pero YA NUNCA se usa como
+// filtro de un DELETE. La única identidad real de "esto es un dato de
+// esta corrida" es que su id está en idsConversacionesCreadas —
+// nunca una consulta a Supabase que reconstruya "todo lo del docente
+// X", que es exactamente el patrón que borró conversaciones reales.
+const idsConversacionesCreadas: string[] = []
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Único mecanismo de borrado permitido en este archivo — por diseño,
+// NUNCA acepta ni usa docente_id, comodines, ni ningún filtro que no
+// sea "id = <uno de los ids que esta misma corrida ya registró>".
+// Si la lista viene vacía o con algo que no sea un uuid real, aborta
+// sin borrar nada — nunca "mejor borro por si acaso".
+async function borrarSoloEstosIds(ids: string[]) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('SEGURIDAD: lista de ids a borrar vacía — abortando sin borrar nada (nunca se borra por docente_id ni con filtro vacío/general).')
+  }
+  for (const id of ids) {
+    if (typeof id !== 'string' || !UUID_REGEX.test(id)) {
+      throw new Error(`SEGURIDAD: id inválido en la lista de borrado ("${id}") — abortando sin borrar nada.`)
+    }
+  }
+  for (const id of ids) {
+    await sbAdmin.from('conversaciones_chat').delete().eq('id', id)
+  }
 }
 
 async function main() {
@@ -45,10 +71,17 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const svc = AsistenteService as any
 
-  await limpiarTodo() // por si quedó algo de una corrida anterior interrumpida
+  // Ya NO hay limpieza previa "por si quedó algo de una corrida
+  // anterior interrumpida" — esa limpieza era exactamente la que
+  // borraba por docente_id. Si quedó un residuo de una corrida
+  // anterior, este script ya no sabe cuáles eran sus ids y NO los
+  // toca (ver requisito "si no conoce con certeza los ids, no debe
+  // borrar nada") — un posible residuo de prueba aislado es un riesgo
+  // aceptado, nunca un borrado amplio.
 
   // 1 — crear una conversación mediante AsistenteService
   const idConv = await svc.obtenerOCrearConversacionActivaRemota()
+  idsConversacionesCreadas.push(idConv)
   verificar(typeof idConv === 'string' && idConv.length > 0, '1. AsistenteService crea una conversación real en Supabase')
   verificar(svc.conversacionActivaId === idConv, '   conversacionActivaId del servicio queda igual al id creado')
 
@@ -88,6 +121,7 @@ async function main() {
   // 8 — cambiar entre dos conversaciones sin mezclar mensajes
   svc.conversacionActivaId = null
   const idConv2 = await svc.obtenerOCrearConversacionActivaRemota()
+  idsConversacionesCreadas.push(idConv2)
   const msgOtra: MensajeConversacion = { id: `msg-${base + 3}-3`, rol: 'usuario', texto: 'Otra conversación totalmente distinta', creadoEn: base + 3000 }
   svc.mensajes = [msgOtra]
   svc.persistirMensajeRemoto(idConv2, msgOtra)
@@ -115,6 +149,7 @@ async function main() {
   svc.conversacionActivaId = null
   svc.conversacionEnCreacion = null
   const [idA, idB] = await Promise.all([svc.obtenerOCrearConversacionActivaRemota(), svc.obtenerOCrearConversacionActivaRemota()])
+  idsConversacionesCreadas.push(idA)
   verificar(idA === idB, '10. Dos llamadas simultáneas para crear conversación nunca duplican (comparten la misma promesa)')
   // Cuenta cuántas filas reales tiene el id devuelto por la "carrera"
   // (nunca el total de la tabla: idConv del paso 1 sigue viva a
@@ -137,10 +172,10 @@ async function main() {
   verificar(noLanzo, '11a. Un fallo de escritura remota (FK inválida) no lanza una excepción no controlada')
   verificar(JSON.stringify(svc.mensajes) === mensajesAntes, '11b. this.mensajes del servicio queda intacto tras el fallo')
 
-  // 12 — limpiar todos los datos temporales
-  await limpiarTodo()
-  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  verificar((restos?.length ?? 0) === 0, '12. Sin datos temporales restantes para el docente de prueba')
+  // 12 — limpiar ÚNICAMENTE los ids exactos que esta corrida creó
+  await borrarSoloEstosIds(idsConversacionesCreadas)
+  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').in('id', idsConversacionesCreadas)
+  verificar((restos?.length ?? 0) === 0, '12. Ninguno de los ids creados por esta corrida sigue existiendo')
 
   const { supabase } = await import('../lib/supabaseClient')
   await supabase.auth.signOut()

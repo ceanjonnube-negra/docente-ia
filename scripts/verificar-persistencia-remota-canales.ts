@@ -38,9 +38,27 @@ async function iniciarSesionComoDocenteReal() {
   return supabase
 }
 
-async function limpiarTodo() {
-  const { data } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  for (const fila of data ?? []) await sbAdmin.from('conversaciones_chat').delete().eq('id', fila.id)
+// BLINDAJE — ver "el script de prueba borró conversaciones reales":
+// limpiarTodo() (DELETE ... WHERE docente_id=DOCENTE_ID) se ELIMINÓ
+// por completo. DOCENTE_ID sigue usándose SOLO para iniciar sesión —
+// nunca más como filtro de un DELETE ni de una consulta de la que
+// dependa un borrado. La única identidad real de "esto es un dato de
+// esta corrida" es que su id está en idsUsadosParaConversaciones (este
+// archivo YA llevaba ese arreglo desde antes para sus propias
+// verificaciones — ahora también es la fuente exclusiva de qué
+// borrar).
+async function borrarSoloEstosIds(ids: string[]) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('SEGURIDAD: lista de ids a borrar vacía — abortando sin borrar nada (nunca se borra por docente_id ni con filtro vacío/general).')
+  }
+  for (const id of ids) {
+    if (typeof id !== 'string' || !UUID_REGEX.test(id)) {
+      throw new Error(`SEGURIDAD: id inválido en la lista de borrado ("${id}") — abortando sin borrar nada.`)
+    }
+  }
+  for (const id of ids) {
+    await sbAdmin.from('conversaciones_chat').delete().eq('id', id)
+  }
 }
 
 async function mensajesDe(conversacionId: string) {
@@ -55,7 +73,10 @@ async function main() {
   const idsUsadosParaMensajes: string[] = []
   const idsUsadosParaConversaciones: string[] = []
 
-  await limpiarTodo()
+  // Ya NO hay limpieza previa "por si quedó algo de una corrida
+  // anterior" — esa limpieza era exactamente la que borraba por
+  // docente_id. Si quedó un residuo de una corrida anterior, este
+  // script ya no sabe cuáles eran sus ids y NO los toca.
 
   // A — texto → texto (regresión rápida del PASO 3, ya probado a fondo ahí)
   svc.conversacionActivaId = null
@@ -158,8 +179,10 @@ async function main() {
 
   // G — todos los mensajes de las pruebas A-D quedan en Supabase bajo
   // su conversation_id correcto (ya verificado arriba, punto por
-  // punto) — chequeo agregado final.
-  const { data: todasLasConversaciones } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
+  // punto) — chequeo agregado final. Verificado por id EXACTO (nunca
+  // por docente_id — evita también falsos negativos si hubiera otra
+  // conversación real ajena a esta corrida en la cuenta).
+  const { data: todasLasConversaciones } = await sbAdmin.from('conversaciones_chat').select('id').in('id', idsUsadosParaConversaciones)
   verificar(
     (todasLasConversaciones?.length ?? 0) === idsUsadosParaConversaciones.length,
     `G. Supabase tiene exactamente las ${idsUsadosParaConversaciones.length} conversaciones reales creadas por esta prueba (A, B, C, F)`
@@ -169,16 +192,16 @@ async function main() {
   // por estos canales es un uuid real; todo mensaje usa el formato
   // real de la app (msg-<timestamp>-<contador>), ya compatible con la
   // columna text corregida en el PASO 3.
-  const { data: todosLosMensajes } = await sbAdmin.from('mensajes_chat').select('id, conversacion_id').eq('docente_id', DOCENTE_ID)
+  const { data: todosLosMensajes } = await sbAdmin.from('mensajes_chat').select('id, conversacion_id').in('conversacion_id', idsUsadosParaConversaciones)
   const idsConversacionValidos = (todasLasConversaciones ?? []).every((c) => UUID_REGEX.test(c.id))
   const idsMensajeValidos = (todosLosMensajes ?? []).every((m) => /^msg-\d+-/.test(m.id))
   verificar(idsConversacionValidos, 'H1. Todas las conversaciones creadas por estos canales tienen un id uuid real')
   verificar(idsMensajeValidos, 'H2. Todos los mensajes usan el formato real de id de la app (msg-<timestamp>-...), ya compatible con mensajes_chat.id')
 
-  // I — limpiar todos los datos temporales
-  await limpiarTodo()
-  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').eq('docente_id', DOCENTE_ID)
-  verificar((restos?.length ?? 0) === 0, 'I. Sin datos temporales restantes para el docente de prueba')
+  // I — limpiar ÚNICAMENTE los ids exactos que esta corrida creó
+  await borrarSoloEstosIds(idsUsadosParaConversaciones)
+  const { data: restos } = await sbAdmin.from('conversaciones_chat').select('id').in('id', idsUsadosParaConversaciones)
+  verificar((restos?.length ?? 0) === 0, 'I. Ninguno de los ids creados por esta corrida sigue existiendo')
 
   const { supabase } = await import('../lib/supabaseClient')
   await supabase.auth.signOut()
