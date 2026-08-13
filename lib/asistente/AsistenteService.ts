@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, pareceOperacionSobreDatoPersonalAlumno, quiereIlustracion, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -308,6 +308,20 @@ class AsistenteServiceImpl {
   // nunca importada aquí): comprobar que siga siendo EXACTAMENTE este
   // trabajo antes de tocar this.mensajes evita que un tick de polling
   // tardío produzca una segunda burbuja.
+  // Ver "fallo crítico: corrección de CURP desviada a generar_imagen" —
+  // true mientras el último mensaje del asistente sea una propuesta de
+  // corrección de dato de alumno (datosAccionAlumno) todavía sin
+  // confirmar/cancelar (ver confirmarCorreccionAlumno, que marca
+  // accionElegida). Se usa en enviarMensaje para que esa propuesta
+  // pendiente tenga prioridad sobre documentoActivo/materialVisualActivo:
+  // "corrígela"/"sí, corrígela" deben resolverla a ELLA, nunca
+  // reinterpretarse como edición del documento/imagen activos aunque
+  // compartan el mismo verbo.
+  private tieneCorreccionAlumnoPendiente(): boolean {
+    const ultimo = this.mensajes[this.mensajes.length - 1]
+    return !!ultimo && ultimo.rol === 'asistente' && !!ultimo.datosAccionAlumno && !ultimo.accionElegida
+  }
+
   private trabajoDocumentoActivoId: string | null = null
   private pollingTrabajoTimer: ReturnType<typeof setTimeout> | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
@@ -1418,6 +1432,25 @@ class AsistenteServiceImpl {
       return
     }
 
+    // PROTECCIÓN DE DATOS PERSONALES (ver "fallo crítico: corrección de
+    // CURP desviada a generar_imagen") — dos señales, cualquiera basta:
+    // 1. Ya existe una propuesta de corrección de alumno pendiente de
+    //    confirmar (tieneCorreccionAlumnoPendiente) — la continuidad
+    //    ("corrígela", "sí, corrígela") debe resolver ESA propuesta.
+    // 2. El mensaje actual es, por sí mismo, una operación explícita
+    //    sobre un identificador personal del alumno (CURP/RFC/NSS/
+    //    matrícula/fecha de nacimiento/domicilio, ver
+    //    pareceOperacionSobreDatoPersonalAlumno) — la intención nueva y
+    //    explícita del turno siempre gana sobre un recurso activo
+    //    anterior, igual que ya hace pareceNuevoDocumento con documentos
+    //    nuevos.
+    // En cualquiera de los dos casos NO se reutiliza documentoActivo ni
+    // materialVisualActivo: el mensaje cae al camino normal de abajo,
+    // donde clasificarNivel0 lo resuelve como consultar_dato_alumno/
+    // corregir_dato_alumno — nunca se envía al generador de imágenes ni
+    // se trata como edición del documento activo.
+    const esOperacionSobreDatoPersonalAlumno = this.tieneCorreccionAlumnoPendiente() || pareceOperacionSobreDatoPersonalAlumno(limpio)
+
     // CREACIÓN NUEVA — REGLA FUNCIONAL OBLIGATORIA (ver "fallo crítico:
     // guía ilustrada devolvió LISTA_OFICIAL_DE_ALUMNOS.docx"): si el
     // mensaje describe un documento NUEVO ("Hazme una guía... sobre el
@@ -1430,7 +1463,7 @@ class AsistenteServiceImpl {
     // lógica de "documento activo" (tipoFinalizar/enviarComoEdicion),
     // cae directo al camino normal (más abajo), exactamente como si no
     // hubiera ningún documento activo.
-    if (this.documentoActivo && !pareceNuevoDocumento(limpio)) {
+    if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
@@ -1469,7 +1502,7 @@ class AsistenteServiceImpl {
     //    confunda con "editar la imagen".
     // Con foto adjunta o en voz, también cae siempre al camino normal
     // — editar imágenes queda fuera de esos dos casos en esta fase.
-    if (this.materialVisualActivo && !adjunto && canal !== 'voz' && detectarHerramientaDocumento(limpio) !== 'imagen' && pareceEdicionDeImagenActiva(limpio)) {
+    if (this.materialVisualActivo && !adjunto && canal !== 'voz' && detectarHerramientaDocumento(limpio) !== 'imagen' && pareceEdicionDeImagenActiva(limpio) && !esOperacionSobreDatoPersonalAlumno) {
       await this.enviarRegeneracionImagen(limpio)
       return
     }

@@ -227,3 +227,29 @@ export function quiereIlustracion(texto: string): boolean {
   const normalizado = normalizar(texto)
   return FRASES_DOCUMENTO_ILUSTRADO.some((frase) => normalizado.includes(frase))
 }
+
+// PROTECCIÓN DE DATOS PERSONALES (ver "fallo crítico: corrección de CURP
+// desviada a generar_imagen") — un mensaje que opera sobre un
+// identificador personal sensible de un alumno (mismo catálogo mínimo
+// que ya usa la regla VERACIDAD DE DATOS) nunca debe poder confundirse
+// con una edición del documento/imagen activos, aunque comparta verbo
+// con REGEX_VERBOS_EDICION_IMAGEN (ej. "corrígela"). AsistenteService.ts
+// la usa para que esos mensajes SIEMPRE caigan al camino normal, donde
+// clasificarNivel0 los resuelve como consultar_dato_alumno/
+// corregir_dato_alumno.
+// Exige el identificador Y una señal real de operación (verbo de
+// corrección/consulta, o un valor con forma de CURP/RFC ya escrito en el
+// mensaje) — así una mención de paso dentro de una plantilla ("agrega un
+// espacio para CURP en el formato") no dispara la protección sin
+// necesidad, solo una operación real sobre el dato de un alumno.
+const REGEX_IDENTIFICADOR_PERSONAL_ALUMNO =
+  /\b(curp|rfc|nss|numero de seguro social|matricula|fecha de nacimiento|domicilio)\b/
+const REGEX_OPERACION_DATO_PERSONAL =
+  /\b(correct[ao]|corrige(la|lo)?|corrigela|corrigelo|actualiza(la|lo)?|cambia(la|lo)?|modifica(la|lo)?|registra(la|lo)?|guarda(la|lo)?|verifica(la|lo)?|confirma(la|lo)?|revisa(la|lo)?|cual es|cuales son|dime|consulta)\b/
+const REGEX_VALOR_CURP = /\b[A-Z]{4}\d{6}[HM][A-Z]{2}[A-Z]{3}[A-Z0-9]\d\b/i
+const REGEX_VALOR_RFC = /\b[A-Z]{4}\d{6}[A-Z0-9]{3}\b/i
+export function pareceOperacionSobreDatoPersonalAlumno(texto: string): boolean {
+  const normalizado = normalizar(texto)
+  if (!REGEX_IDENTIFICADOR_PERSONAL_ALUMNO.test(normalizado)) return false
+  return REGEX_OPERACION_DATO_PERSONAL.test(normalizado) || REGEX_VALOR_CURP.test(texto) || REGEX_VALOR_RFC.test(texto)
+}
