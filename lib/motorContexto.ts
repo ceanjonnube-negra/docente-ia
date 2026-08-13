@@ -331,8 +331,83 @@ export async function contextoAlumno(sb: SupabaseClient, alumnoId: string, ciclo
 // siempre se guarda así en toda la aplicación — no es inventar ni
 // cambiar ningún carácter, solo su representación de mayúscula/
 // minúscula).
-const REGEX_CURP_ESTRUCTURAL =
-  /^[A-Z][AEIOUX][A-Z]{2}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[HM](AS|BC|BS|CC|CS|CH|CL|CM|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QO|QR|SP|SL|SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z\d]\d$/
+// Catálogo real de claves de entidad federativa que usa la CURP oficial
+// (32 estados + "NE" para nacido en el extranjero) — mismo criterio que
+// ya traía REGEX_CURP_ESTRUCTURAL, ahora expuesto aparte para poder
+// reportar el motivo exacto cuando falla.
+const ENTIDADES_CURP_VALIDAS = [
+  'AS', 'BC', 'BS', 'CC', 'CS', 'CH', 'CL', 'CM', 'DF', 'DG', 'GT', 'GR', 'HG', 'JC',
+  'MC', 'MN', 'MS', 'NT', 'NL', 'OC', 'PL', 'QO', 'QR', 'SP', 'SL', 'SR', 'TC', 'TS',
+  'TL', 'VZ', 'YN', 'ZS', 'NE',
+]
+// Días reales por mes (índice 0 = enero) — febrero se deja en 29 a
+// propósito: la CURP por sí sola (YYMMDD, sin siglo) nunca permite saber
+// con certeza si el año era bisiesto, así que nunca se rechaza un 29 de
+// febrero por esa ambigüedad — pero un 30 o 31 de febrero, o un 31 en un
+// mes de 30 días, es imposible en cualquier año real y sí se rechaza.
+const DIAS_POR_MES = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+// Validación de CURP por ETAPAS (ver "blindaje determinista de CURP" —
+// fallo real: una CURP de 17 caracteres fue tratada por el modelo como
+// si tuviera 18 posiciones reales). Cada etapa comprueba EXACTAMENTE una
+// de las posiciones/segmentos reales de la CURP oficial y regresa el
+// motivo específico de la primera que falla — nunca completa, trunca,
+// desplaza ni infiere ningún carácter que el valor no tenga; una CURP
+// que no llega a 18 caracteres se rechaza indicando cuántos tiene
+// realmente, nunca se analiza como si el resto existiera. Vive aquí
+// (mismo archivo que aplicarCorreccionAlumno) porque es la única fuente
+// de verdad que TODOS los caminos de escritura ya llaman antes de
+// escribir (ver herramientaCorregirDatoAlumno y
+// app/api/alumnos/aplicar-correccion/route.ts) — fortalecerla aquí
+// fortalece automáticamente ambas barreras sin duplicar la regla.
+function validarEstructuraCurp(valor: string): ResultadoValidacionCampoAlumno {
+  if (valor.length !== 18) {
+    const detalle = valor.length < 18
+      ? `tiene ${valor.length} de 18 caracteres, por lo que está incompleta`
+      : `tiene ${valor.length} de 18 caracteres, más de los que debería tener`
+    return {
+      valido: false,
+      motivo: `La CURP proporcionada ${detalle} y no puede utilizarse para corregir el registro`,
+    }
+  }
+  if (!/^[A-Z][AEIOUX][A-Z]{2}/.test(valor)) {
+    return { valido: false, motivo: 'Las posiciones 1-4 (iniciales) no tienen la estructura esperada de una CURP' }
+  }
+  const bloqueFecha = valor.slice(4, 10)
+  if (!/^\d{6}$/.test(bloqueFecha)) {
+    return { valido: false, motivo: 'Las posiciones 5-10 (fecha codificada) deben ser 6 dígitos' }
+  }
+  const mes = Number(bloqueFecha.slice(2, 4))
+  const dia = Number(bloqueFecha.slice(4, 6))
+  if (mes < 1 || mes > 12) {
+    return { valido: false, motivo: 'La fecha codificada en las posiciones 5-10 tiene un mes que no existe' }
+  }
+  if (dia < 1 || dia > DIAS_POR_MES[mes - 1]) {
+    return { valido: false, motivo: 'La fecha codificada en las posiciones 5-10 no es una fecha real posible' }
+  }
+  const sexoCodificado = valor[10]
+  if (sexoCodificado !== 'H' && sexoCodificado !== 'M') {
+    return { valido: false, motivo: 'La posición 11 (sexo codificado) debe ser H o M' }
+  }
+  const entidad = valor.slice(11, 13)
+  if (!ENTIDADES_CURP_VALIDAS.includes(entidad)) {
+    return { valido: false, motivo: 'Las posiciones 12-13 (entidad federativa codificada) no corresponden a una clave válida' }
+  }
+  if (!/^[B-DF-HJ-NP-TV-Z]{3}$/.test(valor.slice(13, 16))) {
+    return { valido: false, motivo: 'Las posiciones 14-16 (consonantes internas) no tienen el formato esperado' }
+  }
+  if (!/^[A-Z0-9]$/.test(valor[16])) {
+    return { valido: false, motivo: 'La posición 17 (diferenciador/homoclave) no tiene un carácter válido' }
+  }
+  if (!/^\d$/.test(valor[17])) {
+    return { valido: false, motivo: 'La posición 18 (dígito verificador) debe ser un número' }
+  }
+  // Estructuralmente completa y consistente — NUNCA implica "oficialmente
+  // válida" (eso solo lo confirmaría RENAPO u otra fuente oficial, que
+  // esta aplicación no consulta): solo que las 18 posiciones existen y
+  // son internamente consistentes entre sí.
+  return { valido: true, valorNormalizado: valor }
+}
 
 export type ResultadoValidacionCampoAlumno =
   | { valido: true; valorNormalizado: string }
@@ -344,10 +419,7 @@ export function validarValorCampoAlumno(campo: CampoAlumnoCorregible, valorCrudo
 
   if (campo === 'curp') {
     const normalizado = valor.toUpperCase().replace(/\s+/g, '')
-    if (!REGEX_CURP_ESTRUCTURAL.test(normalizado)) {
-      return { valido: false, motivo: 'No tiene el formato estructural de una CURP válida (18 caracteres reales)' }
-    }
-    return { valido: true, valorNormalizado: normalizado }
+    return validarEstructuraCurp(normalizado)
   }
 
   if (campo === 'sexo') {
