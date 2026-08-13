@@ -15,6 +15,7 @@ import type {
   ArchivoGeneradoInfo,
   ContextoAplicacion,
   DesuscribirFn,
+  DiferenciaAlumno,
   EventoMotor,
   FinalizarArchivoInfo,
   Herramienta,
@@ -263,9 +264,10 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
-      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
+      const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
+      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinCorreccionAlumno)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -427,6 +429,24 @@ export class MotorTextoClaude implements MotorConversacional {
       const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
       const accionNavegacion = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as AccionNavegacion
       return { texto: respuesta.replace(match[0], '').trim(), accionNavegacion }
+    } catch {
+      return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico con la propuesta de corrección de dato de alumno
+  // (ver "corregir_dato_alumno" en lib/asistente/herramientasModulo.ts)
+  // — mismo patrón exacto que procesarMarcadorDeNavegacion: el docente
+  // nunca ve esta línea, solo el texto legible (Alumno/Campo/Actual/
+  // Nuevo/Fuente) que la precede.
+  private procesarMarcadorDeCorreccionAlumno(respuesta: string): { texto: string; datosAccionAlumno?: DiferenciaAlumno } {
+    const match = respuesta.match(/\[\[CORRECCION_ALUMNO:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const datosAccionAlumno = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as DiferenciaAlumno
+      return { texto: respuesta.replace(match[0], '').trim(), datosAccionAlumno }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
     }

@@ -850,6 +850,9 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('campo_alumno')) {
           return respuestaTexto('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?')
         }
+        if (clasificacion.datos_faltantes.includes('valor_alumno')) {
+          return respuestaTexto('¿Cuál es el valor correcto?')
+        }
       }
 
       // Separación estricta entre conversación libre y consultas de
@@ -869,6 +872,7 @@ export async function POST(req: NextRequest) {
         userId,
         zonaHoraria,
         canal: channel === 'voice' ? 'voice' : 'text',
+        conversacionId: typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null,
       })
       marcarTelemetria('tool:execution_finished')
       if (respuestaDeModulo !== null) {

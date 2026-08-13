@@ -34,6 +34,7 @@ export function useAsistente() {
     eliminarConversacion: (id: string) => AsistenteService.eliminarConversacion(id),
     confirmarAccionCalendario: (mensajeId: string, accionId: string) => AsistenteService.confirmarAccionCalendario(mensajeId, accionId),
     confirmarNavegacion: (mensajeId: string) => AsistenteService.confirmarNavegacion(mensajeId),
+    confirmarCorreccionAlumno: (mensajeId: string, accionId: string) => AsistenteService.confirmarCorreccionAlumno(mensajeId, accionId),
   }
 }
 

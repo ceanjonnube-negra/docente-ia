@@ -13,6 +13,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { SesionContexto } from './sesionContexto';
+import type { CampoAlumnoCorregible } from './asistente/tipos';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -32,6 +33,7 @@ export type ClasificacionNivel0 = {
     | 'navegar_alumno_lista'
     | 'consultar_incidencias_alumno'
     | 'consultar_dato_alumno'
+    | 'corregir_dato_alumno'
     | 'navegar_lista_filtrada'
     | 'actualizar_perfil_docente'
     | 'registrar_incidencia'
@@ -77,7 +79,23 @@ export type ClasificacionNivel0 = {
   // intención dedicada (1, y ninguna equivalente existe todavía para
   // calificaciones) y no vienen en ese mismo contexto. null en
   // cualquier otra intención, o si no se pudo determinar cuál campo.
-  campo_alumno_solicitado: 'curp' | 'sexo' | 'fecha_nacimiento' | null;
+  campo_alumno_solicitado: CampoAlumnoCorregible | null;
+  // Solo para corregir_dato_alumno — ver "PASO 2: corrección
+  // individual segura de UN campo de UN alumno". 'proponer': el
+  // mensaje ACTUAL da un alumno+campo+valor nuevo explícitos (primera
+  // vez que se plantea esta corrección). 'confirmar'/'cancelar': el
+  // mensaje actual es una respuesta breve a una propuesta que el
+  // propio asistente presentó en el turno inmediato anterior (ver
+  // regla 22.1) — en ese caso, campo_alumno_corregir y
+  // valor_alumno_propuesto se resuelven del turno anterior, NUNCA del
+  // mensaje actual. null en cualquier otra intención.
+  accion_correccion_alumno: 'proponer' | 'confirmar' | 'cancelar' | null;
+  campo_alumno_corregir: CampoAlumnoCorregible | null;
+  // El valor EXACTO que el docente propuso — nunca completado,
+  // corregido ni inferido por el clasificador (ver regla 22). Para
+  // 'confirmar'/'cancelar', el mismo valor ya extraído del turno
+  // anterior del asistente.
+  valor_alumno_propuesto: string | null;
   // Solo relevante cuando nivel_detalle_asistencia_grupo es 'cantidad'
   // o 'nombres' — a qué categoría se refiere ("¿cuántos retardos?" →
   // "retardos"). null en 'resumen'/'completo' (cubren las 4 a la vez)
@@ -174,6 +192,9 @@ const FALLBACK: ClasificacionNivel0 = {
   },
   estado_asistencia_solicitado: null,
   campo_alumno_solicitado: null,
+  accion_correccion_alumno: null,
+  campo_alumno_corregir: null,
+  valor_alumno_propuesto: null,
   pestana_lista: null,
   filtro_lista: null,
   nivel_detalle_asistencia_grupo: null,
@@ -215,7 +236,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida:
 {
-  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "corregir_dato_alumno" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "conversacion_general" | "intencion_no_reconocida",
   "nivel_ejecucion": 1 | 2 | 3 | 4,
   "requiere_ia": boolean,
   "requiere_contexto_memoria": boolean,
@@ -227,6 +248,9 @@ Formato exacto de salida:
   },
   "estado_asistencia_solicitado": "presente" | "falta" | "retardo" | null,
   "campo_alumno_solicitado": "curp" | "sexo" | "fecha_nacimiento" | null,
+  "accion_correccion_alumno": "proponer" | "confirmar" | "cancelar" | null,
+  "campo_alumno_corregir": "curp" | "sexo" | "fecha_nacimiento" | null,
+  "valor_alumno_propuesto": string | null,
   "pestana_lista": "resumen" | "datos" | "asistencia" | "incidencias" | "evaluaciones" | "evidencias" | "fichas" | "historial" | null,
   "filtro_lista": "todos" | "ninas" | "ninos" | "presentes" | "ausentes" | null,
   "nivel_detalle_asistencia_grupo": "cantidad" | "nombres" | "resumen" | "completo" | null,
@@ -280,7 +304,7 @@ Extrae, SOLO si el maestro los mencionó explícitamente en su mensaje ACTUAL (n
 6. Si pregunta qué alumnos requieren apoyo, tienen necesidades especiales, o van rezagados/con dificultades → intencion_principal="consultar_apoyo", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true.
 7. Si pregunta qué documentos tiene generados/guardados/almacenados en la aplicación (planeaciones, fichas, exámenes, citatorios que ya generó antes) → intencion_principal="consultar_documentos", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Excepción — NUNCA uses esta regla si el mensaje usa un verbo de creación (Hazme, Crea, Genera, Prepara, Necesito, Redacta) pidiendo un documento NUEVO (examen, citatorio, rúbrica, cuento, resumen, guía, oficio, material): eso es una solicitud de CREACIÓN, no una consulta sobre documentos ya generados — en ese caso usa "conversacion_general" (regla 10) para dejarlo pasar al generador de documentos existente. Ejemplos que NUNCA son consultar_documentos: "Hazme un examen de...", "Genera un citatorio para...", "Necesito una rúbrica de...", "Crea un cuento sobre...". Esta regla 7 aplica únicamente cuando la pregunta es sobre documentos YA EXISTENTES ("qué documentos tengo", "muéstrame mis exámenes generados", "cuáles he generado").
 8. Si pregunta por actividades, eventos o fechas programadas en el calendario escolar, o por cualquier cosa relacionada con tiempo/fechas de la escuela — aunque no diga la palabra "calendario" ni lo pida explícitamente — → intencion_principal="consultar_calendario", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué sigue esta semana?", "¿cuándo regresamos?", "¿qué tengo mañana?", "¿hay CTE este mes?", "¿qué actividades tengo el viernes?", "¿cuándo son las vacaciones?", "¿qué día es la junta?", "¿qué eventos hay este mes?", "¿cuántos eventos tengo esta semana?", "¿qué días están libres?", "¿qué actividades son oficiales?", "¿qué actividades agregué yo?", "¿cuándo es el próximo consejo técnico?", "¿ya empezaron las vacaciones?". Excepción — NUNCA uses esta regla si el mensaje en realidad pide CREAR, AJUSTAR o APROBAR una planeación (ver regla 4): cuando el calendario, los días inhábiles, las suspensiones o las vacaciones se mencionan solo como algo a considerar DENTRO de una solicitud de planeación (ej. "hazme una planeación... considerando el calendario escolar y las suspensiones"), la intención sigue siendo planeacion_generar; esta regla 8 aplica únicamente cuando la pregunta principal del mensaje es sobre el calendario en sí, no sobre crear un proyecto didáctico.
-9. Para 1, 2.1, 3, 14, 14.1, 15, 19 y 21: busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" — tolerante a mayúsculas, acentos, nombre parcial, Y a errores de transcripción de voz (el nombre puede llegar distorsionado fonéticamente, ej. "Outrid" por "Audrey", "Erik" por "Eric" — considera una coincidencia por semejanza FONÉTICA como candidato válido, no solo coincidencia de texto exacta).
+9. Para 1, 2.1, 3, 14, 14.1, 15, 19, 21 y 22 (solo cuando accion_correccion_alumno="proponer" — para "confirmar"/"cancelar" el alumno se resuelve según la regla 22.1, contra el turno anterior, nunca aquí): busca el nombre del alumno mencionado contra "alumnos_del_grupo_activo" — tolerante a mayúsculas, acentos, nombre parcial, Y a errores de transcripción de voz (el nombre puede llegar distorsionado fonéticamente, ej. "Outrid" por "Audrey", "Erik" por "Eric" — considera una coincidencia por semejanza FONÉTICA como candidato válido, no solo coincidencia de texto exacta).
    - Si hay exactamente una coincidencia EXACTA o casi exacta (mismo nombre, tolerando acentos/mayúsculas/nombre parcial claro): entidades_resueltas.alumno_id = su alumno_id, entidades_resueltas.alumno_nombre_detectado = su nombre_completo REAL tal como aparece en alumnos_del_grupo_activo (nunca el texto que dijo el maestro), alumno_ambiguo=false, datos_faltantes=[].
    - Si hay exactamente una coincidencia pero SOLO por semejanza FONÉTICA (el texto que escribió/dijo el maestro no se parece por escrito al nombre real, típico de dictado por voz mal transcrito): mismo llenado de alumno_id/alumno_nombre_detectado que arriba, PERO además, SOLO para marcar_asistencia_individual (2.1), pon requiere_confirmacion=true y motivo_confirmacion="nombre_fonetico" — la aplicación le va a preguntar al maestro antes de escribir nada. Para 1, 3, 14, 14.1 y 15 (son consultas o navegación, no escrituras) no hace falta esta confirmación extra.
    - Si no se menciona ningún alumno o no hay coincidencia razonable: alumno_id=null, agrega "alumno" a datos_faltantes, nivel_confianza baja (<0.5).
@@ -297,7 +321,9 @@ Extrae, SOLO si el maestro los mencionó explícitamente en su mensaje ACTUAL (n
 18. requiere_consulta_oficial=true SOLO cuando el mensaje pregunta por información OFICIAL de la SEP/autoridades educativas que puede cambiar con el tiempo y cuya fecha/vigencia exacta el modelo no puede saber con certeza por su cuenta: calendario escolar oficial (inicio/término de ciclo, periodos vacacionales oficiales, días de CTE oficiales a nivel SEP), planes y programas de estudio vigentes, campos formativos vigentes, lineamientos, normas, trámites oficiales, acuerdos publicados por SEP o DOF. Es un campo INDEPENDIENTE de intencion_principal (puede coexistir con "consultar_calendario" si la pregunta es sobre el calendario OFICIAL de la SEP, no el calendario personal que el docente registró en la app, o con "conversacion_general" si no encaja en ninguna otra intención). Ejemplos que SÍ son requiere_consulta_oficial=true: "¿cuándo termina el ciclo escolar 2025-2026?", "¿cuándo inicia el siguiente ciclo escolar?", "¿cuáles son los campos formativos vigentes?", "¿qué dice el plan de estudios sobre...?", "¿cuándo son las vacaciones de verano según la SEP?". IMPORTANTE: distingue esto de "consultar_calendario" (regla 8), que es sobre eventos que EL DOCENTE registró en su propio calendario dentro de la app ("¿qué tengo mañana?", "¿hay junta el viernes?") — si la pregunta es sobre SU agenda personal, requiere_consulta_oficial=false aunque intencion_principal sea "consultar_calendario". requiere_consulta_oficial=false SIEMPRE para: datos internos del grupo (asistencias, alumnos, incidencias, documentos ya guardados en la app), y para conversación casual. Nunca lo actives "por si acaso" — solo cuando la pregunta específicamente requiera una fecha o dato oficial vigente que no está en DATOS DEL MAESTRO.
 19. Si pide REGISTRAR/REPORTAR/ANOTAR/DOCUMENTAR/LEVANTAR una incidencia, reporte o problema de conducta/comportamiento de UN alumno mencionado por nombre → intencion_principal="registrar_incidencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "repórtale una incidencia a [nombre] por interrumpir la clase", "registra que [nombre] se peleó con un compañero", "anota una incidencia de conducta para [nombre]", "levanta un reporte a [nombre] porque no trajo material", "documenta que [nombre] fue grosero con un compañero", "pon una incidencia a [nombre]: no hizo la tarea". Extrae dos campos SOLO de lo que el maestro realmente dijo, sin inventar ni completar HECHOS que no dio: tipo_incidencia (una categoría breve, 2-4 palabras, la que mejor describa lo ocurrido — ej. "Conducta", "Falta de material", "Conflicto entre compañeros", "Incumplimiento de tarea") y descripcion_incidencia. descripcion_incidencia va a quedar guardada tal cual en el expediente oficial del alumno, así que NUNCA la copies literal en el lenguaje coloquial del maestro — redáctala en registro formal y administrativo, el mismo tono objetivo y en tercera persona que usarías para un reporte oficial SEP, PRESERVANDO EXACTAMENTE los mismos hechos que el maestro relató: nunca agregues, quites, minimices, exageres ni inventes ningún detalle — solo cambia el registro/tono de la redacción, nunca el contenido. Ejemplo: si el maestro dice "se portó mal, no trabajó y le jaló el pelo a Luis Ángel", descripcion_incidencia debe quedar como "La alumna mostró conducta inapropiada durante la jornada escolar y no participó en las actividades académicas programadas. Se registró un incidente de agresión física hacia un compañero, consistente en jalón de cabello, ocasionado a Luis Ángel." Si el maestro solo dice "repórtale una incidencia a [nombre]" sin decir qué pasó, agrega "descripcion_incidencia" a datos_faltantes — nunca inventes tipo ni descripción para rellenar. Esto es DISTINTO de 2.1 (asistencia: presente/falta/retardo) — llegar tarde por sí solo es un asunto de asistencia (retardo), no una incidencia de conducta, a menos que el maestro relacione explícitamente el retraso con un problema de comportamiento.
 20. Si el docente pregunta por planeaciones YA GUARDADAS en la aplicación — listado general, filtradas por trimestre/periodo, por estado (borrador/publicada/archivada), la vigente/actual, la más reciente/última, o busca una en particular por nombre o tema — → intencion_principal="planeacion_consultar", nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true. Ejemplos: "¿qué planeaciones tengo?", "muéstrame las planeaciones del primer trimestre", "¿cuál es mi planeación actual?", "abre la planeación de leyendas", "¿qué fechas tiene mi última planeación?", "¿cuáles están archivadas?". Resuelve tipo_consulta_planeacion así: "listado_general" si no especifica ningún filtro; "por_periodo" + periodo_planeacion_consulta (el trimestre/periodo tal cual lo dijo, ej. "primer trimestre") si menciona un periodo o trimestre; "por_estado" + estado_planeacion_consulta ("borrador"|"publicada"|"archivada") si menciona un estado; "actual" si pregunta por la vigente o la de este momento; "ultima" si pregunta por la más reciente o la última que creó; "por_nombre" + nombre_planeacion_consulta (el nombre o tema mencionado) si busca una planeación específica. Si el mensaje es una referencia vaga de continuación sin nombre propio (ej. "ábrela", "muéstrame esa", "ábreme esa planeación") Y el ÚLTIMO turno del ASISTENTE en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN" menciona el nombre de UNA planeación específica, usa tipo_consulta_planeacion="por_nombre" con nombre_planeacion_consulta tomado de ese turno anterior — nunca inventado si no aparece ahí. DISTINGUE esto de "planeacion_generar" (regla 4 — pedir CREAR, GENERAR o AJUSTAR una planeación nueva) y de una pregunta general o pedagógica sobre qué es una planeación o cómo planear (esos casos NO son esta intención aunque mencionen la palabra "planeación") — en esos casos usa "conversacion_general".
-21. Si pregunta por un dato personal PUNTUAL ya registrado de UN alumno específico — CURP, sexo o fecha de nacimiento — → intencion_principal="consultar_dato_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "¿Cuál es la CURP de [nombre]?", "Dame la CURP de [nombre]", "¿Cuál es la fecha de nacimiento de [nombre]?", "¿Cuándo nació [nombre]?", "Dime el sexo registrado de [nombre]". Resuelve campo_alumno_solicitado: "curp" para CURP; "fecha_nacimiento" para fecha de nacimiento/cuándo nació/cumpleaños; "sexo" para sexo/género registrado. Si no puedes determinar con confianza cuál de estos tres campos pide, agrega "campo_alumno" a datos_faltantes (en ese caso campo_alumno_solicitado queda null). DISTINTO de 1 (asistencia/faltas/retardos, tiene su propia intención) y de 15 (cifra de incidencias) — esta regla es EXCLUSIVAMENTE para CURP/sexo/fecha de nacimiento; cualquier otro dato personal que el maestro pida y no esté en esta lista (calificaciones, domicilio, teléfono, etc.) NO tiene todavía una intención dedicada — usa "conversacion_general" para esos casos, nunca fuerces esta regla.`;
+21. Si pregunta por un dato personal PUNTUAL ya registrado de UN alumno específico — CURP, sexo o fecha de nacimiento — → intencion_principal="consultar_dato_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false. Ejemplos: "¿Cuál es la CURP de [nombre]?", "Dame la CURP de [nombre]", "¿Cuál es la fecha de nacimiento de [nombre]?", "¿Cuándo nació [nombre]?", "Dime el sexo registrado de [nombre]". Resuelve campo_alumno_solicitado: "curp" para CURP; "fecha_nacimiento" para fecha de nacimiento/cuándo nació/cumpleaños; "sexo" para sexo/género registrado. Si no puedes determinar con confianza cuál de estos tres campos pide, agrega "campo_alumno" a datos_faltantes (en ese caso campo_alumno_solicitado queda null). DISTINTO de 1 (asistencia/faltas/retardos, tiene su propia intención) y de 15 (cifra de incidencias) — esta regla es EXCLUSIVAMENTE para CURP/sexo/fecha de nacimiento; cualquier otro dato personal que el maestro pida y no esté en esta lista (calificaciones, domicilio, teléfono, etc.) NO tiene todavía una intención dedicada — usa "conversacion_general" para esos casos, nunca fuerces esta regla.
+22. Si el mensaje PROPONE un valor nuevo para un dato de un alumno específico —CURP, sexo o fecha de nacimiento— y pide corregirlo/cambiarlo/actualizarlo → intencion_principal="corregir_dato_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, accion_correccion_alumno="proponer". Ejemplos: "La CURP correcta de Dylan Yosueth Hernández Sandoval es HESD170823HNTRNYA3. Corrígela.", "Corrige la CURP de [nombre] a [valor]", "El sexo de [nombre] en realidad es H, cámbialo", "La fecha de nacimiento de [nombre] es 2017-08-23, actualízala". Resuelve campo_alumno_corregir con el mismo criterio de la regla 21 (curp/sexo/fecha_nacimiento). valor_alumno_propuesto: EXACTAMENTE el valor literal que escribió el docente, carácter por carácter — tienes PROHIBIDO completarlo, corregirlo o reformatearlo, salvo UNA sola excepción explícita: convertir una fecha dicha en palabras (ej. "23 de agosto de 2017") al formato AAAA-MM-DD — nunca inventes un dígito o letra que el docente no haya dicho, para CURP y sexo copia el texto tal cual viene, sin cambiar ni un solo carácter. Si el docente NO dio un valor explícito para el campo (solo dijo que "está mal" o "hay que corregirla" sin decir cuál es el valor correcto), agrega "valor_alumno" a datos_faltantes en vez de proponer nada — nunca preguntes ni asumas un valor.
+22.1. CONFIRMACIÓN/CANCELACIÓN de una corrección de alumno pendiente: si el mensaje actual es una respuesta breve de confirmación ("sí", "corrígela", "sí, corrígela", "confirmado", "así es", "adelante", "hazlo", "correcto") o de cancelación ("no", "cancela", "olvídalo", "déjalo así", "mejor no") Y el ÚLTIMO turno del ASISTENTE en "ÚLTIMOS TURNOS DE LA CONVERSACIÓN" presentó EXACTAMENTE una propuesta de corrección pendiente con el formato "Alumno: ... / Campo: ... / Actual: ... / Nuevo: ... / Fuente: ..." → intencion_principal="corregir_dato_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, accion_correccion_alumno="confirmar" (si confirma) o "cancelar" (si cancela). En este caso, extrae campo_alumno_corregir y valor_alumno_propuesto EXACTAMENTE de las líneas "Campo:"/"Nuevo:" de ese turno anterior del asistente — nunca del mensaje actual (que no trae esos datos) — y resuelve entidades_resueltas.alumno_id/alumno_nombre_detectado contra el nombre que aparece en la línea "Alumno:" de ese mismo turno anterior, buscándolo en alumnos_del_grupo_activo con el mismo criterio de la regla 9. Si el turno inmediato anterior del asistente NO es inequívocamente esa propuesta pendiente (formato exacto de arriba), NO uses accion_correccion_alumno="confirmar"/"cancelar" bajo ninguna circunstancia — usa "conversacion_general" en su lugar, nunca asumas que una respuesta breve confirma algo fuera de ese contexto exacto.`;
 }
 
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras
@@ -322,7 +348,14 @@ export async function clasificarNivel0(
     const respuesta = await client.messages.create(
       {
         model: 'claude-sonnet-4-6',
-        max_tokens: 500,
+        // Antes en 500 — el JSON de salida ya no cabe siempre ahí con
+        // los campos agregados por corregir_dato_alumno
+        // (valor_alumno_propuesto puede traer un texto real, ej. una
+        // CURP completa, sumado a todos los demás campos ya
+        // existentes). Un JSON truncado a medio string rompía el
+        // parseo y caía al FALLBACK silenciosamente — ver "el
+        // clasificador real no reconoció la corrección de CURP".
+        max_tokens: 700,
         system: construirPrompt(sesion, historialReciente),
         messages: [{ role: 'user', content: mensaje }],
       },

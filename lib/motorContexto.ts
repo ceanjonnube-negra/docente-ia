@@ -7,7 +7,7 @@
 // para que auth.uid() funcione dentro de las RPC con SECURITY DEFINER).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { DiferenciaCalendario } from './asistente/tipos';
+import type { CampoAlumnoCorregible, DiferenciaCalendario } from './asistente/tipos';
 
 export type ExcepcionAsistencia = {
   alumno_id: string;
@@ -315,6 +315,169 @@ export async function contextoAlumno(sb: SupabaseClient, alumnoId: string, ciclo
   });
   if (error) throw error;
   return data;
+}
+
+// --- Corrección individual de un dato de alumno (ver "PASO 2:
+// corrección individual segura de UN campo de UN alumno" y la
+// migración correcciones_alumno) ---
+//
+// Validación de FORMATO estructural — nunca reconstruye, completa ni
+// infiere ningún carácter que el docente no haya proporcionado
+// explícitamente; solo RECHAZA valores que evidentemente no tienen el
+// formato correcto. Nunca consulta ningún servicio externo (RENAPO ni
+// equivalente) para validar o "corregir" una CURP — eso sería
+// exactamente la fabricación que la regla VERACIDAD DE DATOS prohíbe.
+// La única normalización que aplica es mayúsculas (una CURP/sexo real
+// siempre se guarda así en toda la aplicación — no es inventar ni
+// cambiar ningún carácter, solo su representación de mayúscula/
+// minúscula).
+const REGEX_CURP_ESTRUCTURAL =
+  /^[A-Z][AEIOUX][A-Z]{2}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[HM](AS|BC|BS|CC|CS|CH|CL|CM|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QO|QR|SP|SL|SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z\d]\d$/
+
+export type ResultadoValidacionCampoAlumno =
+  | { valido: true; valorNormalizado: string }
+  | { valido: false; motivo: string }
+
+export function validarValorCampoAlumno(campo: CampoAlumnoCorregible, valorCrudo: string): ResultadoValidacionCampoAlumno {
+  const valor = valorCrudo.trim()
+  if (!valor) return { valido: false, motivo: 'El valor no puede estar vacío' }
+
+  if (campo === 'curp') {
+    const normalizado = valor.toUpperCase().replace(/\s+/g, '')
+    if (!REGEX_CURP_ESTRUCTURAL.test(normalizado)) {
+      return { valido: false, motivo: 'No tiene el formato estructural de una CURP válida (18 caracteres reales)' }
+    }
+    return { valido: true, valorNormalizado: normalizado }
+  }
+
+  if (campo === 'sexo') {
+    const normalizado = valor.toUpperCase()
+    if (normalizado !== 'H' && normalizado !== 'M') {
+      return { valido: false, motivo: 'El sexo debe ser H (niño) o M (niña)' }
+    }
+    return { valido: true, valorNormalizado: normalizado }
+  }
+
+  // fecha_nacimiento — mismo formato ISO (YYYY-MM-DD) que ya usa
+  // app/dashboard/lista/[alumnoId]/page.tsx (input type="date") y el
+  // resto de fechas de la aplicación.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(valor)) {
+    return { valido: false, motivo: 'La fecha debe tener el formato AAAA-MM-DD' }
+  }
+  const fecha = new Date(`${valor}T12:00:00`)
+  if (Number.isNaN(fecha.getTime())) {
+    return { valido: false, motivo: 'Esa fecha no es válida' }
+  }
+  return { valido: true, valorNormalizado: valor }
+}
+
+export type ResultadoCorreccionAlumno =
+  | { exito: true; sinCambios: boolean; valorAnterior: string | null; valorNuevo: string }
+  | { exito: false; error: string }
+
+export type FuenteCorreccionAlumno = {
+  tipo: 'texto' | 'imagen' | 'documento' | 'voz' | 'manual'
+  detalle?: Record<string, unknown>
+  conversacionId?: string | null
+  mensajeId?: string | null
+}
+
+// Escribe ÚNICAMENTE el campo autorizado de UN alumno, con
+// verificación real antes y después — nunca confía en un
+// "valor anterior" que le hayan mandado, siempre lo relee. Mismo
+// criterio ya probado en aplicarCorreccionesCalendario: cada escritura
+// lleva su propio filtro de propiedad (.eq('docente_id', docenteId))
+// y se cuenta solo lo que Supabase realmente confirmó — "nunca
+// confirmar sin verificar".
+export async function aplicarCorreccionAlumno(
+  sb: SupabaseClient,
+  docenteId: string,
+  alumnoId: string,
+  campo: CampoAlumnoCorregible,
+  valorNuevo: string,
+  fuente: FuenteCorreccionAlumno
+): Promise<ResultadoCorreccionAlumno> {
+  // 1. Releer el valor REAL actual — nunca el que haya dicho el cliente.
+  const { data: filaActual, error: errorLectura } = await sb
+    .from('alumnos')
+    .select(campo)
+    .eq('id', alumnoId)
+    .eq('docente_id', docenteId)
+    .maybeSingle()
+  if (errorLectura) {
+    console.error('[CORRECCION_ALUMNO] Fallo leyendo el valor actual:', errorLectura)
+    return { exito: false, error: 'No fue posible consultar el dato actual del alumno' }
+  }
+  if (!filaActual) return { exito: false, error: 'Ese alumno no existe o no te pertenece' }
+  const valorAnteriorReal = (filaActual as Record<CampoAlumnoCorregible, string | null>)[campo]
+
+  // 2. Si ya coincide con lo propuesto, no se escribe nada — el
+  // llamador decide el mensaje ("ese valor ya coincide"), aquí solo se
+  // reporta que no hubo cambio real, para que tampoco se inserte
+  // trazabilidad innecesaria.
+  if (valorAnteriorReal === valorNuevo) {
+    return { exito: true, sinCambios: true, valorAnterior: valorAnteriorReal, valorNuevo }
+  }
+
+  // 3. UPDATE — únicamente el campo autorizado, únicamente esa fila,
+  // únicamente si de verdad pertenece a este docente.
+  const { data: filaActualizada, error: errorUpdate } = await sb
+    .from('alumnos')
+    .update({ [campo]: valorNuevo })
+    .eq('id', alumnoId)
+    .eq('docente_id', docenteId)
+    .select(campo)
+    .maybeSingle()
+  if (errorUpdate) {
+    console.error('[CORRECCION_ALUMNO] Fallo en el UPDATE:', errorUpdate)
+    return { exito: false, error: 'No fue posible actualizar el dato' }
+  }
+  if (!filaActualizada) {
+    return { exito: false, error: 'La actualización no afectó ninguna fila — verifica que el alumno te pertenezca' }
+  }
+
+  // 4. VERIFICACIÓN real — una lectura SEPARADA del propio UPDATE
+  // (nunca solo el eco que Supabase regresa del mismo statement),
+  // confirmando que el valor guardado coincide EXACTAMENTE con el
+  // propuesto. Si no coincide, nunca se reporta éxito.
+  const { data: filaVerificada, error: errorVerificacion } = await sb
+    .from('alumnos')
+    .select(campo)
+    .eq('id', alumnoId)
+    .maybeSingle()
+  const valorVerificado = filaVerificada ? (filaVerificada as Record<CampoAlumnoCorregible, string | null>)[campo] : null
+  if (errorVerificacion || valorVerificado !== valorNuevo) {
+    console.error('[CORRECCION_ALUMNO] El valor releído no coincide con el propuesto tras el UPDATE:', { errorVerificacion, valorVerificado, valorNuevo })
+    return { exito: false, error: 'No se pudo confirmar que el dato quedó guardado correctamente' }
+  }
+
+  // 5. Trazabilidad — SOLO después de comprobar el UPDATE real (ver
+  // paso 4). Si esto falla, el dato del alumno YA se corrigió y YA se
+  // verificó — nunca se revierte solo porque falló el registro de
+  // auditoría (revertir aquí sería una segunda escritura no pedida ni
+  // verificada, con su propio riesgo). Se registra con la máxima
+  // visibilidad posible para investigarlo después — nunca se oculta.
+  const { error: errorTrazabilidad } = await sb.from('correcciones_alumno').insert({
+    alumno_id: alumnoId,
+    docente_id: docenteId,
+    campo,
+    valor_anterior: valorAnteriorReal,
+    valor_nuevo: valorNuevo,
+    fuente: fuente.tipo,
+    fuente_detalle: fuente.detalle ?? null,
+    conversacion_id: fuente.conversacionId ?? null,
+    mensaje_id: fuente.mensajeId ?? null,
+    accion: 'correccion',
+    correccion_original_id: null,
+  })
+  if (errorTrazabilidad) {
+    console.error(
+      `[CORRECCION_ALUMNO] INCONSISTENCIA A INVESTIGAR: el UPDATE de alumno=${alumnoId} campo=${campo} se aplicó y se verificó correctamente, pero la trazabilidad NO se pudo insertar:`,
+      errorTrazabilidad
+    )
+  }
+
+  return { exito: true, sinCambios: false, valorAnterior: valorAnteriorReal, valorNuevo }
 }
 
 export async function contextoGrupo(sb: SupabaseClient, grupoId: string) {

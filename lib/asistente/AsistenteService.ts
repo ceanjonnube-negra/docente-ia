@@ -1242,6 +1242,30 @@ class AsistenteServiceImpl {
                 ...this.mensajes.slice(idx + 1),
               ]
             }
+          } else if (msg && evento.datosAccionAlumno) {
+            // Propuesta de corrección de dato de alumno pendiente de
+            // confirmar (ver "PASO 2: corrección individual segura") —
+            // mismo patrón que la confirmación de calendario:
+            // AccionMensaje/acciones adjuntas al mensaje, nunca se
+            // escribe nada hasta que el docente toque "Corregir" (ver
+            // confirmarCorreccionAlumno más abajo) o lo confirme por
+            // texto (ver corregir_dato_alumno en
+            // lib/asistente/herramientasModulo.ts, que en ese caso ya
+            // escribe y responde sin marcador — este bloque solo
+            // aplica cuando SÍ llega un marcador, es decir, cuando
+            // todavía no se ha escrito nada).
+            this.mensajes = [
+              ...this.mensajes.slice(0, idx),
+              {
+                ...msg,
+                datosAccionAlumno: evento.datosAccionAlumno,
+                acciones: [
+                  { id: 'corregir_alumno', etiqueta: 'Corregir', estilo: 'primario' },
+                  { id: 'cancelar', etiqueta: 'Cancelar', estilo: 'secundario' },
+                ],
+              },
+              ...this.mensajes.slice(idx + 1),
+            ]
           }
         }
         // PASO 3 — el turno del asistente ya quedó en su estado final
@@ -1672,6 +1696,99 @@ class AsistenteServiceImpl {
     } finally {
       clearTimeout(temporizadorFetch)
       this.detenerProgresoAccionCalendario()
+      this.generando = false
+      this.notificar()
+      this.persistirConversacion()
+    }
+  }
+
+  // Botón "Corregir"/"Cancelar" sobre una propuesta de corrección de
+  // dato de alumno (ver "PASO 2: corrección individual segura" y
+  // manejarEventoMotor, caso 'respuesta-final' con datosAccionAlumno)
+  // — mismo patrón exacto que confirmarAccionCalendario: accionElegida
+  // se marca de inmediato para que el botón no se pueda tocar dos
+  // veces, y la escritura real ocurre en un endpoint dedicado que
+  // vuelve a verificar todo del lado servidor (nunca confía en lo que
+  // el cliente diga que era el "valor actual").
+  async confirmarCorreccionAlumno(mensajeId: string, accionId: string) {
+    const mensaje = this.mensajes.find((m) => m.id === mensajeId)
+    if (!mensaje || mensaje.accionElegida || this.generando) return
+
+    const mensajeConAccion: MensajeConversacion = { ...mensaje, accionElegida: accionId }
+    this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? mensajeConAccion : m))
+    this.notificar()
+    this.persistirConversacion()
+    this.persistirMensajeAsegurandoConversacion(mensajeConAccion)
+
+    if (accionId === 'cancelar') {
+      const mensajeCancelado: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no hice ningún cambio.', creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeCancelado]
+      this.notificar()
+      this.persistirConversacion()
+      this.persistirMensajeAsegurandoConversacion(mensajeCancelado)
+      return
+    }
+
+    if (accionId !== 'corregir_alumno') return
+
+    const diferencia = mensaje.datosAccionAlumno
+    if (!diferencia) {
+      const mensajeSinDatos: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'No encontré la propuesta de corrección pendiente. Vuelve a solicitarla.', creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeSinDatos]
+      this.notificar()
+      this.persistirConversacion()
+      this.persistirMensajeAsegurandoConversacion(mensajeSinDatos)
+      return
+    }
+
+    this.generando = true
+    this.notificar()
+
+    const controlador = new AbortController()
+    const temporizadorFetch = setTimeout(() => controlador.abort(), 55_000)
+
+    try {
+      const { user, session } = await conLimiteDeTiempoAccion(
+        obtenerPerfilYSesion(),
+        12_000,
+        'Tiempo de espera agotado obteniendo la sesión del docente'
+      )
+
+      const res = await fetch('/api/alumnos/aplicar-correccion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alumnoId: diferencia.alumnoId,
+          campo: diferencia.campo,
+          valorNuevo: diferencia.valorNuevo,
+          fuente: diferencia.fuente,
+          conversacionId: this.conversacionActivaId,
+          userId: user?.id || null,
+          accessToken: session?.access_token || null,
+        }),
+        signal: controlador.signal,
+      })
+
+      const cuerpo = await res.json().catch(() => null)
+      if (!res.ok || !cuerpo || typeof cuerpo.error === 'string') {
+        throw new Error(cuerpo?.error || 'No pude aplicar la corrección. Intenta de nuevo.')
+      }
+
+      const mensajeExito: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || 'Listo. Corregí el dato.', creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeExito]
+      this.persistirMensajeAsegurandoConversacion(mensajeExito)
+    } catch (err) {
+      const mensajeErrorTexto =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'La corrección tardó demasiado. Intenta de nuevo.'
+          : err instanceof Error
+            ? err.message
+            : 'No pude aplicar la corrección. Intenta de nuevo.'
+      const mensajeError: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: mensajeErrorTexto, creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeError]
+      this.persistirMensajeAsegurandoConversacion(mensajeError)
+    } finally {
+      clearTimeout(temporizadorFetch)
       this.generando = false
       this.notificar()
       this.persistirConversacion()

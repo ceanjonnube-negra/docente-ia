@@ -34,7 +34,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ClasificacionNivel0 } from '../clasificadorNivel0'
 import type { SesionContexto } from '../sesionContexto'
+import type { CampoAlumnoCorregible, DiferenciaAlumno } from './tipos'
 import {
+  aplicarCorreccionAlumno,
   asistenciaGrupoResumen,
   calcularPorcentajeAsistencia,
   consultarAsistenciaAlumno,
@@ -43,6 +45,7 @@ import {
   incidenciasAlumno,
   necesidadesApoyoGrupo,
   periodosEvaluacionDelCiclo,
+  validarValorCampoAlumno,
   type ConteoAsistencia,
   type PeriodoEvaluacion,
 } from '../motorContexto'
@@ -63,6 +66,11 @@ export type ContextoEjecucionHerramienta = {
   // app/api/chat/route.ts), 'text'/undefined en cualquier otro caso.
   // Las herramientas existentes no lo usan — campo opcional, aditivo.
   canal?: 'voice' | 'text'
+  // Solo para corregir_dato_alumno — id real de la conversación
+  // (ver contexto.conversacionId en app/api/chat/route.ts), para que
+  // la trazabilidad en correcciones_alumno pueda enlazarla cuando
+  // exista. Opcional/aditivo, ninguna otra Herramienta lo usa.
+  conversacionId?: string | null
 }
 
 type DisponibilidadHerramienta = { listo: true } | { listo: false; mensaje: string }
@@ -531,11 +539,139 @@ const herramientaConsultarDatoAlumno = definir({
   },
 })
 
+// --- Corrección individual de un dato de alumno (PASO 2 — ver
+// "corrección individual segura de UN campo de UN alumno") ---
+//
+// Cubre las 3 sub-acciones que ya resuelve el Clasificador de Nivel 0
+// (regla 22/22.1): 'proponer' (primera vez, nunca escribe — solo
+// compara y presenta), 'confirmar' (ya se mostró la propuesta y el
+// docente la aprobó — aquí SÍ se escribe, vía aplicarCorreccionAlumno,
+// que ya hace verificación real antes/después y la trazabilidad) y
+// 'cancelar' (no se toca nada). Reutiliza sin duplicar:
+// contextoAlumno/contexto_alumno (mismo RPC ya usado por
+// consultar_dato_alumno/ficha_descriptiva) y
+// validarValorCampoAlumno/aplicarCorreccionAlumno (lib/motorContexto.ts).
+const ETIQUETA_CAMPO_ALUMNO_CORREGIR: Record<CampoAlumnoCorregible, string> = {
+  curp: 'CURP',
+  sexo: 'sexo',
+  fecha_nacimiento: 'fecha de nacimiento',
+}
+
+type ResultadoCorregirDatoAlumno =
+  | { tipo: 'invalido'; motivo: string }
+  | { tipo: 'sin_cambios'; nombre: string; campo: CampoAlumnoCorregible; valor: string }
+  | { tipo: 'propuesta'; diferencia: DiferenciaAlumno }
+  | { tipo: 'aplicado'; nombre: string; campo: CampoAlumnoCorregible; valorNuevo: string }
+  | { tipo: 'error_aplicar'; error: string }
+  | { tipo: 'cancelado'; nombre: string }
+
+const herramientaCorregirDatoAlumno = definir({
+  intent: 'corregir_dato_alumno',
+  puedeEjecutar: (clasificacion, ctx) => {
+    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
+    if (clasificacion.accion_correccion_alumno === 'cancelar') return { listo: true }
+    if (!clasificacion.campo_alumno_corregir) return { listo: false, mensaje: '¿Qué dato necesitas corregir — CURP, sexo o fecha de nacimiento?' }
+    if (!clasificacion.valor_alumno_propuesto) return { listo: false, mensaje: '¿Cuál es el valor correcto?' }
+    if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para hacer esta corrección.' }
+    if (clasificacion.accion_correccion_alumno === 'confirmar' && !ctx.userId) {
+      return { listo: false, mensaje: 'No pude identificar tu sesión para hacer esta corrección.' }
+    }
+    return { listo: true }
+  },
+  ejecutar: async (clasificacion, ctx): Promise<ResultadoHerramientaModulo<ResultadoCorregirDatoAlumno>> => {
+    const alumnoId = clasificacion.entidades_resueltas.alumno_id!
+    const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+    const accion = clasificacion.accion_correccion_alumno
+
+    if (accion === 'cancelar') {
+      return { exito: true, datos: { tipo: 'cancelado', nombre } }
+    }
+
+    const campo = clasificacion.campo_alumno_corregir!
+    // Validación de FORMATO — nunca reconstruye ni completa el valor,
+    // solo lo rechaza si es evidentemente inválido (ver
+    // lib/motorContexto.ts, misma función usada aquí y en la
+    // confirmación, para que ambos caminos apliquen exactamente la
+    // misma regla).
+    const validacion = validarValorCampoAlumno(campo, clasificacion.valor_alumno_propuesto!)
+    if (!validacion.valido) {
+      return { exito: true, datos: { tipo: 'invalido', motivo: validacion.motivo } }
+    }
+
+    if (accion === 'confirmar') {
+      // Escritura real — verificación antes/después y trazabilidad ya
+      // resueltas dentro de aplicarCorreccionAlumno; esta Herramienta
+      // nunca hace su propio UPDATE.
+      const resultado = await aplicarCorreccionAlumno(ctx.sb, ctx.userId!, alumnoId, campo, validacion.valorNormalizado, {
+        tipo: 'texto',
+        conversacionId: ctx.conversacionId ?? null,
+        mensajeId: null,
+      })
+      if (!resultado.exito) return { exito: true, datos: { tipo: 'error_aplicar', error: resultado.error } }
+      if (resultado.sinCambios) return { exito: true, datos: { tipo: 'sin_cambios', nombre, campo, valor: resultado.valorNuevo } }
+      return { exito: true, datos: { tipo: 'aplicado', nombre, campo, valorNuevo: resultado.valorNuevo } }
+    }
+
+    // accion === 'proponer' — solo comparar y presentar, NUNCA escribir.
+    let contextoReal: unknown
+    try {
+      contextoReal = await contextoAlumno(ctx.sb, alumnoId, ctx.sesion.ciclo_escolar_id!)
+    } catch (e) {
+      console.error('[HERRAMIENTA] corregir_dato_alumno — fallo consultando el valor actual:', e)
+      return { exito: false, error: 'No fue posible consultar el dato actual del alumno' }
+    }
+    const datosPersonales = ((contextoReal as { datos_personales?: DatosPersonalesAlumno })?.datos_personales ?? {}) as DatosPersonalesAlumno
+    const valorActualCrudo = datosPersonales[campo]
+    const valorActual = typeof valorActualCrudo === 'string' && valorActualCrudo.trim() ? valorActualCrudo : null
+
+    if (valorActual === validacion.valorNormalizado) {
+      return { exito: true, datos: { tipo: 'sin_cambios', nombre, campo, valor: validacion.valorNormalizado } }
+    }
+
+    const diferencia: DiferenciaAlumno = {
+      alumnoId,
+      alumnoNombre: nombre,
+      campo,
+      valorActual,
+      valorNuevo: validacion.valorNormalizado,
+      fuente: 'texto',
+    }
+    return { exito: true, datos: { tipo: 'propuesta', diferencia } }
+  },
+  formatearRespuesta: (datos: ResultadoCorregirDatoAlumno) => {
+    if (datos.tipo === 'invalido') {
+      return `Ese valor no tiene el formato correcto: ${datos.motivo}. Revísalo y vuelve a intentarlo — no voy a guardar nada hasta que sea válido.`
+    }
+    if (datos.tipo === 'cancelado') {
+      return `De acuerdo, no hice ningún cambio en los datos de ${datos.nombre}.`
+    }
+    if (datos.tipo === 'sin_cambios') {
+      return `Ese valor ya coincide con el registrado — ${datos.nombre} ya tiene ${ETIQUETA_CAMPO_ALUMNO_CORREGIR[datos.campo]} = ${datos.valor}. No hice ningún cambio.`
+    }
+    if (datos.tipo === 'error_aplicar') {
+      return `No fue posible aplicar la corrección: ${datos.error}. Intenta de nuevo.`
+    }
+    if (datos.tipo === 'aplicado') {
+      return `Listo. Corregí ${ETIQUETA_CAMPO_ALUMNO_CORREGIR[datos.campo]} de ${datos.nombre}: ahora es ${datos.valorNuevo}.`
+    }
+    // tipo === 'propuesta' — NUNCA se escribió nada todavía; el
+    // marcador técnico va pegado al final (invisible para el docente,
+    // ver motorTextoClaude.ts) para que la burbuja muestre los botones
+    // Corregir/Cancelar — mismo patrón ya usado por
+    // [[NAVEGACION:...]]/datosAccionCalendario.
+    const d = datos.diferencia
+    const marcador = `[[CORRECCION_ALUMNO:${Buffer.from(JSON.stringify(d), 'utf-8').toString('base64')}]]`
+    const actualTexto = d.valorActual ?? '(no registrado)'
+    return `Alumno: ${d.alumnoNombre}\nCampo: ${ETIQUETA_CAMPO_ALUMNO_CORREGIR[d.campo]}\nActual: ${actualTexto}\nNuevo: ${d.valorNuevo}\nFuente: texto del docente\n\n¿Confirmas la corrección?\n${marcador}`
+  },
+})
+
 const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_asistencia: herramientaConsultarAsistencia,
   consultar_asistencia_grupo: herramientaConsultarAsistenciaGrupo,
   consultar_incidencias_alumno: herramientaConsultarIncidencias,
   consultar_dato_alumno: herramientaConsultarDatoAlumno,
+  corregir_dato_alumno: herramientaCorregirDatoAlumno,
   consultar_apoyo: herramientaConsultarApoyo,
   consultar_documentos: herramientaConsultarDocumentos,
   planeacion_consultar: herramientaConsultarPlaneaciones,

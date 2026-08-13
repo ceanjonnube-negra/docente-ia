@@ -1025,7 +1025,7 @@ export default function AsistentePanel() {
                         <button
                           key={accion.id}
                           type="button"
-                          onClick={() => m.datosAccionNavegacion ? asistente.confirmarNavegacion(m.id) : asistente.confirmarAccionCalendario(m.id, accion.id)}
+                          onClick={() => m.datosAccionNavegacion ? asistente.confirmarNavegacion(m.id) : m.datosAccionAlumno ? asistente.confirmarCorreccionAlumno(m.id, accion.id) : asistente.confirmarAccionCalendario(m.id, accion.id)}
                           disabled={asistente.generando}
                           className={
                             accion.estilo === 'primario'

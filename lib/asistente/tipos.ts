@@ -99,6 +99,31 @@ export type DiferenciaCalendario = {
   motivo: string
 }
 
+// Corrección individual de UN campo de UN alumno desde el Chat IA —
+// ver "PASO 2: corrección individual segura". Por ahora acotado a los
+// 3 campos ya soportados por la trazabilidad real (ver migración
+// correcciones_alumno) y por consultar_dato_alumno de solo lectura;
+// ampliar esta lista requiere tocar también esos dos lugares a la vez,
+// nunca solo uno.
+export type CampoAlumnoCorregible = 'curp' | 'sexo' | 'fecha_nacimiento'
+
+// Propuesta de corrección detectada — comparación 100% determinista
+// (nunca decidida por el modelo) entre el valor real ya consultado en
+// Supabase (valorActual) y el valor que el docente propuso en el
+// mensaje o que el asistente extrajo de un turno anterior confirmado
+// (ver lib/asistente/herramientasModulo.ts). `fuente` en esta fase
+// SIEMPRE es 'texto' (el docente lo escribió/dijo él mismo) — otras
+// fuentes (imagen, documento) se agregan en una fase posterior, no
+// aquí.
+export type DiferenciaAlumno = {
+  alumnoId: string
+  alumnoNombre: string
+  campo: CampoAlumnoCorregible
+  valorActual: string | null
+  valorNuevo: string
+  fuente: 'texto'
+}
+
 export type MensajeConversacion = {
   id: string
   rol: RolMensaje
@@ -148,6 +173,11 @@ export type MensajeConversacion = {
   // AccionNavegacion.automatica). Igual que datosAccionCalendario,
   // viaja pegada al mensaje.
   datosAccionNavegacion?: AccionNavegacion
+  // Corrección de dato de alumno pendiente de confirmar con los
+  // botones "Corregir"/"Cancelar" — mismo criterio que
+  // datosAccionCalendario/datosAccionNavegacion: viaja pegada al
+  // mensaje, nunca a un "proceso activo" en el servidor.
+  datosAccionAlumno?: DiferenciaAlumno
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
@@ -230,7 +260,7 @@ export type EventoMotor =
   // app/api/chat/route.ts) — AsistenteService lo usa como señal para
   // recargar EstadoAsistente.perfil, la única fuente que consumen el
   // menú lateral, /dashboard/inicio y el resto de la interfaz.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; perfilActualizado?: boolean }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
