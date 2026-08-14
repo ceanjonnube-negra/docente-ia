@@ -324,7 +324,24 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId } = await req.json()
+
+  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver "capturar en vivo el
+  // request real del iPhone para el desvío de comparación de CURP") —
+  // solo corre cuando el cliente manda debugRequestId (opt-in por
+  // request, nunca automático) Y estamos fuera de Production (doble
+  // compuerta: aunque esta rama se fusione sin retirar el diagnóstico,
+  // en Production se autodesactiva). Registra ÚNICAMENTE lo del mensaje
+  // de ESTE request — nunca el roster completo ni datos de otros
+  // alumnos. Retirar este bloque completo (y el parámetro
+  // debugRequestId aquí y en motorTextoClaude.ts/AsistenteService.ts)
+  // cuando termine el diagnóstico.
+  const diagnosticoCurpActivo = !!debugRequestId && process.env.VERCEL_ENV !== 'production'
+  function logDiagnosticoCurp(etapa: string, datos: Record<string, unknown>) {
+    if (!diagnosticoCurpActivo) return
+    console.log(`[DIAGNOSTICO_CURP][servidor][${debugRequestId}] ${etapa}`, datos)
+  }
+  logDiagnosticoCurp('mensaje recibido', { longitud: typeof mensaje === 'string' ? mensaje.length : null, texto: mensaje })
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -830,6 +847,17 @@ export async function POST(req: NextRequest) {
       console.log(
         `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id}`
       )
+      logDiagnosticoCurp('clasificación Nivel 0 completa', {
+        intencion_principal: clasificacion.intencion_principal,
+        accion_correccion_alumno: clasificacion.accion_correccion_alumno,
+        modo_operacion_alumno: clasificacion.modo_operacion_alumno,
+        alumno_id: clasificacion.entidades_resueltas.alumno_id,
+        alumno_detectado: clasificacion.entidades_resueltas.alumno_nombre_detectado,
+        campo_alumno_corregir: clasificacion.campo_alumno_corregir,
+        campo_alumno_solicitado: clasificacion.campo_alumno_solicitado,
+        valor_alumno_propuesto: clasificacion.valor_alumno_propuesto,
+        datos_faltantes: clasificacion.datos_faltantes,
+      })
 
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.
@@ -892,6 +920,9 @@ export async function POST(req: NextRequest) {
           console.log(`[IMAGEN][DISPATCHER] ${clasificacion.intencion_principal} coincidió con una Herramienta, pero hay ${cantidadImagenesAdjuntas} imagen(es) este turno — se inyecta como contexto real y se deja pasar al modelo grande en vez de responder directo`)
           contextoEnriquecido += `\n\nDATOS REALES YA CONSULTADOS PARA ESTE TURNO (usa esto junto con la imagen adjunta — nunca inventes ni ignores ninguno de los dos):\n${respuestaDeModulo}`
         } else {
+          logDiagnosticoCurp('herramienta de módulo ejecutada — respuesta directa', {
+            intencion_principal: clasificacion.intencion_principal,
+          })
           return respuestaTexto(respuestaDeModulo)
         }
       }
@@ -1249,9 +1280,11 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       console.error('Error en Clasificador de Nivel 0, continuando con flujo normal:', e)
+      logDiagnosticoCurp('error en el bloque Nivel 0', { error: e instanceof Error ? e.message : String(e) })
     }
   }
   // --- Fin Clasificador de Nivel 0 ---
+  logDiagnosticoCurp('fin del bloque Nivel 0 sin respuesta directa — continúa al flujo normal/Nivel 4', {})
 
   // RESTRICCIÓN ESTRUCTURAL DE FUENTES (ver "Prohibir afirmaciones de
   // capacidades inexistentes — arquitectura, no filtro de texto"): en

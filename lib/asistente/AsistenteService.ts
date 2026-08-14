@@ -1393,6 +1393,27 @@ class AsistenteServiceImpl {
     const limpio = texto.trim()
     if (!limpio || this.generando) return
 
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver "capturar en vivo el
+    // request real del iPhone para el desvío de comparación de CURP") —
+    // SOLO fuera de Production (Vercel expone NEXT_PUBLIC_VERCEL_ENV
+    // también en el bundle del cliente para esto mismo). No cambia
+    // ningún guard ni ninguna decisión de enrutamiento — únicamente
+    // observa y correlaciona con /api/chat vía debugRequestId. Retirar
+    // este bloque completo (y el parámetro debugRequestId en
+    // motorTextoClaude.ts/route.ts) cuando termine el diagnóstico.
+    const diagnosticoActivo = process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production'
+    const debugRequestId = diagnosticoActivo ? `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : undefined
+    if (diagnosticoActivo) {
+      console.log('[DIAGNOSTICO_CURP][cliente] antes de cualquier guard', {
+        debugRequestId,
+        textoOriginal: limpio,
+        tieneAdjunto: !!adjunto,
+        canal: canal ?? 'texto',
+        materialVisualActivoPresente: !!this.materialVisualActivo,
+        documentoActivoPresente: !!this.documentoActivo,
+      })
+    }
+
     // Vista inicial (sin conversación seleccionada): escribir el primer
     // mensaje ES la acción que crea la conversación nueva — ver
     // ARQUITECTURA: "al crear una conversación nueva: 1. crear un nuevo
@@ -1533,8 +1554,23 @@ class AsistenteServiceImpl {
     // latencia de Supabase (ver persistirMensajeRemoto).
     this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
 
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ver nota al inicio de este
+    // método. Este es el punto de "camino normal" (ningún guard
+    // determinista interceptó el mensaje): registra el texto EXACTO que
+    // está a punto de salir por fetch, con el mismo debugRequestId de
+    // arriba para poder correlacionarlo con el log del servidor.
+    if (diagnosticoActivo) {
+      console.log('[DIAGNOSTICO_CURP][cliente] justo antes de enviarTexto/fetch', {
+        debugRequestId,
+        textoFinal: limpio,
+      })
+    }
+
     try {
-      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug)
+      // Cast puntual (as any) SOLO para poder pasar debugRequestId sin
+      // ampliar la interfaz MotorConversacional — es instrumentación
+      // temporal, se retira junto con el resto de este bloque.
+      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, debugRequestId)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

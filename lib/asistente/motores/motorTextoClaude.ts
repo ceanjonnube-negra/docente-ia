@@ -143,7 +143,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -179,6 +179,17 @@ export class MotorTextoClaude implements MotorConversacional {
       // como un documento, nunca menos.
       temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes || regenerarImagen ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver AsistenteService.
+      // enviarMensaje) — mismo debugRequestId, punto real donde sale el
+      // fetch. Retirar junto con el resto de este diagnóstico.
+      if (debugRequestId && process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production') {
+        console.log('[DIAGNOSTICO_CURP][cliente] fetch real a /api/chat', {
+          debugRequestId,
+          url: '/api/chat',
+          textoEnviado: texto,
+        })
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,6 +198,7 @@ export class MotorTextoClaude implements MotorConversacional {
           historial: this.historial,
           contexto: contextoTexto,
           institucionId: perfil?.institucion_id || null,
+          debugRequestId: debugRequestId || undefined,
           imagenBase64: adjunto?.base64 || null,
           imagenTipo: adjunto?.tipo || null,
           nombreArchivo: adjunto?.nombreArchivo || null,
