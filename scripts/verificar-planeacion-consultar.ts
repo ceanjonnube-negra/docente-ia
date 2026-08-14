@@ -219,6 +219,7 @@ function clasificacion(overrides: Partial<ClasificacionNivel0> = {}): Clasificac
     estado_asistencia_solicitado: null,
     campo_alumno_solicitado: null,
     accion_correccion_alumno: null,
+    modo_operacion_alumno: null,
     campo_alumno_corregir: null,
     valor_alumno_propuesto: null,
     pestana_lista: null,

@@ -561,6 +561,13 @@ type ResultadoCorregirDatoAlumno =
   | { tipo: 'invalido'; motivo: string }
   | { tipo: 'sin_cambios'; nombre: string; campo: CampoAlumnoCorregible; valor: string }
   | { tipo: 'propuesta'; diferencia: DiferenciaAlumno }
+  // Ver "cerrar el hueco: comparar nunca debe poder ofrecer el botón
+  // Corregir" (regla 22.2 / modo_operacion_alumno="comparar") — SOLO
+  // LECTURA: consulta, valida y compara, pero jamás construye una
+  // DiferenciaAlumno ni el marcador [[CORRECCION_ALUMNO:...]], sin
+  // importar si el valor coincide, difiere, o (ese caso ya lo cubre
+  // 'invalido' arriba, igual en ambos modos) es inválido.
+  | { tipo: 'comparacion'; nombre: string; campo: CampoAlumnoCorregible; valorActual: string | null; valorProporcionado: string; coincide: boolean }
   | { tipo: 'aplicado'; nombre: string; campo: CampoAlumnoCorregible; valorNuevo: string }
   | { tipo: 'error_aplicar'; error: string }
   | { tipo: 'cancelado'; nombre: string }
@@ -599,6 +606,14 @@ const herramientaCorregirDatoAlumno = definir({
     }
 
     if (accion === 'confirmar') {
+      // Segunda barrera (nunca debería dispararse: regla 22.2 nunca
+      // genera un marcador confirmable, y regla 22.1 solo confirma
+      // sobre ESE marcador exacto) — pero nunca se confía únicamente en
+      // que el clasificador jamás combine 'confirmar' con modo
+      // 'comparar'; se bloquea también aquí, en el punto de escritura.
+      if (clasificacion.modo_operacion_alumno === 'comparar') {
+        return { exito: true, datos: { tipo: 'invalido', motivo: 'Esto era una comparación de solo lectura, no una corrección pendiente de confirmar' } }
+      }
       // Escritura real — verificación antes/después y trazabilidad ya
       // resueltas dentro de aplicarCorreccionAlumno; esta Herramienta
       // nunca hace su propio UPDATE.
@@ -624,6 +639,20 @@ const herramientaCorregirDatoAlumno = definir({
     const valorActualCrudo = datosPersonales[campo]
     const valorActual = typeof valorActualCrudo === 'string' && valorActualCrudo.trim() ? valorActualCrudo : null
 
+    // modo_operacion_alumno="comparar" (regla 22.2) — CONSULTAR →
+    // VALIDAR → COMPARAR → INFORMAR, estrictamente. Corta aquí, ANTES
+    // de construir cualquier DiferenciaAlumno/marcador: sin importar si
+    // el valor coincide o difiere del registrado, nunca se ofrece
+    // confirmación ni botón Corregir — esa es la única diferencia con
+    // modo_operacion_alumno="corregir" (regla 22), que si difiere SÍ
+    // continúa hacia la propuesta confirmable de abajo.
+    if (clasificacion.modo_operacion_alumno === 'comparar') {
+      return {
+        exito: true,
+        datos: { tipo: 'comparacion', nombre, campo, valorActual, valorProporcionado: validacion.valorNormalizado, coincide: valorActual === validacion.valorNormalizado },
+      }
+    }
+
     if (valorActual === validacion.valorNormalizado) {
       return { exito: true, datos: { tipo: 'sin_cambios', nombre, campo, valor: validacion.valorNormalizado } }
     }
@@ -648,6 +677,14 @@ const herramientaCorregirDatoAlumno = definir({
     if (datos.tipo === 'sin_cambios') {
       return `Ese valor ya coincide con el registrado — ${datos.nombre} ya tiene ${ETIQUETA_CAMPO_ALUMNO_CORREGIR[datos.campo]} = ${datos.valor}. No hice ningún cambio.`
     }
+    if (datos.tipo === 'comparacion') {
+      const etiqueta = ETIQUETA_CAMPO_ALUMNO_CORREGIR[datos.campo]
+      const actualTexto = datos.valorActual ?? '(no registrado)'
+      if (datos.coincide) {
+        return `Comparé la ${etiqueta} de ${datos.nombre}: el valor que me diste (${datos.valorProporcionado}) coincide exactamente con el registrado (${actualTexto}). No hice ningún cambio.`
+      }
+      return `Comparé la ${etiqueta} de ${datos.nombre}:\n${etiqueta} registrada: ${actualTexto}\nValor proporcionado: ${datos.valorProporcionado}\n\nDifieren. No hice ningún cambio — si quieres que corrija el dato, dímelo explícitamente (por ejemplo: "corrige la ${etiqueta} de ${datos.nombre} a ${datos.valorProporcionado}").`
+    }
     if (datos.tipo === 'error_aplicar') {
       return `No fue posible aplicar la corrección: ${datos.error}. Intenta de nuevo.`
     }
@@ -666,12 +703,34 @@ const herramientaCorregirDatoAlumno = definir({
   },
 })
 
+// --- Revisión interna de posibles errores en los datos de los alumnos
+// (ver "fallo: Chat IA niega poder editar datos de alumnos", regla 23
+// del Clasificador de Nivel 0) — TODAVÍA no existe la función real de
+// auditoría masiva (compararía cada alumno del grupo contra el formato
+// esperado y propondría correcciones una por una, igual que
+// corregir_dato_alumno pero en lote); eso queda para una siguiente
+// etapa. Esta Herramienta existe solo para que el chat responda con
+// HONESTIDAD cuando el maestro la pide — nunca simula haber revisado
+// nada, nunca inventa resultados — y le recuerda la vía que sí existe
+// hoy: corregir un dato puntual (regla 22) dándole el alumno y el
+// valor correcto. 100% determinista (nunca pasa por el modelo grande),
+// mismo criterio que el resto de este archivo.
+const herramientaRevisarDatosAlumnos = definir({
+  intent: 'revisar_datos_alumnos',
+  puedeEjecutar: () => ({ listo: true }),
+  ejecutar: async () => ({ exito: true, datos: null }),
+  formatearRespuesta: () =>
+    'Todavía no tengo una función para revisar automáticamente todos los datos de tus alumnos en busca de errores — esa función no está construida aún, así que no voy a decirte que ya la hice. ' +
+    'Lo que sí puedo hacer ahora mismo es corregir un dato puntual: dime el alumno y el valor correcto de su CURP, sexo o fecha de nacimiento, te muestro el dato actual registrado y, si lo confirmas, lo corrijo de verdad.',
+})
+
 const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_asistencia: herramientaConsultarAsistencia,
   consultar_asistencia_grupo: herramientaConsultarAsistenciaGrupo,
   consultar_incidencias_alumno: herramientaConsultarIncidencias,
   consultar_dato_alumno: herramientaConsultarDatoAlumno,
   corregir_dato_alumno: herramientaCorregirDatoAlumno,
+  revisar_datos_alumnos: herramientaRevisarDatosAlumnos,
   consultar_apoyo: herramientaConsultarApoyo,
   consultar_documentos: herramientaConsultarDocumentos,
   planeacion_consultar: herramientaConsultarPlaneaciones,
