@@ -27,7 +27,7 @@ import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/plan
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
-import type { AccionNavegacion } from '@/lib/asistente/tipos'
+import type { AccionNavegacion, TrazaDiagnosticoCurp } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -326,22 +326,57 @@ export async function POST(req: NextRequest) {
   console.log('[STREAM][chat] chatRequestIniciado=true')
   const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId } = await req.json()
 
-  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver "capturar en vivo el
-  // request real del iPhone para el desvío de comparación de CURP") —
-  // solo corre cuando el cliente manda debugRequestId (opt-in por
-  // request, nunca automático) Y estamos fuera de Production (doble
-  // compuerta: aunque esta rama se fusione sin retirar el diagnóstico,
-  // en Production se autodesactiva). Registra ÚNICAMENTE lo del mensaje
-  // de ESTE request — nunca el roster completo ni datos de otros
-  // alumnos. Retirar este bloque completo (y el parámetro
-  // debugRequestId aquí y en motorTextoClaude.ts/AsistenteService.ts)
-  // cuando termine el diagnóstico.
+  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
+  // roundtrip de comparación de CURP sin depender de vercel logs") — YA
+  // NO depende de vercel logs: la traza viaja de vuelta al cliente
+  // dentro de la propia respuesta HTTP, como un marcador técnico
+  // invisible (mismo mecanismo exacto que [[CORRECCION_ALUMNO:...]] /
+  // [[DOCUMENTO_ARCHIVO:...]] / [[NAVEGACION:...]], ver
+  // motorTextoClaude.ts) — el cliente lo extrae y lo quita ANTES de
+  // mostrar/guardar el mensaje, así nunca contamina Supabase ni el
+  // historial que se le manda al modelo en turnos posteriores. Solo
+  // corre cuando el cliente manda debugRequestId (opt-in por request,
+  // nunca automático) Y estamos fuera de Production (doble compuerta —
+  // este gate del servidor SÍ es confiable, VERCEL_ENV nunca se sustituye
+  // en build time como sí le pasaba al gate roto del cliente). SOLO
+  // indicadores técnicos — NUNCA el texto del mensaje, el nombre del
+  // alumno, la CURP ni el roster. Retirar este bloque completo (y el
+  // parámetro debugRequestId) cuando termine el diagnóstico.
   const diagnosticoCurpActivo = !!debugRequestId && process.env.VERCEL_ENV !== 'production'
-  function logDiagnosticoCurp(etapa: string, datos: Record<string, unknown>) {
-    if (!diagnosticoCurpActivo) return
-    console.log(`[DIAGNOSTICO_CURP][servidor][${debugRequestId}] ${etapa}`, datos)
+  const trazaDebug: TrazaDiagnosticoCurp = {
+    debugRequestId: debugRequestId || '',
+    resultado: 'ok',
+    etapa: 'mensaje recibido',
+    mensajeLongitud: typeof mensaje === 'string' ? mensaje.length : null,
+    intencionPrincipal: null,
+    accionCorreccionAlumno: null,
+    modoOperacionAlumno: null,
+    alumnoDetectado: null,
+    campo: null,
+    valorPropuestoPresente: null,
+    valorLongitud: null,
+    datosFaltantes: null,
+    herramientaEjecutada: null,
+    documentoPresente: null,
+    tamanoPayloadVisual: null,
+    imagenSeleccionada: null,
+    imagenPreparada: null,
+    imagenEnAsistente: null,
+    imagenEnMotor: null,
+    imagenEnFetch: null,
+    imagenRecibidaServidor: null,
+    imagenEntregadaVision: null,
+    statusHttp: null,
+    tipoError: null,
   }
-  logDiagnosticoCurp('mensaje recibido', { longitud: typeof mensaje === 'string' ? mensaje.length : null, texto: mensaje })
+  // Marcador técnico — mismo patrón exacto que los otros 3 marcadores ya
+  // existentes en este archivo (ver [[DOCUMENTO_ARCHIVO:...]] más abajo).
+  function marcadorDiagnostico(): string {
+    return `\n\n[[DIAGNOSTICO_CURP:${Buffer.from(JSON.stringify(trazaDebug), 'utf-8').toString('base64')}]]`
+  }
+  function conDiagnostico(texto: string): string {
+    return diagnosticoCurpActivo ? `${texto}${marcadorDiagnostico()}` : texto
+  }
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -805,6 +840,18 @@ export async function POST(req: NextRequest) {
   const requiereRegistroEscolar = tieneImagenAdjunta
   const cantidadImagenesAdjuntas = Array.isArray(imagenesBase64) ? imagenesBase64.length : (imagenBase64 ? 1 : 0)
 
+  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — checkpoint del lado servidor
+  // del pipeline visual (ver bloque de arriba). tieneImagenAdjunta ya es
+  // la MISMA señal que decide el resto del comportamiento real de la
+  // app — nunca se calcula distinto para el diagnóstico.
+  if (diagnosticoCurpActivo) {
+    trazaDebug.imagenRecibidaServidor = tieneImagenAdjunta
+    trazaDebug.imagenEntregadaVision = tieneImagenAdjunta
+    trazaDebug.tamanoPayloadVisual = imagenBase64
+      ? (typeof imagenBase64 === 'string' ? imagenBase64.length : null)
+      : (Array.isArray(imagenesBase64) ? imagenesBase64.reduce((acc: number, i: { base64?: string }) => acc + (i?.base64?.length || 0), 0) : null)
+  }
+
   // --- Clasificador de Nivel 0 — se llama SIEMPRE que hay sesión real,
   // sin ningún filtro de palabras clave delante (ver la nota de
   // arquitectura junto a los imports: ningún filtro local puede
@@ -847,39 +894,41 @@ export async function POST(req: NextRequest) {
       console.log(
         `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id}`
       )
-      logDiagnosticoCurp('clasificación Nivel 0 completa', {
-        intencion_principal: clasificacion.intencion_principal,
-        accion_correccion_alumno: clasificacion.accion_correccion_alumno,
-        modo_operacion_alumno: clasificacion.modo_operacion_alumno,
-        alumno_id: clasificacion.entidades_resueltas.alumno_id,
-        alumno_detectado: clasificacion.entidades_resueltas.alumno_nombre_detectado,
-        campo_alumno_corregir: clasificacion.campo_alumno_corregir,
-        campo_alumno_solicitado: clasificacion.campo_alumno_solicitado,
-        valor_alumno_propuesto: clasificacion.valor_alumno_propuesto,
-        datos_faltantes: clasificacion.datos_faltantes,
-      })
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
+      // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
+      if (diagnosticoCurpActivo) {
+        trazaDebug.etapa = 'clasificación Nivel 0 completa'
+        trazaDebug.intencionPrincipal = clasificacion.intencion_principal
+        trazaDebug.accionCorreccionAlumno = clasificacion.accion_correccion_alumno
+        trazaDebug.modoOperacionAlumno = clasificacion.modo_operacion_alumno
+        trazaDebug.alumnoDetectado = !!clasificacion.entidades_resueltas.alumno_id
+        trazaDebug.campo = clasificacion.campo_alumno_corregir ?? clasificacion.campo_alumno_solicitado
+        trazaDebug.valorPropuestoPresente = !!clasificacion.valor_alumno_propuesto
+        trazaDebug.valorLongitud = clasificacion.valor_alumno_propuesto ? clasificacion.valor_alumno_propuesto.length : null
+        trazaDebug.datosFaltantes = clasificacion.datos_faltantes
+      }
 
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.
       if (clasificacion.datos_faltantes.length > 0 || clasificacion.entidades_resueltas.alumno_ambiguo) {
         if (clasificacion.entidades_resueltas.alumno_ambiguo) {
           const opciones = clasificacion.entidades_resueltas.opciones_alumno_ambiguo.join(', ')
-          return respuestaTexto(`Tengo más de un alumno que coincide con ese nombre: ${opciones}. ¿A cuál te refieres?`)
+          return respuestaTexto(conDiagnostico(`Tengo más de un alumno que coincide con ese nombre: ${opciones}. ¿A cuál te refieres?`))
         }
         if (clasificacion.datos_faltantes.includes('alumno')) {
-          return respuestaTexto('¿De qué alumno se trata?')
+          return respuestaTexto(conDiagnostico('¿De qué alumno se trata?'))
         }
         if (clasificacion.datos_faltantes.includes('descripcion_incidencia')) {
-          return respuestaTexto('¿Qué fue lo que pasó exactamente?')
+          return respuestaTexto(conDiagnostico('¿Qué fue lo que pasó exactamente?'))
         }
         if (clasificacion.datos_faltantes.includes('fecha_o_duracion')) {
-          return respuestaTexto('¿Para cuántos días o qué fechas te gustaría esta planeación?')
+          return respuestaTexto(conDiagnostico('¿Para cuántos días o qué fechas te gustaría esta planeación?'))
         }
         if (clasificacion.datos_faltantes.includes('campo_alumno')) {
-          return respuestaTexto('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?')
+          return respuestaTexto(conDiagnostico('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?'))
         }
         if (clasificacion.datos_faltantes.includes('valor_alumno')) {
-          return respuestaTexto('¿Cuál es el valor correcto?')
+          return respuestaTexto(conDiagnostico('¿Cuál es el valor correcto?'))
         }
       }
 
@@ -920,10 +969,11 @@ export async function POST(req: NextRequest) {
           console.log(`[IMAGEN][DISPATCHER] ${clasificacion.intencion_principal} coincidió con una Herramienta, pero hay ${cantidadImagenesAdjuntas} imagen(es) este turno — se inyecta como contexto real y se deja pasar al modelo grande en vez de responder directo`)
           contextoEnriquecido += `\n\nDATOS REALES YA CONSULTADOS PARA ESTE TURNO (usa esto junto con la imagen adjunta — nunca inventes ni ignores ninguno de los dos):\n${respuestaDeModulo}`
         } else {
-          logDiagnosticoCurp('herramienta de módulo ejecutada — respuesta directa', {
-            intencion_principal: clasificacion.intencion_principal,
-          })
-          return respuestaTexto(respuestaDeModulo)
+          if (diagnosticoCurpActivo) {
+            trazaDebug.etapa = 'herramienta de módulo ejecutada — respuesta directa'
+            trazaDebug.herramientaEjecutada = clasificacion.intencion_principal
+          }
+          return respuestaTexto(conDiagnostico(respuestaDeModulo))
         }
       }
 
@@ -1280,11 +1330,19 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       console.error('Error en Clasificador de Nivel 0, continuando con flujo normal:', e)
-      logDiagnosticoCurp('error en el bloque Nivel 0', { error: e instanceof Error ? e.message : String(e) })
+      if (diagnosticoCurpActivo) {
+        trazaDebug.etapa = 'error en el bloque Nivel 0'
+        trazaDebug.resultado = 'error'
+        trazaDebug.tipoError = e instanceof Error ? e.name : 'desconocido'
+      }
     }
   }
   // --- Fin Clasificador de Nivel 0 ---
-  logDiagnosticoCurp('fin del bloque Nivel 0 sin respuesta directa — continúa al flujo normal/Nivel 4', {})
+  if (diagnosticoCurpActivo && trazaDebug.etapa === 'clasificación Nivel 0 completa') {
+    // Solo actualiza la etapa si nada más concluyente ya la cambió
+    // (herramienta ejecutada o error) — evita pisar información útil.
+    trazaDebug.etapa = 'fin del bloque Nivel 0 sin respuesta directa — continúa al flujo normal/Nivel 4'
+  }
 
   // RESTRICCIÓN ESTRUCTURAL DE FUENTES (ver "Prohibir afirmaciones de
   // capacidades inexistentes — arquitectura, no filtro de texto"): en
@@ -2114,6 +2172,15 @@ Grado: [grado] | Grupo: [grupo]
           }
         }
         console.log(`[STREAM][chat] eventoFinalEnviado=true cantidadAdjuntos=${cantidadAdjuntos} duracionTotalMs=${Date.now() - inicioRequestMs}`)
+        // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — mismo marcador que la
+        // ruta determinista de arriba, aplicado aquí al streaming de
+        // Claude (Nivel 4 / turnos con imagen) — mismo mecanismo exacto
+        // que ya usa [[DOCUMENTO_ARCHIVO:...]] unas líneas arriba.
+        if (diagnosticoCurpActivo) {
+          trazaDebug.etapa = 'streaming Nivel 4 completado'
+          trazaDebug.herramientaEjecutada = trazaDebug.herramientaEjecutada ?? 'conversacion_general_o_nivel4'
+          controller.enqueue(encoder.encode(marcadorDiagnostico()))
+        }
       } catch (err) {
         // Ya se había empezado a mandar texto plano — no se puede
         // convertir esto en un JSON de error a estas alturas.

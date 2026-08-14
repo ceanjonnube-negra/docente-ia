@@ -58,6 +58,7 @@ import type {
   Herramienta,
   MensajeConversacion,
   MotorConversacional,
+  TrazaDiagnosticoCurp,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
@@ -111,6 +112,14 @@ export type EstadoAsistente = {
   // la conexión tiene éxito. Quitar junto con AsistentePanel cuando ya
   // no haga falta diagnosticar en el propio dispositivo.
   diagnosticoArranqueVoz: DiagnosticoArranqueVoz | null
+  // Panel técnico TEMPORAL (ver "diagnóstico roundtrip de comparación de
+  // CURP sin depender de vercel logs") — mismo criterio exacto que
+  // diagnosticoArranqueVoz: solo se llena cuando el propio cliente
+  // generó un debugRequestId (gate NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO),
+  // nunca en uso normal. Se reinicia a null al inicio de cada
+  // enviarMensaje (ver ese método) para que cada turno muestre solo su
+  // propia traza. Quitar junto con el resto del diagnóstico.
+  diagnosticoTecnico: TrazaDiagnosticoCurp | null
   // Registro paso a paso de la última conexión de voz — solo lo renderiza
   // AsistentePanel cuando la URL trae ?voiceDebug=1 (ver ese archivo).
   // Siempre se llena (barato), independientemente de si el panel de
@@ -215,6 +224,7 @@ class AsistenteServiceImpl {
   private avisoVoz: string | null = null
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private diagnosticoArranqueVoz: DiagnosticoArranqueVoz | null = null
+  private diagnosticoTecnico: TrazaDiagnosticoCurp | null = null
   private debugVoz: PasoDebugVoz[] = []
   private estadoEscucha: 'escuchando' | 'hablando' | null = null
   private avisoGeneracion: string | null = null
@@ -387,6 +397,7 @@ class AsistenteServiceImpl {
       modoVoz: this.modoVoz,
       avisoVoz: this.avisoVoz,
       diagnosticoArranqueVoz: this.diagnosticoArranqueVoz,
+      diagnosticoTecnico: this.diagnosticoTecnico,
       debugVoz: this.debugVoz,
       estadoEscucha: this.estadoEscucha,
       avisoGeneracion: this.avisoGeneracion,
@@ -1377,6 +1388,10 @@ class AsistenteServiceImpl {
         this.diagnosticoArranqueVoz = evento.datos
         this.notificar()
         break
+      case 'diagnostico-curp':
+        this.diagnosticoTecnico = evento.datos
+        this.notificar()
+        break
       case 'estado-escucha':
         this.estadoEscucha = evento.estado
         this.notificar()
@@ -1393,26 +1408,20 @@ class AsistenteServiceImpl {
     const limpio = texto.trim()
     if (!limpio || this.generando) return
 
-    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver "capturar en vivo el
-    // request real del iPhone para el desvío de comparación de CURP") —
-    // SOLO fuera de Production (Vercel expone NEXT_PUBLIC_VERCEL_ENV
-    // también en el bundle del cliente para esto mismo). No cambia
-    // ningún guard ni ninguna decisión de enrutamiento — únicamente
-    // observa y correlaciona con /api/chat vía debugRequestId. Retirar
-    // este bloque completo (y el parámetro debugRequestId en
-    // motorTextoClaude.ts/route.ts) cuando termine el diagnóstico.
-    const diagnosticoActivo = process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production'
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
+    // roundtrip de comparación de CURP sin depender de vercel logs") —
+    // gate FAIL-CLOSED: solo activo si NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO
+    // === '1' exactamente (ausente/undefined/vacío/'0'/cualquier otro
+    // valor = INACTIVO). Corrige el gate anterior (NEXT_PUBLIC_VERCEL_ENV,
+    // nunca expuesto en el build de este proyecto — quedaba siempre
+    // activo). No cambia ningún guard ni ninguna decisión de enrutamiento
+    // — únicamente genera el id que motorTextoClaude.ts/route.ts usan
+    // para correlacionar la traza que vuelve dentro de la respuesta.
+    // Retirar este bloque (y diagnosticoTecnico/el caso
+    // 'diagnostico-curp' más abajo) cuando termine el diagnóstico.
+    const diagnosticoActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1'
     const debugRequestId = diagnosticoActivo ? `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : undefined
-    if (diagnosticoActivo) {
-      console.log('[DIAGNOSTICO_CURP][cliente] antes de cualquier guard', {
-        debugRequestId,
-        textoOriginal: limpio,
-        tieneAdjunto: !!adjunto,
-        canal: canal ?? 'texto',
-        materialVisualActivoPresente: !!this.materialVisualActivo,
-        documentoActivoPresente: !!this.documentoActivo,
-      })
-    }
+    this.diagnosticoTecnico = null
 
     // Vista inicial (sin conversación seleccionada): escribir el primer
     // mensaje ES la acción que crea la conversación nueva — ver
@@ -1554,23 +1563,11 @@ class AsistenteServiceImpl {
     // latencia de Supabase (ver persistirMensajeRemoto).
     this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
 
-    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ver nota al inicio de este
-    // método. Este es el punto de "camino normal" (ningún guard
-    // determinista interceptó el mensaje): registra el texto EXACTO que
-    // está a punto de salir por fetch, con el mismo debugRequestId de
-    // arriba para poder correlacionarlo con el log del servidor.
-    if (diagnosticoActivo) {
-      console.log('[DIAGNOSTICO_CURP][cliente] justo antes de enviarTexto/fetch', {
-        debugRequestId,
-        textoFinal: limpio,
-      })
-    }
-
     try {
       // Cast puntual (as any) SOLO para poder pasar debugRequestId sin
       // ampliar la interfaz MotorConversacional — es instrumentación
       // temporal, se retira junto con el resto de este bloque.
-      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, debugRequestId)
+      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

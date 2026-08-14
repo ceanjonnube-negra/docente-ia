@@ -20,6 +20,7 @@ import type {
   FinalizarArchivoInfo,
   Herramienta,
   MotorConversacional,
+  TrazaDiagnosticoCurp,
 } from '../tipos'
 
 const detectarTipoDocumento = (texto: string): string => {
@@ -162,6 +163,53 @@ export class MotorTextoClaude implements MotorConversacional {
     // éxito o con un error real y accionable— y con el timeout del
     // fetch de abajo, lo mismo aplica a la llamada a /api/chat en sí.
     let temporizadorFetch: ReturnType<typeof setTimeout> | null = null
+
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
+    // roundtrip de comparación de CURP sin depender de vercel logs") —
+    // declarados ANTES del try para que el catch también pueda emitir la
+    // traza de fallo (debugRequestId/etapa/status/tipo de error) cuando
+    // la petición nunca llega a obtener respuesta del servidor. Gate
+    // FAIL-CLOSED: solo activo si NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO
+    // === '1' exactamente (ausente/undefined/vacío/'0'/cualquier otro
+    // valor = INACTIVO). Los 5 indicadores del pipeline visual que sí
+    // puede ver este archivo colapsan al mismo booleano (!!adjunto) — la
+    // selección y preparación reales del archivo ocurren en la pantalla
+    // de chat, fuera del alcance autorizado de este diagnóstico; aquí
+    // solo se confirma que el adjunto sigue presente en cada punto de
+    // paso. Retirar todo este bloque junto con el resto del diagnóstico.
+    const diagnosticoActivo = !!debugRequestId && process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1'
+    const camposClientePrevios: Pick<TrazaDiagnosticoCurp, 'imagenSeleccionada' | 'imagenPreparada' | 'imagenEnAsistente' | 'imagenEnMotor' | 'imagenEnFetch'> = {
+      imagenSeleccionada: !!adjunto,
+      imagenPreparada: !!adjunto,
+      imagenEnAsistente: !!adjunto,
+      imagenEnMotor: !!adjunto,
+      imagenEnFetch: !!adjunto,
+    }
+    function trazaFallo(etapa: string, extra: Partial<TrazaDiagnosticoCurp> = {}): TrazaDiagnosticoCurp {
+      return {
+        debugRequestId: debugRequestId || '',
+        resultado: 'error',
+        etapa,
+        mensajeLongitud: texto.length,
+        intencionPrincipal: null,
+        accionCorreccionAlumno: null,
+        modoOperacionAlumno: null,
+        alumnoDetectado: null,
+        campo: null,
+        valorPropuestoPresente: null,
+        valorLongitud: null,
+        datosFaltantes: null,
+        herramientaEjecutada: null,
+        documentoPresente: null,
+        tamanoPayloadVisual: null,
+        ...camposClientePrevios,
+        imagenRecibidaServidor: null,
+        imagenEntregadaVision: null,
+        statusHttp: null,
+        tipoError: null,
+        ...extra,
+      }
+    }
     try {
       const { user, session, perfil } = await conLimiteDeTiempo(
         obtenerPerfilYSesion(),
@@ -178,17 +226,6 @@ export class MotorTextoClaude implements MotorConversacional {
       // generar una imagen real con el proveedor puede tardar tanto
       // como un documento, nunca menos.
       temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes || regenerarImagen ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
-
-      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL (ver AsistenteService.
-      // enviarMensaje) — mismo debugRequestId, punto real donde sale el
-      // fetch. Retirar junto con el resto de este diagnóstico.
-      if (debugRequestId && process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production') {
-        console.log('[DIAGNOSTICO_CURP][cliente] fetch real a /api/chat', {
-          debugRequestId,
-          url: '/api/chat',
-          textoEnviado: texto,
-        })
-      }
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -255,6 +292,9 @@ export class MotorTextoClaude implements MotorConversacional {
         } catch {
           // el cuerpo no era JSON — se usa el mensaje genérico
         }
+        if (diagnosticoActivo) {
+          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('respuesta HTTP no exitosa', { statusHttp: res.status }) })
+        }
         this.emitir({ tipo: 'error', mensaje: mensajeError })
         return
       }
@@ -277,20 +317,34 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
-      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinCorreccionAlumno)
+      const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinCorreccionAlumno)
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — se extrae y se retira del
+      // texto ANTES de guardarEnHistorial, exactamente igual que los
+      // demás marcadores de arriba — nunca llega a Supabase ni al texto
+      // que ve el docente. Retirar junto con el resto del diagnóstico.
+      const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinPerfilActualizado)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado })
+      if (diagnosticoActivo && diagnosticoCurp) {
+        this.emitir({ tipo: 'diagnostico-curp', datos: { ...diagnosticoCurp, ...camposClientePrevios } })
+      }
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
         console.error('[CHAT] /api/chat no respondió dentro del tiempo límite — abortado automáticamente')
+        if (diagnosticoActivo) {
+          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('timeout de fetch — abortado automáticamente', { tipoError: 'AbortError' }) })
+        }
         this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
       }
       if (err instanceof ErrorLimiteDeTiempo) {
         console.error('[CHAT]', err.message)
+        if (diagnosticoActivo) {
+          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('timeout obteniendo la sesión del docente', { tipoError: 'ErrorLimiteDeTiempo' }) })
+        }
         this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
       }
@@ -305,8 +359,14 @@ export class MotorTextoClaude implements MotorConversacional {
       // problema de conexión que no existió.
       if (err instanceof Error && err.message === 'RESPUESTA_INTERRUMPIDA') {
         console.error('[CHAT] La respuesta se interrumpió a mitad de la transmisión')
+        if (diagnosticoActivo) {
+          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('streaming interrumpido a mitad de transmisión', { tipoError: 'RESPUESTA_INTERRUMPIDA' }) })
+        }
         this.emitir({ tipo: 'error', mensaje: 'La respuesta se interrumpió antes de terminar. Vuelve a pedir la planeación.' })
         return
+      }
+      if (diagnosticoActivo) {
+        this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('excepción no clasificada en enviarTexto', { tipoError: err instanceof Error ? err.name : 'desconocido' }) })
       }
       this.emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
     } finally {
@@ -475,6 +535,25 @@ export class MotorTextoClaude implements MotorConversacional {
     const match = respuesta.match(/\[\[PERFIL_ACTUALIZADO\]\]/)
     if (!match) return { texto: respuesta, perfilActualizado: false }
     return { texto: respuesta.replace(match[0], '').trim(), perfilActualizado: true }
+  }
+
+  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
+  // roundtrip de comparación de CURP sin depender de vercel logs") —
+  // mismo patrón exacto que los demás marcadores de arriba: el docente
+  // NUNCA ve esta línea ni queda persistida (se extrae antes de
+  // guardarEnHistorial, ver enviarTexto). Quitar este método junto con
+  // el resto del diagnóstico.
+  private procesarMarcadorDeDiagnosticoCurp(respuesta: string): { texto: string; diagnosticoCurp?: TrazaDiagnosticoCurp } {
+    const match = respuesta.match(/\[\[DIAGNOSTICO_CURP:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const diagnosticoCurp = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as TrazaDiagnosticoCurp
+      return { texto: respuesta.replace(match[0], '').trim(), diagnosticoCurp }
+    } catch {
+      return { texto: respuesta.replace(match[0], '').trim() }
+    }
   }
 
   // El modelo grande puede pedir continuar una tarea larga (varias fichas,

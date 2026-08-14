@@ -1188,6 +1188,48 @@ export default function AsistentePanel() {
             <p>DataChannel.readyState: {asistente.diagnosticoArranqueVoz.dataChannelState}</p>
           </div>
         )}
+        {/* Panel técnico TEMPORAL — ver "diagnóstico roundtrip de
+            comparación de CURP sin depender de vercel logs". Solo
+            aparece cuando NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO='1'
+            generó un debugRequestId para este turno (ver
+            AsistenteService.enviarMensaje) — nunca en uso normal.
+            Nunca muestra CURP completa, nombre del alumno, roster ni
+            contenido de imagen/documento, solo indicadores técnicos.
+            Quitar junto con diagnosticoTecnico cuando ya no haga
+            falta. */}
+        {asistente.diagnosticoTecnico && (
+          <details className="mb-2 w-full text-[11px] font-mono text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 whitespace-pre-wrap break-words">
+            <summary className="font-bold cursor-pointer">
+              🔧 Diagnóstico técnico ({asistente.diagnosticoTecnico.resultado}) — {asistente.diagnosticoTecnico.debugRequestId}
+            </summary>
+            <div className="mt-1 space-y-0.5">
+              <p>etapa: {asistente.diagnosticoTecnico.etapa}</p>
+              {asistente.diagnosticoTecnico.mensajeLongitud !== null && <p>mensaje_longitud: {asistente.diagnosticoTecnico.mensajeLongitud}</p>}
+              {asistente.diagnosticoTecnico.intencionPrincipal && <p>intención: {asistente.diagnosticoTecnico.intencionPrincipal}</p>}
+              {asistente.diagnosticoTecnico.accionCorreccionAlumno && <p>acción: {asistente.diagnosticoTecnico.accionCorreccionAlumno}</p>}
+              {asistente.diagnosticoTecnico.modoOperacionAlumno && <p>modo_operación: {asistente.diagnosticoTecnico.modoOperacionAlumno}</p>}
+              {asistente.diagnosticoTecnico.alumnoDetectado !== null && <p>alumno_detectado: {String(asistente.diagnosticoTecnico.alumnoDetectado)}</p>}
+              {asistente.diagnosticoTecnico.campo && <p>campo: {asistente.diagnosticoTecnico.campo}</p>}
+              {asistente.diagnosticoTecnico.valorPropuestoPresente !== null && <p>valor_propuesto_presente: {String(asistente.diagnosticoTecnico.valorPropuestoPresente)}</p>}
+              {asistente.diagnosticoTecnico.valorLongitud !== null && <p>valor_longitud: {asistente.diagnosticoTecnico.valorLongitud}</p>}
+              {asistente.diagnosticoTecnico.datosFaltantes && asistente.diagnosticoTecnico.datosFaltantes.length > 0 && (
+                <p>datos_faltantes: {asistente.diagnosticoTecnico.datosFaltantes.join(', ')}</p>
+              )}
+              {asistente.diagnosticoTecnico.herramientaEjecutada && <p>herramienta/rama: {asistente.diagnosticoTecnico.herramientaEjecutada}</p>}
+              <p>imagen_seleccionada: {String(asistente.diagnosticoTecnico.imagenSeleccionada)}</p>
+              <p>imagen_preparada: {String(asistente.diagnosticoTecnico.imagenPreparada)}</p>
+              <p>imagen_en_asistente: {String(asistente.diagnosticoTecnico.imagenEnAsistente)}</p>
+              <p>imagen_en_motor: {String(asistente.diagnosticoTecnico.imagenEnMotor)}</p>
+              <p>imagen_en_fetch: {String(asistente.diagnosticoTecnico.imagenEnFetch)}</p>
+              {asistente.diagnosticoTecnico.imagenRecibidaServidor !== null && <p>imagen_recibida_servidor: {String(asistente.diagnosticoTecnico.imagenRecibidaServidor)}</p>}
+              {asistente.diagnosticoTecnico.imagenEntregadaVision !== null && <p>imagen_entregada_vision: {String(asistente.diagnosticoTecnico.imagenEntregadaVision)}</p>}
+              {asistente.diagnosticoTecnico.documentoPresente !== null && <p>documento_presente: {String(asistente.diagnosticoTecnico.documentoPresente)}</p>}
+              {asistente.diagnosticoTecnico.tamanoPayloadVisual !== null && <p>tamaño_payload_visual: {asistente.diagnosticoTecnico.tamanoPayloadVisual} bytes(base64)</p>}
+              {asistente.diagnosticoTecnico.statusHttp !== null && <p>status HTTP: {asistente.diagnosticoTecnico.statusHttp}</p>}
+              {asistente.diagnosticoTecnico.tipoError && <p>tipo de error: {asistente.diagnosticoTecnico.tipoError}</p>}
+            </div>
+          </details>
+        )}
         {asistente.avisoGeneracion && (
           <button
             type="button"

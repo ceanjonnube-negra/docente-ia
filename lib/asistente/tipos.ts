@@ -277,6 +277,49 @@ export type EventoMotor =
   // depender de que alguien recuerde agregar el parámetro a la URL.
   // Quitar este panel (y esta variante) en cuanto deje de hacer falta.
   | { tipo: 'diagnostico-arranque-voz'; datos: DiagnosticoArranqueVoz }
+  // Panel técnico TEMPORAL (ver "diagnóstico roundtrip de comparación de
+  // CURP sin depender de vercel logs") — mismo criterio exacto que
+  // 'diagnostico-arranque-voz': solo se emite cuando el propio cliente
+  // generó un debugRequestId (gate NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO,
+  // ver AsistenteService.enviarMensaje) — nunca en uso normal. Quitar
+  // esta variante junto con el resto del diagnóstico.
+  | { tipo: 'diagnostico-curp'; datos: TrazaDiagnosticoCurp }
+
+// Todos los campos son indicadores técnicos listos para mostrarse tal
+// cual — NUNCA la CURP completa, el nombre del alumno, el roster ni el
+// contenido de una imagen/documento. Ver "diagnóstico roundtrip de
+// comparación de CURP" — quitar este tipo junto con el resto del
+// diagnóstico temporal.
+export type TrazaDiagnosticoCurp = {
+  debugRequestId: string
+  resultado: 'ok' | 'error'
+  etapa: string
+  // --- Servidor (null si resultado='error' y nunca llegó respuesta) ---
+  mensajeLongitud: number | null
+  intencionPrincipal: string | null
+  accionCorreccionAlumno: string | null
+  modoOperacionAlumno: string | null
+  alumnoDetectado: boolean | null
+  campo: string | null
+  valorPropuestoPresente: boolean | null
+  valorLongitud: number | null
+  datosFaltantes: string[] | null
+  herramientaEjecutada: string | null
+  documentoPresente: boolean | null
+  tamanoPayloadVisual: number | null
+  // --- Pipeline visual, por etapa (ver diseño — varias colapsan al
+  // mismo indicador dentro del alcance de archivos autorizado) ---
+  imagenSeleccionada: boolean | null
+  imagenPreparada: boolean | null
+  imagenEnAsistente: boolean | null
+  imagenEnMotor: boolean | null
+  imagenEnFetch: boolean | null
+  imagenRecibidaServidor: boolean | null
+  imagenEntregadaVision: boolean | null
+  // --- Solo si resultado='error' ---
+  statusHttp: number | null
+  tipoError: string | null
+}
 
 // Todos los campos son texto simple listos para mostrarse tal cual —
 // nunca tokens ni claves reales, solo etapas/estados/códigos/mensajes.
