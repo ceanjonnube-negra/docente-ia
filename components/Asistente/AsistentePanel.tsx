@@ -25,7 +25,7 @@ import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
-import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
+import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -624,14 +624,6 @@ export default function AsistentePanel() {
     avisoAdjuntoTimerRef.current = setTimeout(() => setAvisoAdjunto(null), 5000)
   }
 
-  const leerComoBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onloadend = () => resolve((reader.result as string).split(',')[1])
-      reader.onerror = () => reject(new Error('No se pudo leer el archivo'))
-      reader.readAsDataURL(file)
-    })
-
   // Un solo <input type="file"> nativo, sin menú propio antes — en
   // iPhone/Android/escritorio, el sistema operativo YA ofrece su
   // propio selector (Fototeca/Tomar foto/Elegir archivo en iOS,
@@ -650,18 +642,24 @@ export default function AsistentePanel() {
     e.target.value = ''
     if (files.length === 0) return
 
-    // Un solo archivo (foto o documento) — camino idéntico al que ya
-    // existía antes de esta mejora, sin compresión ni presupuesto de
-    // varias imágenes de por medio.
+    // Un solo archivo (foto o documento) — mismo mecanismo de
+    // compresión que ya usa el flujo de varias fotos (comprimirImagen,
+    // ver lib/asistente/comprimirImagen.ts), en vez del Base64 crudo
+    // sin comprimir que causaba HTTP 413 con fotos de cámara sin
+    // redimensionar (ver "Auditoría técnica — 413 en mensajes con
+    // imagen"). Para archivos que no son imagen (documentos), la
+    // propia comprimirImagen() detecta que no puede decodificarlos como
+    // imagen y cae en su fallback: devuelve el Base64 original sin
+    // cambios y conserva su `tipo` real — mismo resultado que antes.
     if (files.length === 1) {
       const file = files[0]
-      const base64 = await leerComoBase64(file)
+      const { base64, tipo } = await comprimirImagen(file)
       // [IMAGEN][FRONTEND] log temporal de auditoría (ver "Revisar
       // pipeline completo de imágenes del Chat IA") — confirma que el
       // archivo elegido de verdad terminó como base64 real en el
       // estado, no solo como referencia de archivo.
-      console.log(`[IMAGEN][FRONTEND] imagen seleccionada — tipo=${file.type || 'desconocido'} tamaño=${Math.round(file.size / 1024)}KB base64Listo=${base64.length > 0}`)
-      setAdjuntosPendientes([{ base64, tipo: file.type || 'application/octet-stream', nombreArchivo: file.name }])
+      console.log(`[IMAGEN][FRONTEND] imagen seleccionada — tipo=${file.type || 'desconocido'} tamaño_original=${Math.round(file.size / 1024)}KB tamaño_comprimido=${Math.round(base64.length / 1024)}KB base64Listo=${base64.length > 0}`)
+      setAdjuntosPendientes([{ base64, tipo, nombreArchivo: file.name }])
       return
     }
 
