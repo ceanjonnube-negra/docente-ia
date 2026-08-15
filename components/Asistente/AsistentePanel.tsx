@@ -544,6 +544,26 @@ const nombrePila = (nombreCompleto: string | undefined): string => {
     .join(' ')
 }
 
+// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — SONDA DE CLIC (ver "auditoría
+// de solo lectura — pérdida de imagen antes de llegar al servidor"):
+// captura el estado real de adjuntosPendientes/comprimiendo en el
+// instante exacto del clic en Enviar, ANTES de que enviar() toque nada
+// — el diagnóstico ROUNDTRIP existente solo puede ver !!adjunto ya
+// dentro de motorTextoClaude.enviarTexto, corriente abajo de este
+// punto; esta sonda cierra ese punto ciego. Solo metadata (tamaños,
+// tipos, booleanos) — nunca contenido Base64 ni datos de alumnos.
+// Preview-only (mismo gate que el resto del diagnóstico). Retirar junto
+// con el resto de la instrumentación temporal.
+type SondaClickEnvio = {
+  timestamp: number
+  adjuntosCount: number
+  comprimiendoActivo: boolean
+  primerAdjuntoTipo: 'imagen' | 'documento' | null
+  primerAdjuntoMime: string | null
+  primerAdjuntoBytesAprox: number | null
+  previewPresente: boolean
+}
+
 export default function AsistentePanel() {
   const asistente = useAsistente()
   const router = useRouter()
@@ -563,6 +583,8 @@ export default function AsistentePanel() {
   const [adjuntosPendientes, setAdjuntosPendientes] = useState<AdjuntoImagen[]>([])
   const [comprimiendo, setComprimiendo] = useState<{ completadas: number; total: number } | null>(null)
   const [avisoAdjunto, setAvisoAdjunto] = useState<string | null>(null)
+  // Sonda de clic (ver tipo SondaClickEnvio arriba, a nivel de módulo).
+  const [sondaClickEnvio, setSondaClickEnvio] = useState<SondaClickEnvio | null>(null)
   const avisoAdjuntoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const adjuntoInputRef = useRef<HTMLInputElement>(null)
 
@@ -715,6 +737,25 @@ export default function AsistentePanel() {
   }
 
   const enviar = () => {
+    // SONDA DE CLIC — primer punto ejecutable de enviar(), antes de
+    // cualquier guard/reset/copia/await/llamada (ver tipo
+    // SondaClickEnvio, a nivel de módulo). Solo lectura: no toca texto,
+    // adjuntosPendientes ni comprimiendo, solo los inspecciona. Gate
+    // idéntico al resto de la instrumentación temporal — inactivo por
+    // completo (ni siquiera arma el objeto) en cualquier ambiente donde
+    // NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO no sea exactamente '1'.
+    if (process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1') {
+      const primerAdjunto = adjuntosPendientes[0]
+      setSondaClickEnvio({
+        timestamp: Date.now(),
+        adjuntosCount: adjuntosPendientes.length,
+        comprimiendoActivo: !!comprimiendo,
+        primerAdjuntoTipo: primerAdjunto ? (primerAdjunto.tipo.startsWith('image/') ? 'imagen' : 'documento') : null,
+        primerAdjuntoMime: primerAdjunto?.tipo ?? null,
+        primerAdjuntoBytesAprox: primerAdjunto ? Math.round((primerAdjunto.base64.length * 3) / 4) : null,
+        previewPresente: adjuntosPendientes.length > 0,
+      })
+    }
     const texto = input.trim()
     // Mientras se están comprimiendo fotos, adjuntosPendientes todavía
     // está vacío — enviar en ese momento mandaría el texto SIN las
@@ -1233,6 +1274,17 @@ export default function AsistentePanel() {
               <p>imagen_en_asistente: {String(asistente.diagnosticoTecnico.imagenEnAsistente)}</p>
               <p>imagen_en_motor: {String(asistente.diagnosticoTecnico.imagenEnMotor)}</p>
               <p>imagen_en_fetch: {String(asistente.diagnosticoTecnico.imagenEnFetch)}</p>
+              {sondaClickEnvio && (
+                <>
+                  <p className="font-bold mt-1">🖱 sonda de clic (instante exacto de Enviar)</p>
+                  <p>ui_click_adjuntos_count: {sondaClickEnvio.adjuntosCount}</p>
+                  <p>ui_click_comprimiendo: {String(sondaClickEnvio.comprimiendoActivo)}</p>
+                  <p>ui_click_primer_adjunto_tipo: {sondaClickEnvio.primerAdjuntoTipo ?? 'ninguno'}</p>
+                  <p>ui_click_primer_adjunto_mime: {sondaClickEnvio.primerAdjuntoMime ?? 'ninguno'}</p>
+                  <p>ui_click_primer_adjunto_bytes_aprox: {sondaClickEnvio.primerAdjuntoBytesAprox ?? 'ninguno'}</p>
+                  <p>ui_click_preview_presente: {String(sondaClickEnvio.previewPresente)}</p>
+                </>
+              )}
               {asistente.diagnosticoTecnico.imagenRecibidaServidor !== null && <p>imagen_recibida_servidor: {String(asistente.diagnosticoTecnico.imagenRecibidaServidor)}</p>}
               {asistente.diagnosticoTecnico.imagenEntregadaVision !== null && <p>imagen_entregada_vision: {String(asistente.diagnosticoTecnico.imagenEntregadaVision)}</p>}
               {asistente.diagnosticoTecnico.documentoPresente !== null && <p>documento_presente: {String(asistente.diagnosticoTecnico.documentoPresente)}</p>}
