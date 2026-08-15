@@ -653,13 +653,27 @@ export default function AsistentePanel() {
     // cambios y conserva su `tipo` real — mismo resultado que antes.
     if (files.length === 1) {
       const file = files[0]
-      const { base64, tipo } = await comprimirImagen(file)
-      // [IMAGEN][FRONTEND] log temporal de auditoría (ver "Revisar
-      // pipeline completo de imágenes del Chat IA") — confirma que el
-      // archivo elegido de verdad terminó como base64 real en el
-      // estado, no solo como referencia de archivo.
-      console.log(`[IMAGEN][FRONTEND] imagen seleccionada — tipo=${file.type || 'desconocido'} tamaño_original=${Math.round(file.size / 1024)}KB tamaño_comprimido=${Math.round(base64.length / 1024)}KB base64Listo=${base64.length > 0}`)
-      setAdjuntosPendientes([{ base64, tipo, nombreArchivo: file.name }])
+      // Mismo mecanismo de "ocupado" que ya protege el flujo de varias
+      // fotos (ver más abajo, setComprimiendo/finally) — comprimirImagen()
+      // hace trabajo real (decodificar, redimensionar, recodificar JPEG)
+      // que ya no es instantáneo como el leerComoBase64() anterior; sin
+      // este bloqueo, enviar() podía disparar mientras la compresión
+      // seguía en curso y adjuntosPendientes todavía estaba vacío (ver
+      // "Auditoría de solo lectura — pérdida de imagen antes de llegar
+      // al servidor"). try/finally asegura que comprimiendo se libere
+      // también si comprimirImagen() llegara a fallar.
+      setComprimiendo({ completadas: 0, total: 1 })
+      try {
+        const { base64, tipo } = await comprimirImagen(file)
+        // [IMAGEN][FRONTEND] log temporal de auditoría (ver "Revisar
+        // pipeline completo de imágenes del Chat IA") — confirma que el
+        // archivo elegido de verdad terminó como base64 real en el
+        // estado, no solo como referencia de archivo.
+        console.log(`[IMAGEN][FRONTEND] imagen seleccionada — tipo=${file.type || 'desconocido'} tamaño_original=${Math.round(file.size / 1024)}KB tamaño_comprimido=${Math.round(base64.length / 1024)}KB base64Listo=${base64.length > 0}`)
+        setAdjuntosPendientes([{ base64, tipo, nombreArchivo: file.name }])
+      } finally {
+        setComprimiendo(null)
+      }
       return
     }
 
