@@ -27,7 +27,7 @@ import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/plan
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
-import type { AccionNavegacion, TrazaDiagnosticoCurp } from '@/lib/asistente/tipos'
+import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -368,10 +368,46 @@ export async function POST(req: NextRequest) {
     imagenEntregadaVision: null,
     statusHttp: null,
     tipoError: null,
+    // --- TIEMPOS/CONSUMO — ver "instrumentación temporal de tiempos y
+    // consumo". inicioRequestMs (ya existía arriba) es la referencia
+    // para todas las duraciones relativas de este bloque.
+    msClienteAntesFetch: null, // lo llena el cliente, nunca el servidor
+    msFetchHastaRespuesta: null, // ídem
+    msTotalCliente: null, // ídem
+    clasificacionEjecutada: false,
+    msClasificacion: null,
+    consultaDatosEjecutada: false,
+    msConsultaDatos: null, // requeriría tocar herramientasModulo.ts para separarlo de msHerramienta — fuera del alcance autorizado esta ronda, ver informe
+    msHerramienta: null,
+    msAntesNivel4: null,
+    nivel4Ejecutado: false,
+    msTotalServidor: null,
+    llamadasIA: [],
+    numeroLlamadasIA: 0,
+    numeroLlamadasAnthropic: 0,
+    numeroLlamadasOpenAI: 0,
+    clienteAbortado: null, // lo llena el cliente cuando de verdad ocurre
+    servidorRecibioRequest: true, // si este objeto existe, el servidor ya recibió el request
+    servidorInicioProveedor: null,
+    servidorTerminoProveedor: null,
+    respuestaServidorTerminada: null,
+  }
+  // Ver "no inventar valores": agrega una LlamadaIA real a la traza y
+  // mantiene sincronizados los contadores — única función que escribe
+  // en trazaDebug.llamadasIA, para no duplicar la lógica de conteo.
+  function registrarLlamadaIA(llamada: LlamadaIA) {
+    trazaDebug.llamadasIA.push(llamada)
+    trazaDebug.numeroLlamadasIA = trazaDebug.llamadasIA.length
+    trazaDebug.numeroLlamadasAnthropic = trazaDebug.llamadasIA.filter((l) => l.proveedor === 'anthropic').length
+    trazaDebug.numeroLlamadasOpenAI = trazaDebug.llamadasIA.filter((l) => l.proveedor === 'openai').length
+    trazaDebug.servidorInicioProveedor = true
   }
   // Marcador técnico — mismo patrón exacto que los otros 3 marcadores ya
   // existentes en este archivo (ver [[DOCUMENTO_ARCHIVO:...]] más abajo).
   function marcadorDiagnostico(): string {
+    trazaDebug.msTotalServidor = Date.now() - inicioRequestMs
+    trazaDebug.servidorTerminoProveedor = trazaDebug.llamadasIA.every((l) => l.ms !== null)
+    trazaDebug.respuestaServidorTerminada = true
     return `\n\n[[DIAGNOSTICO_CURP:${Buffer.from(JSON.stringify(trazaDebug), 'utf-8').toString('base64')}]]`
   }
   function conDiagnostico(texto: string): string {
@@ -879,8 +915,32 @@ export async function POST(req: NextRequest) {
       // propia pregunta "¿Te refieres a...?" del turno anterior (ver
       // regla 13 en clasificadorNivel0.ts). No es historial "de
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
+      const tClasificacionInicio = diagnosticoCurpActivo ? Date.now() : 0
       const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       marcarTelemetria('intent:classification_finished')
+      if (diagnosticoCurpActivo) {
+        const msClasificacion = Date.now() - tClasificacionInicio
+        trazaDebug.clasificacionEjecutada = true
+        trazaDebug.msClasificacion = msClasificacion
+        // clasificarNivel0 vive en lib/clasificadorNivel0.ts, fuera de
+        // los archivos autorizados esta ronda — se mide su duración
+        // desde aquí (afuera), pero sus tokens no están expuestos sin
+        // tocar ese archivo (ver informe): usageDisponible=false, nunca
+        // un valor inventado. Modelo tomado del código ya existente
+        // (literal 'claude-sonnet-4-6' en ese archivo), no de una
+        // llamada adicional.
+        registrarLlamadaIA({
+          proveedor: 'anthropic',
+          modelo: 'claude-sonnet-4-6',
+          finalidad: 'clasificacion',
+          ms: msClasificacion,
+          usageDisponible: false,
+          inputTokens: null,
+          outputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        })
+      }
       requiereConsultaOficial = clasificacion.requiere_consulta_oficial === true
       if (requiereConsultaOficial) {
         console.log(`[CONSULTA_OFICIAL] activada — intencion=${clasificacion.intencion_principal}`)
@@ -943,6 +1003,7 @@ export async function POST(req: NextRequest) {
       // consultar_calendario NO están ahí (generación/razonamiento
       // real, no una cifra fija).
       marcarTelemetria('tool:execution_started')
+      const tHerramientaInicio = diagnosticoCurpActivo ? Date.now() : 0
       const respuestaDeModulo = await ejecutarHerramientaDeModulo(clasificacion, {
         sb: supabaseUser,
         sesion,
@@ -952,6 +1013,16 @@ export async function POST(req: NextRequest) {
         conversacionId: typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null,
       })
       marcarTelemetria('tool:execution_finished')
+      if (diagnosticoCurpActivo) {
+        // "consulta de datos" vive DENTRO de la herramienta (ej.
+        // contextoAlumno en herramientasModulo.ts) — separarla de este
+        // tiempo requeriría tocar ese archivo, fuera del alcance
+        // autorizado esta ronda (ver informe). Se mide como una sola
+        // etapa combinada; consultaDatosEjecutada refleja si la
+        // intención SÍ tenía una Herramienta registrada.
+        trazaDebug.msHerramienta = Date.now() - tHerramientaInicio
+        trazaDebug.consultaDatosEjecutada = respuestaDeModulo !== null
+      }
       if (respuestaDeModulo !== null) {
         if (tieneImagenAdjunta) {
           // CAUSA RAÍZ real del bug de imágenes: este dispatcher no
@@ -1342,6 +1413,15 @@ export async function POST(req: NextRequest) {
     // Solo actualiza la etapa si nada más concluyente ya la cambió
     // (herramienta ejecutada o error) — evita pisar información útil.
     trazaDebug.etapa = 'fin del bloque Nivel 0 sin respuesta directa — continúa al flujo normal/Nivel 4'
+  }
+  if (diagnosticoCurpActivo && trazaDebug.msTotalServidor === null) {
+    // Este punto solo se alcanza cuando NADA respondió antes (ninguna
+    // Herramienta directa, ninguna aclaración) — el request va a
+    // continuar hacia Nivel 4. Se marca aquí, antes de esa llamada real
+    // a Claude, nunca después (para no confundir "se intentó" con "ya
+    // terminó").
+    trazaDebug.msAntesNivel4 = Date.now() - inicioRequestMs
+    trazaDebug.nivel4Ejecutado = true
   }
 
   // RESTRICCIÓN ESTRUCTURAL DE FUENTES (ver "Prohibir afirmaciones de
@@ -1908,6 +1988,7 @@ Grado: [grado] | Grupo: [grupo]
   }
 
   marcarTelemetria('claude:request_started')
+  const tNivel4LlamadaInicio = diagnosticoCurpActivo ? Date.now() : 0
   let stream
   try {
     stream = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: true }, { timeout: TIMEOUT_ANTHROPIC_MS }), 'conversacion')
@@ -1927,6 +2008,15 @@ Grado: [grado] | Grupo: [grupo]
   }
 
   const encoder = new TextEncoder()
+  // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — usage real que Anthropic ya
+  // entrega dentro del mismo stream que se está leyendo de todas formas
+  // (eventos message_start/message_delta) — NUNCA una llamada extra ni
+  // contenido adicional enviado al modelo. Se queda en null si el
+  // gate está apagado o si esos eventos no llegan a aparecer.
+  let usageInputTokens: number | null = null
+  let usageOutputTokens: number | null = null
+  let usageCacheRead: number | null = null
+  let usageCacheWrite: number | null = null
   let primerDeltaTelemetria = false
   // Chat IA — Registro escolar: acumula el tool_use mientras Claude lo
   // transmite en fragmentos (content_block_start -> delta -> stop) antes
@@ -1942,6 +2032,19 @@ Grado: [grado] | Grupo: [grupo]
       try {
         console.log('[STREAM][chat] streamInicio=true')
         for await (const event of stream) {
+          // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — usage real ya
+          // presente en estos mismos eventos del stream, sin ninguna
+          // llamada ni contenido adicional.
+          if (diagnosticoCurpActivo) {
+            if (event.type === 'message_start') {
+              usageInputTokens = event.message.usage.input_tokens ?? null
+              usageCacheRead = (event.message.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? null
+              usageCacheWrite = (event.message.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? null
+            }
+            if (event.type === 'message_delta' && event.usage) {
+              usageOutputTokens = event.usage.output_tokens ?? null
+            }
+          }
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             if (!primerDeltaTelemetria) {
               primerDeltaTelemetria = true
@@ -2179,6 +2282,17 @@ Grado: [grado] | Grupo: [grupo]
         if (diagnosticoCurpActivo) {
           trazaDebug.etapa = 'streaming Nivel 4 completado'
           trazaDebug.herramientaEjecutada = trazaDebug.herramientaEjecutada ?? 'conversacion_general_o_nivel4'
+          registrarLlamadaIA({
+            proveedor: 'anthropic',
+            modelo: parametrosClaude.model,
+            finalidad: 'respuesta',
+            ms: Date.now() - tNivel4LlamadaInicio,
+            usageDisponible: usageInputTokens !== null || usageOutputTokens !== null,
+            inputTokens: usageInputTokens,
+            outputTokens: usageOutputTokens,
+            cacheReadTokens: usageCacheRead,
+            cacheWriteTokens: usageCacheWrite,
+          })
           controller.enqueue(encoder.encode(marcadorDiagnostico()))
         }
       } catch (err) {

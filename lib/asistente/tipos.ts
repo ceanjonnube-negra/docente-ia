@@ -319,6 +319,56 @@ export type TrazaDiagnosticoCurp = {
   // --- Solo si resultado='error' ---
   statusHttp: number | null
   tipoError: string | null
+  // --- TIEMPOS (ver "instrumentación temporal de tiempos y consumo") —
+  // duraciones relativas en ms, NUNCA timestamps sensibles. null cuando
+  // esa etapa nunca se alcanzó — nunca se inventa una duración. ---
+  msClienteAntesFetch: number | null
+  msFetchHastaRespuesta: number | null
+  msTotalCliente: number | null
+  clasificacionEjecutada: boolean
+  msClasificacion: number | null
+  consultaDatosEjecutada: boolean
+  msConsultaDatos: number | null
+  msHerramienta: number | null
+  msAntesNivel4: number | null
+  nivel4Ejecutado: boolean
+  msTotalServidor: number | null
+  // --- LLAMADAS A IA / COSTO — una entrada por llamada real al
+  // proveedor, nunca inventada. usageDisponible=false cuando la
+  // arquitectura actual no expone tokens para esa llamada (ver
+  // clasificarNivel0 — vive fuera de los archivos autorizados de esta
+  // ronda, así que su duración se mide desde afuera pero sus tokens
+  // quedan como no disponibles). ---
+  llamadasIA: LlamadaIA[]
+  numeroLlamadasIA: number
+  numeroLlamadasAnthropic: number
+  numeroLlamadasOpenAI: number
+  // --- CANCELACIÓN — ver limitación documentada: si el cliente aborta
+  // ANTES de que el servidor responda, el servidor nunca puede avisarle
+  // qué pasó después — estos campos servidor-side solo llegan cuando el
+  // servidor SÍ logra responder (éxito o error HTTP controlado).
+  // clienteAbortado se llena del lado cliente cuando de verdad ocurre. ---
+  clienteAbortado: boolean | null
+  servidorRecibioRequest: boolean | null
+  servidorInicioProveedor: boolean | null
+  servidorTerminoProveedor: boolean | null
+  respuestaServidorTerminada: boolean | null
+}
+
+// Una llamada real a un proveedor de IA dentro de esta petición — nunca
+// prompts ni respuestas completas, solo metadatos técnicos y métricas
+// de uso ya entregadas por el proveedor (nunca una llamada extra para
+// obtenerlas). Ver TrazaDiagnosticoCurp.llamadasIA.
+export type LlamadaIA = {
+  proveedor: 'anthropic' | 'openai' | 'otro'
+  modelo: string | null
+  finalidad: 'clasificacion' | 'razonamiento' | 'respuesta' | 'imagen' | 'otra'
+  ms: number | null
+  usageDisponible: boolean
+  inputTokens: number | null
+  outputTokens: number | null
+  cacheReadTokens: number | null
+  cacheWriteTokens: number | null
 }
 
 // Todos los campos son texto simple listos para mostrarse tal cual —

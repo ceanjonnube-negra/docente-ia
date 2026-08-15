@@ -64,6 +64,21 @@ const TIMEOUT_SESION_MS = 12_000
 // deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver app/api/chat/
 // route.ts) antes de responder algo — 35s deja margen de sobra.
 const TIMEOUT_FETCH_MS = 35_000
+// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — timeout ampliado EXCLUSIVO de
+// Preview con el gate activo (ver "instrumentación temporal de tiempos
+// y consumo"), para dejar que una petición diagnóstica termine de
+// verdad y así medir dónde se va el tiempo real. NUNCA se usa fuera de
+// NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO==='1' — el timeout normal
+// (TIMEOUT_FETCH_MS, 35s) queda exactamente igual en cualquier otro
+// caso, incluida Production. Elegido con el techo real de la función
+// serverless como referencia (maxDuration=180s, ver app/api/chat/
+// route.ts): 90s deja margen suficiente para observar un ciclo
+// completo de clasificarNivel0 (hasta 12s, sin reintento) seguido de un
+// intento real de Nivel 4 (hasta 120s, con 1 reintento) sin acercarse
+// al límite duro del servidor, evitando esperar en vano una función que
+// Vercel ya habría terminado por su cuenta. Retirar junto con el resto
+// del diagnóstico.
+const TIMEOUT_FETCH_DIAGNOSTICO_MS = 90_000
 // Fetch de FINALIZAR ARCHIVO (finalizarArchivo presente): puede incluir
 // una redacción completa de Claude sin streaming de hasta 8000 tokens
 // (CASO 3, hasta TIMEOUT_ANTHROPIC_DOCUMENTO_MS=55s en el servidor) más
@@ -147,6 +162,10 @@ export class MotorTextoClaude implements MotorConversacional {
   async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
+    // y msClienteAntesFetch (ver "instrumentación temporal de tiempos y
+    // consumo"). Nunca afecta el comportamiento real, solo mide.
+    const tInicioEnviarTexto = Date.now()
 
     // CAUSA RAÍZ del chat "colgado" después de generar o descargar un
     // documento: obtenerPerfilYSesion() (3 llamadas reales a Supabase
@@ -186,6 +205,7 @@ export class MotorTextoClaude implements MotorConversacional {
       imagenEnFetch: !!adjunto,
     }
     function trazaFallo(etapa: string, extra: Partial<TrazaDiagnosticoCurp> = {}): TrazaDiagnosticoCurp {
+      const ahora = Date.now()
       return {
         debugRequestId: debugRequestId || '',
         resultado: 'error',
@@ -207,6 +227,36 @@ export class MotorTextoClaude implements MotorConversacional {
         imagenEntregadaVision: null,
         statusHttp: null,
         tipoError: null,
+        // TIEMPOS — msFetchHastaRespuesta queda null aquí a propósito:
+        // en ningún caso de fallo hubo una respuesta real que medir
+        // hasta ese punto (el que sí aplica se sobreescribe abajo con
+        // extra cuando corresponde). msTotalCliente sí es real: cuánto
+        // pasó desde que entró el turno hasta que se dio por vencido.
+        msClienteAntesFetch: null,
+        msFetchHastaRespuesta: null,
+        msTotalCliente: ahora - tInicioEnviarTexto,
+        clasificacionEjecutada: false,
+        msClasificacion: null,
+        consultaDatosEjecutada: false,
+        msConsultaDatos: null,
+        msHerramienta: null,
+        msAntesNivel4: null,
+        nivel4Ejecutado: false,
+        msTotalServidor: null,
+        llamadasIA: [],
+        numeroLlamadasIA: 0,
+        numeroLlamadasAnthropic: 0,
+        numeroLlamadasOpenAI: 0,
+        // CANCELACIÓN — ver limitación documentada en tipos.ts: si el
+        // cliente se rinde antes de que el servidor conteste, nunca
+        // puede saber qué pasó después en el servidor/proveedor — esos
+        // 3 campos quedan null (desconocido), nunca inventados como
+        // true o false.
+        clienteAbortado: null,
+        servidorRecibioRequest: null,
+        servidorInicioProveedor: null,
+        servidorTerminoProveedor: null,
+        respuestaServidorTerminada: null,
         ...extra,
       }
     }
@@ -225,7 +275,23 @@ export class MotorTextoClaude implements MotorConversacional {
       // regenerarImagen (Fase 0+1) también necesita el margen largo —
       // generar una imagen real con el proveedor puede tardar tanto
       // como un documento, nunca menos.
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes || regenerarImagen ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el timeout normal
+      // (TIMEOUT_FETCH_MS) SOLO se amplía cuando diagnosticoActivo es
+      // true (gate fail-closed ya calculado arriba); ausente/'0'/
+      // cualquier otro valor conserva exactamente el timeout de
+      // siempre, sin excepción — incluida Production.
+      temporizadorFetch = setTimeout(
+        () => this.controlador?.abort(),
+        finalizarArchivo || esVariasImagenes || regenerarImagen
+          ? TIMEOUT_FETCH_DOCUMENTO_MS
+          : (diagnosticoActivo ? TIMEOUT_FETCH_DIAGNOSTICO_MS : TIMEOUT_FETCH_MS)
+      )
+
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — msClienteAntesFetch
+      // (cuánto tardó todo lo previo, sobre todo obtenerPerfilYSesion)
+      // y tFetchInicio (referencia para msFetchHastaRespuesta más abajo).
+      const msClienteAntesFetch = diagnosticoActivo ? Date.now() - tInicioEnviarTexto : null
+      const tFetchInicio = Date.now()
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -326,7 +392,17 @@ export class MotorTextoClaude implements MotorConversacional {
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado })
       if (diagnosticoActivo && diagnosticoCurp) {
-        this.emitir({ tipo: 'diagnostico-curp', datos: { ...diagnosticoCurp, ...camposClientePrevios } })
+        this.emitir({
+          tipo: 'diagnostico-curp',
+          datos: {
+            ...diagnosticoCurp,
+            ...camposClientePrevios,
+            msClienteAntesFetch,
+            msFetchHastaRespuesta: Date.now() - tFetchInicio,
+            msTotalCliente: Date.now() - tInicioEnviarTexto,
+            clienteAbortado: false,
+          },
+        })
       }
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
@@ -335,7 +411,7 @@ export class MotorTextoClaude implements MotorConversacional {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
         console.error('[CHAT] /api/chat no respondió dentro del tiempo límite — abortado automáticamente')
         if (diagnosticoActivo) {
-          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('timeout de fetch — abortado automáticamente', { tipoError: 'AbortError' }) })
+          this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('timeout de fetch — abortado automáticamente', { tipoError: 'AbortError', clienteAbortado: true }) })
         }
         this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return

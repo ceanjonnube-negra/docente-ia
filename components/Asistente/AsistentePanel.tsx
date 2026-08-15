@@ -1227,6 +1227,26 @@ export default function AsistentePanel() {
               {asistente.diagnosticoTecnico.tamanoPayloadVisual !== null && <p>tamaño_payload_visual: {asistente.diagnosticoTecnico.tamanoPayloadVisual} bytes(base64)</p>}
               {asistente.diagnosticoTecnico.statusHttp !== null && <p>status HTTP: {asistente.diagnosticoTecnico.statusHttp}</p>}
               {asistente.diagnosticoTecnico.tipoError && <p>tipo de error: {asistente.diagnosticoTecnico.tipoError}</p>}
+              <p className="font-bold mt-1">⏱ tiempos (ms)</p>
+              {asistente.diagnosticoTecnico.msClienteAntesFetch !== null && <p>cliente_antes_fetch: {asistente.diagnosticoTecnico.msClienteAntesFetch}</p>}
+              {asistente.diagnosticoTecnico.msFetchHastaRespuesta !== null && <p>fetch_hasta_respuesta: {asistente.diagnosticoTecnico.msFetchHastaRespuesta}</p>}
+              {asistente.diagnosticoTecnico.msTotalCliente !== null && <p>total_cliente: {asistente.diagnosticoTecnico.msTotalCliente}</p>}
+              <p>clasificación ejecutada: {String(asistente.diagnosticoTecnico.clasificacionEjecutada)}{asistente.diagnosticoTecnico.msClasificacion !== null ? ` (${asistente.diagnosticoTecnico.msClasificacion}ms)` : ''}</p>
+              <p>consulta_datos/herramienta ejecutada: {String(asistente.diagnosticoTecnico.consultaDatosEjecutada)}{asistente.diagnosticoTecnico.msHerramienta !== null ? ` (${asistente.diagnosticoTecnico.msHerramienta}ms)` : ''}</p>
+              <p>nivel4 ejecutado: {String(asistente.diagnosticoTecnico.nivel4Ejecutado)}{asistente.diagnosticoTecnico.msAntesNivel4 !== null ? ` (arrancó a los ${asistente.diagnosticoTecnico.msAntesNivel4}ms)` : ''}</p>
+              {asistente.diagnosticoTecnico.msTotalServidor !== null && <p>total_servidor: {asistente.diagnosticoTecnico.msTotalServidor}</p>}
+              <p className="font-bold mt-1">🤖 llamadas IA ({asistente.diagnosticoTecnico.numeroLlamadasIA}: {asistente.diagnosticoTecnico.numeroLlamadasAnthropic} Anthropic, {asistente.diagnosticoTecnico.numeroLlamadasOpenAI} OpenAI)</p>
+              {asistente.diagnosticoTecnico.llamadasIA.map((l, i) => (
+                <p key={i}>
+                  #{i + 1} {l.proveedor}/{l.modelo ?? '?'} — {l.finalidad} — {l.ms !== null ? `${l.ms}ms` : '?ms'} — {l.usageDisponible ? `in=${l.inputTokens ?? '?'} out=${l.outputTokens ?? '?'}${l.cacheReadTokens ? ` cache_read=${l.cacheReadTokens}` : ''}${l.cacheWriteTokens ? ` cache_write=${l.cacheWriteTokens}` : ''}` : 'usage_no_disponible'}
+                </p>
+              ))}
+              <p className="font-bold mt-1">🔌 cancelación</p>
+              {asistente.diagnosticoTecnico.clienteAbortado !== null && <p>cliente_abortado: {String(asistente.diagnosticoTecnico.clienteAbortado)}</p>}
+              {asistente.diagnosticoTecnico.servidorRecibioRequest !== null && <p>servidor_recibió_request: {String(asistente.diagnosticoTecnico.servidorRecibioRequest)}</p>}
+              {asistente.diagnosticoTecnico.servidorInicioProveedor !== null && <p>servidor_inició_proveedor: {String(asistente.diagnosticoTecnico.servidorInicioProveedor)}</p>}
+              {asistente.diagnosticoTecnico.servidorTerminoProveedor !== null && <p>servidor_terminó_proveedor: {String(asistente.diagnosticoTecnico.servidorTerminoProveedor)}</p>}
+              {asistente.diagnosticoTecnico.respuestaServidorTerminada !== null && <p>respuesta_servidor_terminada: {String(asistente.diagnosticoTecnico.respuestaServidorTerminada)}</p>}
             </div>
           </details>
         )}
