@@ -916,7 +916,7 @@ export async function POST(req: NextRequest) {
       // regla 13 en clasificadorNivel0.ts). No es historial "de
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
       const tClasificacionInicio = diagnosticoCurpActivo ? Date.now() : 0
-      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta)
       marcarTelemetria('intent:classification_finished')
       if (diagnosticoCurpActivo) {
         const msClasificacion = Date.now() - tClasificacionInicio
@@ -1004,14 +1004,29 @@ export async function POST(req: NextRequest) {
       // real, no una cifra fija).
       marcarTelemetria('tool:execution_started')
       const tHerramientaInicio = diagnosticoCurpActivo ? Date.now() : 0
-      const respuestaDeModulo = await ejecutarHerramientaDeModulo(clasificacion, {
-        sb: supabaseUser,
-        sesion,
-        userId,
-        zonaHoraria,
-        canal: channel === 'voice' ? 'voice' : 'text',
-        conversacionId: typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null,
-      })
+      // EXCEPCIÓN — comparar dato de alumno con imagen adjunta como
+      // fuente del valor (ver "ajuste mínimo de clasificación para
+      // imagen adjunta"): herramientaCorregirDatoAlumno en
+      // herramientasModulo.ts es 100% determinista y SIEMPRE exige
+      // valor_alumno_propuesto como texto — nunca sabe leer una imagen.
+      // El clasificador marca esta variante con nivel_ejecucion=4 (en
+      // vez del 1 normal de corregir_dato_alumno) exactamente para esto:
+      // se salta la Herramienta determinista aquí y cae al
+      // enriquecimiento de Nivel 4 de abajo, que si sabe leer imágenes
+      // (Claude Vision, ya en uso en conversación general). Ningún otro
+      // caso de corregir_dato_alumno usa nivel_ejecucion=4 — es una
+      // señal exclusiva de esta excepción.
+      const esComparacionDeAlumnoConImagen = clasificacion.intencion_principal === 'corregir_dato_alumno' && clasificacion.nivel_ejecucion === 4
+      const respuestaDeModulo = esComparacionDeAlumnoConImagen
+        ? null
+        : await ejecutarHerramientaDeModulo(clasificacion, {
+            sb: supabaseUser,
+            sesion,
+            userId,
+            zonaHoraria,
+            canal: channel === 'voice' ? 'voice' : 'text',
+            conversacionId: typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null,
+          })
       marcarTelemetria('tool:execution_finished')
       if (diagnosticoCurpActivo) {
         // "consulta de datos" vive DENTRO de la herramienta (ej.
@@ -1377,6 +1392,27 @@ export async function POST(req: NextRequest) {
               categoria: categoriaEventoCalendario(e),
             }))
             contextoEnriquecido += `\n\nCALENDARIO ESCOLAR COMPLETO DEL CICLO ${inicioAnioCiclo}-${inicioAnioCiclo + 1} (usa estos datos reales para responder cualquier pregunta sobre fechas, actividades o eventos escolares — de hoy (${sesion.fecha_actual}), de esta semana, de este mes, ya pasados, o de más adelante en el ciclo; no inventes otros; si no hay eventos en el rango que se pregunta, dilo con honestidad; distingue siempre en tu respuesta entre eventos oficiales SEP y actividades propias que el maestro agregó — nunca los mezcles sin indicarlo):\n${JSON.stringify(eventosConCategoria)}`
+          } else if (
+            clasificacion.intencion_principal === 'corregir_dato_alumno' &&
+            clasificacion.modo_operacion_alumno === 'comparar' &&
+            clasificacion.entidades_resueltas.alumno_id &&
+            clasificacion.campo_alumno_corregir &&
+            sesion.ciclo_escolar_id
+          ) {
+            // Ver "ajuste mínimo de clasificación para imagen adjunta"
+            // — única forma de llegar aquí: el clasificador detectó
+            // comparar+alumno+campo con el valor fuente en una imagen
+            // adjunta (nivel_ejecucion=4 exclusivo de esta excepción,
+            // ver ejecutarHerramientaDeModulo más arriba, que se saltó
+            // a propósito para este caso). Reutiliza contextoAlumno,
+            // la MISMA función que ya usa herramientaCorregirDatoAlumno
+            // para el camino de solo texto — una sola fuente de verdad
+            // del valor real registrado.
+            const ctxAlumnoComparar = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
+            const datosPersonalesComparar = (ctxAlumnoComparar as { datos_personales?: Record<string, string | null> })?.datos_personales ?? {}
+            const valorRegistradoComparar = datosPersonalesComparar[clasificacion.campo_alumno_corregir] ?? null
+            contextoEnriquecido += `\n\nCOMPARACIÓN DE DATO PERSONAL DE ALUMNO CONTRA UNA IMAGEN ADJUNTA (ver "ajuste mínimo de clasificación para imagen adjunta"):\nEl maestro adjuntó una imagen para comparar el campo "${clasificacion.campo_alumno_corregir}" del alumno "${clasificacion.entidades_resueltas.alumno_nombre_detectado}".\nValor REAL ya registrado en la aplicación para ese campo (no lo inventes, es el dato real): ${valorRegistradoComparar ?? '(no hay ningún valor registrado todavía para este campo)'}.\nLee el valor real que aparece en la imagen adjunta y compáralo EXACTAMENTE, carácter por carácter, contra el valor registrado de arriba. Responde con claridad si coinciden o no, y en qué difieren si no coinciden. Esto es EXCLUSIVAMENTE de solo lectura: bajo ninguna circunstancia propongas, apliques, confirmes ni des a entender que ya aplicaste ninguna corrección en este turno — ni siquiera si el maestro pide corregirlo explícitamente en este mismo mensaje; en ese caso dile que puede pedir la corrección por separado, dándote el valor correcto en un mensaje aparte, una vez que confirmen juntos cuál es.`
+            console.log(`[NIVEL4][corregir_dato_alumno][comparar+imagen] alumno_id=${clasificacion.entidades_resueltas.alumno_id} campo=${clasificacion.campo_alumno_corregir} valorRegistradoPresente=${valorRegistradoComparar !== null}`)
           } else {
             // Diagnóstico obligatorio (ver "Corrección de arquitectura —
             // lectura real del módulo de Asistencias"): antes, si la

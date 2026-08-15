@@ -246,7 +246,7 @@ const FALLBACK: ClasificacionNivel0 = {
 // mandarle la conversación completa, solo lo último.
 type TurnoReciente = { role: 'user' | 'assistant'; content: string };
 
-function construirPrompt(sesion: SesionContexto, historialReciente: TurnoReciente[]): string {
+function construirPrompt(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean): string {
   return `Eres el Clasificador de Nivel 0 de Docente IA. Analiza el mensaje del
 docente y responde EXCLUSIVAMENTE con un objeto JSON, sin texto antes,
 después, sin explicaciones, sin marcadores de código.
@@ -299,6 +299,7 @@ CONTEXTO DE SESIÓN (dato, no lo inventes, úsalo tal cual):
 grupo_activo_id: ${sesion.grupo_activo_id ?? 'ninguno'}
 ciclo_escolar_id: ${sesion.ciclo_escolar_id ?? 'ninguno'}
 alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
+imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
 
 ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
 ${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
@@ -346,8 +347,8 @@ Extrae, SOLO si el maestro los mencionó explícitamente en su mensaje ACTUAL (n
    (a) un verbo o intención explícita de comparación/revisión/verificación/contraste — "compara", "comparar", "revisa si coincide", "revisar", "verifica", "verificar", "contrasta", "contrastar", "confirma si coincide", "¿es igual a...?", "¿coincide con...?" — una palabra suelta como "compara" SIN los otros tres elementos NUNCA es suficiente por sí sola;
    (b) un alumno identificable (mismo criterio de la regla 9);
    (c) el campo concreto — por ahora principalmente CURP, también sexo o fecha de nacimiento con el mismo criterio de la regla 21;
-   (d) un VALOR concreto que el propio docente escribió para comparar contra el registrado — no basta con nombrar el campo, tiene que traer el valor literal (ej. la cadena de la CURP a comparar).
-Si estos cuatro elementos están presentes → intencion_principal="corregir_dato_alumno", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, accion_correccion_alumno="proponer", modo_operacion_alumno="comparar" — CRÍTICO: modo_operacion_alumno="comparar" (nunca "corregir") es la única señal que usa herramientasModulo.ts para garantizar que esta operación es estrictamente de SOLO LECTURA — jamás genera una propuesta confirmable ni el botón Corregir, sin importar si el valor proporcionado es válido/inválido o igual/distinto al registrado. El mismo sub-estado accion_correccion_alumno="proponer" que ya usa la regla 22 (consulta el valor real, valida su formato y compara; NUNCA escribe por sí mismo — la escritura solo puede ocurrir después, en un turno POSTERIOR y separado, si el docente confirma explícitamente, ver regla 22.1). Resuelve campo_alumno_corregir y valor_alumno_propuesto con el MISMO criterio exacto de la regla 22: el valor EXACTO tal como lo escribió el docente, carácter por carácter, sin completar, corregir, truncar, desplazar ni inferir ningún carácter que no haya escrito.
+   (d) un VALOR concreto que el propio docente escribió para comparar contra el registrado — no basta con nombrar el campo, tiene que traer el valor literal (ej. la cadena de la CURP a comparar). EXCEPCIÓN — imagen adjunta como fuente del valor (ver "auditoría de solo lectura — pérdida de imagen antes de llegar al servidor" y el ajuste de clasificación que la sigue): esta excepción existe ÚNICAMENTE cuando imagen_adjunta_a_este_mensaje="sí" (el valor EXACTO del campo de CONTEXTO DE SESIÓN de arriba — nunca lo que el mensaje del docente diga o parezca implicar). VERIFICA ESE CAMPO PRIMERO, ANTES DE CUALQUIER OTRA COSA: si imagen_adjunta_a_este_mensaje="no", esta excepción NUNCA aplica bajo ninguna circunstancia, aunque el mensaje mencione explícitamente "esta imagen", "la foto" o cualquier palabra equivalente — esa mención en el texto NUNCA es evidencia de que la imagen realmente llegó (pudo perderse antes de llegar al servidor); en ese caso trata el mensaje EXACTAMENTE como si le faltara el valor (ver el párrafo siguiente: agrega "valor_alumno" a datos_faltantes, nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false) — nunca actives la excepción de imagen. Solo cuando imagen_adjunta_a_este_mensaje="sí" Y el mensaje deja claro que el valor a comparar debe leerse de esa imagen (ej. "compárala con la de esta imagen", "lee la CURP de la foto y compárala", "verifica si coincide con la que aparece en la imagen"), (d) se considera satisfecho por la imagen — es el ÚNICO caso donde (a)+(b)+(c) bastan sin un valor de texto. En ese caso: usa nivel_ejecucion=4, requiere_ia=true, requiere_contexto_memoria=true (en vez de 1/false/false) — esta variante necesita que el modelo lea el valor real desde la imagen adjunta, algo que no se puede resolver de forma determinista como el resto de esta intención. valor_alumno_propuesto queda null (NUNCA lo inventes ni completes con lo que crees que dice la imagen — tú no la ves, solo clasificas texto) y NO agregues "valor_alumno" a datos_faltantes en este caso específico.
+Si estos cuatro elementos están presentes (el texto literal, o la excepción de imagen de arriba) → intencion_principal="corregir_dato_alumno", nivel_ejecucion=1 (o 4 únicamente en la excepción de imagen, ver arriba), requiere_ia=false (true en la excepción de imagen), requiere_contexto_memoria=false (true en la excepción de imagen), accion_correccion_alumno="proponer", modo_operacion_alumno="comparar" — CRÍTICO: modo_operacion_alumno="comparar" (nunca "corregir") es la única señal que usa herramientasModulo.ts para garantizar que esta operación es estrictamente de SOLO LECTURA — jamás genera una propuesta confirmable ni el botón Corregir, sin importar si el valor proporcionado es válido/inválido o igual/distinto al registrado. El mismo sub-estado accion_correccion_alumno="proponer" que ya usa la regla 22 (consulta el valor real, valida su formato y compara; NUNCA escribe por sí mismo — la escritura solo puede ocurrir después, en un turno POSTERIOR y separado, si el docente confirma explícitamente, ver regla 22.1). Resuelve campo_alumno_corregir y valor_alumno_propuesto con el MISMO criterio exacto de la regla 22: el valor EXACTO tal como lo escribió el docente, carácter por carácter, sin completar, corregir, truncar, desplazar ni inferir ningún carácter que no haya escrito.
 Si el mensaje trae la intención de comparar pero le falta el alumno, el campo, o el valor concreto a comparar, NO actives esta regla ni la 22 — usa el mismo mecanismo de datos_faltantes ya existente ("alumno" si falta el alumno, "campo_alumno" si falta el campo, "valor_alumno" si falta el valor) — nunca asumas ni completes lo que el docente no dio.
 Frases como "no corrijas nada todavía", "no cambies nada", "sin corregir", "no lo apliques" NUNCA impiden que esta regla se active — al contrario, son exactamente la señal de que el docente quiere solo la comparación de solo lectura, que es exactamente lo que accion_correccion_alumno="proponer" ya garantiza (nunca escribe por sí solo).
 DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docente SOLO pregunta por el valor YA registrado, sin traer ningún valor propio para comparar. En cuanto el mensaje trae, además del alumno y el campo, un valor concreto del propio docente para comparar contra lo registrado, es esta regla (22.2), nunca la 21.
@@ -370,7 +371,15 @@ const TIMEOUT_NIVEL0_MS = 12_000;
 export async function clasificarNivel0(
   mensaje: string,
   sesion: SesionContexto,
-  historialReciente: TurnoReciente[] = []
+  historialReciente: TurnoReciente[] = [],
+  // Ver "ajuste mínimo de clasificación para imagen adjunta" — el
+  // clasificador es estrictamente de texto (nunca recibe la imagen en
+  // sí), pero necesita saber SI existe una para la excepción de la
+  // regla 22.2 (comparar un dato de alumno usando una imagen como
+  // fuente del valor). false por default: cualquier llamada que no
+  // pase este parámetro explícitamente conserva el comportamiento
+  // exacto de siempre.
+  tieneImagenAdjunta = false
 ): Promise<ClasificacionNivel0> {
   try {
     const respuesta = await client.messages.create(
@@ -384,7 +393,7 @@ export async function clasificarNivel0(
         // parseo y caía al FALLBACK silenciosamente — ver "el
         // clasificador real no reconoció la corrección de CURP".
         max_tokens: 700,
-        system: construirPrompt(sesion, historialReciente),
+        system: construirPrompt(sesion, historialReciente, tieneImagenAdjunta),
         messages: [{ role: 'user', content: mensaje }],
       },
       { timeout: TIMEOUT_NIVEL0_MS }
