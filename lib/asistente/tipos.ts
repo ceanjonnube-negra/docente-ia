@@ -353,6 +353,23 @@ export type TrazaDiagnosticoCurp = {
   servidorInicioProveedor: boolean | null
   servidorTerminoProveedor: boolean | null
   respuestaServidorTerminada: boolean | null
+  // --- DEPURACIÓN DE esComparacionVisualDeAlumno (ver "instrumentación
+  // diagnóstica mínima para confirmar qué cláusula da false") —
+  // exposición directa, sin ningún ?? ni fallback que pueda enmascarar
+  // un campo null detrás de otro (a diferencia de trazaDebug.campo, que
+  // sí usa "campo_alumno_corregir ?? campo_alumno_solicitado" y por eso
+  // no basta para diagnosticar esto). Nunca CURP/valores reales, solo
+  // nombres de campo y booleanos. null cuando el gate diagnóstico está
+  // apagado o el predicado nunca se calculó (nivel_ejecucion===1 sin
+  // instrumentación activa, etc.). Preview-only, retirar junto con el
+  // resto del diagnóstico. ---
+  esComparacionVisualAlumno: boolean | null
+  campoAlumnoCorregir: string | null
+  campoAlumnoCorregirPresente: boolean | null
+  campoAlumnoSolicitado: string | null
+  campoAlumnoSolicitadoPresente: boolean | null
+  alumnoAmbiguo: boolean | null
+  valorAlumnoPropuestoAusente: boolean | null
 }
 
 // Una llamada real a un proveedor de IA dentro de esta petición — nunca

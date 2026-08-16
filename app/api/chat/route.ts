@@ -391,6 +391,13 @@ export async function POST(req: NextRequest) {
     servidorInicioProveedor: null,
     servidorTerminoProveedor: null,
     respuestaServidorTerminada: null,
+    esComparacionVisualAlumno: null,
+    campoAlumnoCorregir: null,
+    campoAlumnoCorregirPresente: null,
+    campoAlumnoSolicitado: null,
+    campoAlumnoSolicitadoPresente: null,
+    alumnoAmbiguo: null,
+    valorAlumnoPropuestoAusente: null,
   }
   // Ver "no inventar valores": agrega una LlamadaIA real a la traza y
   // mantiene sincronizados los contadores — única función que escribe
@@ -995,6 +1002,25 @@ export async function POST(req: NextRequest) {
         !clasificacion.entidades_resueltas.alumno_ambiguo &&
         !!clasificacion.campo_alumno_corregir &&
         valorAlumnoPropuestoAusente
+
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — DEPURACIÓN DE
+      // esComparacionVisualDeAlumno (ver "instrumentación diagnóstica
+      // mínima para confirmar qué cláusula da false"). Solo lectura de
+      // valores que ya existen en este punto — ninguna llamada nueva,
+      // ninguna consulta nueva. Expone campo_alumno_corregir y
+      // campo_alumno_solicitado POR SEPARADO, sin el "??" que ya usa
+      // trazaDebug.campo (arriba) y que puede enmascarar uno detrás del
+      // otro. Nunca CURP ni ningún valor real, solo nombres de campo y
+      // booleanos.
+      if (diagnosticoCurpActivo) {
+        trazaDebug.esComparacionVisualAlumno = esComparacionVisualDeAlumno
+        trazaDebug.campoAlumnoCorregir = clasificacion.campo_alumno_corregir ?? null
+        trazaDebug.campoAlumnoCorregirPresente = !!clasificacion.campo_alumno_corregir
+        trazaDebug.campoAlumnoSolicitado = clasificacion.campo_alumno_solicitado ?? null
+        trazaDebug.campoAlumnoSolicitadoPresente = !!clasificacion.campo_alumno_solicitado
+        trazaDebug.alumnoAmbiguo = !!clasificacion.entidades_resueltas.alumno_ambiguo
+        trazaDebug.valorAlumnoPropuestoAusente = valorAlumnoPropuestoAusente
+      }
 
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.

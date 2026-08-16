@@ -1311,6 +1311,12 @@ export default function AsistentePanel() {
               {asistente.diagnosticoTecnico.servidorInicioProveedor !== null && <p>servidor_inició_proveedor: {String(asistente.diagnosticoTecnico.servidorInicioProveedor)}</p>}
               {asistente.diagnosticoTecnico.servidorTerminoProveedor !== null && <p>servidor_terminó_proveedor: {String(asistente.diagnosticoTecnico.servidorTerminoProveedor)}</p>}
               {asistente.diagnosticoTecnico.respuestaServidorTerminada !== null && <p>respuesta_servidor_terminada: {String(asistente.diagnosticoTecnico.respuestaServidorTerminada)}</p>}
+              <p className="font-bold mt-1">🧩 depuración esComparacionVisualDeAlumno</p>
+              {asistente.diagnosticoTecnico.esComparacionVisualAlumno !== null && <p>es_comparacion_visual_alumno: {String(asistente.diagnosticoTecnico.esComparacionVisualAlumno)}</p>}
+              {asistente.diagnosticoTecnico.campoAlumnoCorregirPresente !== null && <p>campo_alumno_corregir: {asistente.diagnosticoTecnico.campoAlumnoCorregir ?? 'null'} (presente: {String(asistente.diagnosticoTecnico.campoAlumnoCorregirPresente)})</p>}
+              {asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente !== null && <p>campo_alumno_solicitado: {asistente.diagnosticoTecnico.campoAlumnoSolicitado ?? 'null'} (presente: {String(asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente)})</p>}
+              {asistente.diagnosticoTecnico.alumnoAmbiguo !== null && <p>alumno_ambiguo: {String(asistente.diagnosticoTecnico.alumnoAmbiguo)}</p>}
+              {asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente !== null && <p>valor_alumno_propuesto_ausente: {String(asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente)}</p>}
             </div>
           </details>
         )}
