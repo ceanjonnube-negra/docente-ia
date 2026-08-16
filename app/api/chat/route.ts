@@ -968,6 +968,34 @@ export async function POST(req: NextRequest) {
         trazaDebug.datosFaltantes = clasificacion.datos_faltantes
       }
 
+      // PREDICADO ÚNICO — COMPARACIÓN VISUAL DE DATO DE ALUMNO (ver
+      // "diseñar una condición determinista y única" — reemplaza la
+      // dependencia anterior de clasificacion.nivel_ejecucion===4, que
+      // una prueba real demostró no confiable: el modelo puede resolver
+      // correctamente intención/modo/alumno/campo pero no sincronizar
+      // nivel_ejecucion ni limpiar datos_faltantes en la misma llamada).
+      // Construido ÚNICAMENTE con señales ya demostradas fiables en
+      // pruebas reales de esta sesión: tieneImagenAdjunta (hecho de
+      // runtime, no depende del modelo) + campos del clasificador que
+      // SIEMPRE se resolvieron bien en cada prueba (intención, modo,
+      // alumno, campo). Deliberadamente NO usa nivel_ejecucion,
+      // datos_faltantes ni accion_correccion_alumno — ver auditoría de
+      // diseño. Se declara UNA sola vez y se reutiliza tal cual en los
+      // tres puntos que antes podían desincronizarse: el bloque de
+      // aclaración de abajo, el bypass de la Herramienta determinista, y
+      // la entrada al enriquecimiento de Nivel4 — nunca se recalcula ni
+      // se aproxima de otra forma en ningún otro lugar.
+      const valorAlumnoPropuestoAusente =
+        !clasificacion.valor_alumno_propuesto || clasificacion.valor_alumno_propuesto.trim() === ''
+      const esComparacionVisualDeAlumno =
+        tieneImagenAdjunta &&
+        clasificacion.intencion_principal === 'corregir_dato_alumno' &&
+        clasificacion.modo_operacion_alumno === 'comparar' &&
+        !!clasificacion.entidades_resueltas.alumno_id &&
+        !clasificacion.entidades_resueltas.alumno_ambiguo &&
+        !!clasificacion.campo_alumno_corregir &&
+        valorAlumnoPropuestoAusente
+
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.
       if (clasificacion.datos_faltantes.length > 0 || clasificacion.entidades_resueltas.alumno_ambiguo) {
@@ -987,7 +1015,7 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('campo_alumno')) {
           return respuestaTexto(conDiagnostico('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?'))
         }
-        if (clasificacion.datos_faltantes.includes('valor_alumno')) {
+        if (clasificacion.datos_faltantes.includes('valor_alumno') && !esComparacionVisualDeAlumno) {
           return respuestaTexto(conDiagnostico('¿Cuál es el valor correcto?'))
         }
       }
@@ -1006,18 +1034,17 @@ export async function POST(req: NextRequest) {
       const tHerramientaInicio = diagnosticoCurpActivo ? Date.now() : 0
       // EXCEPCIÓN — comparar dato de alumno con imagen adjunta como
       // fuente del valor (ver "ajuste mínimo de clasificación para
-      // imagen adjunta"): herramientaCorregirDatoAlumno en
-      // herramientasModulo.ts es 100% determinista y SIEMPRE exige
-      // valor_alumno_propuesto como texto — nunca sabe leer una imagen.
-      // El clasificador marca esta variante con nivel_ejecucion=4 (en
-      // vez del 1 normal de corregir_dato_alumno) exactamente para esto:
-      // se salta la Herramienta determinista aquí y cae al
-      // enriquecimiento de Nivel 4 de abajo, que si sabe leer imágenes
-      // (Claude Vision, ya en uso en conversación general). Ningún otro
-      // caso de corregir_dato_alumno usa nivel_ejecucion=4 — es una
-      // señal exclusiva de esta excepción.
-      const esComparacionDeAlumnoConImagen = clasificacion.intencion_principal === 'corregir_dato_alumno' && clasificacion.nivel_ejecucion === 4
-      const respuestaDeModulo = esComparacionDeAlumnoConImagen
+      // imagen adjunta" y "diseñar una condición determinista y
+      // única"): herramientaCorregirDatoAlumno en herramientasModulo.ts
+      // es 100% determinista y SIEMPRE exige valor_alumno_propuesto
+      // como texto — nunca sabe leer una imagen. Se salta la
+      // Herramienta determinista aquí y cae al enriquecimiento de
+      // Nivel 4 de abajo, que sí sabe leer imágenes (Claude Vision, ya
+      // en uso en conversación general). Usa el predicado único
+      // esComparacionVisualDeAlumno (declarado arriba, antes del
+      // bloque de aclaración) — misma señal exacta reutilizada en los
+      // otros dos puntos, nunca una aproximación local distinta.
+      const respuestaDeModulo = esComparacionVisualDeAlumno
         ? null
         : await ejecutarHerramientaDeModulo(clasificacion, {
             sb: supabaseUser,
@@ -1336,7 +1363,7 @@ export async function POST(req: NextRequest) {
       // — se resuelven arriba, en ejecutarHerramientaDeModulo, sin
       // pasar nunca por el modelo grande (ver
       // lib/asistente/herramientasModulo.ts).
-      if (clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) {
+      if ((clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) || esComparacionVisualDeAlumno) {
         try {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
             const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
@@ -1392,25 +1419,21 @@ export async function POST(req: NextRequest) {
               categoria: categoriaEventoCalendario(e),
             }))
             contextoEnriquecido += `\n\nCALENDARIO ESCOLAR COMPLETO DEL CICLO ${inicioAnioCiclo}-${inicioAnioCiclo + 1} (usa estos datos reales para responder cualquier pregunta sobre fechas, actividades o eventos escolares — de hoy (${sesion.fecha_actual}), de esta semana, de este mes, ya pasados, o de más adelante en el ciclo; no inventes otros; si no hay eventos en el rango que se pregunta, dilo con honestidad; distingue siempre en tu respuesta entre eventos oficiales SEP y actividades propias que el maestro agregó — nunca los mezcles sin indicarlo):\n${JSON.stringify(eventosConCategoria)}`
-          } else if (
-            clasificacion.intencion_principal === 'corregir_dato_alumno' &&
-            clasificacion.modo_operacion_alumno === 'comparar' &&
-            clasificacion.entidades_resueltas.alumno_id &&
-            clasificacion.campo_alumno_corregir &&
-            sesion.ciclo_escolar_id
-          ) {
-            // Ver "ajuste mínimo de clasificación para imagen adjunta"
-            // — única forma de llegar aquí: el clasificador detectó
-            // comparar+alumno+campo con el valor fuente en una imagen
-            // adjunta (nivel_ejecucion=4 exclusivo de esta excepción,
-            // ver ejecutarHerramientaDeModulo más arriba, que se saltó
-            // a propósito para este caso). Reutiliza contextoAlumno,
-            // la MISMA función que ya usa herramientaCorregirDatoAlumno
-            // para el camino de solo texto — una sola fuente de verdad
-            // del valor real registrado.
-            const ctxAlumnoComparar = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
+          } else if (esComparacionVisualDeAlumno && sesion.ciclo_escolar_id) {
+            // Ver "ajuste mínimo de clasificación para imagen adjunta" y
+            // "diseñar una condición determinista y única" — única forma
+            // de llegar aquí: el predicado esComparacionVisualDeAlumno
+            // (declarado arriba, antes del bloque de aclaración, misma
+            // señal reutilizada en el bypass de la Herramienta) ya
+            // garantiza intención/modo/alumno_id/campo — solo falta
+            // aquí el ciclo escolar para poder consultar. Reutiliza
+            // contextoAlumno, la MISMA función que ya usa
+            // herramientaCorregirDatoAlumno para el camino de solo
+            // texto — una sola fuente de verdad del valor real
+            // registrado.
+            const ctxAlumnoComparar = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id!, sesion.ciclo_escolar_id)
             const datosPersonalesComparar = (ctxAlumnoComparar as { datos_personales?: Record<string, string | null> })?.datos_personales ?? {}
-            const valorRegistradoComparar = datosPersonalesComparar[clasificacion.campo_alumno_corregir] ?? null
+            const valorRegistradoComparar = datosPersonalesComparar[clasificacion.campo_alumno_corregir!] ?? null
             contextoEnriquecido += `\n\nCOMPARACIÓN DE DATO PERSONAL DE ALUMNO CONTRA UNA IMAGEN ADJUNTA (ver "ajuste mínimo de clasificación para imagen adjunta"):\nEl maestro adjuntó una imagen para comparar el campo "${clasificacion.campo_alumno_corregir}" del alumno "${clasificacion.entidades_resueltas.alumno_nombre_detectado}".\nValor REAL ya registrado en la aplicación para ese campo (no lo inventes, es el dato real): ${valorRegistradoComparar ?? '(no hay ningún valor registrado todavía para este campo)'}.\nAunque la Lista de alumnos general de arriba no muestre este dato personal (se omite ahí a propósito, por privacidad — nunca expone CURP/sexo/fecha de nacimiento de todo el grupo en cada turno), eso NO significa que el dato no esté registrado: para ESTA comparación específica, el valor de arriba es el valor real y completo consultado directamente para este alumno, y tiene prioridad total sobre la ausencia de ese campo en la lista general. Si el valor de arriba no es "(no hay ningún valor registrado todavía para este campo)", úsalo como fuente de verdad para comparar — nunca digas que no tienes ese dato o que no está registrado.\nLee el valor real que aparece en la imagen adjunta y compáralo EXACTAMENTE, carácter por carácter, contra el valor registrado de arriba. Responde ÚNICAMENTE con: el valor que leíste en la imagen, el valor registrado, y si coinciden o no. Esto es EXCLUSIVAMENTE de solo lectura: bajo ninguna circunstancia propongas, apliques, confirmes ni des a entender que ya aplicaste ninguna corrección en este turno — ni siquiera si el maestro pide corregirlo explícitamente en este mismo mensaje; en ese caso dile que puede pedir la corrección por separado, dándote el valor correcto en un mensaje aparte, una vez que confirmen juntos cuál es.`
             console.log(`[NIVEL4][corregir_dato_alumno][comparar+imagen] alumno_id=${clasificacion.entidades_resueltas.alumno_id} campo=${clasificacion.campo_alumno_corregir} valorRegistradoPresente=${valorRegistradoComparar !== null}`)
           } else {
