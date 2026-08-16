@@ -391,18 +391,6 @@ export async function POST(req: NextRequest) {
     servidorInicioProveedor: null,
     servidorTerminoProveedor: null,
     respuestaServidorTerminada: null,
-    esComparacionVisualAlumno: null,
-    campoAlumnoCorregir: null,
-    campoAlumnoCorregirPresente: null,
-    campoAlumnoSolicitado: null,
-    campoAlumnoSolicitadoPresente: null,
-    alumnoAmbiguo: null,
-    valorAlumnoPropuestoAusente: null,
-    cicloEscolarIdPresente: null,
-    enriquecimientoComparacionVisualEjecutado: null,
-    contextoAlumnoCompararEjecutado: null,
-    valorRegistradoCompararPresente: null,
-    contextoComparacionInyectado: null,
   }
   // Ver "no inventar valores": agrega una LlamadaIA real a la traza y
   // mantiene sincronizados los contadores — única función que escribe
@@ -1008,25 +996,6 @@ export async function POST(req: NextRequest) {
         !!clasificacion.campo_alumno_corregir &&
         valorAlumnoPropuestoAusente
 
-      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — DEPURACIÓN DE
-      // esComparacionVisualDeAlumno (ver "instrumentación diagnóstica
-      // mínima para confirmar qué cláusula da false"). Solo lectura de
-      // valores que ya existen en este punto — ninguna llamada nueva,
-      // ninguna consulta nueva. Expone campo_alumno_corregir y
-      // campo_alumno_solicitado POR SEPARADO, sin el "??" que ya usa
-      // trazaDebug.campo (arriba) y que puede enmascarar uno detrás del
-      // otro. Nunca CURP ni ningún valor real, solo nombres de campo y
-      // booleanos.
-      if (diagnosticoCurpActivo) {
-        trazaDebug.esComparacionVisualAlumno = esComparacionVisualDeAlumno
-        trazaDebug.campoAlumnoCorregir = clasificacion.campo_alumno_corregir ?? null
-        trazaDebug.campoAlumnoCorregirPresente = !!clasificacion.campo_alumno_corregir
-        trazaDebug.campoAlumnoSolicitado = clasificacion.campo_alumno_solicitado ?? null
-        trazaDebug.campoAlumnoSolicitadoPresente = !!clasificacion.campo_alumno_solicitado
-        trazaDebug.alumnoAmbiguo = !!clasificacion.entidades_resueltas.alumno_ambiguo
-        trazaDebug.valorAlumnoPropuestoAusente = valorAlumnoPropuestoAusente
-      }
-
       // Caso: falta un dato esencial o hay ambigüedad → no se ejecuta
       // nada todavía, se le pide al docente que aclare.
       if (clasificacion.datos_faltantes.length > 0 || clasificacion.entidades_resueltas.alumno_ambiguo) {
@@ -1394,24 +1363,8 @@ export async function POST(req: NextRequest) {
       // — se resuelven arriba, en ejecutarHerramientaDeModulo, sin
       // pasar nunca por el modelo grande (ver
       // lib/asistente/herramientasModulo.ts).
-      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — cicloEscolarIdPresente (ver
-      // "ampliar la instrumentación diagnóstica Preview... cinco señales
-      // booleanas"). Se mide aquí, justo antes de la compuerta ampliada,
-      // porque sesion.ciclo_escolar_id y esComparacionVisualDeAlumno ya
-      // existen en este punto — es exactamente el valor que la rama de
-      // comparación visual de abajo usará para decidir si entra.
-      if (diagnosticoCurpActivo && esComparacionVisualDeAlumno) {
-        trazaDebug.cicloEscolarIdPresente = !!sesion.ciclo_escolar_id
-      }
       if ((clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) || esComparacionVisualDeAlumno) {
         try {
-          // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — confirma que la
-          // petición realmente entró a este bloque de enriquecimiento
-          // (no solo que la condición de arriba se evaluó) cuando el
-          // caso es comparación visual.
-          if (diagnosticoCurpActivo && esComparacionVisualDeAlumno) {
-            trazaDebug.enriquecimientoComparacionVisualEjecutado = true
-          }
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
             const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
@@ -1479,26 +1432,9 @@ export async function POST(req: NextRequest) {
             // texto — una sola fuente de verdad del valor real
             // registrado.
             const ctxAlumnoComparar = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id!, sesion.ciclo_escolar_id)
-            // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — confirma que la
-            // llamada existente de arriba realmente se ejecutó, sin
-            // agregar ninguna llamada adicional.
-            if (diagnosticoCurpActivo) {
-              trazaDebug.contextoAlumnoCompararEjecutado = true
-            }
             const datosPersonalesComparar = (ctxAlumnoComparar as { datos_personales?: Record<string, string | null> })?.datos_personales ?? {}
             const valorRegistradoComparar = datosPersonalesComparar[clasificacion.campo_alumno_corregir!] ?? null
-            // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo booleano, nunca
-            // el valor real.
-            if (diagnosticoCurpActivo) {
-              trazaDebug.valorRegistradoCompararPresente = valorRegistradoComparar !== null
-            }
             contextoEnriquecido += `\n\nCOMPARACIÓN DE DATO PERSONAL DE ALUMNO CONTRA UNA IMAGEN ADJUNTA (ver "ajuste mínimo de clasificación para imagen adjunta"):\nEl maestro adjuntó una imagen para comparar el campo "${clasificacion.campo_alumno_corregir}" del alumno "${clasificacion.entidades_resueltas.alumno_nombre_detectado}".\nValor REAL ya registrado en la aplicación para ese campo (no lo inventes, es el dato real): ${valorRegistradoComparar ?? '(no hay ningún valor registrado todavía para este campo)'}.\nAunque la Lista de alumnos general de arriba no muestre este dato personal (se omite ahí a propósito, por privacidad — nunca expone CURP/sexo/fecha de nacimiento de todo el grupo en cada turno), eso NO significa que el dato no esté registrado: para ESTA comparación específica, el valor de arriba es el valor real y completo consultado directamente para este alumno, y tiene prioridad total sobre la ausencia de ese campo en la lista general. Si el valor de arriba no es "(no hay ningún valor registrado todavía para este campo)", úsalo como fuente de verdad para comparar — nunca digas que no tienes ese dato o que no está registrado.\nLee el valor real que aparece en la imagen adjunta y compáralo EXACTAMENTE, carácter por carácter, contra el valor registrado de arriba. Responde ÚNICAMENTE con: el valor que leíste en la imagen, el valor registrado, y si coinciden o no. Esto es EXCLUSIVAMENTE de solo lectura: bajo ninguna circunstancia propongas, apliques, confirmes ni des a entender que ya aplicaste ninguna corrección en este turno — ni siquiera si el maestro pide corregirlo explícitamente en este mismo mensaje; en ese caso dile que puede pedir la corrección por separado, dándote el valor correcto en un mensaje aparte, una vez que confirmen juntos cuál es.`
-            // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — confirma que el
-            // bloque anterior efectivamente se concatenó a
-            // contextoEnriquecido antes de la llamada final a Claude.
-            if (diagnosticoCurpActivo) {
-              trazaDebug.contextoComparacionInyectado = true
-            }
             console.log(`[NIVEL4][corregir_dato_alumno][comparar+imagen] alumno_id=${clasificacion.entidades_resueltas.alumno_id} campo=${clasificacion.campo_alumno_corregir} valorRegistradoPresente=${valorRegistradoComparar !== null}`)
           } else {
             // Diagnóstico obligatorio (ver "Corrección de arquitectura —

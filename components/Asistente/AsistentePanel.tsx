@@ -544,26 +544,6 @@ const nombrePila = (nombreCompleto: string | undefined): string => {
     .join(' ')
 }
 
-// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — SONDA DE CLIC (ver "auditoría
-// de solo lectura — pérdida de imagen antes de llegar al servidor"):
-// captura el estado real de adjuntosPendientes/comprimiendo en el
-// instante exacto del clic en Enviar, ANTES de que enviar() toque nada
-// — el diagnóstico ROUNDTRIP existente solo puede ver !!adjunto ya
-// dentro de motorTextoClaude.enviarTexto, corriente abajo de este
-// punto; esta sonda cierra ese punto ciego. Solo metadata (tamaños,
-// tipos, booleanos) — nunca contenido Base64 ni datos de alumnos.
-// Preview-only (mismo gate que el resto del diagnóstico). Retirar junto
-// con el resto de la instrumentación temporal.
-type SondaClickEnvio = {
-  timestamp: number
-  adjuntosCount: number
-  comprimiendoActivo: boolean
-  primerAdjuntoTipo: 'imagen' | 'documento' | null
-  primerAdjuntoMime: string | null
-  primerAdjuntoBytesAprox: number | null
-  previewPresente: boolean
-}
-
 export default function AsistentePanel() {
   const asistente = useAsistente()
   const router = useRouter()
@@ -583,8 +563,6 @@ export default function AsistentePanel() {
   const [adjuntosPendientes, setAdjuntosPendientes] = useState<AdjuntoImagen[]>([])
   const [comprimiendo, setComprimiendo] = useState<{ completadas: number; total: number } | null>(null)
   const [avisoAdjunto, setAvisoAdjunto] = useState<string | null>(null)
-  // Sonda de clic (ver tipo SondaClickEnvio arriba, a nivel de módulo).
-  const [sondaClickEnvio, setSondaClickEnvio] = useState<SondaClickEnvio | null>(null)
   const avisoAdjuntoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const adjuntoInputRef = useRef<HTMLInputElement>(null)
 
@@ -737,25 +715,6 @@ export default function AsistentePanel() {
   }
 
   const enviar = () => {
-    // SONDA DE CLIC — primer punto ejecutable de enviar(), antes de
-    // cualquier guard/reset/copia/await/llamada (ver tipo
-    // SondaClickEnvio, a nivel de módulo). Solo lectura: no toca texto,
-    // adjuntosPendientes ni comprimiendo, solo los inspecciona. Gate
-    // idéntico al resto de la instrumentación temporal — inactivo por
-    // completo (ni siquiera arma el objeto) en cualquier ambiente donde
-    // NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO no sea exactamente '1'.
-    if (process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1') {
-      const primerAdjunto = adjuntosPendientes[0]
-      setSondaClickEnvio({
-        timestamp: Date.now(),
-        adjuntosCount: adjuntosPendientes.length,
-        comprimiendoActivo: !!comprimiendo,
-        primerAdjuntoTipo: primerAdjunto ? (primerAdjunto.tipo.startsWith('image/') ? 'imagen' : 'documento') : null,
-        primerAdjuntoMime: primerAdjunto?.tipo ?? null,
-        primerAdjuntoBytesAprox: primerAdjunto ? Math.round((primerAdjunto.base64.length * 3) / 4) : null,
-        previewPresente: adjuntosPendientes.length > 0,
-      })
-    }
     const texto = input.trim()
     // Mientras se están comprimiendo fotos, adjuntosPendientes todavía
     // está vacío — enviar en ese momento mandaría el texto SIN las
@@ -813,42 +772,24 @@ export default function AsistentePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Marca temporal de verificación de bundle en Preview — ver "comprobación
-  // determinista sin Web Inspector para confirmar que Safari ejecuta el
-  // bundle nuevo". Protegida únicamente por el mismo gate que
-  // diagnosticoTecnico (NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO='1'), pero no
-  // depende de diagnosticoTecnico ni de ningún request: debe verse apenas
-  // carga el componente. Quitar junto con el resto del diagnóstico Preview
-  // cuando ya no haga falta.
-  const diagnosticoPreviewActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1'
-  const marcaRuntimePreview = diagnosticoPreviewActivo && (
-    <span className="fixed bottom-0 left-0 z-[60] text-[9px] font-mono text-white bg-black/70 px-1.5 py-0.5 rounded-tr pointer-events-none">
-      RUNTIME PREVIEW: DIAG-V3 · 4a563b9
-    </span>
-  )
-
   // --- Burbuja flotante (colapsada) ---
   if (!asistente.panelAbierto) {
     return (
-      <>
-        <button
-          onClick={() => asistente.abrirPanel()}
-          aria-label="Abrir Asistente IA"
-          className="fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full shadow-xl overflow-hidden border-2 border-white bg-white flex items-center justify-center hover:scale-105 transition-transform"
-        >
-          <img src="/logo.png" alt="Asistente Docente IA" className="w-full h-full object-cover" />
-          {asistente.mensajes.length > 0 && (
-            <span className="absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500 border-2 border-white" aria-hidden="true" />
-          )}
-        </button>
-        {marcaRuntimePreview}
-      </>
+      <button
+        onClick={() => asistente.abrirPanel()}
+        aria-label="Abrir Asistente IA"
+        className="fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full shadow-xl overflow-hidden border-2 border-white bg-white flex items-center justify-center hover:scale-105 transition-transform"
+      >
+        <img src="/logo.png" alt="Asistente Docente IA" className="w-full h-full object-cover" />
+        {asistente.mensajes.length > 0 && (
+          <span className="absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500 border-2 border-white" aria-hidden="true" />
+        )}
+      </button>
     )
   }
 
   return (
     <>
-    {marcaRuntimePreview}
     <div className="fixed inset-0 z-50 flex flex-col bg-gray-50 print:hidden">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
         <div onClick={() => setMenuAbierto(true)} className="w-8 h-8 flex items-center justify-center text-2xl mr-2 flex-shrink-0 mt-1 cursor-pointer">🍎</div>
@@ -1292,17 +1233,6 @@ export default function AsistentePanel() {
               <p>imagen_en_asistente: {String(asistente.diagnosticoTecnico.imagenEnAsistente)}</p>
               <p>imagen_en_motor: {String(asistente.diagnosticoTecnico.imagenEnMotor)}</p>
               <p>imagen_en_fetch: {String(asistente.diagnosticoTecnico.imagenEnFetch)}</p>
-              {sondaClickEnvio && (
-                <>
-                  <p className="font-bold mt-1">🖱 sonda de clic (instante exacto de Enviar)</p>
-                  <p>ui_click_adjuntos_count: {sondaClickEnvio.adjuntosCount}</p>
-                  <p>ui_click_comprimiendo: {String(sondaClickEnvio.comprimiendoActivo)}</p>
-                  <p>ui_click_primer_adjunto_tipo: {sondaClickEnvio.primerAdjuntoTipo ?? 'ninguno'}</p>
-                  <p>ui_click_primer_adjunto_mime: {sondaClickEnvio.primerAdjuntoMime ?? 'ninguno'}</p>
-                  <p>ui_click_primer_adjunto_bytes_aprox: {sondaClickEnvio.primerAdjuntoBytesAprox ?? 'ninguno'}</p>
-                  <p>ui_click_preview_presente: {String(sondaClickEnvio.previewPresente)}</p>
-                </>
-              )}
               {asistente.diagnosticoTecnico.imagenRecibidaServidor !== null && <p>imagen_recibida_servidor: {String(asistente.diagnosticoTecnico.imagenRecibidaServidor)}</p>}
               {asistente.diagnosticoTecnico.imagenEntregadaVision !== null && <p>imagen_entregada_vision: {String(asistente.diagnosticoTecnico.imagenEntregadaVision)}</p>}
               {asistente.diagnosticoTecnico.documentoPresente !== null && <p>documento_presente: {String(asistente.diagnosticoTecnico.documentoPresente)}</p>}
@@ -1329,18 +1259,6 @@ export default function AsistentePanel() {
               {asistente.diagnosticoTecnico.servidorInicioProveedor !== null && <p>servidor_inició_proveedor: {String(asistente.diagnosticoTecnico.servidorInicioProveedor)}</p>}
               {asistente.diagnosticoTecnico.servidorTerminoProveedor !== null && <p>servidor_terminó_proveedor: {String(asistente.diagnosticoTecnico.servidorTerminoProveedor)}</p>}
               {asistente.diagnosticoTecnico.respuestaServidorTerminada !== null && <p>respuesta_servidor_terminada: {String(asistente.diagnosticoTecnico.respuestaServidorTerminada)}</p>}
-              <p className="font-bold mt-1">🧩 depuración esComparacionVisualDeAlumno</p>
-              {asistente.diagnosticoTecnico.esComparacionVisualAlumno !== null && <p>es_comparacion_visual_alumno: {String(asistente.diagnosticoTecnico.esComparacionVisualAlumno)}</p>}
-              {asistente.diagnosticoTecnico.campoAlumnoCorregirPresente !== null && <p>campo_alumno_corregir: {asistente.diagnosticoTecnico.campoAlumnoCorregir ?? 'null'} (presente: {String(asistente.diagnosticoTecnico.campoAlumnoCorregirPresente)})</p>}
-              {asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente !== null && <p>campo_alumno_solicitado: {asistente.diagnosticoTecnico.campoAlumnoSolicitado ?? 'null'} (presente: {String(asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente)})</p>}
-              {asistente.diagnosticoTecnico.alumnoAmbiguo !== null && <p>alumno_ambiguo: {String(asistente.diagnosticoTecnico.alumnoAmbiguo)}</p>}
-              {asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente !== null && <p>valor_alumno_propuesto_ausente: {String(asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente)}</p>}
-              <p className="font-bold mt-1">🔎 enriquecimiento comparación visual</p>
-              {asistente.diagnosticoTecnico.cicloEscolarIdPresente !== null && <p>ciclo_escolar_id_presente: {String(asistente.diagnosticoTecnico.cicloEscolarIdPresente)}</p>}
-              {asistente.diagnosticoTecnico.enriquecimientoComparacionVisualEjecutado !== null && <p>enriquecimiento_comparacion_visual_ejecutado: {String(asistente.diagnosticoTecnico.enriquecimientoComparacionVisualEjecutado)}</p>}
-              {asistente.diagnosticoTecnico.contextoAlumnoCompararEjecutado !== null && <p>contexto_alumno_comparar_ejecutado: {String(asistente.diagnosticoTecnico.contextoAlumnoCompararEjecutado)}</p>}
-              {asistente.diagnosticoTecnico.valorRegistradoCompararPresente !== null && <p>valor_registrado_comparar_presente: {String(asistente.diagnosticoTecnico.valorRegistradoCompararPresente)}</p>}
-              {asistente.diagnosticoTecnico.contextoComparacionInyectado !== null && <p>contexto_comparacion_inyectado: {String(asistente.diagnosticoTecnico.contextoComparacionInyectado)}</p>}
             </div>
           </details>
         )}

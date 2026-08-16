@@ -257,18 +257,6 @@ export class MotorTextoClaude implements MotorConversacional {
         servidorInicioProveedor: null,
         servidorTerminoProveedor: null,
         respuestaServidorTerminada: null,
-        esComparacionVisualAlumno: null,
-        campoAlumnoCorregir: null,
-        campoAlumnoCorregirPresente: null,
-        campoAlumnoSolicitado: null,
-        campoAlumnoSolicitadoPresente: null,
-        alumnoAmbiguo: null,
-        valorAlumnoPropuestoAusente: null,
-        cicloEscolarIdPresente: null,
-        enriquecimientoComparacionVisualEjecutado: null,
-        contextoAlumnoCompararEjecutado: null,
-        valorRegistradoCompararPresente: null,
-        contextoComparacionInyectado: null,
         ...extra,
       }
     }

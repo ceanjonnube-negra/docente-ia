@@ -353,37 +353,6 @@ export type TrazaDiagnosticoCurp = {
   servidorInicioProveedor: boolean | null
   servidorTerminoProveedor: boolean | null
   respuestaServidorTerminada: boolean | null
-  // --- DEPURACIÓN DE esComparacionVisualDeAlumno (ver "instrumentación
-  // diagnóstica mínima para confirmar qué cláusula da false") —
-  // exposición directa, sin ningún ?? ni fallback que pueda enmascarar
-  // un campo null detrás de otro (a diferencia de trazaDebug.campo, que
-  // sí usa "campo_alumno_corregir ?? campo_alumno_solicitado" y por eso
-  // no basta para diagnosticar esto). Nunca CURP/valores reales, solo
-  // nombres de campo y booleanos. null cuando el gate diagnóstico está
-  // apagado o el predicado nunca se calculó (nivel_ejecucion===1 sin
-  // instrumentación activa, etc.). Preview-only, retirar junto con el
-  // resto del diagnóstico. ---
-  esComparacionVisualAlumno: boolean | null
-  campoAlumnoCorregir: string | null
-  campoAlumnoCorregirPresente: boolean | null
-  campoAlumnoSolicitado: string | null
-  campoAlumnoSolicitadoPresente: boolean | null
-  alumnoAmbiguo: boolean | null
-  valorAlumnoPropuestoAusente: boolean | null
-  // --- ENRIQUECIMIENTO DE COMPARACIÓN VISUAL (ver "ampliar la
-  // instrumentación diagnóstica Preview con las cinco señales
-  // booleanas") — permite distinguir, en una sola prueba real, si el
-  // problema está en que no se consulta contextoAlumno, en que sí se
-  // consulta pero el valor no se inyecta al prompt, o en que sí se
-  // inyecta pero Nivel4 lo ignora. Nunca el valor real, solo
-  // booleanos. null cuando el gate diagnóstico está apagado o esta
-  // rama nunca se alcanzó. Preview-only, retirar junto con el resto
-  // del diagnóstico. ---
-  cicloEscolarIdPresente: boolean | null
-  enriquecimientoComparacionVisualEjecutado: boolean | null
-  contextoAlumnoCompararEjecutado: boolean | null
-  valorRegistradoCompararPresente: boolean | null
-  contextoComparacionInyectado: boolean | null
 }
 
 // Una llamada real a un proveedor de IA dentro de esta petición — nunca
