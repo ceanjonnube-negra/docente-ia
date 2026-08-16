@@ -370,6 +370,20 @@ export type TrazaDiagnosticoCurp = {
   campoAlumnoSolicitadoPresente: boolean | null
   alumnoAmbiguo: boolean | null
   valorAlumnoPropuestoAusente: boolean | null
+  // --- ENRIQUECIMIENTO DE COMPARACIÓN VISUAL (ver "ampliar la
+  // instrumentación diagnóstica Preview con las cinco señales
+  // booleanas") — permite distinguir, en una sola prueba real, si el
+  // problema está en que no se consulta contextoAlumno, en que sí se
+  // consulta pero el valor no se inyecta al prompt, o en que sí se
+  // inyecta pero Nivel4 lo ignora. Nunca el valor real, solo
+  // booleanos. null cuando el gate diagnóstico está apagado o esta
+  // rama nunca se alcanzó. Preview-only, retirar junto con el resto
+  // del diagnóstico. ---
+  cicloEscolarIdPresente: boolean | null
+  enriquecimientoComparacionVisualEjecutado: boolean | null
+  contextoAlumnoCompararEjecutado: boolean | null
+  valorRegistradoCompararPresente: boolean | null
+  contextoComparacionInyectado: boolean | null
 }
 
 // Una llamada real a un proveedor de IA dentro de esta petición — nunca

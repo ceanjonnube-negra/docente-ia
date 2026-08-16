@@ -1317,6 +1317,12 @@ export default function AsistentePanel() {
               {asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente !== null && <p>campo_alumno_solicitado: {asistente.diagnosticoTecnico.campoAlumnoSolicitado ?? 'null'} (presente: {String(asistente.diagnosticoTecnico.campoAlumnoSolicitadoPresente)})</p>}
               {asistente.diagnosticoTecnico.alumnoAmbiguo !== null && <p>alumno_ambiguo: {String(asistente.diagnosticoTecnico.alumnoAmbiguo)}</p>}
               {asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente !== null && <p>valor_alumno_propuesto_ausente: {String(asistente.diagnosticoTecnico.valorAlumnoPropuestoAusente)}</p>}
+              <p className="font-bold mt-1">🔎 enriquecimiento comparación visual</p>
+              {asistente.diagnosticoTecnico.cicloEscolarIdPresente !== null && <p>ciclo_escolar_id_presente: {String(asistente.diagnosticoTecnico.cicloEscolarIdPresente)}</p>}
+              {asistente.diagnosticoTecnico.enriquecimientoComparacionVisualEjecutado !== null && <p>enriquecimiento_comparacion_visual_ejecutado: {String(asistente.diagnosticoTecnico.enriquecimientoComparacionVisualEjecutado)}</p>}
+              {asistente.diagnosticoTecnico.contextoAlumnoCompararEjecutado !== null && <p>contexto_alumno_comparar_ejecutado: {String(asistente.diagnosticoTecnico.contextoAlumnoCompararEjecutado)}</p>}
+              {asistente.diagnosticoTecnico.valorRegistradoCompararPresente !== null && <p>valor_registrado_comparar_presente: {String(asistente.diagnosticoTecnico.valorRegistradoCompararPresente)}</p>}
+              {asistente.diagnosticoTecnico.contextoComparacionInyectado !== null && <p>contexto_comparacion_inyectado: {String(asistente.diagnosticoTecnico.contextoComparacionInyectado)}</p>}
             </div>
           </details>
         )}
