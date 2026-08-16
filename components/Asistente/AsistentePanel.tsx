@@ -813,24 +813,42 @@ export default function AsistentePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Marca temporal de verificación de bundle en Preview — ver "comprobación
+  // determinista sin Web Inspector para confirmar que Safari ejecuta el
+  // bundle nuevo". Protegida únicamente por el mismo gate que
+  // diagnosticoTecnico (NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO='1'), pero no
+  // depende de diagnosticoTecnico ni de ningún request: debe verse apenas
+  // carga el componente. Quitar junto con el resto del diagnóstico Preview
+  // cuando ya no haga falta.
+  const diagnosticoPreviewActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1'
+  const marcaRuntimePreview = diagnosticoPreviewActivo && (
+    <span className="fixed bottom-0 left-0 z-[60] text-[9px] font-mono text-white bg-black/70 px-1.5 py-0.5 rounded-tr pointer-events-none">
+      RUNTIME PREVIEW: DIAG-V3 · 4a563b9
+    </span>
+  )
+
   // --- Burbuja flotante (colapsada) ---
   if (!asistente.panelAbierto) {
     return (
-      <button
-        onClick={() => asistente.abrirPanel()}
-        aria-label="Abrir Asistente IA"
-        className="fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full shadow-xl overflow-hidden border-2 border-white bg-white flex items-center justify-center hover:scale-105 transition-transform"
-      >
-        <img src="/logo.png" alt="Asistente Docente IA" className="w-full h-full object-cover" />
-        {asistente.mensajes.length > 0 && (
-          <span className="absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500 border-2 border-white" aria-hidden="true" />
-        )}
-      </button>
+      <>
+        <button
+          onClick={() => asistente.abrirPanel()}
+          aria-label="Abrir Asistente IA"
+          className="fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full shadow-xl overflow-hidden border-2 border-white bg-white flex items-center justify-center hover:scale-105 transition-transform"
+        >
+          <img src="/logo.png" alt="Asistente Docente IA" className="w-full h-full object-cover" />
+          {asistente.mensajes.length > 0 && (
+            <span className="absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500 border-2 border-white" aria-hidden="true" />
+          )}
+        </button>
+        {marcaRuntimePreview}
+      </>
     )
   }
 
   return (
     <>
+    {marcaRuntimePreview}
     <div className="fixed inset-0 z-50 flex flex-col bg-gray-50 print:hidden">
       <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100 shadow-sm">
         <div onClick={() => setMenuAbierto(true)} className="w-8 h-8 flex items-center justify-center text-2xl mr-2 flex-shrink-0 mt-1 cursor-pointer">🍎</div>
