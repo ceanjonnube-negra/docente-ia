@@ -1359,6 +1359,12 @@ export async function POST(req: NextRequest) {
           modulo: 'lista',
           accion: 'abrir_modulo',
           filtros: { filtro },
+          // Aditivo — ver "ventana contextual de Lista filtrada desde
+          // el Chat IA". sesion.grupo_activo_id ya está resuelto en
+          // este punto (obtenerSesionContexto, más arriba) — nunca una
+          // consulta nueva. Permite que la sheet del cliente consulte
+          // roster/asistencia sin volver a resolver el grupo activo.
+          grupoId: sesion.grupo_activo_id,
           automatica: true,
         }
         const marcador = `[[NAVEGACION:${Buffer.from(JSON.stringify(accionNavegacion), 'utf-8').toString('base64')}]]`

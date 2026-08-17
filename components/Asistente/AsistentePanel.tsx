@@ -27,6 +27,8 @@ import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from 
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import VentanaListaFiltrada from './VentanaListaFiltrada'
+import type { FiltroLista } from '@/lib/listaFiltrada'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
@@ -574,6 +576,11 @@ export default function AsistentePanel() {
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('voiceDebug') === '1'
   )
 
+  // Ventana contextual de Lista filtrada, abierta ENCIMA del chat sin
+  // navegar — ver "ventana contextual de Lista filtrada desde el
+  // Chat IA". null = cerrada.
+  const [listaFiltradaAbierta, setListaFiltradaAbierta] = useState<{ grupoId: string; filtro: FiltroLista } | null>(null)
+
   // Navegación automática pedida por voz/texto ("Abre a Sergio en la
   // lista") — AsistentePanel es la única pieza con useRouter, así que
   // aquí (y solo aquí) se convierte una AccionNavegacion en un
@@ -590,10 +597,12 @@ export default function AsistentePanel() {
     } else if (accion.modulo === 'lista') {
       // Navegación a nivel de módulo, sin alumnoId — "muéstrame
       // únicamente los ausentes" (ver navegar_lista_filtrada en
-      // app/api/chat/route.ts). filtros.filtro coincide con el mismo
-      // estado `filtro` que ya existe en app/dashboard/lista/page.tsx.
-      const filtro = accion.filtros?.filtro
-      router.push(filtro ? `/dashboard/lista?filtro=${filtro}` : '/dashboard/lista')
+      // app/api/chat/route.ts). En vez de navegar, se abre una
+      // ventana contextual encima del chat (nunca router.push) para
+      // que el chat de abajo nunca se pierda — ver
+      // VentanaListaFiltrada.
+      const filtro = (accion.filtros?.filtro ?? 'todos') as FiltroLista
+      if (accion.grupoId) setListaFiltradaAbierta({ grupoId: accion.grupoId, filtro })
     }
     AsistenteService.limpiarNavegacionPendiente()
   }, [asistente.accionNavegacionPendiente, router])
@@ -1340,6 +1349,13 @@ export default function AsistentePanel() {
         </div>
       </div>
     </div>
+    {listaFiltradaAbierta && (
+      <VentanaListaFiltrada
+        grupoId={listaFiltradaAbierta.grupoId}
+        filtro={listaFiltradaAbierta.filtro}
+        onClose={() => setListaFiltradaAbierta(null)}
+      />
+    )}
     </>
   )
 }

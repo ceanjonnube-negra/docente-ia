@@ -9,6 +9,7 @@ import { useAsistente, useContextoAsistente, useHerramientasAsistente } from '@/
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
 import { fechaISOHoy, formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarEstadoAsistencia, contarEstadosAsistencia, type EstadoAsistenciaOficial } from '@/lib/motorContexto'
+import { filtrarAlumnosPorCriterio } from '@/lib/listaFiltrada'
 
 type Alumno = AlumnoConPosicion
 // Único origen de verdad: los 4 estados oficiales y su clasificación
@@ -322,14 +323,14 @@ function ListaPageContent() {
   const hayRegistroHoy = totalPresentes + totalFaltas + totalRetardos > 0
   const porcentajeAsistenciaHoy = alumnos.length > 0 ? Math.round((totalPresentes / alumnos.length) * 100) : 0
 
-  const alumnosFiltrados = alumnos.filter(a => {
-    if (busqueda && !a.nombre.toLowerCase().includes(busqueda.toLowerCase())) return false
-    if (filtro === 'ninas' && a.sexo !== 'M') return false
-    if (filtro === 'ninos' && a.sexo !== 'H') return false
-    if (filtro === 'presentes' && estados[a.id] !== 'presente') return false
-    if (filtro === 'ausentes' && estados[a.id] !== 'falta') return false
-    return true
-  })
+  // Los 5 criterios (todos/ninas/ninos/presentes/ausentes) vienen de
+  // filtrarAlumnosPorCriterio (lib/listaFiltrada.ts) — misma fuente
+  // de verdad que usa la ventana contextual del Chat IA, ver
+  // "ventana contextual de Lista filtrada". La búsqueda por nombre es
+  // exclusiva de esta pantalla completa, se sigue aplicando aparte.
+  const alumnosFiltrados = filtrarAlumnosPorCriterio(alumnos, estados, filtro).filter(
+    a => !busqueda || a.nombre.toLowerCase().includes(busqueda.toLowerCase())
+  )
 
   // El asistente siempre sabe que el docente está viendo Lista y de qué
   // grupo, sin tener que preguntarlo.

@@ -78,6 +78,15 @@ export type AccionNavegacion = {
   alumnoId?: string
   pestana?: string
   filtros?: Record<string, string>
+  // Grupo activo YA resuelto por el servidor (sesion.grupo_activo_id,
+  // ver lib/sesionContexto.ts) — ver "ventana contextual de Lista
+  // filtrada desde el Chat IA". Campo aditivo, tipado, separado de
+  // `filtros`: hoy solo lo llena navegar_lista_filtrada en route.ts,
+  // para que la sheet del Chat pueda consultar el roster/asistencia
+  // sin volver a resolver el grupo del lado del cliente. Ausente/null
+  // en cualquier otra acción de navegación existente, sin cambiar su
+  // comportamiento.
+  grupoId?: string | null
   // true = navegar de inmediato ("Abre a Sergio en la lista"); false =
   // solo ofrecer el botón "Abrir en Lista" sin cambiar de pantalla
   // ("Muéstrame a Sergio en la lista") — ver DIFERENCIA ENTRE
