@@ -379,7 +379,17 @@ export async function clasificarNivel0(
   // fuente del valor). false por default: cualquier llamada que no
   // pase este parámetro explícitamente conserva el comportamiento
   // exacto de siempre.
-  tieneImagenAdjunta = false
+  tieneImagenAdjunta = false,
+  // Ver "medición de usage real del Clasificador de Nivel 0". Expone el
+  // usage exacto de ESTA llamada (respuesta.usage, ya presente en el
+  // SDK) a quien llama, sin alterar la clasificación ni su contrato de
+  // retorno — parámetro opcional, así que cualquier llamada existente
+  // que no lo pase conserva el comportamiento exacto de siempre.
+  // Deliberadamente un callback recibido por parámetro (no una
+  // variable de módulo): en Fluid Compute la misma instancia puede
+  // atender requests concurrentes, así que un estado compartido a
+  // nivel de módulo mezclaría el usage de una petición con el de otra.
+  onUsage?: (usage: Anthropic.Usage) => void
 ): Promise<ClasificacionNivel0> {
   try {
     const respuesta = await client.messages.create(
@@ -398,6 +408,7 @@ export async function clasificarNivel0(
       },
       { timeout: TIMEOUT_NIVEL0_MS }
     );
+    onUsage?.(respuesta.usage)
 
     const bloque = respuesta.content.find((b) => b.type === 'text');
     if (!bloque || bloque.type !== 'text') return FALLBACK;

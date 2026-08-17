@@ -916,29 +916,42 @@ export async function POST(req: NextRequest) {
       // regla 13 en clasificadorNivel0.ts). No es historial "de
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
       const tClasificacionInicio = diagnosticoCurpActivo ? Date.now() : 0
-      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta)
+      // Ver "medición de usage real del Clasificador de Nivel 0" —
+      // clasificarNivel0 acepta un callback opcional que expone el
+      // usage real de su propia llamada a Anthropic (respuesta.usage,
+      // ya presente en el SDK). Local a este request (nunca una
+      // variable de módulo), así que es segura bajo requests
+      // concurrentes. Envuelto en un objeto (no un "let" reasignado
+      // directo) porque TypeScript no logra rastrear correctamente el
+      // ensanchamiento de tipo de un "let" reasignado dentro de un
+      // callback pasado a otra función — con el objeto, la propiedad
+      // conserva su tipo declarado sin ese falso positivo.
+      const usageClasificacion: { valor: Anthropic.Usage | null } = { valor: null }
+      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta, (usage) => {
+        usageClasificacion.valor = usage
+      })
       marcarTelemetria('intent:classification_finished')
       if (diagnosticoCurpActivo) {
         const msClasificacion = Date.now() - tClasificacionInicio
         trazaDebug.clasificacionEjecutada = true
         trazaDebug.msClasificacion = msClasificacion
-        // clasificarNivel0 vive en lib/clasificadorNivel0.ts, fuera de
-        // los archivos autorizados esta ronda — se mide su duración
-        // desde aquí (afuera), pero sus tokens no están expuestos sin
-        // tocar ese archivo (ver informe): usageDisponible=false, nunca
-        // un valor inventado. Modelo tomado del código ya existente
-        // (literal 'claude-sonnet-4-6' en ese archivo), no de una
-        // llamada adicional.
+        // Modelo tomado del código ya existente (literal
+        // 'claude-sonnet-4-6' en clasificadorNivel0.ts), no de una
+        // llamada adicional. usage real de ESTA petición, nunca
+        // inventado — si el SDK entrega null (ej. sin caching activo
+        // todavía, cache_read_input_tokens/cache_creation_input_tokens
+        // vienen null), se preserva null, nunca se sustituye por 0.
+        const usage = usageClasificacion.valor
         registrarLlamadaIA({
           proveedor: 'anthropic',
           modelo: 'claude-sonnet-4-6',
           finalidad: 'clasificacion',
           ms: msClasificacion,
-          usageDisponible: false,
-          inputTokens: null,
-          outputTokens: null,
-          cacheReadTokens: null,
-          cacheWriteTokens: null,
+          usageDisponible: usage !== null,
+          inputTokens: usage?.input_tokens ?? null,
+          outputTokens: usage?.output_tokens ?? null,
+          cacheReadTokens: usage?.cache_read_input_tokens ?? null,
+          cacheWriteTokens: usage?.cache_creation_input_tokens ?? null,
         })
       }
       requiereConsultaOficial = clasificacion.requiere_consulta_oficial === true
