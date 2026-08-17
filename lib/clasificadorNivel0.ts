@@ -246,8 +246,22 @@ const FALLBACK: ClasificacionNivel0 = {
 // mandarle la conversación completa, solo lo último.
 type TurnoReciente = { role: 'user' | 'assistant'; content: string };
 
-function construirPrompt(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean): string {
-  return `Eres el Clasificador de Nivel 0 de Docente IA. Analiza el mensaje del
+// Bloque estático — intro, contrato de formato de salida y las 23
+// reglas del Clasificador de Nivel 0. Byte-idéntico entre requests:
+// nunca cambia con el docente, la sesión, el grupo, el historial ni
+// el mensaje — construido UNA sola vez a nivel de módulo. Reordenado
+// respecto al construirPrompt() original ÚNICAMENTE para que este
+// bloque quede como prefijo 100% estático antes del contexto
+// dinámico (ver diseño "separar prefijo estático cacheable del
+// clasificador de Nivel 0") — mismo texto exacto, mismas 23 reglas,
+// mismo esquema de salida, mismo significado. Las reglas se refieren
+// a "CONTEXTO DE SESIÓN"/"alumnos_del_grupo_activo"/"ÚLTIMOS TURNOS
+// DE LA CONVERSACIÓN" por NOMBRE de sección (nunca por posición), y
+// el modelo recibe el system prompt completo antes de generar
+// cualquier token — nunca en fragmentos — así que resuelve esas
+// referencias igual sin importar que ese bloque ahora venga después
+// en el texto en vez de antes.
+const PROMPT_NIVEL0_ESTATICO = `Eres el Clasificador de Nivel 0 de Docente IA. Analiza el mensaje del
 docente y responde EXCLUSIVAMENTE con un objeto JSON, sin texto antes,
 después, sin explicaciones, sin marcadores de código.
 
@@ -294,15 +308,6 @@ Formato exacto de salida:
   "motivo_confirmacion": string | null,
   "requiere_consulta_oficial": boolean
 }
-
-CONTEXTO DE SESIÓN (dato, no lo inventes, úsalo tal cual):
-grupo_activo_id: ${sesion.grupo_activo_id ?? 'ninguno'}
-ciclo_escolar_id: ${sesion.ciclo_escolar_id ?? 'ninguno'}
-alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
-imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
-
-ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
-${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
 
 REGLAS:
 1. Si el mensaje pregunta por faltas/asistencia/retardos de un alumno específico → intencion_principal="consultar_asistencia", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false.
@@ -353,6 +358,20 @@ Si el mensaje trae la intención de comparar pero le falta el alumno, el campo, 
 Frases como "no corrijas nada todavía", "no cambies nada", "sin corregir", "no lo apliques" NUNCA impiden que esta regla se active — al contrario, son exactamente la señal de que el docente quiere solo la comparación de solo lectura, que es exactamente lo que accion_correccion_alumno="proponer" ya garantiza (nunca escribe por sí solo).
 DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docente SOLO pregunta por el valor YA registrado, sin traer ningún valor propio para comparar. En cuanto el mensaje trae, además del alumno y el campo, un valor concreto del propio docente para comparar contra lo registrado, es esta regla (22.2), nunca la 21.
 23. REVISIÓN INTERNA de posibles errores en los datos de los alumnos (ver "fallo: Chat IA niega poder editar datos de alumnos"): si el maestro pide revisar, checar o buscar posibles errores/inconsistencias en los datos de sus alumnos o de "la lista" SIN nombrar un alumno y un campo específicos con un valor nuevo (eso ya es la regla 22) → intencion_principal="revisar_datos_alumnos", nivel_ejecucion=1, requiere_ia=false, requiere_contexto_memoria=false, entidades_resueltas.alumno_id=null. Ejemplos: "Revisa otros posibles errores", "Revisa otros posibles errores y corrige", "Revisa la lista", "Busca errores en los datos de mis alumnos", "Corrige la lista de la app", "Quiero que corrijas la lista, de la app", "¿Hay datos mal capturados en mi grupo?", "Checa que los datos de mis alumnos estén bien". Esta regla es SIEMPRE sobre los datos YA guardados dentro de la aplicación — NUNCA la uses, y usa "conversacion_general" en su lugar, si el mensaje menciona explícitamente RENAPO, "verificación oficial", "fuente oficial", "validar oficialmente" o cualquier equivalente que pida contrastar contra una fuente externa: eso NO es esta intención, es una pregunta que el chat debe responder con honestidad (no tiene acceso a RENAPO ni a ninguna fuente oficial de identidad), nunca confundirla con revisar los datos internos.`;
+
+// Contexto de sesión + últimos turnos — la parte que sí cambia en
+// cada request (grupo, alumnos, señal de imagen, historial
+// reciente). Mismo texto/etiquetas exactos que ya usaba
+// construirPrompt(), sin cambios.
+function construirContextoDinamico(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean): string {
+  return `CONTEXTO DE SESIÓN (dato, no lo inventes, úsalo tal cual):
+grupo_activo_id: ${sesion.grupo_activo_id ?? 'ninguno'}
+ciclo_escolar_id: ${sesion.ciclo_escolar_id ?? 'ninguno'}
+alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
+imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
+
+ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
+${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}`;
 }
 
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras
@@ -403,7 +422,19 @@ export async function clasificarNivel0(
         // parseo y caía al FALLBACK silenciosamente — ver "el
         // clasificador real no reconoció la corrección de CURP".
         max_tokens: 700,
-        system: construirPrompt(sesion, historialReciente, tieneImagenAdjunta),
+        // Prompt caching (ver diseño "separar prefijo estático
+        // cacheable del clasificador de Nivel 0") — el bloque
+        // estático (PROMPT_NIVEL0_ESTATICO, ~91% del prompt total) se
+        // marca con cache_control para que Anthropic lo sirva desde
+        // caché en llamadas subsecuentes dentro de la ventana de TTL;
+        // el contexto dinámico va en un bloque separado, SIN
+        // cache_control, después del breakpoint — nunca se cachea
+        // (cambia en cada request). No cambia el contenido ni el
+        // orden lógico de ninguna regla, solo cómo se transmite.
+        system: [
+          { type: 'text', text: PROMPT_NIVEL0_ESTATICO, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: construirContextoDinamico(sesion, historialReciente, tieneImagenAdjunta) },
+        ],
         messages: [{ role: 'user', content: mensaje }],
       },
       { timeout: TIMEOUT_NIVEL0_MS }
