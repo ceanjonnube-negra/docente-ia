@@ -627,6 +627,94 @@ function extraerUnicoObjetoJsonTopLevel(texto: string): string | null {
   return texto.slice(objetos[0].inicio, objetos[0].fin)
 }
 
+// Normalización EXCLUSIVA para los patrones deterministas de abajo —
+// NO es normalizarNombre (lib/emparejarAlumno.ts): esta función es
+// local a este archivo, no se usa para resolver alumnos, y no se
+// reutiliza fuera de este propósito. Solo operaciones seguras: NFD +
+// strip de diacríticos, minúsculas, quitar puntuación exterior
+// (¿?¡!.,;:), colapsar espacios, trim. Nunca stemming, nunca
+// tolerancia de palabras parciales.
+function normalizarMensajeDeterminista(mensaje: string): string {
+  return mensaje
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[¿?¡!.,;:]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Allowlist cerrada — FASE 1 del fast path determinista (ver
+// "auditoría técnica y diseño — fast path determinista"). Match EXACTO
+// de cadena completa tras normalizar, nunca coincidencia parcial ni
+// "contiene la palabra". Cualquier variante no listada aquí,
+// literalmente, cae a Sonnet sin excepción — incluida deliberadamente
+// "¿Cuántas niñas y cuántos niños son?" (bug independiente, fuera de
+// alcance de esta intervención).
+const FRASES_CANTIDAD_TOTAL_ALUMNOS = new Set([
+  'cuantos alumnos tengo',
+  'cuantos alumnos hay',
+  'cuantos alumnos son',
+  'cuantos alumnos tengo en el grupo',
+])
+
+const FRASES_NAVEGAR_LISTA_FILTRADA: Record<string, NonNullable<ClasificacionNivel0['filtro_lista']>> = {
+  'muestrame todos': 'todos',
+  'ensename todos': 'todos',
+  'ver todos': 'todos',
+  'muestrame las ninas': 'ninas',
+  'ensename las ninas': 'ninas',
+  'ver las ninas': 'ninas',
+  'muestrame los ninos': 'ninos',
+  'ensename los ninos': 'ninos',
+  'ver los ninos': 'ninos',
+  'muestrame los presentes': 'presentes',
+  'ensename los presentes': 'presentes',
+  'ver los presentes': 'presentes',
+  'muestrame los ausentes': 'ausentes',
+  'ensename los ausentes': 'ausentes',
+  'ver los ausentes': 'ausentes',
+}
+
+// Capa determinista ANTES de Anthropic — ver diseño "fast path
+// determinista, microfase 1". SOLO clasifica (nunca resuelve alumnos,
+// nunca escribe, nunca genera texto de respuesta) — construye el
+// mismo contrato compacto que ya genera Sonnet
+// (ClasificacionModeloNivel0) para que normalizarClasificacionNivel0
+// derive nivel_ejecucion/requiere_ia/requiere_contexto_memoria/
+// requiere_confirmacion exactamente con la misma lógica de siempre,
+// sin duplicarla aquí. Devuelve null ante cualquier mensaje que no
+// coincida EXACTAMENTE, carácter por carácter tras normalizar, con una
+// de las frases de la allowlist — en ese caso el llamador continúa
+// hacia Sonnet sin ninguna diferencia respecto al camino actual.
+function intentarClasificacionDeterminista(mensaje: string): ClasificacionModeloNivel0 | null {
+  const normalizado = normalizarMensajeDeterminista(mensaje)
+
+  if (FRASES_CANTIDAD_TOTAL_ALUMNOS.has(normalizado)) {
+    return {
+      intencion_principal: 'consultar_asistencia_grupo',
+      entidades_resueltas: { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: false, opciones_alumno_ambiguo: [] },
+      datos_faltantes: [],
+      nivel_confianza: 1,
+      nivel_detalle_asistencia_grupo: 'cantidad',
+      categoria_asistencia_grupo: 'total',
+    }
+  }
+
+  const filtro = FRASES_NAVEGAR_LISTA_FILTRADA[normalizado]
+  if (filtro) {
+    return {
+      intencion_principal: 'navegar_lista_filtrada',
+      entidades_resueltas: { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: false, opciones_alumno_ambiguo: [] },
+      datos_faltantes: [],
+      nivel_confianza: 1,
+      filtro_lista: filtro,
+    }
+  }
+
+  return null
+}
+
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras
 // generar un documento: esta era la ÚNICA llamada a Claude en todo el
 // proyecto sin límite de tiempo explícito (compárese con las otras dos
@@ -663,6 +751,19 @@ export async function clasificarNivel0(
   // nivel de módulo mezclaría el usage de una petición con el de otra.
   onUsage?: (usage: Anthropic.Usage) => void
 ): Promise<ClasificacionNivel0> {
+  // Fast path determinista — microfase 1 (ver "auditoría técnica y
+  // diseño — fast path determinista"). Se comprueba ANTES de construir
+  // o enviar cualquier petición a Anthropic: si hay match, la función
+  // retorna aquí mismo y el bloque try/client.messages.create de abajo
+  // nunca se ejecuta — cero llamada a Sonnet, cero tokens. onUsage
+  // nunca se invoca en este camino (no hay Anthropic.Usage real que
+  // reportar), consistente con que ya tolera ausencia de uso. Ningún
+  // otro camino (Sonnet, parser tolerante, FALLBACK) cambia.
+  const determinista = intentarClasificacionDeterminista(mensaje)
+  if (determinista) {
+    return normalizarClasificacionNivel0(determinista, tieneImagenAdjunta)
+  }
+
   try {
     const respuesta = await client.messages.create(
       {
