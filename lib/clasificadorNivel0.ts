@@ -558,6 +558,75 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
   }
 }
 
+// Recuperación conservadora de robustez JSON — ver "JSON inválido en
+// el baseline: prosa + JSON", caso real 27-alumno-ambiguo, donde
+// Sonnet respondió correctamente en semántica pero antepuso una
+// explicación en español antes del JSON, rompiendo JSON.parse
+// directo. Recorre el texto carácter por carácter llevando
+// profundidad de llaves y estado de string — NUNCA una regex ingenua
+// tipo /\{.*\}/, que se rompe con objetos anidados, llaves dentro de
+// strings o backslashes escapados. Devuelve el substring del ÚNICO
+// objeto JSON top-level balanceado encontrado, o null si encuentra
+// cero objetos, uno incompleto/truncado, o dos o más objetos
+// top-level independientes — en ese último caso nunca elige uno
+// arbitrariamente, la ambigüedad se resuelve siempre hacia FALLBACK
+// en el llamador. No interpreta ni corrige semántica: solo localiza
+// el envoltorio.
+function extraerUnicoObjetoJsonTopLevel(texto: string): string | null {
+  let dentroDeString = false
+  let siguienteEscapado = false
+  let profundidad = 0
+  let inicio = -1
+  const objetos: Array<{ inicio: number; fin: number }> = []
+
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i]
+
+    if (dentroDeString) {
+      if (siguienteEscapado) {
+        siguienteEscapado = false
+      } else if (c === '\\') {
+        siguienteEscapado = true
+      } else if (c === '"') {
+        dentroDeString = false
+      }
+      continue
+    }
+
+    if (c === '"') {
+      dentroDeString = true
+      continue
+    }
+
+    if (c === '{') {
+      if (profundidad === 0) inicio = i
+      profundidad++
+      continue
+    }
+
+    if (c === '}') {
+      if (profundidad > 0) {
+        profundidad--
+        if (profundidad === 0 && inicio !== -1) {
+          objetos.push({ inicio, fin: i + 1 })
+          inicio = -1
+        }
+      }
+      continue
+    }
+  }
+
+  if (objetos.length !== 1) return null
+  // Endurecimiento — un objeto completo encontrado no basta: si al
+  // terminar el recorrido queda evidencia estructural de OTRO objeto
+  // top-level abierto pero nunca cerrado (profundidad>0 y/o inicio
+  // sigue apuntando a ese segundo `{`), la política conservadora
+  // exige rechazar en vez de devolver el primero — nunca asumir que
+  // el fragmento incompleto es ruido inofensivo.
+  if (profundidad !== 0 || inicio !== -1) return null
+  return texto.slice(objetos[0].inicio, objetos[0].fin)
+}
+
 // CAUSA RAÍZ de "el chat se queda esperando indefinidamente" tras
 // generar un documento: esta era la ÚNICA llamada a Claude en todo el
 // proyecto sin límite de tiempo explícito (compárese con las otras dos
@@ -629,7 +698,26 @@ export async function clasificarNivel0(
     if (!bloque || bloque.type !== 'text') return FALLBACK;
 
     const limpio = bloque.text.replace(/```json|```/g, '').trim();
-    const parsedModelo = JSON.parse(limpio) as ClasificacionModeloNivel0;
+
+    // Camino normal: JSON.parse directo, igual que siempre. Si falla
+    // (ver "JSON inválido en el baseline: prosa + JSON"), se intenta
+    // UNA recuperación conservadora — localizar el único objeto JSON
+    // top-level balanceado dentro del texto (extraerUnicoObjetoJsonTopLevel).
+    // Si esa recuperación no encuentra exactamente un objeto (cero,
+    // truncado, o dos o más ambiguos), se relanza el error ORIGINAL de
+    // JSON.parse — mismo camino de siempre hacia el catch/FALLBACK de
+    // abajo, mismo log, sin logging nuevo. Si el objeto recuperado
+    // tampoco parsea, su propio SyntaxError sube igual al mismo catch.
+    // Ninguna de las dos rutas corrige semántica: solo arregla el
+    // envoltorio antes de entrar a la validación normal de abajo.
+    let parsedModelo: ClasificacionModeloNivel0;
+    try {
+      parsedModelo = JSON.parse(limpio) as ClasificacionModeloNivel0;
+    } catch (errorParseoDirecto) {
+      const extraido = extraerUnicoObjetoJsonTopLevel(limpio);
+      if (extraido === null) throw errorParseoDirecto;
+      parsedModelo = JSON.parse(extraido) as ClasificacionModeloNivel0;
+    }
 
     // Validación mínima de forma sobre la salida CRUDA del modelo —
     // antes de normalizar, mismo criterio de siempre (no confiar
