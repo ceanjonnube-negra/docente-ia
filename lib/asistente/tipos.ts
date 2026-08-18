@@ -156,7 +156,20 @@ export type ResultadoEmbebidoListaFiltrada = {
   grupoId: string
   filtro: FiltroLista
 }
-export type ResultadoEmbebido = ResultadoEmbebidoListaFiltrada
+// Segundo miembro de la unión — imagen generada/editada por el Chat
+// IA. A propósito NO repite url/nombreArchivo/assetId/tamanoBytes:
+// esos ya viven en MensajeConversacion.archivo (la fuente única del
+// recurso, ver ArchivoGeneradoInfo) — este tipo solo describe CÓMO
+// presentar ese mismo archivo (tarjeta de imagen + overlay en vez de
+// TarjetaDescarga genérica), nunca una segunda copia del recurso. Un
+// consumidor de resultadoEmbebido.tipo==='imagen' siempre lee la URL
+// real de mensaje.archivo, nunca de aquí.
+export type ResultadoEmbebidoImagen = {
+  tipo: 'imagen'
+  id: string
+  titulo: string
+}
+export type ResultadoEmbebido = ResultadoEmbebidoListaFiltrada | ResultadoEmbebidoImagen
 
 export type MensajeConversacion = {
   id: string

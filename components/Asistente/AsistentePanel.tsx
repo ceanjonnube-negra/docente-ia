@@ -28,6 +28,7 @@ import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo, ResultadoEmbebidoListaFiltrada } from '@/lib/asistente/tipos'
 import VentanaListaFiltrada from './VentanaListaFiltrada'
+import VentanaImagen from './VentanaImagen'
 import type { FiltroLista } from '@/lib/listaFiltrada'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -475,6 +476,36 @@ function TarjetaResultadoLista({ resultado, onVer }: { resultado: ResultadoEmbeb
   )
 }
 
+// Tarjeta de imagen — segundo tipo real de resultado persistente (ver
+// "resultado persistente del Chat IA"). A diferencia de TarjetaDescarga
+// (genérica, para cualquier documento), esta comunica "esto es una
+// imagen" con la miniatura como protagonista, no un nombre técnico de
+// archivo. `archivo` es la MISMA fuente que ya usa TarjetaDescarga
+// (MensajeConversacion.archivo) — esta tarjeta nunca trae su propia
+// copia de la URL. object-contain respeta la proporción real (nunca
+// recorta el cartel); max-h evita una miniatura gigantesca sin crear
+// scroll horizontal (mismo max-w-sm que el resto de tarjetas del
+// Chat). Tocar la miniatura o el botón "Ver" hacen lo mismo.
+function TarjetaResultadoImagen({ archivo, onVer }: { archivo: ArchivoGeneradoInfo; onVer: () => void }) {
+  return (
+    <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border border-gray-100 rounded-bl-sm overflow-hidden">
+      <button type="button" onClick={onVer} className="block w-full">
+        <img src={archivo.url} alt="Imagen generada" className="w-full max-h-64 object-contain bg-gray-50" />
+      </button>
+      <div className="px-4 py-2.5 flex items-center justify-between gap-3">
+        <p className="text-sm font-bold text-gray-900">Imagen generada</p>
+        <button
+          type="button"
+          onClick={onVer}
+          className="px-3 py-1.5 rounded-full text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 transition flex-shrink-0"
+        >
+          Ver
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Vista previa de solo lectura del documento activo — se ve como un
 // documento real (título centrado, secciones, viñetas), no como un
 // mensaje de chat más. Reemplaza la tarjeta anterior de "título +
@@ -617,6 +648,13 @@ export default function AsistentePanel() {
   // navegar — ver "ventana contextual de Lista filtrada desde el
   // Chat IA". null = cerrada.
   const [listaFiltradaAbierta, setListaFiltradaAbierta] = useState<{ grupoId: string; filtro: FiltroLista } | null>(null)
+
+  // Overlay contextual para ver una imagen ya generada, encima del
+  // chat, sin navegar — ver VentanaImagen. Guarda directamente el
+  // archivo (única fuente del recurso, ya persistido en el mensaje)
+  // en vez de reconstruirlo por id — reabrir es UI pura, sin ningún
+  // fetch/consulta adicional. null = cerrada.
+  const [imagenAbierta, setImagenAbierta] = useState<ArchivoGeneradoInfo | null>(null)
 
   // Navegación automática pedida por voz/texto ("Abre a Sergio en la
   // lista") — AsistentePanel es la única pieza con useRouter, así que
@@ -968,12 +1006,36 @@ export default function AsistentePanel() {
         {asistente.mensajes.map((m, i) => {
           const esUltimoGenerando = asistente.generando && i === asistente.mensajes.length - 1
           const esDoc = m.rol === 'asistente' && esDocumentoFormal(m.texto)
+          // Variable local (no acceso a propiedad) a propósito: el
+          // estrechamiento de TypeScript sobre m.resultadoEmbebido?.tipo
+          // no sobrevive dentro de los closures onClick de abajo —
+          // sobre una const local sí.
+          const resultado = m.resultadoEmbebido
           return (
             <div key={m.id} id={`asistente-msg-${m.id}`} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
               {m.rol === 'asistente' && (
                 <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
               )}
-              {m.rol === 'asistente' && m.resultadoEmbebido?.tipo === 'lista_filtrada' ? (
+              {m.rol === 'asistente' && resultado?.tipo === 'imagen' && m.archivo?.tipo === 'imagen' ? (
+                // Resultado persistente de imagen (ver "resultado
+                // persistente del Chat IA") — tarjeta específica en
+                // vez de TarjetaDescarga genérica; el recurso real
+                // sigue siendo ÚNICAMENTE m.archivo (URL/nombre/
+                // tamaño/assetId), nunca una copia. El texto plano que
+                // acompaña este mensaje ("Imagen generada
+                // correctamente.", ver route.ts) es redundante frente
+                // a la miniatura y no se muestra — misma decisión
+                // estructural que lista_filtrada, nunca por regex.
+                // Deliberadamente NO se suprime la lectura por voz de
+                // este texto (a diferencia de lista_filtrada): en modo
+                // voz el docente no tiene otra confirmación audible de
+                // que la imagen terminó de generarse, así que quitarla
+                // sería un riesgo real de "no romper", no solo un
+                // ajuste visual — ver AsistenteService.
+                <div className="flex flex-col items-start gap-2 w-full">
+                  <TarjetaResultadoImagen archivo={m.archivo} onVer={() => setImagenAbierta(m.archivo!)} />
+                </div>
+              ) : m.rol === 'asistente' && resultado?.tipo === 'lista_filtrada' ? (
                 // Resultado persistente de lista filtrada (ver
                 // "resultado persistente del Chat IA") — la tarjeta ES
                 // la respuesta completa; el texto plano que la
@@ -987,8 +1049,8 @@ export default function AsistentePanel() {
                 // confirmaciones.
                 <div className="flex flex-col items-start gap-2 w-full">
                   <TarjetaResultadoLista
-                    resultado={m.resultadoEmbebido}
-                    onVer={() => setListaFiltradaAbierta({ grupoId: m.resultadoEmbebido!.grupoId, filtro: m.resultadoEmbebido!.filtro })}
+                    resultado={resultado}
+                    onVer={() => setListaFiltradaAbierta({ grupoId: resultado.grupoId, filtro: resultado.filtro })}
                   />
                 </div>
               ) : esDoc || (m.rol === 'asistente' && m.archivo?.url) ? (
@@ -1409,6 +1471,21 @@ export default function AsistentePanel() {
         grupoId={listaFiltradaAbierta.grupoId}
         filtro={listaFiltradaAbierta.filtro}
         onClose={() => setListaFiltradaAbierta(null)}
+      />
+    )}
+    {imagenAbierta && (
+      // Reutiliza compartirArchivo/descargarArchivo tal cual — mismo
+      // mecanismo (Web Share API con el archivo real, con
+      // navigator.share/hoja nativa de iOS como resultado; nunca una
+      // promesa de guardado directo a Fotos que la web no tiene) que ya
+      // usa TarjetaDescarga para cualquier archivo. Ningún fetch/IA
+      // nuevo — `imagenAbierta` es exactamente MensajeConversacion.
+      // archivo, ya persistido.
+      <VentanaImagen
+        archivo={imagenAbierta}
+        onClose={() => setImagenAbierta(null)}
+        onGuardarCompartir={() => compartirArchivo(imagenAbierta, () => mostrarAvisoAdjunto('Enlace copiado'))}
+        onDescargar={() => descargarArchivo(imagenAbierta.url, imagenAbierta.nombre)}
       />
     )}
     </>

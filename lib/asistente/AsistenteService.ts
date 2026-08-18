@@ -1224,7 +1224,20 @@ class AsistenteServiceImpl {
             // documento, no una imagen). El prompt original es lo que
             // el docente acaba de escribir (el mensaje justo antes de
             // esta respuesta), no "Imagen generada correctamente.".
-            this.mensajes = [...this.mensajes.slice(0, idx), { ...msg, archivo: evento.archivo, archivos: evento.archivos }, ...this.mensajes.slice(idx + 1)]
+            this.mensajes = [
+              ...this.mensajes.slice(0, idx),
+              // resultadoEmbebido (ver "resultado persistente del Chat
+              // IA") — aditivo, puramente de presentación: describe que
+              // este mensaje se muestra como tarjeta de imagen en vez de
+              // TarjetaDescarga genérica, pero el recurso real sigue
+              // siendo ÚNICAMENTE `archivo` (URL/tamaño/nombre/assetId),
+              // nunca una segunda copia. Título fijo por ahora ("Imagen
+              // generada") — arrastrar promptUsado hasta aquí para un
+              // título más descriptivo queda para cuando se mejore el
+              // prompt builder, no en esta microfase de UX.
+              { ...msg, archivo: evento.archivo, archivos: evento.archivos, resultadoEmbebido: { tipo: 'imagen', id: msg.id, titulo: 'Imagen generada' } },
+              ...this.mensajes.slice(idx + 1),
+            ]
             const promptOriginal = (idx > 0 ? this.mensajes[idx - 1]?.texto : undefined) || msg.texto
             this.materialVisualActivo = evento.archivo.assetId
               ? { id: evento.archivo.assetId, promptOriginal, url: evento.archivo.url, nombre: evento.archivo.nombre }
