@@ -14,6 +14,7 @@ import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectar
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
+import { TITULO_FILTRO_LISTA, type FiltroLista } from '@/lib/listaFiltrada'
 import {
   iniciarTrabajoDocumento,
   consultarTrabajo,
@@ -1260,6 +1261,25 @@ class AsistenteServiceImpl {
             // calendario — ver confirmarNavegacion().
             if (evento.accionNavegacion.automatica) {
               this.accionNavegacionPendiente = evento.accionNavegacion
+              // Resultado persistente (ver "resultado persistente del
+              // Chat IA") — SOLO para navegar_lista_filtrada
+              // (abrir_modulo, sin alumnoId): la sheet se sigue
+              // abriendo sola de inmediato (accionNavegacionPendiente,
+              // arriba, sin cambios), pero además el mensaje queda con
+              // una tarjeta reabrible en el historial. El caso con
+              // alumnoId ("Abre a Sergio en la lista") no entra aquí —
+              // sigue exactamente igual que antes, sin tarjeta.
+              if (evento.accionNavegacion.modulo === 'lista' && evento.accionNavegacion.accion === 'abrir_modulo' && !evento.accionNavegacion.alumnoId && evento.accionNavegacion.grupoId) {
+                const filtro = (evento.accionNavegacion.filtros?.filtro ?? 'todos') as FiltroLista
+                this.mensajes = [
+                  ...this.mensajes.slice(0, idx),
+                  {
+                    ...msg,
+                    resultadoEmbebido: { tipo: 'lista_filtrada', id: msg.id, titulo: TITULO_FILTRO_LISTA[filtro], grupoId: evento.accionNavegacion.grupoId, filtro },
+                  },
+                  ...this.mensajes.slice(idx + 1),
+                ]
+              }
             } else {
               this.mensajes = [
                 ...this.mensajes.slice(0, idx),
@@ -1294,13 +1314,14 @@ class AsistenteServiceImpl {
           }
         }
         // PASO 3 — el turno del asistente ya quedó en su estado final
-        // (todas las mutaciones de arriba ya se aplicaron a
-        // this.mensajes): se relee fresco por id y se guarda UNA vez,
-        // nunca durante 'respuesta-parcial'.
-        if (this.turnoAbierto) {
-          const mensajeFinal = this.mensajes.find(m => m.id === this.turnoAbierto)
-          if (mensajeFinal) this.persistirMensajeAsegurandoConversacion(mensajeFinal)
-        }
+        // (todas las mutaciones de arriba, incluida resultadoEmbebido,
+        // ya se aplicaron a this.mensajes): se relee fresco por id y
+        // se guarda UNA vez, nunca durante 'respuesta-parcial'. Se
+        // saca del `if` (antes vivía solo adentro) porque el bloque de
+        // voz de abajo también necesita este mismo mensajeFinal, para
+        // no repetir el find.
+        const mensajeFinal = this.turnoAbierto ? this.mensajes.find(m => m.id === this.turnoAbierto) : undefined
+        if (mensajeFinal) this.persistirMensajeAsegurandoConversacion(mensajeFinal)
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
         // alta la respuesta real que acaba de llegar (ver
         // MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el
@@ -1308,7 +1329,16 @@ class AsistenteServiceImpl {
         // de esa lectura (estado 'hablando', barge-in, vuelta a
         // 'escuchando' al terminar) lo maneja el propio motor a través
         // de response.done — este método no necesita saber nada más.
-        if (this.modoVoz) {
+        // EXCEPCIÓN — resultadoEmbebido.tipo==='lista_filtrada' (ver
+        // "resultado persistente del Chat IA"): la tarjeta persistente
+        // ya representa completamente la respuesta, igual que en
+        // texto (ver AsistentePanel) — el texto que la acompaña
+        // ("Mostrando las niñas.") es redundante también en voz.
+        // Misma señal estructurada que ya decide la tarjeta, nunca una
+        // inspección del texto. Cualquier otra respuesta (normal,
+        // documento, imagen, error, confirmación, alumnoId, otra
+        // acción automática) sigue reproduciéndose exactamente igual.
+        if (this.modoVoz && mensajeFinal?.resultadoEmbebido?.tipo !== 'lista_filtrada') {
           this.registrarPasoDebugVoz('chat:response_received', 'ok', `${evento.texto.length} caracteres`)
           this.motorVoz?.reproducirRespuestaEnVoz(evento.texto)
         }

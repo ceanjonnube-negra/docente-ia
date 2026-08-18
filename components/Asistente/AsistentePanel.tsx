@@ -26,7 +26,7 @@ import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseConteni
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
-import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import type { AdjuntoImagen, ArchivoGeneradoInfo, ResultadoEmbebidoListaFiltrada } from '@/lib/asistente/tipos'
 import VentanaListaFiltrada from './VentanaListaFiltrada'
 import type { FiltroLista } from '@/lib/listaFiltrada'
 
@@ -434,6 +434,43 @@ function TarjetaDescarga({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// Ícono decorativo por filtro — puramente visual (no es una regla de
+// negocio: la etiqueta real vive en TITULO_FILTRO_LISTA,
+// lib/listaFiltrada.ts, y ya viaja resuelta en resultado.titulo).
+const ICONO_FILTRO_LISTA: Record<FiltroLista, string> = {
+  todos: '👥',
+  ninas: '👧',
+  ninos: '👦',
+  presentes: '✅',
+  ausentes: '❌',
+}
+
+// Tarjeta persistente para un resultado reabrible del Chat IA (ver
+// "resultado persistente del Chat IA" — MensajeConversacion.
+// resultadoEmbebido). Primer y único tipo real por ahora:
+// 'lista_filtrada'; un segundo tipo futuro (documento/imagen/ficha)
+// se renderiza agregando su propio componente pequeño aquí al lado,
+// nunca reescribiendo este. Deliberadamente compacta — una sola fila,
+// mismo criterio táctil que el resto de los botones del Chat IA.
+function TarjetaResultadoLista({ resultado, onVer }: { resultado: ResultadoEmbebidoListaFiltrada; onVer: () => void }) {
+  return (
+    <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border border-gray-100 rounded-bl-sm px-4 py-2.5 flex items-center gap-3">
+      <span className="text-lg flex-shrink-0">{ICONO_FILTRO_LISTA[resultado.filtro]}</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-bold text-gray-900 truncate">{resultado.titulo}</p>
+        <p className="text-[11px] text-gray-400">Lista del grupo</p>
+      </div>
+      <button
+        type="button"
+        onClick={onVer}
+        className="px-3 py-1.5 rounded-full text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 transition flex-shrink-0"
+      >
+        Ver lista
+      </button>
     </div>
   )
 }
@@ -936,7 +973,25 @@ export default function AsistentePanel() {
               {m.rol === 'asistente' && (
                 <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
               )}
-              {esDoc || (m.rol === 'asistente' && m.archivo?.url) ? (
+              {m.rol === 'asistente' && m.resultadoEmbebido?.tipo === 'lista_filtrada' ? (
+                // Resultado persistente de lista filtrada (ver
+                // "resultado persistente del Chat IA") — la tarjeta ES
+                // la respuesta completa; el texto plano que la
+                // acompañó ("Mostrando las niñas.") es redundante y no
+                // se muestra. Esta rama solo se activa cuando el
+                // mensaje trae resultadoEmbebido.tipo==='lista_filtrada'
+                // (únicamente lo adjunta AsistenteService para
+                // navegar_lista_filtrada automático, ver
+                // manejarEventoMotor) — nunca afecta respuestas
+                // normales, documentos, imágenes, errores ni otras
+                // confirmaciones.
+                <div className="flex flex-col items-start gap-2 w-full">
+                  <TarjetaResultadoLista
+                    resultado={m.resultadoEmbebido}
+                    onVer={() => setListaFiltradaAbierta({ grupoId: m.resultadoEmbebido!.grupoId, filtro: m.resultadoEmbebido!.filtro })}
+                  />
+                </div>
+              ) : esDoc || (m.rol === 'asistente' && m.archivo?.url) ? (
                 <div className="flex flex-col items-start gap-2 w-full">
                   {esDoc && (
                     <VistaPreviaDocumento

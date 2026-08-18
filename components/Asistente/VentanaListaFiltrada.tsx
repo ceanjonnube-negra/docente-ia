@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion, type AlumnoConPosicion } from '@/lib/rosterGrupo'
-import { filtrarAlumnosPorCriterio, cargarEstadosAsistenciaHoy, type FiltroLista } from '@/lib/listaFiltrada'
+import { filtrarAlumnosPorCriterio, cargarEstadosAsistenciaHoy, TITULO_FILTRO_LISTA, type FiltroLista } from '@/lib/listaFiltrada'
 import { fechaISOHoy, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import type { EstadoAsistenciaOficial } from '@/lib/motorContexto'
 
@@ -14,14 +14,6 @@ import type { EstadoAsistenciaOficial } from '@/lib/motorContexto'
 // completa, ver lib/listaFiltrada.ts). Nunca navega, nunca toca
 // router.push/replace, nunca modifica el estado del Chat — al
 // cerrarse, el chat de abajo queda exactamente como estaba.
-
-const TITULO_POR_FILTRO: Record<FiltroLista, string> = {
-  todos: 'Alumnos',
-  ninas: 'Niñas',
-  ninos: 'Niños',
-  presentes: 'Presentes',
-  ausentes: 'Ausentes',
-}
 
 // Solo presentes/ausentes necesitan consulta de asistencia — todos/
 // ninas/ninos se resuelven únicamente con el roster (ver "Latencia"
@@ -92,9 +84,9 @@ export default function VentanaListaFiltrada({ grupoId, filtro, onClose }: Props
 
         <div className="flex items-center justify-between px-5 pt-3 pb-3 border-b border-gray-100 flex-shrink-0">
           <div>
-            <h3 className="font-bold text-gray-900 text-base">{TITULO_POR_FILTRO[filtro]}</h3>
+            <h3 className="font-bold text-gray-900 text-base">{TITULO_FILTRO_LISTA[filtro]}</h3>
             {!cargando && !error && (
-              <p className="text-xs text-gray-400 mt-0.5">{TITULO_POR_FILTRO[filtro]} · {alumnosFiltrados.length}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{TITULO_FILTRO_LISTA[filtro]} · {alumnosFiltrados.length}</p>
             )}
           </div>
           <button

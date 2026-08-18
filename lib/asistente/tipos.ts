@@ -8,6 +8,8 @@
 // proveedor significa escribir una clase nueva que la implemente y
 // cambiar qué motor se instancia — nada más en la aplicación se entera.
 
+import type { FiltroLista } from '../listaFiltrada'
+
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
 // Archivo real generado por una de las 7 herramientas (ver
@@ -133,6 +135,29 @@ export type DiferenciaAlumno = {
   fuente: 'texto'
 }
 
+// Resultado reutilizable/reabrible producido por el Chat IA — ver
+// "resultado persistente del Chat IA". A diferencia de
+// datosAccionNavegacion (que solo describe una acción PENDIENTE de
+// confirmar), esto describe un resultado YA entregado que debe
+// quedar visible en el historial como su propia tarjeta, con una
+// acción para reabrirlo sin volver a pedirle nada a la IA. Unión
+// discriminada por `tipo` a propósito: el primer caso real es
+// 'lista_filtrada' (ver navegar_lista_filtrada en
+// app/api/chat/route.ts); documento/imagen/ficha/tabla se agregan
+// como nuevos miembros de esta misma unión más adelante, sin
+// reestructurar nada de lo que ya existe.
+export type ResultadoEmbebidoListaFiltrada = {
+  tipo: 'lista_filtrada'
+  id: string
+  titulo: string
+  // Payload mínimo para reabrir la sheet (VentanaListaFiltrada) sin
+  // ninguna consulta ni inferencia nueva — mismos dos datos que ya
+  // viajan en AccionNavegacion.grupoId/filtros.filtro.
+  grupoId: string
+  filtro: FiltroLista
+}
+export type ResultadoEmbebido = ResultadoEmbebidoListaFiltrada
+
 export type MensajeConversacion = {
   id: string
   rol: RolMensaje
@@ -187,6 +212,11 @@ export type MensajeConversacion = {
   // datosAccionCalendario/datosAccionNavegacion: viaja pegada al
   // mensaje, nunca a un "proceso activo" en el servidor.
   datosAccionAlumno?: DiferenciaAlumno
+  // Resultado persistente ya entregado en este mensaje (ver
+  // ResultadoEmbebido arriba) — a diferencia de los campos
+  // "datosAccion*" (que esperan una confirmación), este ya es
+  // definitivo: la tarjeta que renderiza siempre puede reabrirse.
+  resultadoEmbebido?: ResultadoEmbebido
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada

@@ -11,6 +11,19 @@ import { clasificarEstadoAsistencia, type EstadoAsistenciaOficial } from './moto
 
 export type FiltroLista = 'todos' | 'ninas' | 'ninos' | 'presentes' | 'ausentes'
 
+// Etiqueta legible de cada filtro — única fuente de verdad (ver
+// "resultado persistente del Chat IA"). La usan tanto la sheet
+// (VentanaListaFiltrada, título del encabezado) como el Chat IA
+// (AsistenteService, para construir el título de la tarjeta
+// persistente) — ninguno de los dos mantiene su propio texto.
+export const TITULO_FILTRO_LISTA: Record<FiltroLista, string> = {
+  todos: 'Alumnos',
+  ninas: 'Niñas',
+  ninos: 'Niños',
+  presentes: 'Presentes',
+  ausentes: 'Ausentes',
+}
+
 // Único lugar que decide quién pertenece a cada filtro. Semántica
 // EXACTA de siempre (ver auditoría previa, app/dashboard/lista/
 // page.tsx):
