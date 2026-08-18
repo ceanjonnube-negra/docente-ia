@@ -27,7 +27,12 @@ export type ImagenGenerada = {
 
 export interface ProveedorImagenes {
   nombre: string
-  generar(promptFinal: string, formato: SolicitudImagen['formato']): Promise<{ buffer: Buffer; contentType: string; ancho: number; alto: number }>
+  // calidad: parámetro opcional y aditivo (FASE 6 — "parámetros del
+  // proveedor") — un proveedor que no lo soporte simplemente lo
+  // ignora; openaiImagenes.ts lo usa para elegir quality en
+  // images.generate. Nunca aplica a editar() (ver más abajo, sin
+  // cambios).
+  generar(promptFinal: string, formato: SolicitudImagen['formato'], calidad?: 'medium' | 'high'): Promise<{ buffer: Buffer; contentType: string; ancho: number; alto: number }>
   // Ver "corrección — edición real de imágenes con el asset visual
   // anterior como entrada": recibe el buffer REAL de la imagen previa
   // (no solo su descripción) — es lo que permite conservar composición
@@ -46,9 +51,23 @@ const proveedorOpenAI: ProveedorImagenes = {
 // lo necesite.
 const PROVEEDOR_ACTIVO: ProveedorImagenes = proveedorOpenAI
 
+// FASE 6 — "parámetros del proveedor": calidad para carteles/avisos
+// escolares (solicitud.tipoPieza presente), nunca para ilustraciones
+// sueltas de documento — esas pueden llegar a ser hasta 4 por
+// documento (ver MAX_IMAGENES_POR_DOCUMENTO en herramientas.ts), así
+// que nunca reciben este default. 'medium' (ver auditoría "gpt-image-2
+// vs gpt-image-1"): con gpt-image-2, 'medium' ($0.041/imagen a
+// 1024x1536) ya cuesta MENOS que 'high' de gpt-image-1 ($0.25) — no
+// hace falta 'high' como default para lograr buena calidad de cartel.
+// Encapsulado en esta única constante: subirla a 'high' ($0.165) para
+// casos de "calidad premium"/regeneración explícita, sin tocar ningún
+// otro archivo.
+const CALIDAD_CARTEL_ESCOLAR: 'medium' | 'high' = 'medium'
+
 export async function generarImagen(solicitud: SolicitudImagen): Promise<ImagenGenerada> {
   const promptFinal = construirPromptFinal(solicitud)
-  const resultado = await PROVEEDOR_ACTIVO.generar(promptFinal, solicitud.formato)
+  const calidad = solicitud.calidad ?? (solicitud.tipoPieza ? CALIDAD_CARTEL_ESCOLAR : undefined)
+  const resultado = await PROVEEDOR_ACTIVO.generar(promptFinal, solicitud.formato, calidad)
   return { ...resultado, promptUsado: promptFinal, proveedor: PROVEEDOR_ACTIVO.nombre }
 }
 

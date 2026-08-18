@@ -5,9 +5,16 @@
 // (app/api/chat/route.ts, openaiRAG) y voz Realtime
 // (motorOpenAIRealtime.ts), sin secreto nuevo.
 //
-// gpt-image-1 siempre devuelve base64 (nunca url) — no hace falta un
+// gpt-image-2 siempre devuelve base64 (nunca url) — no hace falta un
 // segundo fetch para bajar el archivo, el buffer sale directo de la
-// respuesta.
+// respuesta. MIGRACIÓN gpt-image-1 -> gpt-image-2 (ver auditoría
+// "gpt-image-2 vs gpt-image-1"): mismo SDK (ya soporta 'gpt-image-2'
+// como ImageModel, sin actualizar dependencias), mismos parámetros de
+// generación (prompt/size/quality/n/b64_json). Único cambio real de
+// comportamiento: gpt-image-2 NO acepta input_fidelity (el modelo
+// procesa toda entrada de imagen en alta fidelidad automáticamente,
+// según documentación oficial) — se retira de editarImagenOpenAI, ver
+// abajo. size:'auto' en edición sigue siendo compatible.
 
 import OpenAI, { toFile } from 'openai'
 import { tamanoParaFormato, type SolicitudImagen } from '../reglasVisuales'
@@ -32,14 +39,15 @@ const DIMENSIONES: Record<string, { ancho: number; alto: number }> = {
 
 export async function generarImagenOpenAI(
   promptFinal: string,
-  formato: SolicitudImagen['formato']
+  formato: SolicitudImagen['formato'],
+  calidad?: 'medium' | 'high'
 ): Promise<{ buffer: Buffer; contentType: string; ancho: number; alto: number }> {
   const size = tamanoParaFormato(formato)
   const respuesta = await obtenerCliente().images.generate({
-    model: 'gpt-image-1',
+    model: 'gpt-image-2',
     prompt: promptFinal,
     size,
-    quality: 'medium',
+    quality: calidad ?? 'medium',
     n: 1,
   })
   const b64 = respuesta.data?.[0]?.b64_json
@@ -58,23 +66,26 @@ export async function generarImagenOpenAI(
 // images.edit (no images.generate): recibe el archivo original como
 // entrada visual real, así el modelo conserva lo que la instrucción
 // no menciona en vez de reinterpretar la escena desde cero.
-// input_fidelity:'high' — "controla cuánto esfuerzo hace el modelo
-// para igualar el estilo/las características de la imagen de
-// entrada" (documentación de OpenAI), exactamente lo que pide
-// "preservación de composición". size:'auto' deja que el proveedor
-// mantenga proporciones coherentes con la imagen de entrada en vez de
-// forzar una de las 3 medidas fijas de generación desde cero.
+// MIGRACIÓN gpt-image-1 -> gpt-image-2: input_fidelity ya NO se manda
+// — gpt-image-2 procesa toda entrada de imagen en alta fidelidad
+// automáticamente y no acepta este parámetro (ver auditoría
+// "gpt-image-2 vs gpt-image-1"); antes servía para pedir esa misma
+// preservación de composición explícitamente, ahora es el
+// comportamiento por defecto del modelo, sin que este código tenga
+// que pedirlo. size:'auto' sigue siendo compatible y sigue
+// funcionando igual: deja que el proveedor mantenga proporciones
+// coherentes con la imagen de entrada en vez de forzar una de las 3
+// medidas fijas de generación desde cero.
 export async function editarImagenOpenAI(
   bufferOriginal: Buffer,
   promptFinal: string
 ): Promise<{ buffer: Buffer; contentType: string; ancho: number; alto: number }> {
   const archivoOriginal = await toFile(bufferOriginal, 'imagen-original.png', { type: 'image/png' })
   const respuesta = await obtenerCliente().images.edit({
-    model: 'gpt-image-1',
+    model: 'gpt-image-2',
     image: archivoOriginal,
     prompt: promptFinal,
     quality: 'medium',
-    input_fidelity: 'high',
     size: 'auto',
   })
   const b64 = respuesta.data?.[0]?.b64_json

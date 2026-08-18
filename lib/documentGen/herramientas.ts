@@ -38,6 +38,7 @@ import { subirBuffer, crearUrlFirmada, descargarBuffer, rutaArchivo, BUCKET_IMAG
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from './parseContenido'
 import { generarImagen, editarImagen } from '../imageGen/ImageGenerationService'
 import type { EstiloVisual } from '../imageGen/reglasVisuales'
+import { inferirTipoPieza, formatoPorDefectoParaTipoPieza } from '../imageGen/reglasVisuales'
 import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
 
 // Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
@@ -150,7 +151,14 @@ export async function ejecutarHerramientaDocumento(
   // llamar aquí. undefined (sin nivel resuelto) preserva EXACTAMENTE
   // el comportamiento anterior: generarImagen() cae a su propio
   // ESTILO_POR_DEFECTO, igual que antes de esta fase.
-  estiloVisual?: EstiloVisual
+  estiloVisual?: EstiloVisual,
+  // FASE 2 — "mejora de calidad visual de imágenes escolares": mensaje
+  // REAL del docente (nunca la descripción ya redactada por Claude),
+  // solo usado por tipo==='imagen' para inferir tipoPieza de forma
+  // determinista (ver inferirTipoPieza) — opcional y al final, para no
+  // romper ningún llamador existente. Ausente preserva EXACTAMENTE el
+  // camino de antes de esta fase (sin tipoPieza, prompt de siempre).
+  mensajeOriginalDocente?: string
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -164,7 +172,7 @@ export async function ejecutarHerramientaDocumento(
   }
 
   if (tipo === 'imagen') {
-    return ejecutarGeneracionImagen(texto, perfil, sb, userId, supabaseUser, conversacionId ?? null, versionAnteriorId ?? null)
+    return ejecutarGeneracionImagen(texto, perfil, sb, userId, supabaseUser, conversacionId ?? null, versionAnteriorId ?? null, mensajeOriginalDocente)
   }
 
   console.log(`[${ETIQUETA_EXPORT[tipo]}] userId=${userId} — solicitud de exportación recibida`)
@@ -397,7 +405,11 @@ async function ejecutarGeneracionImagen(
   userId: string,
   supabaseUser: SupabaseClient | undefined,
   conversacionId: string | null,
-  versionAnteriorId: string | null
+  versionAnteriorId: string | null,
+  // FASE 2 — mensaje REAL del docente (nunca la descripción de
+  // Claude) — SOLO se usa para inferir tipoPieza de forma
+  // determinista, nunca como contenido del prompt.
+  mensajeOriginalDocente?: string
 ): Promise<ArchivoGenerado> {
   console.log(`[IMAGEN_EXPORT] userId=${userId} — solicitud de ${versionAnteriorId ? 'EDICIÓN' : 'generación'} de imagen recibida`)
 
@@ -427,8 +439,17 @@ async function ejecutarGeneracionImagen(
       throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo editando la imagen')
     }
   } else {
+    // FASE 1/2/3 — "mejora de calidad visual de imágenes escolares":
+    // tipoPieza se infiere SOLO del mensaje real del docente (nunca de
+    // la descripción de Claude en `prompt`, que puede parafrasear y
+    // perder las palabras clave), de forma 100% determinista — ver
+    // inferirTipoPieza. Sin mensajeOriginalDocente (llamador que no lo
+    // pasa), tipoPieza queda undefined y construirPromptFinal cae
+    // exactamente en el camino de siempre, sin ningún cambio.
+    const tipoPieza = mensajeOriginalDocente ? inferirTipoPieza(mensajeOriginalDocente) : undefined
+    const formato = tipoPieza ? formatoPorDefectoParaTipoPieza(tipoPieza) : undefined
     try {
-      imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt }))
+      imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt, tipoPieza, formato }))
     } catch (err) {
       console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
       throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')

@@ -2018,7 +2018,12 @@ Grado: [grado] | Grupo: [grupo]
 
         const resultados = await Promise.allSettled(
           formatosAGenerar.map((tipo) =>
-            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas, estiloVisualNivelEducativo), `generar-archivo-combinado-${tipo}`)
+            // mensaje (texto REAL del docente, nunca la descripción de
+            // Claude en `texto`) — solo para inferir tipoPieza en
+            // ejecutarGeneracionImagen cuando tipo==='imagen' (ver
+            // "mejora de calidad visual de imágenes escolares"); word/
+            // pdf/powerpoint/excel lo ignoran, sin ningún cambio.
+            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas, estiloVisualNivelEducativo, mensaje || undefined), `generar-archivo-combinado-${tipo}`)
           )
         )
         const primario = resultados[0]
