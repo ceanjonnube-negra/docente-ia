@@ -9,6 +9,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { detectarHerramientaDocumento } from '../documentos'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -88,6 +89,20 @@ const TIMEOUT_FETCH_DIAGNOSTICO_MS = 90_000
 // tolerante a tiempos largos"). 130s deja margen real de sobra incluso
 // con un reintento interno del servidor de por medio.
 const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
+// CORRECCIÓN — evidencia real: dbg_1787065556208_ai557w ("Crea una
+// imagen para anunciar el regreso a clases..."). El cliente abortó a
+// los ~90.4s (TIMEOUT_FETCH_DIAGNOSTICO_MS, el único timeout que
+// aplicaba a una generación de imagen estándar con diagnóstico
+// activo; SIN diagnóstico habría sido TIMEOUT_FETCH_MS, 35s — peor
+// aún) pero el servidor terminó de generar y persistir la imagen real
+// en Supabase/Storage hasta los ~111.4s — el pipeline SÍ funcionó,
+// solo llegó tarde para el timeout que tenía asignado. La migración a
+// gpt-image-2 (con su paso de razonamiento antes de generar, según
+// documentación oficial) explica de forma plausible ese tiempo mayor.
+// 150s deja margen real sobre esos ~111.4s observados, sin acercarse
+// al techo duro del servidor (maxDuration=180s, ver app/api/chat/
+// route.ts).
+const TIMEOUT_FETCH_IMAGEN_MS = 150_000
 
 class ErrorLimiteDeTiempo extends Error {}
 
@@ -276,6 +291,18 @@ export class MotorTextoClaude implements MotorConversacional {
       // regenerarImagen (Fase 0+1) también necesita el margen largo —
       // generar una imagen real con el proveedor puede tardar tanto
       // como un documento, nunca menos.
+      // CORRECCIÓN — "timeout cliente para generación de imagen desde
+      // texto" (ver dbg_1787065556208_ai557w): reutiliza el MISMO
+      // detector determinista que ya usa AsistenteService.enviarMensaje
+      // para decidir el enrutamiento real (IMAGE_CREATE), nunca una
+      // regex nueva — si `texto` pide una imagen nueva y no viene con
+      // fotos adjuntas (eso es análisis de foto, no generación), el
+      // turno recibe TIMEOUT_FETCH_IMAGEN_MS sin importar si el
+      // diagnóstico está activo o no. Evaluado ANTES del gate de
+      // diagnóstico a propósito: antes, una generación de imagen
+      // estándar solo llegaba a 90s con diagnóstico activo, o 35s sin
+      // él — ambos insuficientes frente a los ~111.4s reales medidos.
+      const esImagenNuevaDesdeTexto = !finalizarArchivo && !esVariasImagenes && !regenerarImagen && !adjunto && !adjuntos?.length && detectarHerramientaDocumento(texto) === 'imagen'
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el timeout normal
       // (TIMEOUT_FETCH_MS) SOLO se amplía cuando diagnosticoActivo es
       // true (gate fail-closed ya calculado arriba); ausente/'0'/
@@ -285,7 +312,9 @@ export class MotorTextoClaude implements MotorConversacional {
         () => this.controlador?.abort(),
         finalizarArchivo || esVariasImagenes || regenerarImagen
           ? TIMEOUT_FETCH_DOCUMENTO_MS
-          : (diagnosticoActivo ? TIMEOUT_FETCH_DIAGNOSTICO_MS : TIMEOUT_FETCH_MS)
+          : esImagenNuevaDesdeTexto
+            ? TIMEOUT_FETCH_IMAGEN_MS
+            : (diagnosticoActivo ? TIMEOUT_FETCH_DIAGNOSTICO_MS : TIMEOUT_FETCH_MS)
       )
 
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — msClienteAntesFetch
