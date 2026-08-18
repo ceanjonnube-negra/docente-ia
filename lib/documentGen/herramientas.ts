@@ -38,7 +38,7 @@ import { subirBuffer, crearUrlFirmada, descargarBuffer, rutaArchivo, BUCKET_IMAG
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from './parseContenido'
 import { generarImagen, editarImagen } from '../imageGen/ImageGenerationService'
 import type { EstiloVisual } from '../imageGen/reglasVisuales'
-import { inferirTipoPieza, formatoPorDefectoParaTipoPieza } from '../imageGen/reglasVisuales'
+import { inferirTipoPieza, formatoPorDefectoParaTipoPieza, inferirModoVisual, extraerDatosExplicitosPieza, decidirCalidadCartel } from '../imageGen/reglasVisuales'
 import { guardarAssetVisual, obtenerAssetVisualPorId } from '../assetsVisuales'
 
 // Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
@@ -448,8 +448,21 @@ async function ejecutarGeneracionImagen(
     // exactamente en el camino de siempre, sin ningún cambio.
     const tipoPieza = mensajeOriginalDocente ? inferirTipoPieza(mensajeOriginalDocente) : undefined
     const formato = tipoPieza ? formatoPorDefectoParaTipoPieza(tipoPieza) : undefined
+    // "dos modos visuales" / "no inventar datos" / "optimización de
+    // costo": las 3 mejoras siguen el MISMO criterio que tipoPieza —
+    // solo se calculan cuando hay tipoPieza Y mensaje real del
+    // docente; sin eso, quedan undefined y construirPromptFinal/
+    // generarImagen se comportan exactamente igual que antes.
+    const modoVisual = tipoPieza && mensajeOriginalDocente ? inferirModoVisual(tipoPieza, mensajeOriginalDocente) : undefined
+    const datosExplicitos = tipoPieza && mensajeOriginalDocente ? extraerDatosExplicitosPieza(mensajeOriginalDocente) : undefined
+    const calidad = tipoPieza && mensajeOriginalDocente ? decidirCalidadCartel(mensajeOriginalDocente, datosExplicitos ?? {}) : undefined
     try {
-      imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt, tipoPieza, formato }))
+      // CORRECCIÓN — "fuente de verdad completa": se pasa el mensaje
+      // REAL del docente completo (no solo el subconjunto estructurado
+      // datosExplicitos) para que construirPromptCartelEscolar pueda
+      // conservar hechos reales que no caben en fecha/hora/lugar/costo
+      // (ej. "Jornada Ampliada", "pago trimestral") sin perderlos.
+      imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt, tipoPieza, formato, modoVisual, datosExplicitos, calidad, mensajeOriginalDocente }))
     } catch (err) {
       console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
       throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')
