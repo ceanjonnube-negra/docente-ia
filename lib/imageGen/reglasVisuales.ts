@@ -40,7 +40,12 @@ export type ModoVisualPieza = 'escolar_alegre' | 'institucional_limpio'
 
 const DESCRIPCION_MODO_VISUAL: Record<ModoVisualPieza, string> = {
   escolar_alegre: 'ilustración colorida, cálida y amigable — estética atractiva para preescolar/primaria, colores vivos pero armónicos (nunca estridentes), formas amigables, ambiente festivo y de bienvenida, sin perder orden ni jerarquía visual; apariencia de cartel escolar alegre bien diseñado, nunca de boceto genérico.',
-  institucional_limpio: 'diseño limpio, profesional y sobrio — apropiado para un comunicado institucional escolar, paleta de colores reducida y elegante, composición ordenada y formal, énfasis total en la claridad del mensaje sobre la decoración; apariencia de aviso oficial bien diseñado, nunca de cartel infantil ni de boceto genérico.',
+  // CORRECCIÓN — "apretar más el modo institucional": la versión
+  // anterior decía "nunca de cartel infantil" de forma genérica, sin
+  // nombrar los elementos concretos que en la práctica seguían
+  // colándose (manzanitas, confeti, mascotas). Ahora los prohíbe
+  // explícitamente, uno por uno.
+  institucional_limpio: 'diseño limpio, profesional y sobrio — apropiado para un comunicado institucional escolar, paleta de colores reducida y elegante (2-3 colores como máximo), composición ordenada y formal, tipografía sobria, énfasis total en la claridad del mensaje sobre la decoración; apariencia de aviso oficial o comunicado escolar bien diseñado — NUNCA de cartel infantil, cartel de bienvenida festivo o boceto genérico; sin manzanitas decorativas, confeti, globos, stickers, mascotas ni personajes caricaturescos; si se representan personas, deben verse en un contexto escolar realista y profesional, nunca como caricatura que domine la pieza.',
 }
 
 // Default conservador cuando no hay señal suficiente para decidir
@@ -319,9 +324,13 @@ function construirPromptCartelEscolar(solicitud: SolicitudImagen, tipoPieza: Tip
 
   // "bajar el nivel de genérico/recargado" — decoración diferenciada
   // por modo: institucional_limpio pide deliberadamente MENOS
-  // elementos que escolar_alegre, nunca al revés.
+  // elementos que escolar_alegre, nunca al revés. CORRECCIÓN — "0 a 1
+  // elementos" en vez de "hasta 1" (permite composición sin decoración
+  // en absoluto cuando el mensaje ya es claro por sí mismo) y lista de
+  // prohibición explícita — misma lista de la rama alegre-no-afectada
+  // de arriba, reforzada aquí en el contexto de decoración.
   const elementosDecorativos = modoVisual === 'institucional_limpio'
-    ? 'decoración mínima y discreta — como máximo 1 elemento gráfico sutil relacionado con el entorno escolar (ej. un ícono institucional simple); nunca ilustraciones infantiles, nunca stickers, nunca varios elementos decorativos compitiendo entre sí.'
+    ? 'cero a un elemento gráfico sutil y funcional relacionado con el entorno escolar (ej. un ícono institucional simple) — nunca más de uno. PROHIBIDO en este modo: manzanitas decorativas, confeti, globos, stickers, mascotas o personajes caricaturescos, ilustraciones infantiles, ambiente festivo. Si se representan personas, deben verse en un contexto escolar realista y profesional, nunca como personajes caricaturescos que dominen la pieza.'
     : 'iconografía o ilustraciones escolares relacionadas con el tipo de aviso (según corresponda: personas en un salón de clases, calendario, mochila, útiles escolares, campana escolar, edificio escolar...) como acento visual — máximo 1-2 elementos decorativos, nunca deben opacar ni competir con el texto principal.'
 
   // Regla de jerarquía — condicionada a si de verdad tenemos la
@@ -334,6 +343,21 @@ function construirPromptCartelEscolar(solicitud: SolicitudImagen, tipoPieza: Tip
   const reglaJerarquiaAutoridad = solicitudOriginal
     ? 'REGLA CRÍTICA — JERARQUÍA DE AUTORIDAD: la "SOLICITUD ORIGINAL DEL DOCENTE" es la fuente de verdad completa y con máxima autoridad. "DATOS ESTRUCTURADOS CONFIRMADOS" es un subconjunto derivado de esa misma solicitud (sirve solo para jerarquía/énfasis) — nunca agrega información que la solicitud original no tenga. "DIRECCIÓN VISUAL Y COMPOSITIVA" únicamente aporta diseño (composición, ambiente, objetos, estética, distribución, estilo) — si menciona una fecha, hora, lugar, costo, nombre, cantidad, evento o cualquier otro hecho que NO esté contenido o sustentado por la "SOLICITUD ORIGINAL DEL DOCENTE", ese dato debe ser IGNORADO por completo. Nunca completes datos faltantes por contexto, sentido común o costumbre escolar.'
     : 'REGLA CRÍTICA — JERARQUÍA DE AUTORIDAD: SOLO "DATOS ESTRUCTURADOS CONFIRMADOS" tiene autoridad para fecha, hora, lugar y costo. Si "DIRECCIÓN VISUAL Y COMPOSITIVA" menciona un dato factual que NO aparezca ahí, debe ser IGNORADO por completo — nunca lo incluyas en la imagen. Nunca completes datos faltantes por contexto, sentido común o costumbre escolar.'
+
+  // CORRECCIÓN — "apretar más el modo institucional": antes esta regla
+  // era ÚNICA para ambos modos y literalmente daba "¡Los esperamos!"
+  // como ejemplo válido — esa era la causa real de que avisos
+  // institucionales (reunión, pago, convocatoria) trajeran copy
+  // promocional no pedido. escolar_alegre conserva EXACTAMENTE el
+  // texto/criterio de siempre (sin ningún cambio); institucional_limpio
+  // ahora prohíbe agregar cualquier saludo/eslogan por iniciativa
+  // propia, salvo que el docente lo haya pedido explícitamente (lo
+  // cual, de haberlo pedido, ya viaja dentro de la SOLICITUD ORIGINAL
+  // DEL DOCENTE / DIRECCIÓN VISUAL de arriba, así que sigue
+  // representándose con normalidad).
+  const copyYTono = modoVisual === 'institucional_limpio'
+    ? 'COPY Y TONO: NO agregues saludos, eslóganes ni frases de bienvenida por iniciativa propia (nunca "¡Los esperamos!", "¡No faltes!", "¡Te esperamos!" ni equivalentes) — solo incluye copy adicional si el docente lo pidió explícitamente en su solicitud original. El cartel debe quedarse con el título, los datos factuales y, si aplica, el texto de cuerpo que el docente sí escribió — sin relleno promocional.'
+    : 'COPY Y TONO: un saludo o título creativo breve (ej. "¡Bienvenidos de regreso!", "¡Los esperamos!") está permitido si no afirma ningún dato nuevo; evita eslóganes largos, bloques promocionales, hechos nuevos o nombres/fechas/horarios/lugares/cantidades/eventos inventados que opaquen la información principal.'
 
   const secciones = [
     `TIPO DE PIEZA: ${DESCRIPCION_TIPO_PIEZA[tipoPieza]}.`,
@@ -348,11 +372,7 @@ function construirPromptCartelEscolar(solicitud: SolicitudImagen, tipoPieza: Tip
     `DATOS ESTRUCTURADOS CONFIRMADOS (subconjunto de fecha/hora/lugar/costo derivado de la solicitud original — SOLO para jerarquía/énfasis, nunca agrega información):\n${datosEstructuradosConfirmados}`,
     `DIRECCIÓN VISUAL Y COMPOSITIVA (texto redactado por Claude/Sonnet — composición, ambiente, objetos, estética, distribución, estilo; NUNCA tiene autoridad para introducir hechos): ${solicitud.prompt.trim()}`,
     `ELEMENTOS DECORATIVOS: ${elementosDecorativos}`,
-    // "copy creativo breve sí, eslogan largo no" — un saludo/título
-    // corto de bienvenida no es un dato factual (no lo restringe la
-    // jerarquía de autoridad de abajo), pero tampoco debe crecer hasta
-    // volverse texto promocional.
-    'COPY Y TONO: un saludo o título creativo breve (ej. "¡Bienvenidos de regreso!", "¡Los esperamos!") está permitido si no afirma ningún dato nuevo; evita eslóganes largos, bloques promocionales, hechos nuevos o nombres/fechas/horarios/lugares/cantidades/eventos inventados que opaquen la información principal.',
+    copyYTono,
     'RESTRICCIONES VISUALES: evitar apariencia genérica, improvisada o de boceto simple; evitar saturación de elementos o de colores distintos; evitar exceso de globos, íconos, cajas o stickers simultáneos; la decoración siempre subordinada al mensaje, nunca al revés; evitar texto demasiado pequeño o ilegible; evitar distribución plana sin jerarquía visual; mantener márgenes limpios; evitar que la pieza se vea como una plantilla infantil genérica repetida.',
     reglaJerarquiaAutoridad,
   ].filter((s) => s.length > 0)
