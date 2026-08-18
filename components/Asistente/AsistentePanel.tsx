@@ -21,7 +21,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { AsistenteService } from '@/lib/asistente/AsistenteService'
-import { esDocumentoFormal } from '@/lib/asistente/documentos'
+import { esDocumentoFormal, detectarHerramientaDocumento, pareceEdicionDeImagenActiva } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
@@ -1192,13 +1192,38 @@ export default function AsistentePanel() {
             </div>
           )
         })}
-        {asistente.generando && (asistente.mensajes.length === 0 || asistente.mensajes[asistente.mensajes.length - 1]?.rol !== 'asistente') && (
-          <div className="flex justify-start">
-            <div className="bg-white shadow-sm rounded-2xl rounded-bl-sm px-4 py-3">
-              <p className="text-xs text-purple-600 font-medium animate-pulse">Generando...</p>
+        {(() => {
+          const ultimoMensaje = asistente.mensajes[asistente.mensajes.length - 1]
+          const esperandoPrimeraRespuesta = asistente.generando && (asistente.mensajes.length === 0 || ultimoMensaje?.rol !== 'asistente')
+          if (!esperandoPrimeraRespuesta) return null
+          // Etiqueta específica SOLO cuando ya existe una señal
+          // estructurada real en cliente — nunca una clasificación
+          // nueva ni un regex frágil inventado solo para este texto:
+          // reutiliza exactamente los mismos dos detectores
+          // deterministas que ya usa enviarMensaje() para decidir el
+          // enrutamiento real (IMAGE_CREATE vía detectarHerramientaDocumento,
+          // IMAGE_EDIT vía pareceEdicionDeImagenActiva + materialVisualActivo
+          // activo). Si el mensaje del docente no matchea ninguno (ej. una
+          // instrucción de edición sin la palabra "imagen"), cae al genérico
+          // "Generando…" — nunca se inventa certeza que no existe.
+          const esGeneracionDeImagen = ultimoMensaje?.rol === 'usuario' && (
+            detectarHerramientaDocumento(ultimoMensaje.texto) === 'imagen' ||
+            (!!asistente.materialVisualActivoId && pareceEdicionDeImagenActiva(ultimoMensaje.texto))
+          )
+          return (
+            <div className="flex justify-start">
+              <div className="w-7 h-7 bg-gradient-to-br from-purple-600 to-blue-500 rounded-xl flex items-center justify-center text-xs mr-2 flex-shrink-0 mt-1"><img src="/logo.png" alt="Docente IA" className="w-full h-full object-contain" /></div>
+              <div className="bg-white shadow-sm rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-2">
+                <span className="flex gap-1" aria-hidden="true">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" />
+                </span>
+                <p className="text-xs text-purple-600 font-medium">{esGeneracionDeImagen ? 'Generando imagen…' : 'Generando…'}</p>
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
         <div ref={bottomRef} />
       </div>
 
@@ -1365,6 +1390,7 @@ export default function AsistentePanel() {
               {asistente.diagnosticoTecnico.tamanoPayloadVisual !== null && <p>tamaño_payload_visual: {asistente.diagnosticoTecnico.tamanoPayloadVisual} bytes(base64)</p>}
               {asistente.diagnosticoTecnico.statusHttp !== null && <p>status HTTP: {asistente.diagnosticoTecnico.statusHttp}</p>}
               {asistente.diagnosticoTecnico.tipoError && <p>tipo de error: {asistente.diagnosticoTecnico.tipoError}</p>}
+              {asistente.diagnosticoTecnico.mensajeError && <p>mensaje de error: {asistente.diagnosticoTecnico.mensajeError}</p>}
               <p className="font-bold mt-1">⏱ tiempos (ms)</p>
               {asistente.diagnosticoTecnico.msClienteAntesFetch !== null && <p>cliente_antes_fetch: {asistente.diagnosticoTecnico.msClienteAntesFetch}</p>}
               {asistente.diagnosticoTecnico.msFetchHastaRespuesta !== null && <p>fetch_hasta_respuesta: {asistente.diagnosticoTecnico.msFetchHastaRespuesta}</p>}

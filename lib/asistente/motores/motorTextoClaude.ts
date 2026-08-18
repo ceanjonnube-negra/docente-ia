@@ -227,6 +227,7 @@ export class MotorTextoClaude implements MotorConversacional {
         imagenEntregadaVision: null,
         statusHttp: null,
         tipoError: null,
+        mensajeError: null,
         // TIEMPOS — msFetchHastaRespuesta queda null aquí a propósito:
         // en ningún caso de fallo hubo una respuesta real que medir
         // hasta ese punto (el que sí aplica se sobreescribe abajo con
@@ -442,7 +443,20 @@ export class MotorTextoClaude implements MotorConversacional {
         return
       }
       if (diagnosticoActivo) {
-        this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('excepción no clasificada en enviarTexto', { tipoError: err instanceof Error ? err.name : 'desconocido' }) })
+        // CORRECCIÓN — "auditoría de falla de generación de imagen"
+        // (dbg_1787016902092_659gia): tipoError (err.name, ej.
+        // "TypeError") por sí solo no distingue un fallo real de red
+        // de cualquier otra excepción de programación — se agrega el
+        // mensaje real, truncado a un largo seguro. err.message es
+        // texto que el propio motor de JavaScript adjunta a la
+        // excepción — nunca contiene tokens/cookies/Authorization/
+        // claves (esos nunca viajan como texto de un Error en este
+        // archivo) ni el contenido del mensaje del docente. Se omite
+        // deliberadamente err.stack: puede incluir rutas de archivo
+        // internas sin aportar nada que mensajeError ya no diga para
+        // este diagnóstico puntual.
+        const mensajeError = err instanceof Error && err.message ? err.message.slice(0, 300) : null
+        this.emitir({ tipo: 'diagnostico-curp', datos: trazaFallo('excepción no clasificada en enviarTexto', { tipoError: err instanceof Error ? err.name : 'desconocido', mensajeError }) })
       }
       this.emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
     } finally {

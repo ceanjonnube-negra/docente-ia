@@ -371,6 +371,19 @@ export type TrazaDiagnosticoCurp = {
   // --- Solo si resultado='error' ---
   statusHttp: number | null
   tipoError: string | null
+  // Mensaje real de la excepción (err.message), truncado a un largo
+  // seguro — solo lo llena el catch genérico no clasificado de
+  // motorTextoClaude.ts (ver "auditoría de falla de generación de
+  // imagen", dbg_1787016902092_659gia): tipoError por sí solo (ej.
+  // "TypeError") no bastó para distinguir un fallo real de red de
+  // cualquier otra excepción de programación. Nunca contiene tokens,
+  // cookies, Authorization, claves, el body de la petición, ni nada
+  // del mensaje/contenido del docente — es literalmente el texto que
+  // el motor de JavaScript ya adjunta a la excepción, nunca datos que
+  // este archivo construya o incluya aparte. Opcional (no todas las
+  // trazas lo llenan, ver app/api/chat/route.ts, fuera de alcance de
+  // esta ronda) — ausente se interpreta igual que null.
+  mensajeError?: string | null
   // --- TIEMPOS (ver "instrumentación temporal de tiempos y consumo") —
   // duraciones relativas en ms, NUNCA timestamps sensibles. null cuando
   // esa etapa nunca se alcanzó — nunca se inventa una duración. ---

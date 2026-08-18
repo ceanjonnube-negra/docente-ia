@@ -1601,6 +1601,20 @@ class AsistenteServiceImpl {
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }
     this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
+    // CORRECCIÓN — "indicador Generando…" nunca se veía en generación
+    // de imagen: a diferencia de las otras 5 rutas de este archivo que
+    // ya hacen esto (confirmarAccionCalendario, confirmarCorreccionAlumno,
+    // enviarRegeneracionImagen, analizarCalendarioDesdeImagen...), esta
+    // ruta dejaba que `generando` se volviera true solo de forma
+    // reactiva, en el primer evento 'respuesta-parcial' del motor (ver
+    // manejarEventoMotor). Para un turno con streaming real de texto
+    // eso pasa casi de inmediato y es imperceptible; para la
+    // generación de imagen (CASO 3 en route.ts) el servidor no manda
+    // NADA hasta que Sonnet + gpt-image-1 + Storage ya terminaron por
+    // completo (~20-30s reales, ver auditoría del debug ID
+    // dbg_1787016902092_659gia) — así que `generando` se quedaba en
+    // false toda la espera real y el indicador nunca aparecía.
+    this.generando = true
     this.notificar()
     // PASO 3 — fire-and-forget: nunca retrasa el envío a Claude por la
     // latencia de Supabase (ver persistirMensajeRemoto).
