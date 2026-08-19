@@ -750,18 +750,35 @@ class AsistenteServiceImpl {
     // ese mismo id contra el cual validar, así que se restaura tal
     // cual (la imagen sigue existiendo en Storage/BD independientemente
     // de qué mensaje la muestre en pantalla).
-    // FALLBACK conservador (ver "recuperación robusta de generación de
-    // imágenes — persistencia remota"): conversaciones de ANTES de esta
-    // corrección nunca escribieron material_visual_activo en Supabase,
-    // así que datos.materialVisualActivo siempre vuelve null aunque la
-    // tarjeta de imagen siga visible. Se reconstruye SOLO en ese caso,
-    // desde los mensajes de ESTA MISMA conversación — nunca inventa
-    // nada nuevo.
-    this.materialVisualActivo = datos.materialVisualActivo ?? this.reconstruirMaterialVisualActivoDesdeMensajes(datos.mensajes)
-    // Si se reconstruyó (no venía ya así de la fuente), se corrige la
-    // columna remota de una vez — así la próxima apertura de esta
-    // conversación ya no necesita reconstruir nada.
-    if (!datos.materialVisualActivo && this.materialVisualActivo) this.persistirMaterialVisualActivoRemoto()
+    // RECONCILIACIÓN de frescura (ver "recuperación robusta de
+    // generación de imágenes — reconciliación") — CAUSA RAÍZ real
+    // confirmada con evidencia de producción: null como única condición
+    // no bastaba. Si la escritura remota de un turno anterior falló o no
+    // alcanzó a completarse antes de un reload, material_visual_activo
+    // podía quedar NO nulo pero VIEJO (ver prueba real: "Hazla más
+    // formal" editó una imagen de casi 5 horas antes en vez de la
+    // generada minutos antes en la misma conversación). Regla de
+    // producto: dentro de una conversación, la imagen activa SIEMPRE
+    // debe ser la imagen generada/editada válida más reciente según el
+    // propio historial de mensajes — el historial es la fuente de
+    // verdad de frescura, nunca created_at de assets_visuales (eso
+    // exigiría una consulta adicional que esta ronda evita a propósito).
+    const materialDesdeMensajes = this.reconstruirMaterialVisualActivoDesdeMensajes(datos.mensajes)
+    if (materialDesdeMensajes) {
+      // CASO A/B: no había nada remoto, o remoto apuntaba a otra
+      // versión (más vieja) — la del historial gana siempre y se repara
+      // la columna remota. CASO C: coinciden — se conserva tal cual, sin
+      // escritura adicional (evita un write en cada apertura normal).
+      this.materialVisualActivo = materialDesdeMensajes
+      if (datos.materialVisualActivo?.id !== materialDesdeMensajes.id) this.persistirMaterialVisualActivoRemoto()
+    } else {
+      // CASO D: el historial no trae ninguna imagen válida (conversación
+      // legacy sin resultadoEmbebido completo, por ejemplo) pero sí
+      // existe un materialVisualActivo remoto — se conserva tal cual,
+      // nunca se descarta solo porque no se pudo verificar contra el
+      // historial. CASO E: ninguno existe — queda null.
+      this.materialVisualActivo = datos.materialVisualActivo ?? null
+    }
     this.limpiarEstadoTransitorio()
     this.notificar()
     // Ver "corrección: timeout en documentos ilustrados largos" — si
