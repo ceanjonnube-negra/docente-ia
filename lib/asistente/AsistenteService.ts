@@ -1580,17 +1580,25 @@ class AsistenteServiceImpl {
       return
     }
 
-    // Documento ilustrado o de varios formatos a la vez (ver
-    // "corrección: timeout en documentos ilustrados largos") — Claude
-    // redactando una guía larga + hasta 4 ilustraciones reales puede
-    // tardar más de lo que Safari/iPhone espera en una sola respuesta
-    // bloqueante. Se detecta con las MISMAS funciones deterministas
-    // que ya usa el servidor para decidir si activa MODO DOCUMENTO
-    // ILUSTRADO/genera varios formatos — nunca una heurística nueva.
-    // Un mensaje normal (sin mención de ilustración, un solo formato)
-    // sigue exactamente el camino síncrono de siempre, sin pasar por
-    // aquí — cero cambio de comportamiento para el caso común.
-    if (!adjunto && canal !== 'voz' && (quiereIlustracion(limpio) || detectarFormatosExplicitosMultiples(limpio).length > 1)) {
+    // Documento ilustrado, de varios formatos, o IMAGEN NUEVA suelta
+    // (ver "recuperación robusta de generación de imágenes" — auditoría
+    // real en iPhone: el docente sale de Safari/PWA mientras gpt-image-2
+    // sigue generando, Safari mata el fetch original con TypeError: Load
+    // failed, y aunque el servidor SÍ terminó y persistió la imagen, el
+    // docente la pierde y a veces la vuelve a generar pagando dos veces).
+    // detectarHerramientaDocumento(limpio)==='imagen' exige un verbo de
+    // generación explícito (ver detectarGeneracionMultimedia en
+    // documentos.ts) — nunca dispara con una foto adjunta (ya se excluyó
+    // arriba, !adjunto), ni con edición/regeneración de la imagen activa
+    // (ya resuelta arriba, materialVisualActivo+pareceEdicionDeImagenActiva,
+    // antes de llegar aquí). Se detecta con las MISMAS funciones
+    // deterministas que ya usa el servidor para decidir si activa MODO
+    // DOCUMENTO ILUSTRADO/genera varios formatos/MODO IMAGEN — nunca una
+    // heurística nueva. Un mensaje normal (sin mención de ilustración, un
+    // solo formato, sin pedir imagen) sigue exactamente el camino
+    // síncrono de siempre, sin pasar por aquí — cero cambio de
+    // comportamiento para el caso común.
+    if (!adjunto && canal !== 'voz' && (quiereIlustracion(limpio) || detectarFormatosExplicitosMultiples(limpio).length > 1 || detectarHerramientaDocumento(limpio) === 'imagen')) {
       await this.enviarComoTrabajoDocumento(limpio)
       return
     }
@@ -2132,11 +2140,52 @@ ${instruccion}`
     const archivos = trabajo.resultado?.archivos ?? []
     const archivo = archivos.length > 0 ? archivos[0] : undefined
     const idNuevo = nuevoId()
-    const mensajeAsistente: MensajeConversacion = { id: idNuevo, rol: 'asistente', texto, creadoEn: Date.now(), archivo, archivos: archivos.length > 0 ? archivos : undefined }
+    // Imagen suelta recuperada de un trabajo async (ver "recuperación
+    // robusta de generación de imágenes") — mismo contrato
+    // resultadoEmbebido que ya arma manejarEventoMotor para el camino
+    // síncrono normal (ver evento.archivo?.tipo==='imagen' más arriba en
+    // este archivo): `archivo` sigue siendo la única fuente real del
+    // recurso (URL/assetId/nombre/tamaño), resultadoEmbebido solo decide
+    // que se presente como tarjeta "Imagen generada" en vez de
+    // TarjetaDescarga genérica.
+    const esImagen = archivo?.tipo === 'imagen'
+    const mensajeAsistente: MensajeConversacion = {
+      id: idNuevo,
+      rol: 'asistente',
+      texto,
+      creadoEn: Date.now(),
+      archivo,
+      archivos: archivos.length > 0 ? archivos : undefined,
+      resultadoEmbebido: esImagen ? { tipo: 'imagen', id: idNuevo, titulo: 'Imagen generada' } : undefined,
+    }
+    // Prompt original del docente (mismo criterio que evento.archivo
+    // más arriba en este archivo, camino síncrono normal: el mensaje
+    // justo antes de la respuesta) — se lee ANTES de agregar
+    // mensajeAsistente, así el último elemento de this.mensajes en este
+    // punto es real el mensaje del docente que arrancó este trabajo.
+    const ultimoPrevio = this.mensajes[this.mensajes.length - 1]
+    const promptOriginal = (ultimoPrevio?.rol === 'usuario' ? ultimoPrevio.texto : undefined) || texto
     this.mensajes = [...this.mensajes, mensajeAsistente]
-    const contenidoReal = trabajo.resultado?.contenidoOriginal
-    if (contenidoReal) this.actualizarDocumentoActivo(idNuevo, contenidoReal, archivo)
-    else if (esDocumentoFormal(texto)) this.actualizarDocumentoActivo(idNuevo, texto, archivo)
+    if (esImagen) {
+      // Imagen suelta recuperada de un trabajo async — mismo
+      // MaterialVisualActivoGuardado y mismo criterio EXACTOS que el
+      // camino síncrono normal (ver evento.archivo?.assetId más arriba
+      // en este archivo): sin esto, el docente no podía continuar
+      // naturalmente ("hazla más formal") sobre una imagen que se
+      // recuperó tras volver a la app — quedaba funcionalmente distinta
+      // de una imagen recibida sin desconexión.
+      this.materialVisualActivo = archivo?.assetId
+        ? { id: archivo.assetId, promptOriginal, url: archivo.url, nombre: archivo.nombre }
+        : null
+    } else {
+      // Una imagen nunca es documentoActivo (texto) — mismo criterio
+      // que el camino síncrono normal (ver evento.archivo?.tipo===
+      // 'imagen' en manejarEventoMotor, que tampoco llama a
+      // actualizarDocumentoActivo).
+      const contenidoReal = trabajo.resultado?.contenidoOriginal
+      if (contenidoReal) this.actualizarDocumentoActivo(idNuevo, contenidoReal, archivo)
+      else if (esDocumentoFormal(texto)) this.actualizarDocumentoActivo(idNuevo, texto, archivo)
+    }
     this.notificar()
     // PASO 3B — este resultado llega por polling (GET /api/chat/
     // trabajo-documento/[id]), nunca pasa por manejarEventoMotor, así
