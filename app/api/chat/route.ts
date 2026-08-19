@@ -2112,6 +2112,59 @@ Grado: [grado] | Grupo: [grupo]
   let textoBorradorAcumulado = ''
   const readable = new ReadableStream({
     async start(controller) {
+      // Guard defensivo — [[IMAGEN:...]] jamás debe llegar crudo al
+      // maestro en una respuesta conversacional normal (ver caso real:
+      // tras una falla previa, "Continua" hizo que Claude reprodujera
+      // el marcador interno de MODO IMAGEN fuera de ese modo). SOLO
+      // aplica a esta rama de streaming — el camino legítimo de
+      // documentos ilustrados (CASO 3, más arriba en esta función)
+      // retorna con respuestaTexto() mucho antes de llegar aquí, así
+      // que este guard nunca puede tocar ese contenido interno legítimo
+      // (analizado después por parseContenido.ts/herramientas.ts para
+      // Word/PDF). Un marcador puede llegar partido entre varios chunks
+      // del streaming real de Claude — nunca se filtra chunk por chunk:
+      // se acumula y solo se libera al cliente el texto que YA es
+      // seguro (nunca puede terminar formando "[[IMAGEN:"), reteniendo
+      // como máximo los últimos caracteres que todavía podrían ser el
+      // inicio de ese prefijo formándose entre este chunk y el
+      // siguiente.
+      const MARCADOR_IMAGEN_INICIO = '[[IMAGEN:'
+      let bufferPendienteSanitizado = ''
+      let dentroDeMarcadorImagen = false
+      let seEnvioTextoVisible = false
+      function emitirTextoSano(delta: string) {
+        bufferPendienteSanitizado += delta
+        while (true) {
+          if (dentroDeMarcadorImagen) {
+            const cierre = bufferPendienteSanitizado.indexOf(']]')
+            if (cierre === -1) return // seguimos dentro del marcador — nada seguro que liberar todavía
+            bufferPendienteSanitizado = bufferPendienteSanitizado.slice(cierre + 2)
+            dentroDeMarcadorImagen = false
+            continue
+          }
+          const inicio = bufferPendienteSanitizado.indexOf(MARCADOR_IMAGEN_INICIO)
+          if (inicio !== -1) {
+            const seguro = bufferPendienteSanitizado.slice(0, inicio)
+            if (seguro) { controller.enqueue(encoder.encode(seguro)); seEnvioTextoVisible = true }
+            bufferPendienteSanitizado = bufferPendienteSanitizado.slice(inicio)
+            dentroDeMarcadorImagen = true
+            continue
+          }
+          // Sin marcador confirmado todavía: se retiene solo el sufijo
+          // que aún podría convertirse en "[[IMAGEN:" con el próximo
+          // chunk — el resto ya es 100% seguro y se libera de inmediato,
+          // preservando el streaming en vivo para el caso normal.
+          let retener = 0
+          const maxRetener = Math.min(bufferPendienteSanitizado.length, MARCADOR_IMAGEN_INICIO.length - 1)
+          for (let n = maxRetener; n > 0; n--) {
+            if (MARCADOR_IMAGEN_INICIO.startsWith(bufferPendienteSanitizado.slice(-n))) { retener = n; break }
+          }
+          const seguro = bufferPendienteSanitizado.slice(0, bufferPendienteSanitizado.length - retener)
+          if (seguro) { controller.enqueue(encoder.encode(seguro)); seEnvioTextoVisible = true }
+          bufferPendienteSanitizado = bufferPendienteSanitizado.slice(bufferPendienteSanitizado.length - retener)
+          return
+        }
+      }
       try {
         console.log('[STREAM][chat] streamInicio=true')
         for await (const event of stream) {
@@ -2133,7 +2186,7 @@ Grado: [grado] | Grupo: [grupo]
               primerDeltaTelemetria = true
               marcarTelemetria('claude:first_text_received')
             }
-            controller.enqueue(encoder.encode(event.delta.text))
+            emitirTextoSano(event.delta.text)
             if (esTurnoDeBorradorPlaneacion) textoBorradorAcumulado += event.delta.text
           }
 
@@ -2171,7 +2224,7 @@ Grado: [grado] | Grupo: [grupo]
               )
               for await (const eventoContinuacion of streamContinuacion) {
                 if (eventoContinuacion.type === 'content_block_delta' && eventoContinuacion.delta.type === 'text_delta') {
-                  controller.enqueue(encoder.encode(eventoContinuacion.delta.text))
+                  emitirTextoSano(eventoContinuacion.delta.text)
                 }
               }
               toolUseActivo = null
@@ -2200,6 +2253,22 @@ Grado: [grado] | Grupo: [grupo]
               }
             }
           }
+        }
+        // Cierre del guard [[IMAGEN:...]] — si el streaming terminó a
+        // mitad de un marcador (nunca cerró "]]"), todo lo retenido era
+        // parte del marcador y se descarta sin enviarlo. Si terminó
+        // fuera de un marcador, lo retenido ya es texto normal seguro y
+        // se libera. Si al final nunca se envió nada visible al maestro
+        // (la respuesta completa era el marcador, o venía vacía), se
+        // entrega una respuesta corta y segura en su lugar — nunca una
+        // burbuja vacía ni el contenido interno crudo.
+        if (!dentroDeMarcadorImagen && bufferPendienteSanitizado) {
+          controller.enqueue(encoder.encode(bufferPendienteSanitizado))
+          seEnvioTextoVisible = true
+        }
+        bufferPendienteSanitizado = ''
+        if (!seEnvioTextoVisible) {
+          controller.enqueue(encoder.encode('No pude continuar esa imagen desde el contexto actual. Indícame el cambio que deseas y la retomamos.'))
         }
         marcarTelemetria('claude:response_finished')
         console.log(`[STREAM][chat] streamFinalizado=true duracionStreamMs=${Date.now() - inicioRequestMs}`)
