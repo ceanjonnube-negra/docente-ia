@@ -194,10 +194,25 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
 const REGEX_VERBOS_EDICION_IMAGEN =
   /\b(pon(le|erle)?|cambi[ae](le|la|lo|rle)?|quita(le|rle)?|agreg[ae](le|la|lo|rle)?|a[ñn]ad[ae](le|la|lo|rle)?|convierte(la|lo)?|edita(la|lo|rla|rlo)?|modifica(la|lo|rla|rlo)?|ajusta(la|lo|rla|rlo)?|corrige(la|lo)?|mejora(la|lo)?|hazla|hazlo)\b/
 const FRASES_REFERENCIA_IMAGEN = ['esa imagen', 'esta imagen', 'la imagen anterior', 'la anterior', 'a esa', 'de esa imagen']
+// CONTINUACIÓN NATURAL CON REFERENCIA EXPLÍCITA A IMAGEN (ver
+// "reconocer continuaciones naturales que hacen referencia explícita a
+// la imagen activa" — caso real: "Continua con la imagen" con
+// materialVisualActivo ya activo caía a conversación general porque
+// ningún verbo de arriba cubre "continua"/"sigue"/"termina"). Un verbo
+// de continuación por sí solo ("Continúa", "Sigue", "Termínala") NUNCA
+// basta — sería demasiado agresivo y podría secuestrar un documento
+// activo o cualquier otro contexto ambiguo (ver AsistenteService.ts:
+// documentoActivo siempre se evalúa antes que materialVisualActivo, sin
+// cambios); solo cuenta cuando el mismo mensaje ADEMÁS nombra la imagen
+// explícitamente. continu[ae] cubre continua/continúa (normalizar() ya
+// quitó el acento antes de llegar aquí).
+const REGEX_VERBO_CONTINUACION_IMAGEN = /\b(continu[ae]|sigue|termina)\b/
+const REGEX_REFERENCIA_IMAGEN_EXPLICITA = /\bimagen\b/
 export function pareceEdicionDeImagenActiva(texto: string): boolean {
   const normalizado = normalizar(texto)
   if (REGEX_VERBOS_EDICION_IMAGEN.test(normalizado)) return true
-  return FRASES_REFERENCIA_IMAGEN.some((frase) => normalizado.includes(frase))
+  if (FRASES_REFERENCIA_IMAGEN.some((frase) => normalizado.includes(frase))) return true
+  return REGEX_VERBO_CONTINUACION_IMAGEN.test(normalizado) && REGEX_REFERENCIA_IMAGEN_EXPLICITA.test(normalizado)
 }
 
 // MODO DOCUMENTO ILUSTRADO (ver "Documentos ilustrados + guías
