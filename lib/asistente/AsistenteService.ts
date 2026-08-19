@@ -637,6 +637,24 @@ class AsistenteServiceImpl {
       .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo asegurar la conversación remota para este mensaje:', e))
   }
 
+  // Persiste materialVisualActivo también en Supabase (ver
+  // "recuperación robusta de generación de imágenes — persistencia
+  // remota"): ANTES solo se guardaba en localStorage (guardarAhora),
+  // así que abrirConversacion() — que intenta Supabase primero — volvía
+  // siempre con materialVisualActivo=null aunque la tarjeta de imagen
+  // siguiera visible en el historial (evidencia real: "Hazla más
+  // formal" caía a conversación normal tras reabrir la conversación).
+  // Fire-and-forget, mismo criterio que persistirMensajeAsegurandoConversacion
+  // de arriba: nunca bloquea, nunca rompe el chat, nunca hace desaparecer
+  // la imagen ya entregada si la escritura remota falla — la
+  // persistencia local (guardarAhora, disparada por notificar()) sigue
+  // funcionando exactamente igual pase lo que pase aquí.
+  private persistirMaterialVisualActivoRemoto() {
+    if (!this.conversacionActivaId) return
+    actualizarConversacionRemota(this.conversacionActivaId, { materialVisualActivo: this.materialVisualActivo })
+      .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo actualizar materialVisualActivo:', e))
+  }
+
   // Refresca la lista de conversaciones desde Supabase y la COMBINA
   // con lo que ya hubiera en this.listaConversaciones (legacy/
   // localStorage) — nunca la reemplaza de golpe: una conversación que
@@ -732,7 +750,18 @@ class AsistenteServiceImpl {
     // ese mismo id contra el cual validar, así que se restaura tal
     // cual (la imagen sigue existiendo en Storage/BD independientemente
     // de qué mensaje la muestre en pantalla).
-    this.materialVisualActivo = datos.materialVisualActivo ?? null
+    // FALLBACK conservador (ver "recuperación robusta de generación de
+    // imágenes — persistencia remota"): conversaciones de ANTES de esta
+    // corrección nunca escribieron material_visual_activo en Supabase,
+    // así que datos.materialVisualActivo siempre vuelve null aunque la
+    // tarjeta de imagen siga visible. Se reconstruye SOLO en ese caso,
+    // desde los mensajes de ESTA MISMA conversación — nunca inventa
+    // nada nuevo.
+    this.materialVisualActivo = datos.materialVisualActivo ?? this.reconstruirMaterialVisualActivoDesdeMensajes(datos.mensajes)
+    // Si se reconstruyó (no venía ya así de la fuente), se corrige la
+    // columna remota de una vez — así la próxima apertura de esta
+    // conversación ya no necesita reconstruir nada.
+    if (!datos.materialVisualActivo && this.materialVisualActivo) this.persistirMaterialVisualActivoRemoto()
     this.limpiarEstadoTransitorio()
     this.notificar()
     // Ver "corrección: timeout en documentos ilustrados largos" — si
@@ -740,6 +769,31 @@ class AsistenteServiceImpl {
     // sesión anterior (la app se cerró por completo mientras
     // generaba), se retoma justo al abrirla.
     this.reanudarTrabajoDocumentoPendienteSiExiste()
+  }
+
+  // Reconstrucción CONSERVADORA de materialVisualActivo (ver
+  // "recuperación robusta de generación de imágenes — persistencia
+  // remota", fallback para conversaciones existentes) — busca desde el
+  // mensaje MÁS RECIENTE hacia atrás, dentro de ESTOS mismos mensajes
+  // (nunca de otra conversación), el último mensaje que sea de verdad
+  // una imagen generada/editada real: exige resultadoEmbebido.tipo===
+  // 'imagen' (solo lo arma el camino real de generación/edición, ver
+  // manejarEventoMotor/hidratarTrabajoDocumentoCompletado — una foto
+  // adjunta manualmente por el docente NUNCA lo tiene) Y archivo real
+  // con assetId/url/nombre. Nunca reconstruye desde texto, descripciones
+  // de Claude, ni fotos de análisis. Al recorrer del más reciente hacia
+  // atrás, el primer match ya es automáticamente la versión más nueva
+  // (v3 antes que v1) — sin comparar versiones a mano.
+  private reconstruirMaterialVisualActivoDesdeMensajes(mensajes: MensajeConversacion[]): MaterialVisualActivoGuardado | null {
+    for (let i = mensajes.length - 1; i >= 0; i--) {
+      const m = mensajes[i]
+      if (m.resultadoEmbebido?.tipo === 'imagen' && m.archivo?.tipo === 'imagen' && m.archivo.assetId && m.archivo.url && m.archivo.nombre) {
+        const previo = i > 0 ? mensajes[i - 1] : undefined
+        const promptOriginal = (previo?.rol === 'usuario' ? previo.texto : undefined) || m.texto
+        return { id: m.archivo.assetId, promptOriginal, url: m.archivo.url, nombre: m.archivo.nombre }
+      }
+    }
+    return null
   }
 
   // Borra una conversación guardada de forma permanente — si era la
@@ -1242,6 +1296,7 @@ class AsistenteServiceImpl {
             this.materialVisualActivo = evento.archivo.assetId
               ? { id: evento.archivo.assetId, promptOriginal, url: evento.archivo.url, nombre: evento.archivo.nombre }
               : null
+            this.persistirMaterialVisualActivoRemoto()
           } else if (msg && evento.archivo) {
             // CASO 3 (ver FINALIZAR ARCHIVO en app/api/chat/route.ts):
             // el maestro pidió el archivo real en el MISMO mensaje que
@@ -2174,6 +2229,7 @@ ${instruccion}`
       this.materialVisualActivo = archivo?.assetId
         ? { id: archivo.assetId, promptOriginal, url: archivo.url, nombre: archivo.nombre }
         : null
+      this.persistirMaterialVisualActivoRemoto()
     } else {
       // Una imagen nunca es documentoActivo (texto) — mismo criterio
       // que el camino síncrono normal (ver evento.archivo?.tipo===
