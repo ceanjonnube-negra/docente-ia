@@ -69,7 +69,13 @@ function extraerArchivosDeRespuesta(respuesta: string): { texto: string; archivo
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const { mensaje, historial, contexto, institucionId, userId: userIdCliente, accessToken, zonaHoraria, requestId } = body
+  // regenerarImagen (ver "recuperación robusta de generación de
+  // imágenes — ediciones"): opcional, se reenvía TAL CUAL al body
+  // interno de /api/chat más abajo — este endpoint nunca lo valida ni
+  // lo interpreta, el único generador/editor real sigue siendo
+  // /api/chat (ver REGENERAR IMAGEN en route.ts, que ya valida su forma
+  // antes de usarlo).
+  const { mensaje, historial, contexto, institucionId, userId: userIdCliente, accessToken, zonaHoraria, requestId, regenerarImagen } = body
 
   if (typeof requestId !== 'string' || !requestId) {
     return NextResponse.json({ error: 'Falta requestId.' }, { status: 400 })
@@ -114,6 +120,7 @@ export async function POST(req: NextRequest) {
           userId: userIdCliente,
           accessToken,
           zonaHoraria,
+          regenerarImagen,
         }),
       })
       if (!res.ok) {

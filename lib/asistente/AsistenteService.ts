@@ -2048,23 +2048,20 @@ ${instruccion}`
   // regenerarImagen (nunca pasa por Claude, ver REGENERAR IMAGEN en
   // app/api/chat/route.ts) — acción mecánica, mismo criterio que
   // FINALIZAR ARCHIVO.
+  // Edición/regeneración de imagen existente (ver "recuperación robusta
+  // de generación de imágenes — ediciones") — ANTES iba por un fetch
+  // síncrono directo (motorDeContenido().enviarTexto), igual de
+  // vulnerable a backgrounding/timeout que la generación NUEVA lo era
+  // antes de esa corrección (ver caso real: edición de ~47s, servidor
+  // 200 exitoso, cliente mostró "Error al conectar con la IA.", imagen
+  // v2 real generada y pagada que el docente nunca vio). Ahora reutiliza
+  // exactamente la misma infraestructura de trabajo persistente que ya
+  // usan documentos largos e imagen nueva — mismo trabajoId/requestId/
+  // idempotencia/polling/reanudación, sin sistema paralelo.
   private async enviarRegeneracionImagen(instruccion: string) {
-    await this.asegurarMotor()
-    this.sincronizarHistorialTexto()
-    this.transcripcionParcial = ''
-    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: instruccion, creadoEn: Date.now() }
-    this.mensajes = [...this.mensajes, mensajeUsuario]
-    this.turnoAbierto = null
-    this.notificar()
-    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
-
     const materialAnterior = this.materialVisualActivo
     if (!materialAnterior) return // no debería pasar (guardado por enviarMensaje), pero nunca truena aquí
-    try {
-      await (await this.motorDeContenido())?.enviarTexto(instruccion, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { assetIdAnterior: materialAnterior.id })
-    } catch {
-      this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
-    }
+    await this.enviarComoTrabajoDocumento(instruccion, { assetIdAnterior: materialAnterior.id })
   }
 
   // --- Trabajo asíncrono de documento (ver "corrección: timeout en
@@ -2073,7 +2070,7 @@ ${instruccion}`
   // REAL (nunca una desconexión: el POST de creación responde en
   // milisegundos, ni siquiera espera a que empiece la generación) —
   // mismo camino, mismo aviso, que ya usa el resto de la aplicación.
-  private async enviarComoTrabajoDocumento(texto: string) {
+  private async enviarComoTrabajoDocumento(texto: string, regenerarImagen?: { assetIdAnterior: string }) {
     const historialPrevio = this.mensajes.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
     this.transcripcionParcial = ''
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }
@@ -2085,7 +2082,7 @@ ${instruccion}`
 
     const requestId = generarRequestIdTrabajo()
     try {
-      const { trabajoId } = await iniciarTrabajoDocumento(texto, this.contexto, historialPrevio, requestId, null)
+      const { trabajoId } = await iniciarTrabajoDocumento(texto, this.contexto, historialPrevio, requestId, null, regenerarImagen)
       this.trabajoDocumentoActivoId = trabajoId
       guardarTrabajoActivo({ trabajoId, requestId, conversacionId: this.conversacionActivaId })
       this.notificar()

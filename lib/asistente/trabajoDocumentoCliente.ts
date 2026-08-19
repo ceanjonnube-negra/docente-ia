@@ -79,7 +79,13 @@ export async function iniciarTrabajoDocumento(
   contexto: ContextoAplicacion,
   historialMensajes: TrabajoHistorialSimple[],
   requestId: string,
-  institucionId: string | null
+  institucionId: string | null,
+  // Edición/regeneración de imagen existente (ver "recuperación robusta
+  // de generación de imágenes — ediciones") — mismo contrato inline
+  // {assetIdAnterior} que ya usa motorTextoClaude.ts/AsistenteService.ts
+  // para el camino síncrono, nunca un tipo nuevo. Ausente para
+  // documentos e imágenes NUEVAS — mismo comportamiento de siempre.
+  regenerarImagen?: { assetIdAnterior: string }
 ): Promise<{ trabajoId: string; estado: string }> {
   const { user, session, perfil } = await obtenerPerfilYSesion()
   if (!user || !session?.access_token) throw new Error('Sesión no encontrada.')
@@ -101,6 +107,7 @@ export async function iniciarTrabajoDocumento(
       accessToken: session.access_token,
       zonaHoraria: obtenerZonaHorariaDispositivo(),
       requestId,
+      regenerarImagen: regenerarImagen || undefined,
     }),
   })
   if (!res.ok) {
