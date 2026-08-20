@@ -122,6 +122,53 @@ export function fechaISOHoy(zonaHoraria: string | null | undefined, fecha: Date 
   return obtenerFechaHora(zonaHoraria, fecha).fechaISO
 }
 
+const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+// Exige día + mes + AÑO explícitos los 3 juntos, en ese orden — nunca
+// solo "31 de agosto" (sin año): a propósito NO infiere el año faltante
+// de "hoy" ni de ningún otro lado, para nunca calcular el día de la
+// semana de una fecha que en realidad el docente no terminó de dar (ver
+// "corrección — Docente IA fabricaba el día de la semana", caso real:
+// el mensaje original nunca traía año, y agregar uno inferido aquí
+// habría sido exactamente el mismo tipo de dato construido a medias que
+// se quiere evitar).
+const REGEX_FECHA_EXPLICITA_COMPLETA = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${MESES_ES.join('|')})\\s+de\\s+(\\d{4})\\b`, 'gi')
+
+export type FechaExplicitaConDia = {
+  textoOriginal: string // "31 de agosto de 2026", tal cual apareció en el texto
+  fechaLegible: string
+  diaSemana: string // "lunes" — SIEMPRE calculado, nunca el que haya escrito el docente/modelo
+}
+
+// Único cálculo determinístico de "día de la semana de una fecha
+// EXPLÍCITA completa" de todo el proyecto (ver "corrección — Docente IA
+// fabricaba el día de la semana de una fecha explícita"). Deliberadamente
+// conservador — nunca reinterpreta un número suelto como fecha (exige
+// literalmente "N de MES de AAAA"), nunca infiere el año, y descarta
+// cualquier fecha que en realidad no exista en el calendario (31 de
+// febrero, 29 de febrero en año no bisiesto): JS "corrige" solo esas
+// fechas hacia el mes/día siguiente en vez de fallar, así que se
+// valida comparando los componentes de vuelta antes de aceptarla.
+export function calcularDiasSemanaDeFechasExplicitas(texto: string, zonaHoraria: string | null | undefined): FechaExplicitaConDia[] {
+  const resultados: FechaExplicitaConDia[] = []
+  if (!texto) return resultados
+  const regex = new RegExp(REGEX_FECHA_EXPLICITA_COMPLETA.source, 'gi')
+  let coincidencia: RegExpExecArray | null
+  while ((coincidencia = regex.exec(texto)) !== null) {
+    const dia = Number(coincidencia[1])
+    const indiceMes = MESES_ES.indexOf(coincidencia[2].toLowerCase())
+    const anio = Number(coincidencia[3])
+    if (indiceMes === -1 || dia < 1 || dia > 31) continue
+    // Mediodía (mismo criterio que formatearFecha más abajo) — evita que
+    // un desfase de zona horaria empuje la fecha construida al día
+    // civil anterior o siguiente antes de calcular el día de la semana.
+    const fecha = new Date(anio, indiceMes, dia, 12, 0, 0)
+    if (fecha.getFullYear() !== anio || fecha.getMonth() !== indiceMes || fecha.getDate() !== dia) continue // fecha inexistente (ej. 31 de febrero) — no inventar resultado
+    const { diaSemana, fechaLegible } = obtenerFechaHora(zonaHoraria, fecha)
+    resultados.push({ textoOriginal: coincidencia[0], fechaLegible, diaSemana })
+  }
+  return resultados
+}
+
 // Formatea una fecha YA GUARDADA (ej. "2026-07-18" de una fila de
 // asistencia, o el created_at de un documento) para mostrarla en la
 // interfaz — mismo criterio de zona horaria que el resto del servicio,

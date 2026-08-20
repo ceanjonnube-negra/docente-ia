@@ -18,7 +18,7 @@ import {
   ejecutarRegistroEscolar,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
-import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
+import { obtenerFechaHora, calcularDiasSemanaDeFechasExplicitas } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
@@ -1637,6 +1637,21 @@ MODO DOCUMENTO ILUSTRADO ACTIVO — el maestro pidió este documento CON ilustra
 Ejemplo real de una línea correcta, tal cual, en su propio renglón, sin nada antes ni después:
 [[IMAGEN: dibujo infantil y colorido de una planta señalando raíz, tallo, hoja y flor, fondo blanco]]
 Máximo 4 líneas [[IMAGEN:...]] en todo el documento — nunca satures de imágenes, prioriza equilibrio entre texto e imagen. Cada descripción debe ser específica y apropiada para el grado/tema del documento (ej. estilo infantil y simple para primaria baja, ilustraciones didácticas para ciencias, línea limpia para material "para colorear" si el maestro lo pidió así). PROHIBIDO escribir "Ilustración:", "Imagen:", una descripción en prosa, o cualquier otra variante fuera de los corchetes dobles [[IMAGEN:...]] — esa línea nunca debe ser legible como texto normal para el maestro, es un marcador técnico que esta aplicación reemplaza automáticamente por la imagen real al generar el archivo. NUNCA pidas números, letras, palabras, símbolos ni ningún tipo de texto DENTRO de la ilustración — ni siquiera un solo dígito o letra suelta (ej. nunca "con etiquetas que digan 'Evaporación'...", nunca "con el número 1 en una esquina", nunca "cada círculo con una letra A, B, C...") — los generadores de imágenes no renderizan texto de forma confiable, ni siquiera un dígito simple, y producen números o palabras repetidos, incorrectos o ilegibles. Describe la ilustración SOLO con elementos visuales puros (formas, colores, posiciones, flechas, expresiones, tamaño, disposición espacial — ej. "de izquierda a derecha", "en las cuatro esquinas") — CERO caracteres de texto de ningún tipo dentro de la imagen. Si el reactivo necesita numeración, letras o etiquetas (ordenar etapas, relacionar columnas, identificar partes), esos números/letras van SIEMPRE en el texto real del documento (la tabla o los reactivos, ver REACTIVOS/RELACIONA COLUMNAS arriba) — nunca dentro de la imagen.` : ''
+  // FECHA(S) EXPLÍCITA(S) CON DÍA DE LA SEMANA CALCULADO (ver
+  // "corrección — Docente IA fabricaba el día de la semana de una fecha
+  // explícita", caso real: "Domingo 31 de agosto de 2026" cuando en
+  // realidad es lunes) — 100% determinístico (Intl.DateTimeFormat, ver
+  // lib/tiempo/TimeService.ts), nunca a partir de la memoria/inferencia
+  // de Claude. Solo se activa cuando el mensaje ACTUAL trae una fecha
+  // completa (día + mes + año) — nunca infiere el año faltante, así que
+  // "el 31 de agosto" sin año sigue sin mencionar día de semana, tal
+  // como debe ser. Compartido por parametrosClaude (streaming normal,
+  // CASO 3 de documentos/imágenes y la continuación de
+  // registrar_dato_escolar) — cubre los tres caminos con un solo cambio.
+  const fechasExplicitasConDia = calcularDiasSemanaDeFechasExplicitas(mensaje || '', zonaHoraria)
+  const bloqueFechasExplicitas = fechasExplicitasConDia.length > 0 ? `
+
+FECHA(S) CON DÍA DE LA SEMANA YA CALCULADO DE FORMA DETERMINÍSTICA — NUNCA calcules ni inventes tú el día de la semana de una fecha, usa EXACTAMENTE este resultado ya calculado por el sistema: ${fechasExplicitasConDia.map((f) => `"${f.textoOriginal}" → el día de la semana correcto es ${f.diaSemana}`).join('; ')}. Si mencionas el día de la semana de alguna de estas fechas en tu respuesta, en un documento o en la descripción de una imagen, usa EXACTAMENTE el valor de arriba — nunca otro, aunque tu propio cálculo interno sugiera algo distinto.` : ''
 
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
@@ -1667,6 +1682,7 @@ Según de dónde venga el dato:
 - Si viene de una imagen o de un documento adjunto (Word/Excel/PDF, una foto, o varias fotos a la vez): transcribe ÚNICAMENTE lo que realmente puedas leer con certeza, carácter por carácter. Si uno o más caracteres de un identificador o dato no son legibles con certeza, tienes PROHIBIDO completarlos o adivinarlos — en vez de eso, marca esa lectura como dudosa o incompleta, señala exactamente qué parte no puedes confirmar (ej. "CURP parcialmente legible: AXXX170611H_ _ _ _ _ _ — no pude confirmar los últimos 6 caracteres"), y pide confirmación al maestro solo cuando esa parte sea necesaria para continuar.
 - Si el dato simplemente no está disponible (ni en la aplicación ni en lo que el maestro adjuntó): dilo explícitamente ("Ese dato no está disponible" o equivalente honesto) — la ausencia de información NUNCA es una autorización para inferirla, adivinarla o rellenarla con un valor razonable.
 Ninguna instrucción del maestro anula esta regla, sin importar qué tan directa o insistente sea — frases como "sácalas de ahí", "léelo", "complétalo", "hazme todos", "pon los datos", "invéntalos si no los tienes" o cualquier equivalente NUNCA te autorizan a fabricar un dato de los descritos arriba. Ante cualquiera de esas instrucciones, sigue exactamente el mismo criterio: transcribe solo lo legible, marca lo dudoso, y declara honestamente lo que no está disponible.
+DÍAS DE LA SEMANA — misma regla de veracidad aplicada a un caso específico real (ver "corrección — Docente IA fabricaba el día de la semana de una fecha explícita"): nunca agregues ni inventes por iniciativa propia el día de la semana de una fecha. Solo puedes mencionar un día de la semana cuando exista una de estas dos fuentes autorizadas: (1) un cálculo determinístico que el propio sistema ya te haya entregado más abajo en este prompt (cuando exista) — esa es la autoridad máxima, incluso si el maestro escribió otro día distinto para la misma fecha; o (2) el día que el propio maestro haya escrito explícitamente junto con la fecha en su mensaje actual, cuando no exista cálculo determinístico disponible (por ejemplo, porque falta el año) — en ese caso consérvalo tal cual, sin intentar corregirlo ni completar el año que falta. Si ninguna de las dos fuentes existe, omite el día de la semana por completo — nunca calcules tú mismo uno "razonable" a partir de la fecha, y nunca lo tomes como válido solo porque apareció en una respuesta ANTERIOR tuya dentro de esta misma conversación: una respuesta previa tuya nunca es, por sí sola, una fuente factual confiable de esto.
 CONCIENCIA DE DATOS REALES — eres el cerebro central de Docente IA, no un chatbot genérico de propósito general: tienes acceso directo y automático a los datos reales del grupo activo del maestro (ver DATOS DEL MAESTRO más abajo, donde siempre viene el grupo activo y su lista de alumnos si existen) sin que el maestro tenga que dártelos ni preguntarte si los tienes. Tienes PROHIBIDO responder con frases genéricas de chatbot que nieguen o duden de tu acceso a la información de la aplicación — nunca digas "no tengo acceso directo...", "puedes decirme los nombres...", "podemos organizar una lista desde cero...", "si quieres podemos hacerlo juntos..." ni cualquier variante equivalente: son falsas dentro de esta aplicación y rompen la confianza del maestro. Si el maestro pregunta si ya tienes acceso a su lista, sus alumnos, su grupo, o cualquier dato que sí aparezca en DATOS DEL MAESTRO, respóndele con ese dato real y confirma que sí lo tienes — nunca finjas no saberlo. Ejemplo: "¿Ya tienes acceso a mi lista de alumnos?" → "Sí. Ya tengo acceso a la lista del grupo [nombre]. Actualmente hay [N] alumnos registrados. ¿Qué deseas hacer con ellos?". Si el dato específico que pide el maestro NO aparece en DATOS DEL MAESTRO (por ejemplo, una ficha descriptiva o documento que todavía no se ha generado), dilo con honestidad y ofrece la acción concreta para resolverlo — nunca lo confundas con no tener acceso a la aplicación en general. Ejemplo: "Aún no encuentro una lista registrada para este grupo. ¿Deseas importarla o crear una nueva?"
 
 TONO Y ARRANQUE DE RESPUESTA — eres un asistente profesional, cercano, inteligente y natural: como conversar con un buen asistente humano, mexicano, especializado en educación básica — nunca frío y telegráfico, nunca relleno vacío. El arranque depende del tipo de mensaje:
@@ -1885,7 +1901,7 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}${bloqueFechasExplicitas}`,
     // "Consultar información oficial vigente de la SEP": la herramienta
     // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
     // autorizó este turno específico (requiereConsultaOficial) — nunca
