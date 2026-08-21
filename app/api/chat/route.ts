@@ -147,6 +147,72 @@ function respuestaTexto(texto: string): Response {
   return new Response(readable, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
 }
 
+// Postprocesado determinístico del día de la semana (ver "postprocesado
+// determinístico del día de la semana para consultas factuales con año
+// explícito") — solo se invoca cuando anioDiaSemanaAutorizado existe
+// (ver más abajo en el POST). normalizarDiaSemana compara tolerando
+// mayúsculas/acentos, mismo criterio que normalizar() en documentos.ts.
+function normalizarDiaSemana(dia: string): string {
+  return dia.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+const PATRON_DIA_SEMANA_TEXTO = 'lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo'
+const REGEX_DIA_SEMANA_ANTES_FECHA = new RegExp(`(${PATRON_DIA_SEMANA_TEXTO})\\s*,?\\s*$`, 'i')
+const REGEX_DIA_SEMANA_DESPUES_FECHA = new RegExp(`^\\s*,?\\s*(?:que\\s+)?(?:cae\\s+en\\s+|ser[áa]\\s+|es\\s+)?(${PATRON_DIA_SEMANA_TEXTO})\\b`, 'i')
+
+// Corrige (o completa, si falta) el día de la semana asociado a UNA
+// fecha completa específica dentro del texto — nunca toca un día de la
+// semana que pertenezca a otra fecha (ventanas cortas e inmediatamente
+// adyacentes a cada aparición literal de `fechaTexto`, ver "asociación
+// segura"). Si no hay ningún día de semana asociado a esa aparición,
+// agrega el dato mínimo determinístico ("...fecha, que cae en X") —
+// nunca inventa ni cambia nada más del texto.
+function aplicarCorreccionDiaSemana(texto: string, fechaTexto: string, diaCorrecto: string): { texto: string; corregido: boolean } {
+  const VENTANA_ANTES = 15
+  const VENTANA_DESPUES = 40
+  let salida = ''
+  let cursor = 0
+  let corregido = false
+  while (true) {
+    const idx = texto.indexOf(fechaTexto, cursor)
+    if (idx === -1) { salida += texto.slice(cursor); break }
+    const inicioVentanaAntes = Math.max(cursor, idx - VENTANA_ANTES)
+    const ventanaAntes = texto.slice(inicioVentanaAntes, idx)
+    const finFecha = idx + fechaTexto.length
+    const ventanaDespues = texto.slice(finFecha, finFecha + VENTANA_DESPUES)
+    const matchAntes = ventanaAntes.match(REGEX_DIA_SEMANA_ANTES_FECHA)
+    const matchDespues = !matchAntes ? ventanaDespues.match(REGEX_DIA_SEMANA_DESPUES_FECHA) : null
+
+    if (matchAntes) {
+      const diaEscrito = matchAntes[1]
+      const inicioMatchAbsoluto = inicioVentanaAntes + matchAntes.index!
+      salida += texto.slice(cursor, inicioMatchAbsoluto)
+      if (normalizarDiaSemana(diaEscrito) !== normalizarDiaSemana(diaCorrecto)) { salida += diaCorrecto; corregido = true }
+      else { salida += diaEscrito }
+      salida += texto.slice(inicioMatchAbsoluto + diaEscrito.length, idx)
+      salida += fechaTexto
+      cursor = finFecha
+    } else if (matchDespues) {
+      const diaEscrito = matchDespues[1]
+      const inicioMatchAbsoluto = finFecha + matchDespues.index! + matchDespues[0].lastIndexOf(diaEscrito)
+      salida += texto.slice(cursor, idx)
+      salida += fechaTexto
+      salida += texto.slice(finFecha, inicioMatchAbsoluto)
+      if (normalizarDiaSemana(diaEscrito) !== normalizarDiaSemana(diaCorrecto)) { salida += diaCorrecto; corregido = true }
+      else { salida += diaEscrito }
+      cursor = inicioMatchAbsoluto + diaEscrito.length
+    } else {
+      // Sin día de semana asociado a esta aparición de la fecha (ver
+      // "caso 9: Claude omite el día") — se agrega el dato mínimo.
+      salida += texto.slice(cursor, idx)
+      salida += fechaTexto
+      salida += `, que cae en ${diaCorrecto}`
+      corregido = true
+      cursor = finFecha
+    }
+  }
+  return { texto: salida, corregido }
+}
+
 // El maestro nunca debe ver detalle técnico (HTTP, JSON, mensajes crudos
 // de la API de Anthropic/OpenAI, stack traces) — ver ARQUITECTURA
 // MAESTRA, principio de ERRORES. El detalle real siempre se registra con
@@ -1653,6 +1719,28 @@ Máximo 4 líneas [[IMAGEN:...]] en todo el documento — nunca satures de imág
 
 FECHA(S) CON DÍA DE LA SEMANA YA CALCULADO DE FORMA DETERMINÍSTICA — NUNCA calcules ni inventes tú el día de la semana de una fecha, usa EXACTAMENTE este resultado ya calculado por el sistema: ${fechasExplicitasConDia.map((f) => `"${f.textoOriginal}" → el día de la semana correcto es ${f.diaSemana}`).join('; ')}. Si mencionas el día de la semana de alguna de estas fechas en tu respuesta, en un documento o en la descripción de una imagen, usa EXACTAMENTE el valor de arriba — nunca otro, aunque tu propio cálculo interno sugiera algo distinto.` : ''
 
+  // POSTPROCESADO DETERMINÍSTICO DEL DÍA DE LA SEMANA PARA CONSULTAS
+  // FACTUALES CON AÑO EXPLÍCITO (ver "postprocesado determinístico del
+  // día de la semana para consultas factuales con año explícito") —
+  // caso real: "¿Qué día cae la Independencia de México en 2026?"
+  // resuelve el HECHO (16 de septiembre) vía web_search (FASE 1, ya
+  // cerrada), pero Claude seguía calculando el día de la semana
+  // libremente porque esa fecha nunca aparece en el MENSAJE del
+  // docente — bloqueFechasExplicitas (arriba) no puede ayudar ahí,
+  // solo mira lo que el docente escribió. Deliberadamente MUY
+  // conservador: exige las 4 condiciones a la vez — requiereConsultaOficial,
+  // pregunta EXPLÍCITA de "qué día cae"/"en qué día cae", un año de 4
+  // dígitos explícito en el mensaje (NUNCA inferido de "hoy" ni del
+  // ciclo escolar), y canal de texto normal (voz queda fuera esta
+  // ronda). Usado más abajo, en el ReadableStream, para decidir si se
+  // bufferiza la respuesta completa antes de aplicar la corrección.
+  const REGEX_PREGUNTA_DIA_SEMANA = /\bqu[eé]\s+d[ií]a(\s+de\s+la\s+semana)?\s+cae\b|\ben\s+qu[eé]\s+d[ií]a\s+cae\b/i
+  const REGEX_ANIO_EXPLICITO_MENSAJE = /\b(\d{4})\b/
+  const anioAutorizadoMatch = requiereConsultaOficial && channel !== 'voice' && REGEX_PREGUNTA_DIA_SEMANA.test(mensaje || '')
+    ? (mensaje || '').match(REGEX_ANIO_EXPLICITO_MENSAJE)
+    : null
+  const anioDiaSemanaAutorizado: number | null = anioAutorizadoMatch ? Number(anioAutorizadoMatch[1]) : null
+
   // Parámetros de la llamada a Claude, compartidos por el streaming
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
   // el archivo en un solo mensaje, ver más abajo) — el único que cambia
@@ -2148,6 +2236,21 @@ Grado: [grado] | Grupo: [grupo]
       let bufferPendienteSanitizado = ''
       let dentroDeMarcadorImagen = false
       let seEnvioTextoVisible = false
+      // POSTPROCESADO DETERMINÍSTICO DEL DÍA DE LA SEMANA — cuando
+      // anioDiaSemanaAutorizado existe (ver más arriba, condición ya
+      // muy conservadora), esta respuesta completa se retiene en un
+      // buffer en vez de transmitirse en vivo: solo así el servidor
+      // puede leer el texto final de Claude (única fuente real donde el
+      // hecho resuelto por web_search se vuelve visible, ver auditoría
+      // de arquitectura) y corregir el día de la semana antes de
+      // entregarlo. Nunca cambia el streaming del resto del chat — el
+      // guard de [[IMAGEN:...]] arriba sigue intacto, solo se redirige
+      // su salida a este buffer en vez de al cliente directamente.
+      let bufferRespuestaCompleta: string | null = anioDiaSemanaAutorizado !== null ? '' : null
+      function entregarTextoSeguro(texto: string) {
+        if (bufferRespuestaCompleta !== null) { bufferRespuestaCompleta += texto; return }
+        controller.enqueue(encoder.encode(texto))
+      }
       function emitirTextoSano(delta: string) {
         bufferPendienteSanitizado += delta
         while (true) {
@@ -2161,7 +2264,7 @@ Grado: [grado] | Grupo: [grupo]
           const inicio = bufferPendienteSanitizado.indexOf(MARCADOR_IMAGEN_INICIO)
           if (inicio !== -1) {
             const seguro = bufferPendienteSanitizado.slice(0, inicio)
-            if (seguro) { controller.enqueue(encoder.encode(seguro)); seEnvioTextoVisible = true }
+            if (seguro) { entregarTextoSeguro(seguro); seEnvioTextoVisible = true }
             bufferPendienteSanitizado = bufferPendienteSanitizado.slice(inicio)
             dentroDeMarcadorImagen = true
             continue
@@ -2176,7 +2279,7 @@ Grado: [grado] | Grupo: [grupo]
             if (MARCADOR_IMAGEN_INICIO.startsWith(bufferPendienteSanitizado.slice(-n))) { retener = n; break }
           }
           const seguro = bufferPendienteSanitizado.slice(0, bufferPendienteSanitizado.length - retener)
-          if (seguro) { controller.enqueue(encoder.encode(seguro)); seEnvioTextoVisible = true }
+          if (seguro) { entregarTextoSeguro(seguro); seEnvioTextoVisible = true }
           bufferPendienteSanitizado = bufferPendienteSanitizado.slice(bufferPendienteSanitizado.length - retener)
           return
         }
@@ -2279,12 +2382,82 @@ Grado: [grado] | Grupo: [grupo]
         // entrega una respuesta corta y segura en su lugar — nunca una
         // burbuja vacía ni el contenido interno crudo.
         if (!dentroDeMarcadorImagen && bufferPendienteSanitizado) {
-          controller.enqueue(encoder.encode(bufferPendienteSanitizado))
+          entregarTextoSeguro(bufferPendienteSanitizado)
           seEnvioTextoVisible = true
         }
         bufferPendienteSanitizado = ''
         if (!seEnvioTextoVisible) {
-          controller.enqueue(encoder.encode('No pude continuar esa imagen desde el contexto actual. Indícame el cambio que deseas y la retomamos.'))
+          entregarTextoSeguro('No pude continuar esa imagen desde el contexto actual. Indícame el cambio que deseas y la retomamos.')
+        }
+        // Cierre del postprocesado determinístico del día de la semana
+        // (ver "postprocesado determinístico del día de la semana para
+        // consultas factuales con año explícito") — la respuesta
+        // completa ya está en bufferRespuestaCompleta (nunca se envió
+        // en vivo). SELECCIÓN CONSERVADORA de la fecha objetivo (ver
+        // "cerrar riesgo de asociación — más de una fecha del mismo año
+        // en la respuesta"): nunca basta con filtrar por año, porque la
+        // respuesta puede traer más de una fecha distinta de ese año
+        // (ej. la fecha de la efeméride Y la fecha de publicación de la
+        // fuente citada) — corregir ambas sería demasiado agresivo.
+        // CASO A: si el propio mensaje del docente ya trae una fecha
+        // completa de ese año, esa es la fuente más segura — se usa
+        // ella sin importar cuántas otras fechas mencione Claude en su
+        // respuesta. CASO B: si el docente solo dio el año (la fecha
+        // nace de FASE 1/web_search), se acepta la fecha de la
+        // respuesta SOLO si es la única distinta de ese año — ante dos
+        // o más fechas distintas, es AMBIGUO y no se modifica nada
+        // (mejor no corregir que corregir el dato equivocado). Fechas
+        // repetidas (misma clave normalizada) cuentan como una sola.
+        if (bufferRespuestaCompleta !== null) {
+          let textoFinal = bufferRespuestaCompleta
+          if (anioDiaSemanaAutorizado !== null) {
+            const clave = (texto: string) => texto.toLowerCase()
+            const fechasDelMensaje = calcularDiasSemanaDeFechasExplicitas(mensaje || '', zonaHoraria)
+              .filter((f) => f.textoOriginal.endsWith(String(anioDiaSemanaAutorizado)))
+            const clavesUnicasMensaje = new Set(fechasDelMensaje.map((f) => clave(f.textoOriginal)))
+            const fechasEncontradas = calcularDiasSemanaDeFechasExplicitas(textoFinal, zonaHoraria)
+              .filter((f) => f.textoOriginal.endsWith(String(anioDiaSemanaAutorizado)))
+
+            let claveObjetivo: string | null = null
+            let diaCorrectoObjetivo: string | null = null
+            let ambiguo = false
+            let cantidadDistintas = 0
+
+            if (clavesUnicasMensaje.size === 1) {
+              claveObjetivo = [...clavesUnicasMensaje][0]
+              diaCorrectoObjetivo = fechasDelMensaje.find((f) => clave(f.textoOriginal) === claveObjetivo)!.diaSemana
+            } else {
+              const porClave = new Map<string, string>()
+              for (const f of fechasEncontradas) porClave.set(clave(f.textoOriginal), f.diaSemana)
+              cantidadDistintas = porClave.size
+              if (porClave.size === 1) {
+                claveObjetivo = [...porClave.keys()][0]
+                diaCorrectoObjetivo = [...porClave.values()][0]
+              } else if (porClave.size > 1) {
+                ambiguo = true
+              }
+            }
+
+            if (ambiguo) {
+              console.log(`[DIA_SEMANA_POST] ambiguo_fechas_objetivo=${cantidadDistintas}`)
+            } else if (claveObjetivo !== null && diaCorrectoObjetivo !== null) {
+              const variantesReales = new Set(fechasEncontradas.filter((f) => clave(f.textoOriginal) === claveObjetivo).map((f) => f.textoOriginal))
+              if (variantesReales.size > 0) {
+                let corrigioAlguna = false
+                for (const fechaTexto of variantesReales) {
+                  const resultado = aplicarCorreccionDiaSemana(textoFinal, fechaTexto, diaCorrectoObjetivo)
+                  textoFinal = resultado.texto
+                  if (resultado.corregido) corrigioAlguna = true
+                }
+                console.log(`[DIA_SEMANA_POST] activado fechas_objetivo=1 corregido=${corrigioAlguna}`)
+              } else {
+                console.log('[DIA_SEMANA_POST] fecha_objetivo_no_mencionada_en_respuesta')
+              }
+            } else {
+              console.log('[DIA_SEMANA_POST] sin_fecha_objetivo')
+            }
+          }
+          controller.enqueue(encoder.encode(textoFinal))
         }
         marcarTelemetria('claude:response_finished')
         console.log(`[STREAM][chat] streamFinalizado=true duracionStreamMs=${Date.now() - inicioRequestMs}`)
