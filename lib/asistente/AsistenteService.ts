@@ -2398,26 +2398,27 @@ ${instruccion}`
   }
 
   // COPIAR TEXTO RECIENTE (ver enviarMensaje arriba, guard nuevo antes
-  // de documentoActivo) — mismo patrón 100% síncrono que
-  // reutilizarArchivoExistente: nunca toca la red, nunca llama al
-  // motor/Claude, no genera ni sube ningún archivo. El mensaje del
-  // asistente anterior (el que se va a copiar) ya sigue visible en
-  // pantalla tal cual — esta respuesta es solo la confirmación breve;
-  // el botón "Copiar" real vive en la burbuja de ESE mensaje anterior
-  // (ver AsistentePanel.tsx).
+  // de documentoActivo) — 100% síncrono: nunca toca la red, nunca
+  // llama al motor/Claude, no genera ni sube ningún archivo.
+  // CORRECCIÓN (ver "regresión: burbuja sintética de confirmación
+  // desplaza el referente conversacional de continuaciones como
+  // 'Hazlo en imagen'") — a propósito NO agrega ninguna respuesta de
+  // asistente: sincronizarHistorialTexto() manda this.mensajes.slice
+  // (-20) SIN FILTRAR a Claude en el siguiente turno, así que una
+  // burbuja de asistente aquí (aunque solo fuera de confirmación UI)
+  // se convertía en el último turno del asistente que Claude ve — el
+  // referente real (ej. el mensaje de bienvenida) quedaba enterrado
+  // un turno más atrás. El mensaje del docente sí se agrega y se
+  // persiste (para que su burbuja quede visible tal cual la escribió)
+  // — el botón "Copiar" real vive en la burbuja del mensaje anterior
+  // del asistente (ver AsistentePanel.tsx), que con esto sigue siendo
+  // el último turno del asistente en el historial.
   private resolverCopiaTextoReciente(textoVisible: string) {
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }
-    const mensajeAsistente: MensajeConversacion = {
-      id: nuevoId(),
-      rol: 'asistente',
-      texto: 'Claro, puedes copiar el mensaje anterior con el botón "Copiar".',
-      creadoEn: Date.now(),
-    }
-    this.mensajes = [...this.mensajes, mensajeUsuario, mensajeAsistente]
+    this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.notificar()
     this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
-    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
   }
 
   // Genera el archivo real del documento activo (Word/PDF/PowerPoint/
