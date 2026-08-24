@@ -208,6 +208,22 @@ type Listener = () => void
 let contadorId = 0
 const nuevoId = () => `msg-${Date.now()}-${contadorId++}`
 
+// COPIAR TEXTO RECIENTE (ver "copiar texto reciente sin que
+// documentoActivo viejo secuestre la continuación" — caso real:
+// documentoActivo de una planeación vieja + "Dame link para copiar"
+// después de un mensaje de bienvenida en TEXTO NORMAL regeneraba y
+// resubía el Word de la planeación). Detección determinista y muy
+// conservadora, mismo criterio de normalización que ya usa
+// FRASES_FINALIZAR_DOCUMENTO en documentos.ts (minúsculas + sin
+// acentos): exige semántica explícita de "copiar" (la palabra misma,
+// sus formas conjugadas más comunes, o "para copiar") — a propósito
+// NUNCA dispara solo por "link"/"dame"/"descarga"/"archivo" sueltos,
+// para no invertir el mismo tipo de falso positivo que causó el bug.
+function normalizarParaCopiar(texto: string): string {
+  return texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+const REGEX_INTENCION_COPIAR_TEXTO = /\bpara\s+copiar\b|\bcopi(?:a|ar|alo|arlo|ala|arla)\b/
+
 class AsistenteServiceImpl {
   // null = sin conversación seleccionada (vista inicial) — nunca se
   // asigna sola a partir de lo que haya guardado en localStorage. Solo
@@ -1596,6 +1612,37 @@ class AsistenteServiceImpl {
     // se trata como edición del documento activo.
     const esOperacionSobreDatoPersonalAlumno = this.tieneCorreccionAlumnoPendiente() || pareceOperacionSobreDatoPersonalAlumno(limpio)
 
+    // COPIAR TEXTO RECIENTE (ver "copiar texto reciente sin que
+    // documentoActivo viejo secuestre la continuación") — se evalúa
+    // ANTES del guard de documentoActivo de abajo a propósito: gana
+    // siempre que el mensaje sea una intención EXPLÍCITA de copiar Y
+    // el último mensaje visible del asistente sea TEXTO NORMAL
+    // reutilizable (nunca un archivo, una imagen, un resultado
+    // embebido ni una acción/confirmación pendiente — ver la lista de
+    // exclusiones abajo). Deliberadamente NO borra ni invalida
+    // documentoActivo/materialVisualActivo: solo decide que ESTE
+    // turno no los toca — "descarga la planeación" después de esto
+    // sigue funcionando exactamente igual que antes (ver "no
+    // invalidar documentoActivo"). Sin adjunto: una foto adjunta
+    // nunca es "copiar el texto anterior".
+    if (!adjunto && (!adjuntos || adjuntos.length === 0) && REGEX_INTENCION_COPIAR_TEXTO.test(normalizarParaCopiar(limpio))) {
+      const ultimoAsistente = [...this.mensajes].reverse().find((m) => m.rol === 'asistente')
+      const esTextoNormalReutilizable =
+        !!ultimoAsistente &&
+        !!ultimoAsistente.texto?.trim() &&
+        !ultimoAsistente.archivo &&
+        !ultimoAsistente.archivos?.length &&
+        !ultimoAsistente.resultadoEmbebido &&
+        !ultimoAsistente.acciones?.length &&
+        !ultimoAsistente.datosAccionCalendario &&
+        !ultimoAsistente.datosAccionNavegacion &&
+        !ultimoAsistente.datosAccionAlumno
+      if (esTextoNormalReutilizable) {
+        this.resolverCopiaTextoReciente(limpio)
+        return
+      }
+    }
+
     // CREACIÓN NUEVA — REGLA FUNCIONAL OBLIGATORIA (ver "fallo crítico:
     // guía ilustrada devolvió LISTA_OFICIAL_DE_ALUMNOS.docx"): si el
     // mensaje describe un documento NUEVO ("Hazme una guía... sobre el
@@ -2346,6 +2393,29 @@ ${instruccion}`
     // PASO 3B — camino 100% síncrono, nunca pasa por el motor ni por
     // 'respuesta-final' (el archivo ya existía, no se vuelve a pedir
     // nada): ambos mensajes necesitan su propia persistencia aquí.
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
+    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
+  }
+
+  // COPIAR TEXTO RECIENTE (ver enviarMensaje arriba, guard nuevo antes
+  // de documentoActivo) — mismo patrón 100% síncrono que
+  // reutilizarArchivoExistente: nunca toca la red, nunca llama al
+  // motor/Claude, no genera ni sube ningún archivo. El mensaje del
+  // asistente anterior (el que se va a copiar) ya sigue visible en
+  // pantalla tal cual — esta respuesta es solo la confirmación breve;
+  // el botón "Copiar" real vive en la burbuja de ESE mensaje anterior
+  // (ver AsistentePanel.tsx).
+  private resolverCopiaTextoReciente(textoVisible: string) {
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }
+    const mensajeAsistente: MensajeConversacion = {
+      id: nuevoId(),
+      rol: 'asistente',
+      texto: 'Claro, puedes copiar el mensaje anterior con el botón "Copiar".',
+      creadoEn: Date.now(),
+    }
+    this.mensajes = [...this.mensajes, mensajeUsuario, mensajeAsistente]
+    this.turnoAbierto = null
+    this.notificar()
     this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
     this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
   }

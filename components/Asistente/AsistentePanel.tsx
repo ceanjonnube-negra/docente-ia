@@ -656,6 +656,20 @@ export default function AsistentePanel() {
   // fetch/consulta adicional. null = cerrada.
   const [imagenAbierta, setImagenAbierta] = useState<ArchivoGeneradoInfo | null>(null)
 
+  // Acción "Copiar" en mensajes de TEXTO normal del asistente (ver
+  // "copiar texto reciente sin que documentoActivo viejo secuestre la
+  // continuación") — mismo patrón de feedback breve que ya usa
+  // TarjetaDescarga con enlaceCopiado (✅ + reset a los 2s), pero por
+  // id de mensaje (puede haber varios mensajes de texto en pantalla a
+  // la vez, cada uno con su propio botón). null = ningún mensaje
+  // muestra el feedback en este momento.
+  const [mensajeCopiadoId, setMensajeCopiadoId] = useState<string | null>(null)
+  async function copiarTextoMensaje(id: string, texto: string) {
+    await navigator.clipboard.writeText(texto)
+    setMensajeCopiadoId(id)
+    setTimeout(() => setMensajeCopiadoId((actual) => (actual === id ? null : actual)), 2000)
+  }
+
   // Navegación automática pedida por voz/texto ("Abre a Sergio en la
   // lista") — AsistentePanel es la única pieza con useRouter, así que
   // aquí (y solo aquí) se convierte una AccionNavegacion en un
@@ -1011,6 +1025,26 @@ export default function AsistentePanel() {
           // no sobrevive dentro de los closures onClick de abajo —
           // sobre una const local sí.
           const resultado = m.resultadoEmbebido
+          // Mismo criterio conceptual que esTextoNormalReutilizable en
+          // AsistenteService.ts (ver "copiar texto reciente sin que
+          // documentoActivo viejo secuestre la continuación") — decide
+          // si el botón "Copiar" aparece. Un mensaje con texto NO es
+          // "normal" si además trae archivo, resultado embebido
+          // (documento/imagen/lista), o cualquier acción/confirmación
+          // pendiente — copiar esos como si fueran texto suelto
+          // confundiría al maestro sobre qué recurso real está
+          // copiando.
+          const esTextoNormalReutilizable =
+            m.rol === 'asistente' &&
+            !!m.texto?.trim() &&
+            !esUltimoGenerando &&
+            !m.archivo &&
+            !m.archivos?.length &&
+            !m.resultadoEmbebido &&
+            !m.acciones?.length &&
+            !m.datosAccionCalendario &&
+            !m.datosAccionNavegacion &&
+            !m.datosAccionAlumno
           return (
             <div key={m.id} id={`asistente-msg-${m.id}`} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
               {m.rol === 'asistente' && (
@@ -1152,6 +1186,22 @@ export default function AsistentePanel() {
                       </div>
                     ) : m.texto}
                   </div>
+                  {/* Acción discreta "Copiar" (ver "copiar texto
+                      reciente sin que documentoActivo viejo secuestre
+                      la continuación") — solo en mensajes de TEXTO
+                      normal del asistente, ya terminados de escribir.
+                      Copia exactamente el texto visible de ESTE
+                      mensaje, nada más — sin generar archivo, sin
+                      llamar a la red. */}
+                  {esTextoNormalReutilizable && (
+                    <button
+                      type="button"
+                      onClick={() => copiarTextoMensaje(m.id, m.texto)}
+                      className="text-xs text-gray-400 hover:text-gray-600 transition self-start"
+                    >
+                      {mensajeCopiadoId === m.id ? '✅ Copiado' : '📋 Copiar'}
+                    </button>
+                  )}
                   {/* Botones de confirmación (ver AccionMensaje) — se
                       esconden en cuanto el docente elige uno
                       (accionElegida ya viene marcado, ver
