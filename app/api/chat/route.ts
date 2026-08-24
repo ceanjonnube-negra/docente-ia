@@ -158,15 +158,37 @@ function normalizarDiaSemana(dia: string): string {
 const PATRON_DIA_SEMANA_TEXTO = 'lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo'
 const REGEX_DIA_SEMANA_ANTES_FECHA = new RegExp(`(${PATRON_DIA_SEMANA_TEXTO})\\s*,?\\s*$`, 'i')
 const REGEX_DIA_SEMANA_DESPUES_FECHA = new RegExp(`^\\s*,?\\s*(?:que\\s+)?(?:cae\\s+en\\s+|ser[áa]\\s+|es\\s+)?(${PATRON_DIA_SEMANA_TEXTO})\\b`, 'i')
+// Ancla de detección únicamente (nunca de cálculo — TimeService sigue
+// siendo la única autoridad del calendario) para el FALLBACK DÍA+MES
+// (ver "fallback conservador día+mes para consultas factuales con año
+// explícito"): reconoce "16 de septiembre" cuando Claude separa el año
+// del resto de la fecha al redactar ("...cae en martes en 2026"), pero
+// el lookahead negativo excluye deliberadamente cualquier aparición
+// seguida de inmediato por "de AAAA" — esa ya es una fecha completa de
+// OTRO año (ej. "23 de noviembre de 1825") y nunca debe tratarse como
+// candidata parcial de 2026.
+const PATRON_MES_TEXTO = 'enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre'
+const REGEX_DIA_MES_PARCIAL = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${PATRON_MES_TEXTO})\\b(?!\\s+de\\s+\\d{4})`, 'gi')
+// Mismo propósito que el lookahead de arriba, pero aplicado en el
+// momento de CORREGIR: `fechaTexto` de una candidata parcial (ej. "23
+// de noviembre") es una subcadena literal que también puede aparecer
+// DENTRO de una fecha histórica completa (ej. "23 de noviembre de
+// 1825") — la búsqueda por indexOf() de aplicarCorreccionDiaSemana no
+// distingue eso por sí sola, así que este regex se usa para saltar esa
+// aparición sin tocarla.
+const REGEX_ANIO_INMEDIATO_DESPUES = /^\s+de\s+\d{4}\b/
 
 // Corrige (o completa, si falta) el día de la semana asociado a UNA
-// fecha completa específica dentro del texto — nunca toca un día de la
-// semana que pertenezca a otra fecha (ventanas cortas e inmediatamente
+// fecha específica dentro del texto — nunca toca un día de la semana
+// que pertenezca a otra fecha (ventanas cortas e inmediatamente
 // adyacentes a cada aparición literal de `fechaTexto`, ver "asociación
 // segura"). Si no hay ningún día de semana asociado a esa aparición,
 // agrega el dato mínimo determinístico ("...fecha, que cae en X") —
-// nunca inventa ni cambia nada más del texto.
-function aplicarCorreccionDiaSemana(texto: string, fechaTexto: string, diaCorrecto: string): { texto: string; corregido: boolean } {
+// nunca inventa ni cambia nada más del texto. `evitarSiAnioInmediatoDespues`
+// (solo lo usa el FALLBACK DÍA+MES) salta cualquier aparición de
+// `fechaTexto` que en realidad sea parte de una fecha completa de otro
+// año — ver REGEX_ANIO_INMEDIATO_DESPUES arriba.
+function aplicarCorreccionDiaSemana(texto: string, fechaTexto: string, diaCorrecto: string, evitarSiAnioInmediatoDespues = false): { texto: string; corregido: boolean } {
   const VENTANA_ANTES = 15
   const VENTANA_DESPUES = 40
   let salida = ''
@@ -175,6 +197,12 @@ function aplicarCorreccionDiaSemana(texto: string, fechaTexto: string, diaCorrec
   while (true) {
     const idx = texto.indexOf(fechaTexto, cursor)
     if (idx === -1) { salida += texto.slice(cursor); break }
+    const finFechaCandidata = idx + fechaTexto.length
+    if (evitarSiAnioInmediatoDespues && REGEX_ANIO_INMEDIATO_DESPUES.test(texto.slice(finFechaCandidata, finFechaCandidata + 10))) {
+      salida += texto.slice(cursor, finFechaCandidata)
+      cursor = finFechaCandidata
+      continue
+    }
     const inicioVentanaAntes = Math.max(cursor, idx - VENTANA_ANTES)
     const ventanaAntes = texto.slice(inicioVentanaAntes, idx)
     const finFecha = idx + fechaTexto.length
@@ -2454,7 +2482,57 @@ Grado: [grado] | Grupo: [grupo]
                 console.log('[DIA_SEMANA_POST] fecha_objetivo_no_mencionada_en_respuesta')
               }
             } else {
-              console.log('[DIA_SEMANA_POST] sin_fecha_objetivo')
+              // FALLBACK DÍA+MES (ver "fallback conservador día+mes
+              // para consultas factuales con año explícito") — solo
+              // entra aquí cuando ni el mensaje del docente ni una
+              // fecha completa en la respuesta resolvieron un
+              // objetivo, y tampoco hubo ambigüedad de fechas
+              // completas (esa rama de arriba SIEMPRE tiene prioridad
+              // absoluta). Cubre el caso real donde Claude separa el
+              // año del resto de la fecha al redactar ("16 de
+              // septiembre cae en martes en 2026"), que
+              // calcularDiasSemanaDeFechasExplicitas no reconoce como
+              // fecha completa por sí solo.
+              const candidatosParciales = new Map<string, { dia: string; mes: string; textos: Set<string> }>()
+              const regexParcial = new RegExp(REGEX_DIA_MES_PARCIAL.source, 'gi')
+              let coincidenciaParcial: RegExpExecArray | null
+              while ((coincidenciaParcial = regexParcial.exec(textoFinal)) !== null) {
+                const dia = coincidenciaParcial[1]
+                const mes = coincidenciaParcial[2].toLowerCase()
+                const claveParcial = `${dia}|${mes}`
+                if (!candidatosParciales.has(claveParcial)) candidatosParciales.set(claveParcial, { dia, mes, textos: new Set() })
+                candidatosParciales.get(claveParcial)!.textos.add(coincidenciaParcial[0])
+              }
+
+              if (candidatosParciales.size === 1) {
+                const { dia, mes, textos } = [...candidatosParciales.values()][0]
+                // Fecha canónica construida internamente solo para
+                // consultar TimeService — nunca se le pide a Claude
+                // que la haya escrito así, y TimeService sigue siendo
+                // la única autoridad de calendario (ver "no modificar
+                // TimeService").
+                const fechaCanonica = `${dia} de ${mes} de ${anioDiaSemanaAutorizado}`
+                const calculoParcial = calcularDiasSemanaDeFechasExplicitas(fechaCanonica, zonaHoraria)
+                if (calculoParcial.length === 1) {
+                  const diaCorrectoParcial = calculoParcial[0].diaSemana
+                  let corrigioAlguna = false
+                  for (const fechaTexto of textos) {
+                    // evitarSiAnioInmediatoDespues=true — nunca tocar
+                    // "23 de noviembre" cuando en realidad es parte de
+                    // "23 de noviembre de 1825" (ver REGEX_ANIO_INMEDIATO_DESPUES).
+                    const resultado = aplicarCorreccionDiaSemana(textoFinal, fechaTexto, diaCorrectoParcial, true)
+                    textoFinal = resultado.texto
+                    if (resultado.corregido) corrigioAlguna = true
+                  }
+                  console.log(`[DIA_SEMANA_POST] fallback_dia_mes activado corregido=${corrigioAlguna}`)
+                } else {
+                  console.log('[DIA_SEMANA_POST] sin_fecha_objetivo')
+                }
+              } else if (candidatosParciales.size > 1) {
+                console.log(`[DIA_SEMANA_POST] ambiguo_dia_mes=${candidatosParciales.size}`)
+              } else {
+                console.log('[DIA_SEMANA_POST] sin_fecha_objetivo')
+              }
             }
           }
           controller.enqueue(encoder.encode(textoFinal))
