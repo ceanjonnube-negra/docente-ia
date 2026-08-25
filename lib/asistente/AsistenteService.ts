@@ -12,6 +12,7 @@ import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, pareceOperacionSobreDatoPersonalAlumno, quiereIlustracion, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
+import { esMensajeTextoNormalReutilizable } from './contextoConversacional'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import { TITULO_FILTRO_LISTA, type FiltroLista } from '@/lib/listaFiltrada'
@@ -1627,17 +1628,11 @@ class AsistenteServiceImpl {
     // nunca es "copiar el texto anterior".
     if (!adjunto && (!adjuntos || adjuntos.length === 0) && REGEX_INTENCION_COPIAR_TEXTO.test(normalizarParaCopiar(limpio))) {
       const ultimoAsistente = [...this.mensajes].reverse().find((m) => m.rol === 'asistente')
-      const esTextoNormalReutilizable =
-        !!ultimoAsistente &&
-        !!ultimoAsistente.texto?.trim() &&
-        !ultimoAsistente.archivo &&
-        !ultimoAsistente.archivos?.length &&
-        !ultimoAsistente.resultadoEmbebido &&
-        !ultimoAsistente.acciones?.length &&
-        !ultimoAsistente.datosAccionCalendario &&
-        !ultimoAsistente.datosAccionNavegacion &&
-        !ultimoAsistente.datosAccionAlumno
-      if (esTextoNormalReutilizable) {
+      // Criterio ahora compartido con AsistentePanel.tsx (ver
+      // lib/asistente/contextoConversacional.ts — "problema con la
+      // propuesta anterior: dos fuentes de verdad") — mismo resultado
+      // exacto que antes, ya no duplicado a mano en los dos archivos.
+      if (ultimoAsistente && esMensajeTextoNormalReutilizable(ultimoAsistente)) {
         this.resolverCopiaTextoReciente(limpio)
         return
       }

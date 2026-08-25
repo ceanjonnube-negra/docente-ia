@@ -22,6 +22,7 @@ import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { AsistenteService } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal, detectarHerramientaDocumento, pareceEdicionDeImagenActiva } from '@/lib/asistente/documentos'
+import { esMensajeTextoNormalReutilizable } from '@/lib/asistente/contextoConversacional'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
@@ -1025,26 +1026,13 @@ export default function AsistentePanel() {
           // no sobrevive dentro de los closures onClick de abajo —
           // sobre una const local sí.
           const resultado = m.resultadoEmbebido
-          // Mismo criterio conceptual que esTextoNormalReutilizable en
-          // AsistenteService.ts (ver "copiar texto reciente sin que
-          // documentoActivo viejo secuestre la continuación") — decide
-          // si el botón "Copiar" aparece. Un mensaje con texto NO es
-          // "normal" si además trae archivo, resultado embebido
-          // (documento/imagen/lista), o cualquier acción/confirmación
-          // pendiente — copiar esos como si fueran texto suelto
-          // confundiría al maestro sobre qué recurso real está
-          // copiando.
-          const esTextoNormalReutilizable =
-            m.rol === 'asistente' &&
-            !!m.texto?.trim() &&
-            !esUltimoGenerando &&
-            !m.archivo &&
-            !m.archivos?.length &&
-            !m.resultadoEmbebido &&
-            !m.acciones?.length &&
-            !m.datosAccionCalendario &&
-            !m.datosAccionNavegacion &&
-            !m.datosAccionAlumno
+          // Criterio compartido con AsistenteService.ts (ver
+          // lib/asistente/contextoConversacional.ts — "problema con la
+          // propuesta anterior: dos fuentes de verdad") — decide si el
+          // botón "Copiar" aparece. `esUltimoGenerando` es estado de
+          // UI (depende del índice en la lista renderizada) y por eso
+          // se evalúa aquí, fuera de la utilidad pura compartida.
+          const esTextoNormalReutilizable = esMensajeTextoNormalReutilizable(m) && !esUltimoGenerando
           return (
             <div key={m.id} id={`asistente-msg-${m.id}`} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
               {m.rol === 'asistente' && (

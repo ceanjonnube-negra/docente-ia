@@ -230,6 +230,16 @@ export type MensajeConversacion = {
   // "datosAccion*" (que esperan una confirmación), este ya es
   // definitivo: la tarjeta que renderiza siempre puede reabrirse.
   resultadoEmbebido?: ResultadoEmbebido
+  // Marca explícita de "esto es una confirmación/estado operativo, no
+  // contenido reutilizable" (ver "orquestador contextual — fase 1" y
+  // lib/asistente/contextoConversacional.ts) — ej. una futura burbuja
+  // local de tipo "Copiado", "Guardado". Deliberadamente NUNCA se
+  // infiere por el texto del mensaje (ver "el campo debe ser
+  // explícito, no inferido por palabras") — solo el código que
+  // construye ese mensaje puede marcarlo. Opcional y aditivo: ausente
+  // en absolutamente todos los mensajes ya persistidos, así que nunca
+  // rompe una conversación restaurada de antes de este campo.
+  esOperativo?: boolean
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
