@@ -12,7 +12,7 @@ import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, pareceOperacionSobreDatoPersonalAlumno, quiereIlustracion, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
-import { esMensajeTextoNormalReutilizable } from './contextoConversacional'
+import { esMensajeTextoNormalReutilizable, resolverReferentesDisponibles, aMetadataReferentes } from './contextoConversacional'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import { TITULO_FILTRO_LISTA, type FiltroLista } from '@/lib/listaFiltrada'
@@ -1743,10 +1743,18 @@ class AsistenteServiceImpl {
     this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
 
     try {
+      // FASE 2A (ver "contrato del router semántico unificado +
+      // transporte de referentes contextuales") — solo en el camino
+      // conversacional normal (nunca en edición/trabajo async/voz sin
+      // este dato): metadata ligera del contenido reciente
+      // reutilizable, para que Nivel0 pueda ENTENDER a qué se refiere
+      // el maestro. Esta fase NO ejecuta nada con esa decisión — solo
+      // viaja y se clasifica, ver route.ts.
+      const referentesContextuales = aMetadataReferentes(resolverReferentesDisponibles(this.mensajes, this.documentoActivo, this.materialVisualActivo))
       // Cast puntual (as any) SOLO para poder pasar debugRequestId sin
       // ampliar la interfaz MotorConversacional — es instrumentación
       // temporal, se retira junto con el resto de este bloque.
-      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId)
+      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

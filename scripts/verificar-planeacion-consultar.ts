@@ -246,6 +246,9 @@ function clasificacion(overrides: Partial<ClasificacionNivel0> = {}): Clasificac
     requiere_confirmacion: false,
     motivo_confirmacion: null,
     requiere_consulta_oficial: false,
+    capacidad_contextual: null,
+    referente_elegido: null,
+    confianza_contextual: null,
     ...overrides,
   }
 }

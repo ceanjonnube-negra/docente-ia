@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConversacional'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
@@ -418,7 +419,29 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente } = await req.json()
+  // FASE 2A (ver "contrato del router semántico unificado + transporte
+  // de referentes contextuales") — SEGURIDAD (ver "auditoría 11"): el
+  // cliente puede mandar CUALQUIER COSA en este campo, así que nunca
+  // se confía ciegamente — se valida forma completa (id/tipo/origen
+  // dentro de los enums reales) antes de dejarlo llegar al prompt de
+  // Nivel0; cualquier entrada malformada se descarta en silencio, sin
+  // tronar el request. Esto NUNCA es una superficie de permisos: solo
+  // decide qué metadata de CONTENIDO CONVERSACIONAL ve el clasificador,
+  // nunca autoriza ninguna operación sobre datos de alumnos/institución.
+  const TIPOS_REFERENTE_VALIDOS = new Set(['texto', 'documento', 'imagen', 'lista_filtrada'])
+  const ORIGENES_REFERENTE_VALIDOS = new Set(['mensaje', 'documento_activo', 'material_visual_activo'])
+  const referentesContextuales: ReferenteContextualMetadata[] = Array.isArray(referentesContextualesCliente)
+    ? referentesContextualesCliente.filter(
+        (r): r is ReferenteContextualMetadata =>
+          !!r &&
+          typeof r.id === 'string' &&
+          r.id.length > 0 &&
+          TIPOS_REFERENTE_VALIDOS.has(r.tipo) &&
+          ORIGENES_REFERENTE_VALIDOS.has(r.origen) &&
+          (r.formato === undefined || typeof r.formato === 'string')
+      )
+    : []
 
   // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
   // roundtrip de comparación de CURP sin depender de vercel logs") — YA
@@ -1023,7 +1046,7 @@ export async function POST(req: NextRequest) {
       const usageClasificacion: { valor: Anthropic.Usage | null } = { valor: null }
       const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta, (usage) => {
         usageClasificacion.valor = usage
-      })
+      }, referentesContextuales)
       marcarTelemetria('intent:classification_finished')
       if (diagnosticoCurpActivo) {
         const msClasificacion = Date.now() - tClasificacionInicio
@@ -1060,6 +1083,18 @@ export async function POST(req: NextRequest) {
       // escolar configurado), o si consultarAsistenciaAlumno falló.
       console.log(
         `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id}`
+      )
+      // FASE 2A (ver "contrato del router semántico unificado +
+      // transporte de referentes contextuales") — SOLO diagnóstico:
+      // esta app todavía NO ejecuta nada con capacidad_contextual (ver
+      // "validar el cerebro antes de conectarle las manos" — parte 6,
+      // "no ejecutar todavía"). Nunca loguea contenido/prompts/datos de
+      // alumnos, solo la forma de la decisión. `descartada` distingue
+      // por qué terminó en null: por prioridad de intención interna,
+      // por no haber candidatos, o porque el propio modelo no encontró
+      // evidencia suficiente.
+      console.log(
+        `[NIVEL0_CONTEXTUAL] candidatos=${referentesContextuales.length} capacidad=${clasificacion.capacidad_contextual ?? 'null'} referente_tipo=${clasificacion.referente_elegido?.tipo ?? 'null'} confianza=${clasificacion.confianza_contextual ?? 'null'} descartada_por_intencion_interna=${clasificacion.intencion_principal !== 'conversacion_general'}`
       )
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).

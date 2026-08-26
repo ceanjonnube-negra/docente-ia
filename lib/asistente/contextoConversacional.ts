@@ -15,6 +15,7 @@
 // y cuál es el más reciente.
 
 import type { MensajeConversacion, ArchivoGeneradoInfo, ResultadoEmbebidoImagen, ResultadoEmbebidoListaFiltrada } from './tipos'
+import type { DocumentoActivoGuardado, MaterialVisualActivoGuardado } from './persistencia'
 
 // Mismo criterio EXACTO que ya validamos para el botón "Copiar" y para
 // la prioridad de "copiar texto reciente" (ver "copiar texto reciente
@@ -110,4 +111,152 @@ export function obtenerUltimoContenidoUtil(mensajes: MensajeConversacion[]): Con
     // buscando hacia atrás en vez de detenerse aquí.
   }
   return null
+}
+
+// ============================================================
+// FASE 2A — RESOLVEDOR DE REFERENTES (ver "contrato del router
+// semántico unificado + transporte de referentes contextuales").
+// A diferencia de obtenerUltimoContenidoUtil (que solo resuelve la
+// capa de HISTORIAL DE MENSAJES), resolverReferentesDisponibles
+// combina esa capa con documentoActivo/materialVisualActivo. Sigue
+// siendo una función PURA: no decide intención ni capacidad, no llama
+// IA — solo responde "¿qué recursos tiene disponibles el turno
+// actual?". Quién decide cuál usar es Nivel0 (lib/clasificadorNivel0.ts),
+// del lado servidor, con la instrucción real del maestro — nunca esta
+// función ni ningún código de cliente.
+// ============================================================
+
+// Un candidato nunca duplica contenido pesado innecesariamente: para
+// texto/documento sí viaja el texto real completo (útil para cuando
+// más adelante se ejecute la capacidad elegida), pero una imagen solo
+// viaja como URL/metadata (nunca los bytes). `origen` distingue si el
+// candidato vino del HISTORIAL de mensajes o de un estado activo
+// explícito (documentoActivo/materialVisualActivo) — útil para
+// diagnóstico, nunca para decidir prioridad (ver "no establecer
+// prioridad universal imagen > documento > texto — el router decide
+// según la intención").
+export type OrigenReferente = 'mensaje' | 'documento_activo' | 'material_visual_activo'
+
+export type CandidatoReferenteTexto = {
+  tipo: 'texto'
+  origen: OrigenReferente
+  mensajeId?: string
+  texto: string
+}
+
+export type CandidatoReferenteDocumento = {
+  tipo: 'documento'
+  origen: OrigenReferente
+  id: string
+  texto: string
+  ultimoFormatoGenerado?: string
+}
+
+export type CandidatoReferenteImagen = {
+  tipo: 'imagen'
+  origen: OrigenReferente
+  id: string
+  url?: string
+  promptOriginal?: string
+}
+
+export type CandidatoReferenteListaFiltrada = {
+  tipo: 'lista_filtrada'
+  origen: OrigenReferente
+  mensajeId: string
+  grupoId: string
+  filtro: string
+}
+
+export type CandidatoReferente =
+  | CandidatoReferenteTexto
+  | CandidatoReferenteDocumento
+  | CandidatoReferenteImagen
+  | CandidatoReferenteListaFiltrada
+
+// Produce la lista de candidatos disponibles — nunca uno solo
+// "elegido"; esa decisión es de Nivel0, con más contexto (la
+// instrucción real del maestro) del que esta función tiene. Acotado
+// por construcción a un máximo pequeño (nunca una colección
+// ilimitada, ver "límite de candidatos"): como mucho 1 del historial
+// (obtenerUltimoContenidoUtil ya solo devuelve el más reciente) + 1
+// de documentoActivo + 1 de materialVisualActivo = máximo 3,
+// deduplicando por id cuando el mismo recurso ya vino representado
+// desde el mensaje.
+export function resolverReferentesDisponibles(
+  mensajes: MensajeConversacion[],
+  documentoActivo: DocumentoActivoGuardado | null,
+  materialVisualActivo: MaterialVisualActivoGuardado | null
+): CandidatoReferente[] {
+  const candidatos: CandidatoReferente[] = []
+
+  const ultimo = obtenerUltimoContenidoUtil(mensajes)
+  if (ultimo) {
+    if (ultimo.tipo === 'texto') {
+      candidatos.push({ tipo: 'texto', origen: 'mensaje', mensajeId: ultimo.mensajeId, texto: ultimo.texto })
+    } else if (ultimo.tipo === 'documento') {
+      candidatos.push({ tipo: 'documento', origen: 'mensaje', id: ultimo.mensajeId, texto: ultimo.texto, ultimoFormatoGenerado: ultimo.archivo.tipo })
+    } else if (ultimo.tipo === 'imagen') {
+      candidatos.push({ tipo: 'imagen', origen: 'mensaje', id: ultimo.mensajeId, url: ultimo.archivo?.url, promptOriginal: undefined })
+    } else if (ultimo.tipo === 'lista_filtrada') {
+      candidatos.push({ tipo: 'lista_filtrada', origen: 'mensaje', mensajeId: ultimo.mensajeId, grupoId: ultimo.resultado.grupoId, filtro: ultimo.resultado.filtro })
+    }
+  }
+
+  if (documentoActivo && !candidatos.some((c) => c.tipo === 'documento' && c.id === documentoActivo.id)) {
+    candidatos.push({ tipo: 'documento', origen: 'documento_activo', id: documentoActivo.id, texto: documentoActivo.texto, ultimoFormatoGenerado: documentoActivo.ultimoFormatoGenerado })
+  }
+
+  if (materialVisualActivo && !candidatos.some((c) => c.tipo === 'imagen' && c.id === materialVisualActivo.id)) {
+    candidatos.push({ tipo: 'imagen', origen: 'material_visual_activo', id: materialVisualActivo.id, url: materialVisualActivo.url, promptOriginal: materialVisualActivo.promptOriginal })
+  }
+
+  return candidatos
+}
+
+// ============================================================
+// METADATA PARA CLASIFICACIÓN — separada a propósito del candidato
+// completo de arriba (ver "separar referente completo de metadata
+// para clasificación"). Esto es lo ÚNICO que viaja al prompt de
+// Nivel0 (vía /api/chat, mismo request normal, ver
+// lib/clasificadorNivel0.ts): id + tipo + origen + una metadata breve
+// opcional — NUNCA el texto completo, ninguna URL de imagen, ningún
+// dato de alumno. Nivel0 ya recibe el historial reciente por su
+// cuenta; no hace falta repetirle el contenido entero para que pueda
+// decidir A CUÁL de estos candidatos se refiere el mensaje.
+// ============================================================
+
+export type TipoReferenteContextual = 'texto' | 'documento' | 'imagen' | 'lista_filtrada'
+
+export type ReferenteContextualMetadata = {
+  id: string
+  tipo: TipoReferenteContextual
+  origen: OrigenReferente
+  // Única metadata breve realmente útil hoy: el formato ya generado
+  // de un documento (ayuda a Nivel0 a distinguir "conviértelo a Word"
+  // de "ya está en Word, solo dámelo"). Nunca contenido, nunca URLs.
+  formato?: string
+}
+
+function idDeCandidato(c: CandidatoReferente): string | undefined {
+  return c.tipo === 'texto' || c.tipo === 'lista_filtrada' ? c.mensajeId : c.id
+}
+
+// Pura — nunca llamada por Nivel0 directamente, la usa el cliente
+// (AsistenteService.ts) para construir lo que realmente viaja en el
+// body de /api/chat, quedándose con el candidato COMPLETO en memoria
+// local para cuando haga falta ejecutar (fase posterior).
+export function aMetadataReferentes(candidatos: CandidatoReferente[]): ReferenteContextualMetadata[] {
+  const resultado: ReferenteContextualMetadata[] = []
+  for (const c of candidatos) {
+    const id = idDeCandidato(c)
+    if (!id) continue
+    resultado.push({
+      id,
+      tipo: c.tipo,
+      origen: c.origen,
+      formato: c.tipo === 'documento' ? c.ultimoFormatoGenerado : undefined,
+    })
+  }
+  return resultado
 }

@@ -14,6 +14,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SesionContexto } from './sesionContexto';
 import type { CampoAlumnoCorregible } from './asistente/tipos';
+import type { ReferenteContextualMetadata, TipoReferenteContextual } from './asistente/contextoConversacional';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -193,6 +194,17 @@ export type ClasificacionNivel0 = {
   // cualquier consulta de datos internos del grupo (asistencias,
   // alumnos, documentos ya guardados) o conversación casual.
   requiere_consulta_oficial: boolean;
+  // FASE 2A (ver "contrato del router semántico unificado +
+  // transporte de referentes contextuales") — regla 24. SOLO pueden
+  // ser distintos de null cuando intencion_principal==='conversacion_general'
+  // (ver normalizarClasificacionNivel0: cualquier otra intención los
+  // fuerza a null sin excepción — "datos internos ganan"). Esta app
+  // todavía NO ejecuta nada con estos 3 campos (ver Fase 2A: "validar
+  // el cerebro antes de conectarle las manos") — se calculan y se
+  // registran, nada más.
+  capacidad_contextual: 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento' | null;
+  referente_elegido: { tipo: TipoReferenteContextual; id: string } | null;
+  confianza_contextual: 'alta' | 'media' | 'baja' | null;
 };
 
 // Salida MÍNIMA que Sonnet realmente genera (ver diseño "separar el
@@ -255,6 +267,17 @@ type ClasificacionModeloNivel0 = {
   // por semejanza FONÉTICA (ver regla 9, segunda viñeta), nunca en
   // ningún otro caso.
   alumno_resuelto_por_fonetica?: boolean;
+  // FASE 2A — ver regla 24. Campos planos (no un objeto anidado, mismo
+  // estilo que el resto de este contrato) que el modelo SOLO incluye
+  // cuando intencion_principal="conversacion_general" y encontró un
+  // referente real de la lista de REFERENTES CONTEXTUALES DISPONIBLES
+  // — normalizarClasificacionNivel0 los valida y reconstruye
+  // referente_elegido como objeto anidado, o los descarta a null si
+  // cualquiera de los tres no es válido/está incompleto.
+  capacidad_contextual?: 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento';
+  referente_elegido_tipo?: TipoReferenteContextual;
+  referente_elegido_id?: string;
+  confianza_contextual?: 'alta' | 'media' | 'baja';
 };
 
 // Deriva nivel_ejecucion a partir ÚNICAMENTE de intencion_principal —
@@ -335,6 +358,9 @@ const FALLBACK: ClasificacionNivel0 = {
   requiere_confirmacion: false,
   motivo_confirmacion: null,
   requiere_consulta_oficial: false,
+  capacidad_contextual: null,
+  referente_elegido: null,
+  confianza_contextual: null,
 };
 
 // Últimos turnos reales de la conversación — solo se usan para resolver
@@ -405,6 +431,10 @@ Además de esas 4 claves siempre presentes, incluye ÚNICAMENTE las claves opcio
 "accion_planeacion_generar": "crear" | "ajustar" | "aprobar" — solo en planeacion_generar.
 "requiere_consulta_oficial": boolean — inclúyela SOLO cuando sea true (ver regla 18); si es false, omítela por completo.
 "alumno_resuelto_por_fonetica": boolean — inclúyela SOLO con valor true, y SOLO en marcar_asistencia_individual, cuando el alumno se resolvió por semejanza FONÉTICA y no por coincidencia de texto (ver regla 9, segunda viñeta); en cualquier otro caso, omítela por completo.
+"capacidad_contextual": "transformar_texto" | "generar_imagen" | "editar_imagen" | "convertir_documento" — ver regla 24. SOLO cuando intencion_principal="conversacion_general" Y encontraste un referente real en REFERENTES CONTEXTUALES DISPONIBLES; en cualquier otro caso, omítela por completo.
+"referente_elegido_tipo": "texto" | "documento" | "imagen" | "lista_filtrada" — junto con capacidad_contextual, el TIPO del referente elegido (copiado tal cual de la lista). Omítela si omites capacidad_contextual.
+"referente_elegido_id": string — junto con capacidad_contextual, el id EXACTO del referente elegido, copiado carácter por carácter de REFERENTES CONTEXTUALES DISPONIBLES — NUNCA inventes un id que no esté ahí. Omítela si omites capacidad_contextual.
+"confianza_contextual": "alta" | "media" | "baja" — junto con capacidad_contextual, qué tan seguro estás de esa lectura. Omítela si omites capacidad_contextual.
 
 "nivel_ejecucion", "requiere_ia", "requiere_contexto_memoria", "requiere_confirmacion" y "motivo_confirmacion" YA NO forman parte de tu salida — la aplicación los calcula internamente a partir de intencion_principal y de las claves de arriba. Nunca las incluyas.
 
@@ -456,13 +486,19 @@ Si estos cuatro elementos están presentes (el texto literal, o la excepción de
 Si el mensaje trae la intención de comparar pero le falta el alumno, el campo, o el valor concreto a comparar, NO actives esta regla ni la 22 — usa el mismo mecanismo de datos_faltantes ya existente ("alumno" si falta el alumno, "campo_alumno" si falta el campo, "valor_alumno" si falta el valor) — nunca asumas ni completes lo que el docente no dio.
 Frases como "no corrijas nada todavía", "no cambies nada", "sin corregir", "no lo apliques" NUNCA impiden que esta regla se active — al contrario, son exactamente la señal de que el docente quiere solo la comparación de solo lectura, que es exactamente lo que accion_correccion_alumno="proponer" ya garantiza (nunca escribe por sí solo).
 DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docente SOLO pregunta por el valor YA registrado, sin traer ningún valor propio para comparar. En cuanto el mensaje trae, además del alumno y el campo, un valor concreto del propio docente para comparar contra lo registrado, es esta regla (22.2), nunca la 21.
-23. REVISIÓN INTERNA de posibles errores en los datos de los alumnos (ver "fallo: Chat IA niega poder editar datos de alumnos"): si el maestro pide revisar, checar o buscar posibles errores/inconsistencias en los datos de sus alumnos o de "la lista" SIN nombrar un alumno y un campo específicos con un valor nuevo (eso ya es la regla 22) → intencion_principal="revisar_datos_alumnos", entidades_resueltas.alumno_id=null. Ejemplos: "Revisa otros posibles errores", "Revisa otros posibles errores y corrige", "Revisa la lista", "Busca errores en los datos de mis alumnos", "Corrige la lista de la app", "Quiero que corrijas la lista, de la app", "¿Hay datos mal capturados en mi grupo?", "Checa que los datos de mis alumnos estén bien". Esta regla es SIEMPRE sobre los datos YA guardados dentro de la aplicación — NUNCA la uses, y usa "conversacion_general" en su lugar, si el mensaje menciona explícitamente RENAPO, "verificación oficial", "fuente oficial", "validar oficialmente" o cualquier equivalente que pida contrastar contra una fuente externa: eso NO es esta intención, es una pregunta que el chat debe responder con honestidad (no tiene acceso a RENAPO ni a ninguna fuente oficial de identidad), nunca confundirla con revisar los datos internos.`;
+23. REVISIÓN INTERNA de posibles errores en los datos de los alumnos (ver "fallo: Chat IA niega poder editar datos de alumnos"): si el maestro pide revisar, checar o buscar posibles errores/inconsistencias en los datos de sus alumnos o de "la lista" SIN nombrar un alumno y un campo específicos con un valor nuevo (eso ya es la regla 22) → intencion_principal="revisar_datos_alumnos", entidades_resueltas.alumno_id=null. Ejemplos: "Revisa otros posibles errores", "Revisa otros posibles errores y corrige", "Revisa la lista", "Busca errores en los datos de mis alumnos", "Corrige la lista de la app", "Quiero que corrijas la lista, de la app", "¿Hay datos mal capturados en mi grupo?", "Checa que los datos de mis alumnos estén bien". Esta regla es SIEMPRE sobre los datos YA guardados dentro de la aplicación — NUNCA la uses, y usa "conversacion_general" en su lugar, si el mensaje menciona explícitamente RENAPO, "verificación oficial", "fuente oficial", "validar oficialmente" o cualquier equivalente que pida contrastar contra una fuente externa: eso NO es esta intención, es una pregunta que el chat debe responder con honestidad (no tiene acceso a RENAPO ni a ninguna fuente oficial de identidad), nunca confundirla con revisar los datos internos.
+24. CAPACIDAD CONTEXTUAL (ver REFERENTES CONTEXTUALES DISPONIBLES en el contexto dinámico más abajo) — SOLO aplica cuando intencion_principal="conversacion_general" (si cualquiera de las reglas 1-23 ya aplicó, IGNORA esta regla por completo: NUNCA incluyas capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual en ese caso — datos internos siempre ganan). Si hay al menos un referente en esa lista, evalúa si el mensaje actual pretende TRANSFORMAR o REUTILIZAR ese contenido reciente en vez de empezar algo nuevo sin relación con él:
+   - "transformar_texto": pide modificar/reescribir un texto ya generado en la conversación (más corto, más formal, traducirlo, resumirlo, cambiar el tono, simplificarlo...) — el referente elegido debe ser tipo "texto" o "documento".
+   - "generar_imagen": pide convertir ese contenido ya generado en una imagen/tarjeta/gráfico visual nuevo — referente tipo "texto" o "documento".
+   - "editar_imagen": pide modificar una imagen YA generada (cambiar fondo, colores, agregar/quitar algo, tipografía) — referente tipo "imagen", solo tiene sentido si existe uno en la lista.
+   - "convertir_documento": pide el archivo descargable (Word/PDF/PowerPoint/Excel) de contenido ya generado — referente tipo "texto" o "documento".
+   Estas 4 capacidades expresan la MISMA intención de muchas formas naturales distintas — no busques una frase exacta, entiende el significado. Pero NO fuerces ninguna solo porque existan referentes disponibles: si el mensaje pide algo nuevo sin relación con el contenido reciente, o es charla/pregunta general (ej. "cuéntame una historia sobre dinosaurios", aunque exista un texto anterior en la conversación), NO incluyas capacidad_contextual — la sola existencia de un referente NUNCA implica que el maestro quiere reutilizarlo. Si hay ambigüedad real entre dos referentes posibles o entre dos capacidades, usa confianza_contextual="media" o "baja" en vez de forzar una elección para sonar seguro. referente_elegido_id SIEMPRE debe copiarse EXACTAMENTE de la lista de REFERENTES CONTEXTUALES DISPONIBLES — un id que no aparezca ahí, tal cual, se descarta por completo.`;
 
 // Contexto de sesión + últimos turnos — la parte que sí cambia en
 // cada request (grupo, alumnos, señal de imagen, historial
 // reciente). Mismo texto/etiquetas exactos que ya usaba
 // construirPrompt(), sin cambios.
-function construirContextoDinamico(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean): string {
+function construirContextoDinamico(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean, referentesContextuales: ReferenteContextualMetadata[]): string {
   return `CONTEXTO DE SESIÓN (dato, no lo inventes, úsalo tal cual):
 grupo_activo_id: ${sesion.grupo_activo_id ?? 'ninguno'}
 ciclo_escolar_id: ${sesion.ciclo_escolar_id ?? 'ninguno'}
@@ -470,7 +506,10 @@ alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
 imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
 
 ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
-${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}`;
+${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
+
+REFERENTES CONTEXTUALES DISPONIBLES (ver regla 24 — SOLO relevantes si intencion_principal="conversacion_general"; metadata breve, nunca el contenido real):
+${referentesContextuales.length > 0 ? referentesContextuales.map((r) => `- id=${r.id} tipo=${r.tipo} origen=${r.origen}${r.formato ? ` formato=${r.formato}` : ''}`).join('\n') : '(ninguno disponible en este turno)'}`;
 }
 
 // Reconstruye el contrato completo (ClasificacionNivel0) que
@@ -480,7 +519,7 @@ ${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'use
 // la aplicación". Ningún consumidor existente cambia: reciben
 // exactamente los mismos nulls/false/arrays vacíos que antes cuando un
 // campo no aplica, y los mismos valores reales cuando sí aplica.
-function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneImagenAdjunta: boolean): ClasificacionNivel0 {
+function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneImagenAdjunta: boolean, referentesContextuales: ReferenteContextualMetadata[] = []): ClasificacionNivel0 {
   const nivelEjecucion = NIVEL_EJECUCION_POR_INTENCION[modelo.intencion_principal]
   // Verificado contra las 23 reglas: requiere_contexto_memoria siempre
   // coincide exactamente con nivel_ejecucion===4 (nunca hay un caso
@@ -516,6 +555,40 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
     !!modelo.alumno_resuelto_por_fonetica ||
     modelo.datos_faltantes.includes('alumno') ||
     (modelo.intencion_principal === 'marcar_asistencia_individual' && modelo.datos_faltantes.includes('estado_asistencia'))
+
+  // FASE 2A — ver regla 24 y "regla obligatoria de prioridad: si
+  // intencion_principal !== conversacion_general, capacidad_contextual/
+  // referente_elegido/confianza_contextual = null". Se recalcula aquí,
+  // en código, nunca confiando en que el modelo haya omitido los
+  // campos correctamente — cualquier intención interna (1-23) fuerza
+  // los 3 a null sin excepción, pase lo que pase en la salida cruda.
+  let capacidadContextual: ClasificacionNivel0['capacidad_contextual'] = null
+  let referenteElegido: ClasificacionNivel0['referente_elegido'] = null
+  let confianzaContextual: ClasificacionNivel0['confianza_contextual'] = null
+  if (modelo.intencion_principal === 'conversacion_general') {
+    const capacidadValida =
+      modelo.capacidad_contextual === 'transformar_texto' ||
+      modelo.capacidad_contextual === 'generar_imagen' ||
+      modelo.capacidad_contextual === 'editar_imagen' ||
+      modelo.capacidad_contextual === 'convertir_documento'
+    const confianzaValida = modelo.confianza_contextual === 'alta' || modelo.confianza_contextual === 'media' || modelo.confianza_contextual === 'baja'
+    // "Nivel0 solamente puede elegir un id presente en
+    // referentesContextuales... si devuelve un id inexistente,
+    // normalizar a null. No aceptar referentes inventados por el
+    // modelo." — comparación exacta de id Y tipo contra la lista real
+    // que se le mandó, nunca contra lo que el modelo diga que es.
+    const referenteReal = modelo.referente_elegido_id
+      ? referentesContextuales.find((r) => r.id === modelo.referente_elegido_id && r.tipo === modelo.referente_elegido_tipo)
+      : undefined
+    // Los 3 campos son todo-o-nada: una capacidad sin un referente
+    // real y válido no significa nada ejecutable, así que tampoco se
+    // conserva sola.
+    if (capacidadValida && confianzaValida && referenteReal) {
+      capacidadContextual = modelo.capacidad_contextual!
+      referenteElegido = { tipo: referenteReal.tipo, id: referenteReal.id }
+      confianzaContextual = modelo.confianza_contextual!
+    }
+  }
 
   return {
     intencion_principal: modelo.intencion_principal,
@@ -556,6 +629,9 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
     // ver "confirmación y match fonético".
     motivo_confirmacion: modelo.alumno_resuelto_por_fonetica ? 'nombre_fonetico' : null,
     requiere_consulta_oficial: modelo.requiere_consulta_oficial ?? false,
+    capacidad_contextual: capacidadContextual,
+    referente_elegido: referenteElegido,
+    confianza_contextual: confianzaContextual,
   }
 }
 
@@ -750,7 +826,15 @@ export async function clasificarNivel0(
   // variable de módulo): en Fluid Compute la misma instancia puede
   // atender requests concurrentes, así que un estado compartido a
   // nivel de módulo mezclaría el usage de una petición con el de otra.
-  onUsage?: (usage: Anthropic.Usage) => void
+  onUsage?: (usage: Anthropic.Usage) => void,
+  // FASE 2A (ver "contrato del router semántico unificado + transporte
+  // de referentes contextuales") — metadata ligera del contenido
+  // reciente reutilizable de la conversación (ver
+  // lib/asistente/contextoConversacional.ts). Opcional y con default
+  // []: cualquier llamada existente que no lo pase conserva el
+  // comportamiento exacto de siempre (sin candidatos → capacidad_
+  // contextual siempre null, ver normalizarClasificacionNivel0).
+  referentesContextuales: ReferenteContextualMetadata[] = []
 ): Promise<ClasificacionNivel0> {
   // Fast path determinista — microfase 1 (ver "auditoría técnica y
   // diseño — fast path determinista"). Se comprueba ANTES de construir
@@ -762,7 +846,7 @@ export async function clasificarNivel0(
   // otro camino (Sonnet, parser tolerante, FALLBACK) cambia.
   const determinista = intentarClasificacionDeterminista(mensaje)
   if (determinista) {
-    return normalizarClasificacionNivel0(determinista, tieneImagenAdjunta)
+    return normalizarClasificacionNivel0(determinista, tieneImagenAdjunta, referentesContextuales)
   }
 
   try {
@@ -788,7 +872,7 @@ export async function clasificarNivel0(
         // orden lógico de ninguna regla, solo cómo se transmite.
         system: [
           { type: 'text', text: PROMPT_NIVEL0_ESTATICO, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: construirContextoDinamico(sesion, historialReciente, tieneImagenAdjunta) },
+          { type: 'text', text: construirContextoDinamico(sesion, historialReciente, tieneImagenAdjunta, referentesContextuales) },
         ],
         messages: [{ role: 'user', content: mensaje }],
       },
@@ -835,7 +919,7 @@ export async function clasificarNivel0(
       return FALLBACK;
     }
 
-    return normalizarClasificacionNivel0(parsedModelo, tieneImagenAdjunta);
+    return normalizarClasificacionNivel0(parsedModelo, tieneImagenAdjunta, referentesContextuales);
   } catch (e) {
     console.error('Error en Clasificador de Nivel 0, usando fallback:', e);
     return FALLBACK;

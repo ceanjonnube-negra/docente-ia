@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { detectarHerramientaDocumento } from '../documentos'
+import type { ReferenteContextualMetadata } from '../contextoConversacional'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -174,7 +175,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[]) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -356,6 +357,15 @@ export class MotorTextoClaude implements MotorConversacional {
           // imágenes...", Fase 0+1 — solo presente cuando
           // AsistenteService.enviarRegeneracionImagen arma este turno.
           regenerarImagen: regenerarImagen || undefined,
+          // FASE 2A (ver "contrato del router semántico unificado +
+          // transporte de referentes contextuales") — SOLO metadata
+          // ligera (id/tipo/origen/formato, nunca contenido completo,
+          // ver ReferenteContextualMetadata) del contenido reciente
+          // reutilizable de esta conversación. Opcional: ausente en
+          // cualquier llamada que no lo arme (edición de documento,
+          // trabajo async, voz sin candidatos) — mismo comportamiento
+          // de siempre para esas rutas.
+          referentesContextuales: referentesContextuales?.length ? referentesContextuales : undefined,
         }),
         signal: this.controlador.signal,
       })
