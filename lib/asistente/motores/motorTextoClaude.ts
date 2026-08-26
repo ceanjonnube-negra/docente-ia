@@ -11,6 +11,7 @@ import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { detectarHerramientaDocumento } from '../documentos'
 import type { ReferenteContextualMetadata } from '../contextoConversacional'
+import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, type DecisionOrquestador } from '../decisionOrquestador'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -405,6 +406,25 @@ export class MotorTextoClaude implements MotorConversacional {
         return
       }
 
+      // FASE 2B1 (ver "transporte interno de la decisión del
+      // orquestador") — se lee ANTES de leer el body (que sí llega en
+      // streaming), porque los headers de fetch() ya están completos
+      // desde que la promesa de fetch resuelve, sin esperar al body.
+      // Nunca se confía en el header crudo: decode + JSON.parse
+      // envueltos en try/catch (mismo patrón atob() que ya usan los
+      // demás marcadores de este archivo) y validarDecisionOrquestador
+      // como última palabra sobre si el valor es realmente utilizable.
+      // Cualquier fallo en cualquier paso → null, nunca rompe el chat.
+      let decisionOrquestador: DecisionOrquestador | null = null
+      const headerDecision = res.headers.get(HEADER_DECISION_ORQUESTADOR)
+      if (headerDecision) {
+        try {
+          decisionOrquestador = validarDecisionOrquestador(JSON.parse(atob(headerDecision)))
+        } catch {
+          decisionOrquestador = null
+        }
+      }
+
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let respuesta = ''
@@ -430,7 +450,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // que ve el docente. Retirar junto con el resto del diagnóstico.
       const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinPerfilActualizado)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado, decisionOrquestador: decisionOrquestador ?? undefined })
       if (diagnosticoActivo && diagnosticoCurp) {
         this.emitir({
           tipo: 'diagnostico-curp',

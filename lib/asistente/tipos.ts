@@ -9,6 +9,7 @@
 // cambiar qué motor se instancia — nada más en la aplicación se entera.
 
 import type { FiltroLista } from '../listaFiltrada'
+import type { DecisionOrquestador } from './decisionOrquestador'
 
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
@@ -322,7 +323,13 @@ export type EventoMotor =
   // app/api/chat/route.ts) — AsistenteService lo usa como señal para
   // recargar EstadoAsistente.perfil, la única fuente que consumen el
   // menú lateral, /dashboard/inicio y el resto de la interfaz.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; perfilActualizado?: boolean }
+  // decisionOrquestador: FASE 2B1 (ver "transporte interno de la
+  // decisión del orquestador") — metadata interna opcional (capacidad/
+  // referente/confianza, nunca contenido) que Nivel0 ya calculó y
+  // normalizó para este turno; ver lib/asistente/decisionOrquestador.ts.
+  // Presente SOLO como transporte: en esta fase ningún consumidor
+  // ejecuta nada a partir de este campo ni lo muestra al maestro.
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

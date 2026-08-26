@@ -1217,6 +1217,17 @@ class AsistenteServiceImpl {
         break
       }
       case 'respuesta-final': {
+        // FASE 2B1 (ver "transporte interno de la decisión del
+        // orquestador") — SOLO diagnóstico: confirma que la metadata
+        // transportada por header llegó completa hasta aquí. Nunca
+        // contenido/prompts/datos de alumnos. Esta fase NO ejecuta
+        // nada con evento.decisionOrquestador — ver Fase 2A: "validar
+        // el cerebro antes de conectarle las manos".
+        if (evento.decisionOrquestador) {
+          console.log(
+            `[DECISION_ORQUESTADOR] recibida=true capacidad=${evento.decisionOrquestador.capacidad} referente_tipo=${evento.decisionOrquestador.referente.tipo} confianza=${evento.decisionOrquestador.confianza}`
+          )
+        }
         // El Chat IA acaba de confirmar un cambio real en
         // perfiles_docentes (ver actualizar_perfil_docente en
         // app/api/chat/route.ts) — se dispara sin esperar a los

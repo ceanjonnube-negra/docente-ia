@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConversacional'
+import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, type DecisionOrquestador } from '@/lib/asistente/decisionOrquestador'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
@@ -1025,6 +1026,14 @@ export async function POST(req: NextRequest) {
   // importar qué pasó dentro de ese try — mismo criterio ya usado por
   // requiereConsultaOficial.
   let esTurnoDeBorradorPlaneacion = false
+  // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
+  // — mismo criterio que las dos variables de arriba: declarada antes
+  // del try del clasificador para que el Response final (mucho más
+  // abajo) pueda leerla sin importar qué pasó dentro de ese try. Solo
+  // se llena cuando Nivel0 ya normalizó una decisión contextual válida
+  // (ver más abajo) — cualquier error o ausencia de decisión la deja en
+  // null, y entonces el header de más abajo simplemente no se agrega.
+  let decisionOrquestadorParaHeader: DecisionOrquestador | null = null
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -1096,6 +1105,24 @@ export async function POST(req: NextRequest) {
       console.log(
         `[NIVEL0_CONTEXTUAL] candidatos=${referentesContextuales.length} capacidad=${clasificacion.capacidad_contextual ?? 'null'} referente_tipo=${clasificacion.referente_elegido?.tipo ?? 'null'} confianza=${clasificacion.confianza_contextual ?? 'null'} descartada_por_intencion_interna=${clasificacion.intencion_principal !== 'conversacion_general'}`
       )
+      // FASE 2B1 (ver "transporte interno de la decisión del
+      // orquestador") — construye el candidato a header SOLO a partir
+      // de la salida YA NORMALIZADA de Nivel0 (nunca reconstruye en
+      // paralelo la regla de prioridad de normalizarClasificacionNivel0):
+      // cuando cualquiera de los 3 campos es null (ya sea porque
+      // intencion_principal !== 'conversacion_general' o porque el
+      // propio modelo no encontró evidencia suficiente), esto se queda
+      // en null y el header, más abajo, simplemente no se agrega.
+      // validarDecisionOrquestador se usa aquí también (no solo en el
+      // cliente) para garantizar que el header nunca transporte una
+      // forma distinta a la única fuente de verdad compartida.
+      if (clasificacion.capacidad_contextual && clasificacion.referente_elegido && clasificacion.confianza_contextual) {
+        decisionOrquestadorParaHeader = validarDecisionOrquestador({
+          capacidad: clasificacion.capacidad_contextual,
+          referente: clasificacion.referente_elegido,
+          confianza: clasificacion.confianza_contextual,
+        })
+      }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
       if (diagnosticoCurpActivo) {
@@ -2774,7 +2801,19 @@ Grado: [grado] | Grupo: [grupo]
     },
   })
 
+  // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
+  // — el body sigue siendo exactamente el mismo stream de texto plano
+  // de siempre (nunca SSE, nunca NDJSON, nunca un marcador nuevo en el
+  // body). El header es OPCIONAL y solo se agrega cuando ya existe una
+  // decisión contextual válida (ver arriba); mismo patrón de
+  // codificación (Buffer → base64) que route.ts ya usa para los demás
+  // payloads internos (ej. [[DOCUMENTO_ARCHIVO:...]]), aquí en un
+  // header en vez de dentro del texto — la decisión no es contenido.
+  const headersRespuesta: Record<string, string> = { 'Content-Type': 'text/plain; charset=utf-8' }
+  if (decisionOrquestadorParaHeader) {
+    headersRespuesta[HEADER_DECISION_ORQUESTADOR] = Buffer.from(JSON.stringify(decisionOrquestadorParaHeader), 'utf-8').toString('base64')
+  }
   return new Response(readable, {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    headers: headersRespuesta,
   })
 }

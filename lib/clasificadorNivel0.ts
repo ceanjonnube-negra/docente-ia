@@ -15,6 +15,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { SesionContexto } from './sesionContexto';
 import type { CampoAlumnoCorregible } from './asistente/tipos';
 import type { ReferenteContextualMetadata, TipoReferenteContextual } from './asistente/contextoConversacional';
+import type { CapacidadContextual, ConfianzaContextual } from './asistente/decisionOrquestador';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -202,9 +203,9 @@ export type ClasificacionNivel0 = {
   // todavía NO ejecuta nada con estos 3 campos (ver Fase 2A: "validar
   // el cerebro antes de conectarle las manos") — se calculan y se
   // registran, nada más.
-  capacidad_contextual: 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento' | null;
+  capacidad_contextual: CapacidadContextual | null;
   referente_elegido: { tipo: TipoReferenteContextual; id: string } | null;
-  confianza_contextual: 'alta' | 'media' | 'baja' | null;
+  confianza_contextual: ConfianzaContextual | null;
 };
 
 // Salida MÍNIMA que Sonnet realmente genera (ver diseño "separar el
@@ -274,10 +275,10 @@ type ClasificacionModeloNivel0 = {
   // — normalizarClasificacionNivel0 los valida y reconstruye
   // referente_elegido como objeto anidado, o los descarta a null si
   // cualquiera de los tres no es válido/está incompleto.
-  capacidad_contextual?: 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento';
+  capacidad_contextual?: CapacidadContextual;
   referente_elegido_tipo?: TipoReferenteContextual;
   referente_elegido_id?: string;
-  confianza_contextual?: 'alta' | 'media' | 'baja';
+  confianza_contextual?: ConfianzaContextual;
 };
 
 // Deriva nivel_ejecucion a partir ÚNICAMENTE de intencion_principal —
