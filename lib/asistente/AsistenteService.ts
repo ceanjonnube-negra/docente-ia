@@ -2243,12 +2243,26 @@ ${instruccion}`
       )
 
       if (mensajeUsuarioActual && referenteLocal && decision.capacidad === 'generar_imagen' && (referenteLocal.tipo === 'texto' || referenteLocal.tipo === 'documento')) {
-        // Instrucción interna de ejecución (NUNCA un detector léxico
-        // nuevo, ver "no parche léxico" — el router semántico ya decidió
-        // generar_imagen): combina la instrucción real del maestro con
-        // el contenido COMPLETO del referente elegido, para que el
-        // pipeline visual sepa qué ilustrar sin adivinar.
-        const textoParaModelo = `${mensajeUsuarioActual.texto}\n\nCONTENIDO A CONVERTIR EN IMAGEN:\n${referenteLocal.texto}`
+        // Instrucción interna de ejecución — adaptador determinista
+        // entre la decisión semántica (ya tomada por Nivel0: capacidad,
+        // confianza, referente) y el contrato léxico que el pipeline
+        // visual reutilizado (app/api/chat/trabajo-documento →
+        // /api/chat CASO 3) todavía exige: detectarHerramientaDocumento
+        // (lib/asistente/documentos.ts) solo resuelve 'imagen' vía
+        // detectarGeneracionMultimedia, que requiere un verbo de
+        // VERBO_GENERAR + la palabra "imagen" en el propio mensaje que
+        // se envía. La instrucción original del maestro ("Hazlo en
+        // imagen") NUNCA satisface eso por diseño — es justo el tipo de
+        // frase que existe el router semántico para resolver — así que
+        // NUNCA debe ser lo que decide si el pipeline genera la imagen.
+        // Por eso aquí NO se reutiliza tal cual: se antepone una
+        // instrucción canónica fija (mismo verbo/palabra siempre, sin
+        // depender de qué haya escrito el maestro) seguida del
+        // contenido COMPLETO del referente. Esto NO es un detector
+        // nuevo ni reclasifica nada — la decisión de generar_imagen ya
+        // la tomó Nivel0; esto solo la traduce a la forma que el
+        // pipeline existente ya sabe reconocer.
+        const textoParaModelo = `Genera una imagen a partir del siguiente contenido:\n\nCONTENIDO A CONVERTIR EN IMAGEN:\n${referenteLocal.texto}`
         await this.enviarComoTrabajoDocumento(mensajeUsuarioActual.texto, undefined, { mensajeExistente: mensajeUsuarioActual, textoParaModelo })
         return
       }
