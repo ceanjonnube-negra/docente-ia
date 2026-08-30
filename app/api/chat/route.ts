@@ -1749,12 +1749,18 @@ export async function POST(req: NextRequest) {
   // su posición en el archivo.
   if (esCandidataConvertirDocumento && referenteIdParaConvertirDocumento && supabaseUser && userId) {
     try {
-      const conversacionIdReferente = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+      // CORRECCIÓN — "conversacionIdReferente siempre null" (ver
+      // diagnóstico real: contexto llega como string, nunca como objeto
+      // con conversacionId, así que ese filtro nunca podía coincidir —
+      // PostgREST 22P02 contra la columna uuid/not-null, filaValida
+      // siempre false). id ya es PRIMARY KEY (text) en mensajes_chat, y
+      // supabaseUser corre con RLS real del docente (docente_id =
+      // auth.uid()) — el filtro por id solo, bajo ese cliente, es
+      // inequívoco y suficiente sin necesitar conversacion_id.
       const { data: filaReferente, error: errorReferente } = await supabaseUser
         .from('mensajes_chat')
         .select('rol, texto, contenido')
         .eq('id', referenteIdParaConvertirDocumento)
-        .eq('conversacion_id', conversacionIdReferente)
         .maybeSingle()
 
       const contenidoFila = (filaReferente?.contenido ?? {}) as Record<string, unknown>
@@ -1781,7 +1787,7 @@ export async function POST(req: NextRequest) {
         if (formatoResuelto === 'word' || formatoResuelto === 'pdf' || formatoResuelto === 'powerpoint') {
           const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
           const archivo = await conReintento(
-            () => ejecutarHerramientaDocumento(formatoResuelto, filaReferente.texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdReferente, null),
+            () => ejecutarHerramientaDocumento(formatoResuelto, filaReferente.texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, null, null),
             'convertir-documento-referente'
           )
           const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
