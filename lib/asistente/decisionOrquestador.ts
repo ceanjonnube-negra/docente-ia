@@ -10,7 +10,7 @@
 // el cerebro antes de conectarle las manos" — sigue aplicando aquí, un
 // paso más adelante en la tubería, todavía sin manos).
 
-import type { TipoReferenteContextual } from './contextoConversacional'
+import type { ReferenteContextualMetadata, TipoReferenteContextual } from './contextoConversacional'
 
 export type CapacidadContextual = 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento'
 export type ConfianzaContextual = 'alta' | 'media' | 'baja'
@@ -54,4 +54,46 @@ export function validarDecisionOrquestador(valor: unknown): DecisionOrquestador 
     referente: { tipo: r.tipo as TipoReferenteContextual, id: r.id },
     confianza: v.confianza as ConfianzaContextual,
   }
+}
+
+// FASE 2B2A — SHORT-CIRCUIT + EJECUCIÓN DE CAPACIDADES DE RECURSO. Una
+// decisión "informativa" (Fase 2B1) puede llegar a transportarse sin
+// que nada la ejecute; "ejecutar_cliente" es la señal explícita de que
+// el servidor YA decidió no hacer la segunda llamada Sonnet
+// conversacional y espera que el cliente dispare el pipeline real.
+// Nunca viaja en el body/texto — segundo header interno, ver
+// HEADER_DECISION_ORQUESTADOR_MODO.
+export type ModoDecisionOrquestador = 'informativa' | 'ejecutar_cliente'
+
+export const HEADER_DECISION_ORQUESTADOR_MODO = 'X-Docente-IA-Decision-Mode'
+
+// Fuente única de verdad para "¿esta decisión es candidata a
+// ejecutarse en el cliente?" — la llaman TANTO route.ts (para decidir
+// si omite la segunda llamada Sonnet) COMO el cliente (defense in
+// depth: nunca confía solo en que el servidor haya marcado
+// modo='ejecutar_cliente', vuelve a exigir lo mismo aquí antes de
+// ejecutar nada, ver motorTextoClaude.ts/AsistenteService.ts). Pura:
+// nunca llama IA, nunca muta nada.
+//
+// Fase 2B2A SOLO conecta generar_imagen y editar_imagen (ver auditoría
+// "convertir_documento + documento_activo resultó inalcanzable con el
+// enrutamiento actual de enviarMensaje" — enviarComoEdicion nunca
+// manda referentesContextuales, así que ese candidato nunca llega
+// aquí en la práctica; queda pendiente de una decisión aparte).
+// transformar_texto se resolverá SERVER-SIDE dentro del mismo request
+// en una fase futura — nunca short-circuit de cliente.
+export function esCandidataAShortCircuitCliente(
+  decision: DecisionOrquestador,
+  referentesValidados: ReferenteContextualMetadata[]
+): boolean {
+  if (decision.confianza !== 'alta') return false
+  const referenteReal = referentesValidados.find((r) => r.id === decision.referente.id && r.tipo === decision.referente.tipo)
+  if (!referenteReal) return false
+  if (decision.capacidad === 'generar_imagen') {
+    return referenteReal.tipo === 'texto' || referenteReal.tipo === 'documento'
+  }
+  if (decision.capacidad === 'editar_imagen') {
+    return referenteReal.tipo === 'imagen' && referenteReal.origen === 'material_visual_activo'
+  }
+  return false
 }

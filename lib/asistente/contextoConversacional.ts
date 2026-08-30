@@ -238,7 +238,11 @@ export type ReferenteContextualMetadata = {
   formato?: string
 }
 
-function idDeCandidato(c: CandidatoReferente): string | undefined {
+// Exportada (ver Fase 2B2A) para que AsistenteService.ts pueda
+// localizar, del lado del cliente, el CANDIDATO COMPLETO (con
+// contenido real) que corresponde a un referente ya elegido por
+// Nivel0 — nunca duplica este criterio de id a mano en otro archivo.
+export function idDeCandidato(c: CandidatoReferente): string | undefined {
   return c.tipo === 'texto' || c.tipo === 'lista_filtrada' ? c.mensajeId : c.id
 }
 

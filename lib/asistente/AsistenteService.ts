@@ -12,7 +12,8 @@ import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, pareceOperacionSobreDatoPersonalAlumno, quiereIlustracion, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
-import { esMensajeTextoNormalReutilizable, resolverReferentesDisponibles, aMetadataReferentes } from './contextoConversacional'
+import { esMensajeTextoNormalReutilizable, resolverReferentesDisponibles, aMetadataReferentes, idDeCandidato } from './contextoConversacional'
+import { esCandidataAShortCircuitCliente, type DecisionOrquestador } from './decisionOrquestador'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import { TITULO_FILTRO_LISTA, type FiltroLista } from '@/lib/listaFiltrada'
@@ -1217,6 +1218,20 @@ class AsistenteServiceImpl {
         break
       }
       case 'respuesta-final': {
+        // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
+        // recurso") — intercepta ANTES de cualquier otra lógica de esta
+        // rama (incluida la limpieza de burbuja vacía más abajo, ver
+        // textoVacio): un turno short-circuit NUNCA debe crear ni
+        // persistir una respuesta de asistente ni mostrar el error
+        // genérico de "no pude generar la respuesta" — la UX real la
+        // da el pipeline que se dispare en ejecutarDecisionOrquestadorShortCircuit.
+        // Fire-and-forget a propósito (manejarEventoMotor no es async;
+        // el propio ejecutor dispara this.notificar()/this.manejarEventoMotor
+        // según corresponda cuando termine).
+        if (evento.shortCircuitOrquestador && evento.decisionOrquestador) {
+          this.ejecutarDecisionOrquestadorShortCircuit(evento.decisionOrquestador)
+          break
+        }
         // FASE 2B1 (ver "transporte interno de la decisión del
         // orquestador") — SOLO diagnóstico: confirma que la metadata
         // transportada por header llegó completa hasta aquí. Nunca
@@ -2191,10 +2206,86 @@ ${instruccion}`
   // exactamente la misma infraestructura de trabajo persistente que ya
   // usan documentos largos e imagen nueva — mismo trabajoId/requestId/
   // idempotencia/polling/reanudación, sin sistema paralelo.
-  private async enviarRegeneracionImagen(instruccion: string) {
+  // FASE 2B2A — despachador del short-circuit del orquestador (ver
+  // manejarEventoMotor, caso 'respuesta-final'). Nunca confía
+  // ciegamente en que el servidor haya marcado modo='ejecutar_cliente':
+  // vuelve a exigir confianza==='alta' y a validar el referente contra
+  // datos LOCALES actuales (this.mensajes/documentoActivo/
+  // materialVisualActivo), usando la MISMA función pura y centralizada
+  // que ya usó route.ts (defense in depth) — nunca ejecuta solo porque
+  // el id vino en el header. Si el referente ya no existe localmente,
+  // o la capacidad no es una de las dos conectadas en esta fase
+  // (generar_imagen/editar_imagen), cae a un error visible seguro, sin
+  // crear una segunda burbuja del maestro.
+  private async ejecutarDecisionOrquestadorShortCircuit(decision: DecisionOrquestador) {
+    // Revisión mecánica Fase 2B2A — try/catch de nivel superior: el
+    // call site en manejarEventoMotor dispara esta función sin await
+    // ni .catch() (fire-and-forget, manejarEventoMotor no es async).
+    // Sin esto, cualquier excepción — incluso en el tramo previo a los
+    // try/catch internos de enviarComoTrabajoDocumento/
+    // enviarRegeneracionImagen (resolverReferentesDisponibles,
+    // aMetadataReferentes, construcción de historialPrevio) — se
+    // convertiría en una unhandled promise rejection real, dejando
+    // generando=true para siempre sin ningún error visible. Mismo
+    // patrón de garantía que ya usa enviarComoTrabajoDocumento, aquí
+    // cubriendo la función completa.
+    try {
+      const mensajeUsuarioActual = [...this.mensajes].reverse().find((m) => m.rol === 'usuario')
+      const candidatosLocales = resolverReferentesDisponibles(this.mensajes, this.documentoActivo, this.materialVisualActivo)
+      const referentesValidados = aMetadataReferentes(candidatosLocales)
+      const esCandidataLocal = !!mensajeUsuarioActual && esCandidataAShortCircuitCliente(decision, referentesValidados)
+      const referenteLocal = esCandidataLocal
+        ? candidatosLocales.find((c) => c.tipo === decision.referente.tipo && idDeCandidato(c) === decision.referente.id)
+        : undefined
+
+      console.log(
+        `[ORQUESTADOR_EJECUCION] capacidad=${decision.capacidad} referente_tipo=${decision.referente.tipo} referente_encontrado=${!!referenteLocal} mensaje_ya_registrado=true`
+      )
+
+      if (mensajeUsuarioActual && referenteLocal && decision.capacidad === 'generar_imagen' && (referenteLocal.tipo === 'texto' || referenteLocal.tipo === 'documento')) {
+        // Instrucción interna de ejecución (NUNCA un detector léxico
+        // nuevo, ver "no parche léxico" — el router semántico ya decidió
+        // generar_imagen): combina la instrucción real del maestro con
+        // el contenido COMPLETO del referente elegido, para que el
+        // pipeline visual sepa qué ilustrar sin adivinar.
+        const textoParaModelo = `${mensajeUsuarioActual.texto}\n\nCONTENIDO A CONVERTIR EN IMAGEN:\n${referenteLocal.texto}`
+        await this.enviarComoTrabajoDocumento(mensajeUsuarioActual.texto, undefined, { mensajeExistente: mensajeUsuarioActual, textoParaModelo })
+        return
+      }
+
+      if (
+        mensajeUsuarioActual &&
+        referenteLocal &&
+        decision.capacidad === 'editar_imagen' &&
+        referenteLocal.tipo === 'imagen' &&
+        referenteLocal.origen === 'material_visual_activo' &&
+        this.materialVisualActivo?.id === referenteLocal.id
+      ) {
+        await this.enviarRegeneracionImagen(mensajeUsuarioActual.texto, mensajeUsuarioActual)
+        return
+      }
+
+      // Fallback seguro (ver fixture S): nunca una segunda burbuja del
+      // maestro, solo el mecanismo de error ya existente — este también
+      // pone generando=false internamente.
+      this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude completar esa acción. Intenta de nuevo.' })
+    } catch (err) {
+      console.error('[ORQUESTADOR_EJECUCION] Error inesperado ejecutando la decisión:', err)
+      this.generando = false
+      this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude completar esa acción. Intenta de nuevo.' })
+    }
+  }
+
+  // mensajeExistente (ver Fase 2B2A): SOLO lo pasa el short-circuit del
+  // orquestador (ver manejarEventoMotor, caso 'respuesta-final') —
+  // reutiliza EXACTAMENTE el mismo flujo de edición/regeneración de
+  // imagen que ya existe, la única diferencia es que la burbuja del
+  // maestro ya está en pantalla y ya se persistió (ver
+  // enviarComoTrabajoDocumento más abajo).
+  private async enviarRegeneracionImagen(instruccion: string, mensajeExistente?: MensajeConversacion) {
     const materialAnterior = this.materialVisualActivo
     if (!materialAnterior) return // no debería pasar (guardado por enviarMensaje), pero nunca truena aquí
-    await this.enviarComoTrabajoDocumento(instruccion, { assetIdAnterior: materialAnterior.id })
+    await this.enviarComoTrabajoDocumento(instruccion, { assetIdAnterior: materialAnterior.id }, mensajeExistente ? { mensajeExistente } : undefined)
   }
 
   // --- Trabajo asíncrono de documento (ver "corrección: timeout en
@@ -2203,19 +2294,43 @@ ${instruccion}`
   // REAL (nunca una desconexión: el POST de creación responde en
   // milisegundos, ni siquiera espera a que empiece la generación) —
   // mismo camino, mismo aviso, que ya usa el resto de la aplicación.
-  private async enviarComoTrabajoDocumento(texto: string, regenerarImagen?: { assetIdAnterior: string }) {
-    const historialPrevio = this.mensajes.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
+  //
+  // opciones (ver Fase 2B2A: "evitar duplicación también en
+  // contexto") — SOLO la pasa el short-circuit del orquestador:
+  // mensajeExistente es el mensaje del maestro que YA está en
+  // this.mensajes y YA se persistió en enviarMensaje — cuando está
+  // presente, esta función NUNCA construye/agrega/persiste un segundo
+  // mensajeUsuario (evita la burbuja duplicada), y excluye ese mismo
+  // turno de historialPrevio (evita repetirlo también semánticamente
+  // para el modelo, una vez como "instrucción actual" y otra como
+  // último turno del historial). textoParaModelo (default: `texto`)
+  // es lo único que cambia lo que recibe el pipeline real — `texto`
+  // sigue siendo únicamente lo que ya se mostró en la burbuja.
+  private async enviarComoTrabajoDocumento(
+    texto: string,
+    regenerarImagen?: { assetIdAnterior: string },
+    opciones?: { mensajeExistente?: MensajeConversacion; textoParaModelo?: string }
+  ) {
+    const mensajeExistente = opciones?.mensajeExistente
+    const textoParaModelo = opciones?.textoParaModelo ?? texto
+    const mensajesBase = mensajeExistente ? this.mensajes.filter(m => m.id !== mensajeExistente.id) : this.mensajes
+    const historialPrevio = mensajesBase.slice(-20).map(m => ({ rol: m.rol, texto: m.texto }))
     this.transcripcionParcial = ''
-    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }
-    this.mensajes = [...this.mensajes, mensajeUsuario]
+    let mensajeUsuario: MensajeConversacion
+    if (mensajeExistente) {
+      mensajeUsuario = mensajeExistente
+    } else {
+      mensajeUsuario = { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now() }
+      this.mensajes = [...this.mensajes, mensajeUsuario]
+    }
     this.turnoAbierto = null
     this.generando = true
     this.notificar()
-    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
+    if (!mensajeExistente) this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
 
     const requestId = generarRequestIdTrabajo()
     try {
-      const { trabajoId } = await iniciarTrabajoDocumento(texto, this.contexto, historialPrevio, requestId, null, regenerarImagen)
+      const { trabajoId } = await iniciarTrabajoDocumento(textoParaModelo, this.contexto, historialPrevio, requestId, null, regenerarImagen)
       this.trabajoDocumentoActivoId = trabajoId
       guardarTrabajoActivo({ trabajoId, requestId, conversacionId: this.conversacionActivaId })
       this.notificar()

@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConversacional'
-import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, type DecisionOrquestador } from '@/lib/asistente/decisionOrquestador'
+import { validarDecisionOrquestador, esCandidataAShortCircuitCliente, HEADER_DECISION_ORQUESTADOR, HEADER_DECISION_ORQUESTADOR_MODO, type DecisionOrquestador } from '@/lib/asistente/decisionOrquestador'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
@@ -1034,6 +1034,15 @@ export async function POST(req: NextRequest) {
   // (ver más abajo) — cualquier error o ausencia de decisión la deja en
   // null, y entonces el header de más abajo simplemente no se agrega.
   let decisionOrquestadorParaHeader: DecisionOrquestador | null = null
+  // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
+  // recurso") — mismo criterio que la variable de arriba: declarada
+  // antes del try para que el bloque de streaming, mucho más abajo,
+  // pueda leerla. true SOLO cuando esCandidataAShortCircuitCliente ya
+  // confirmó (contra referentesContextuales REALES, no lo que dijo el
+  // modelo) que el cliente puede ejecutar esta decisión — en ese caso
+  // route.ts omite la segunda llamada Sonnet conversacional (ver más
+  // abajo, justo antes de client.messages.create).
+  let esShortCircuitOrquestador = false
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -1122,6 +1131,23 @@ export async function POST(req: NextRequest) {
           referente: clasificacion.referente_elegido,
           confianza: clasificacion.confianza_contextual,
         })
+      }
+      // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
+      // recurso") — misma función pura y centralizada que usa el
+      // cliente (defense in depth, ver AsistenteService.ts): decide si
+      // ESTA decisión ya es candidata a ejecutarse en el cliente, SOLO
+      // contra `referentesContextuales` (los mismos ya validados por
+      // route.ts contra la lista real enviada, nunca lo que el modelo
+      // dijo sin más). En esta fase solo generar_imagen/editar_imagen
+      // pueden dar true — convertir_documento/transformar_texto
+      // siempre dan false aquí (ver auditoría 2B2A).
+      if (decisionOrquestadorParaHeader) {
+        esShortCircuitOrquestador = esCandidataAShortCircuitCliente(decisionOrquestadorParaHeader, referentesContextuales)
+        if (esShortCircuitOrquestador) {
+          console.log(
+            `[ORQUESTADOR_SHORT_CIRCUIT] activo=true capacidad=${decisionOrquestadorParaHeader.capacidad} referente_tipo=${decisionOrquestadorParaHeader.referente.tipo}`
+          )
+        }
       }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
@@ -2262,6 +2288,33 @@ Grado: [grado] | Grupo: [grupo]
       console.error(`Error generando y finalizando documento en un solo paso [${codigo}]:`, err)
       return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
     }
+  }
+
+  // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
+  // recurso") — cuando la decisión ya es candidata a ejecutarse en el
+  // cliente, se omite POR COMPLETO la segunda llamada Sonnet
+  // conversacional de abajo (nunca se construye ni se llama
+  // client.messages.create para este turno): el maestro va a ver la
+  // UX real del pipeline de imagen (ver AsistenteService.ts), una
+  // respuesta conversacional aquí sería una segunda voz redundante
+  // ("Claro, aquí está" + luego la imagen real). El body sigue siendo
+  // texto plano — aquí, vacío a propósito — y el stream se cierra de
+  // inmediato; los dos headers (decisión + modo) ya bastan para que el
+  // cliente sepa qué ejecutar.
+  if (esShortCircuitOrquestador && decisionOrquestadorParaHeader) {
+    const headersShortCircuit: Record<string, string> = {
+      'Content-Type': 'text/plain; charset=utf-8',
+      [HEADER_DECISION_ORQUESTADOR]: Buffer.from(JSON.stringify(decisionOrquestadorParaHeader), 'utf-8').toString('base64'),
+      [HEADER_DECISION_ORQUESTADOR_MODO]: 'ejecutar_cliente',
+    }
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.close()
+        },
+      }),
+      { headers: headersShortCircuit }
+    )
   }
 
   marcarTelemetria('claude:request_started')

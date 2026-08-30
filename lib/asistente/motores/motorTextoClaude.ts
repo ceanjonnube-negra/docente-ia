@@ -11,7 +11,7 @@ import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { detectarHerramientaDocumento } from '../documentos'
 import type { ReferenteContextualMetadata } from '../contextoConversacional'
-import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, type DecisionOrquestador } from '../decisionOrquestador'
+import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, HEADER_DECISION_ORQUESTADOR_MODO, type DecisionOrquestador } from '../decisionOrquestador'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -424,6 +424,16 @@ export class MotorTextoClaude implements MotorConversacional {
           decisionOrquestador = null
         }
       }
+      // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
+      // recurso") — el modo SOLO cuenta si decisionOrquestador también
+      // validó correctamente (defense in depth: un header de modo
+      // corrupto/manipulado nunca activa esto por sí solo, ver
+      // AsistenteService.ts para la re-validación completa contra
+      // datos locales antes de ejecutar nada). Cuando es true, el
+      // body viene vacío a propósito (ver route.ts) — nunca se emite
+      // respuesta-parcial para este turno (ver más abajo): la UX real
+      // la da el pipeline que AsistenteService dispare, no el chat.
+      const esShortCircuitOrquestador = res.headers.get(HEADER_DECISION_ORQUESTADOR_MODO) === 'ejecutar_cliente' && decisionOrquestador !== null
 
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
@@ -434,7 +444,7 @@ export class MotorTextoClaude implements MotorConversacional {
           const { done, value } = await reader.read()
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
-          this.emitir({ tipo: 'respuesta-parcial', texto: respuesta })
+          if (!esShortCircuitOrquestador) this.emitir({ tipo: 'respuesta-parcial', texto: respuesta })
         }
       }
 
@@ -449,8 +459,19 @@ export class MotorTextoClaude implements MotorConversacional {
       // demás marcadores de arriba — nunca llega a Supabase ni al texto
       // que ve el docente. Retirar junto con el resto del diagnóstico.
       const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinPerfilActualizado)
-      this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, datosAccionAlumno, perfilActualizado, decisionOrquestador: decisionOrquestador ?? undefined })
+      if (!esShortCircuitOrquestador) this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
+      this.emitir({
+        tipo: 'respuesta-final',
+        texto: respuestaLimpia,
+        archivo,
+        archivos,
+        contenidoOriginal,
+        accionNavegacion,
+        datosAccionAlumno,
+        perfilActualizado,
+        decisionOrquestador: decisionOrquestador ?? undefined,
+        shortCircuitOrquestador: esShortCircuitOrquestador || undefined,
+      })
       if (diagnosticoActivo && diagnosticoCurp) {
         this.emitir({
           tipo: 'diagnostico-curp',
@@ -465,7 +486,11 @@ export class MotorTextoClaude implements MotorConversacional {
         })
       }
 
-      if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
+      // FASE 2B2A — nunca indexa una fila vacía para un turno short-circuit
+      // (respuestaLimpia siempre '' en ese caso); guardarEnHistorial es
+      // un mecanismo no relacionado (documentos_generados) que no tiene
+      // nada real que registrar aquí.
+      if (user && !esShortCircuitOrquestador) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
