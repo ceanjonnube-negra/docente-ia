@@ -1043,6 +1043,17 @@ export async function POST(req: NextRequest) {
   // route.ts omite la segunda llamada Sonnet conversacional (ver más
   // abajo, justo antes de client.messages.create).
   let esShortCircuitOrquestador = false
+  // FASE 2B2B1 (ver "transformar_texto — misma llamada Sonnet
+  // conversacional ya planeada, sin short-circuit a cliente") — mismo
+  // criterio de las variables de arriba: declarada antes del try para
+  // que el bloque `bloqueTransformarTexto` (más abajo, junto a
+  // bloqueVoz/bloqueModoImagen/etc.) pueda leerla. true SOLO cuando
+  // Nivel0 ya resolvió capacidad_contextual==='transformar_texto' con
+  // confianza_contextual==='alta' y referente_elegido.tipo==='texto'
+  // — referente tipo 'documento' queda EXCLUIDO a propósito esta fase
+  // (puede representar solo el texto-envoltorio del mensaje, nunca el
+  // contenido documental real, ver auditoría 2B2B).
+  let activarTransformarTexto = false
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -1148,6 +1159,20 @@ export async function POST(req: NextRequest) {
             `[ORQUESTADOR_SHORT_CIRCUIT] activo=true capacidad=${decisionOrquestadorParaHeader.capacidad} referente_tipo=${decisionOrquestadorParaHeader.referente.tipo}`
           )
         }
+      }
+      // FASE 2B2B1 — a diferencia de 2B2A, esto NUNCA implica omitir la
+      // llamada conversacional: solo decide si el bloque
+      // `bloqueTransformarTexto` (más abajo) se agrega al system prompt
+      // de la MISMA llamada Sonnet que este turno ya iba a hacer. Se
+      // calcula directamente desde `clasificacion` (ya normalizada por
+      // clasificarNivel0 — nunca reconstruye la regla de prioridad en
+      // paralelo), nunca desde el header de decisión.
+      activarTransformarTexto =
+        clasificacion.capacidad_contextual === 'transformar_texto' &&
+        clasificacion.confianza_contextual === 'alta' &&
+        clasificacion.referente_elegido?.tipo === 'texto'
+      if (activarTransformarTexto) {
+        console.log('[TRANSFORMAR_TEXTO] activo=true referente_tipo=texto')
       }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
@@ -1835,6 +1860,25 @@ Máximo 4 líneas [[IMAGEN:...]] en todo el documento — nunca satures de imág
 
 FECHA(S) CON DÍA DE LA SEMANA YA CALCULADO DE FORMA DETERMINÍSTICA — NUNCA calcules ni inventes tú el día de la semana de una fecha, usa EXACTAMENTE este resultado ya calculado por el sistema: ${fechasExplicitasConDia.map((f) => `"${f.textoOriginal}" → el día de la semana correcto es ${f.diaSemana}`).join('; ')}. Si mencionas el día de la semana de alguna de estas fechas en tu respuesta, en un documento o en la descripción de una imagen, usa EXACTAMENTE el valor de arriba — nunca otro, aunque tu propio cálculo interno sugiera algo distinto.` : ''
 
+  // FASE 2B2B1 (ver "transformar_texto — misma llamada Sonnet
+  // conversacional ya planeada") — mismo criterio que bloqueVoz/
+  // bloqueModoImagen: instrucciones ADICIONALES solo para este turno,
+  // activas SOLO cuando activarTransformarTexto ya confirmó (arriba)
+  // capacidad_contextual==='transformar_texto' + confianza 'alta' +
+  // referente tipo 'texto'. Deliberadamente NO repite el contenido del
+  // referente aquí — Claude ya lo recibe como parte natural de
+  // `messages` (ver historialMensajes, línea ~622 y su uso en
+  // parametrosClaude.messages más abajo); este bloque solo señala CUÁL
+  // de esos turnos es el referente y qué hacer con él, sin duplicar
+  // tokens. "la respuesta real con contenido más reciente" (no "tu
+  // turno inmediatamente anterior") a propósito — obtenerUltimoContenidoUtil
+  // puede saltar mensajes operativos/sin contenido reconocible, así
+  // que el turno inmediatamente anterior en la lista no siempre
+  // coincide con el referente real que Nivel0 resolvió.
+  const bloqueTransformarTexto = activarTransformarTexto ? `
+
+TRANSFORMACIÓN DE CONTENIDO RECIENTE ACTIVA — el maestro pidió transformar el contenido que tú mismo escribiste en esta conversación, no iniciar un tema nuevo. Identifica tu respuesta real con contenido más reciente (tu última respuesta con contenido real — nunca un mensaje operativo, de confirmación, o sin contenido) como el texto base, y aplica sobre ESE texto exactamente la transformación que pide el mensaje actual del maestro (más corta, más formal, para otro público, en otro idioma, resumida, simplificada, u otra transformación equivalente que el mensaje actual indique). Ve directo al resultado: no preguntes qué contenido transformar, no expliques el procedimiento, no confirmes antes de hacerlo — tu respuesta ES el contenido ya transformado.` : ''
+
   // POSTPROCESADO DETERMINÍSTICO DEL DÍA DE LA SEMANA PARA CONSULTAS
   // FACTUALES CON AÑO EXPLÍCITO (ver "postprocesado determinístico del
   // día de la semana para consultas factuales con año explícito") —
@@ -2105,7 +2149,7 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}${bloqueFechasExplicitas}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}${bloqueFechasExplicitas}${bloqueTransformarTexto}`,
     // "Consultar información oficial vigente de la SEP": la herramienta
     // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
     // autorizó este turno específico (requiereConsultaOficial) — nunca
