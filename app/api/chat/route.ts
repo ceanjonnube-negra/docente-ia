@@ -1054,6 +1054,19 @@ export async function POST(req: NextRequest) {
   // (puede representar solo el texto-envoltorio del mensaje, nunca el
   // contenido documental real, ver auditoría 2B2B).
   let activarTransformarTexto = false
+  // FASE 2B2B2 (ver "convertir_documento desde referente textual") —
+  // mismo criterio que las variables de arriba: declaradas antes del
+  // try para que el bloque de ejecución (más abajo, después del
+  // short-circuit de 2B2A, antes de la llamada conversacional) pueda
+  // leerlas. `esCandidataConvertirDocumento` es true SOLO cuando
+  // Nivel0 ya resolvió capacidad_contextual==='convertir_documento'
+  // con confianza_contextual==='alta' y referente_elegido.tipo==='texto'
+  // — mismo criterio de exclusión de referente tipo 'documento' que
+  // 2B2B1 (texto-envoltorio, nunca contenido real). `referenteIdParaConvertirDocumento`
+  // guarda el id exacto para recuperar el texto real vía mensajes_chat
+  // más abajo — nunca se reconstruye por heurística sobre historialMensajes.
+  let esCandidataConvertirDocumento = false
+  let referenteIdParaConvertirDocumento: string | null = null
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -1173,6 +1186,22 @@ export async function POST(req: NextRequest) {
         clasificacion.referente_elegido?.tipo === 'texto'
       if (activarTransformarTexto) {
         console.log('[TRANSFORMAR_TEXTO] activo=true referente_tipo=texto')
+      }
+      // FASE 2B2B2 — mismo criterio directamente desde `clasificacion`
+      // ya normalizada (nunca reconstruye la regla de prioridad en
+      // paralelo). Solo guarda el candidato aquí — la recuperación real
+      // del texto (mensajes_chat) y la ejecución ocurren más abajo,
+      // después del short-circuit de 2B2A, para no hacer una consulta
+      // a la base de datos en turnos que de todos modos no la
+      // necesitan (ej. cuando 2B2A ya va a ejecutar generar_imagen/
+      // editar_imagen para este mismo turno).
+      esCandidataConvertirDocumento =
+        clasificacion.capacidad_contextual === 'convertir_documento' &&
+        clasificacion.confianza_contextual === 'alta' &&
+        clasificacion.referente_elegido?.tipo === 'texto'
+      if (esCandidataConvertirDocumento) {
+        referenteIdParaConvertirDocumento = clasificacion.referente_elegido!.id
+        console.log('[CONVERTIR_DOCUMENTO] candidato=true')
       }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
@@ -2359,6 +2388,69 @@ Grado: [grado] | Grupo: [grupo]
       }),
       { headers: headersShortCircuit }
     )
+  }
+
+  // FASE 2B2B2 (ver "convertir_documento desde referente textual") —
+  // ejecución determinista PRE-conversacional: si todas las
+  // condiciones se cumplen, termina el request aquí mismo con el
+  // archivo real (mismo respuestaTexto/marcador [[DOCUMENTO_ARCHIVO:...]]
+  // que ya usa CASO 3 más arriba) y NUNCA llega a la llamada Sonnet
+  // conversacional de abajo. Nunca usa el header/short-circuit de
+  // 2B2A (esto no es una decisión que el cliente ejecute — se resuelve
+  // enteramente aquí, en el mismo response que Nivel0 ya iba a dar).
+  // Cualquier fallo en cualquier paso (fila no encontrada, error de
+  // Supabase, texto vacío, contenido no reutilizable, formato no
+  // conectado) dejar simplemente de activar esta rama — jamás convierte
+  // contenido aproximado, jamás lanza error nuevo al maestro por esta
+  // fase: el flujo normal de abajo continúa exactamente como si esta
+  // fase no existiera.
+  if (esCandidataConvertirDocumento && referenteIdParaConvertirDocumento && supabaseUser && userId) {
+    try {
+      const conversacionIdReferente = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+      const { data: filaReferente, error: errorReferente } = await supabaseUser
+        .from('mensajes_chat')
+        .select('rol, texto, contenido')
+        .eq('id', referenteIdParaConvertirDocumento)
+        .eq('conversacion_id', conversacionIdReferente)
+        .maybeSingle()
+
+      const contenidoFila = (filaReferente?.contenido ?? {}) as Record<string, unknown>
+      const filaValida =
+        !errorReferente &&
+        !!filaReferente &&
+        filaReferente.rol === 'asistente' &&
+        !!filaReferente.texto?.trim() &&
+        !contenidoFila.archivo &&
+        !(Array.isArray(contenidoFila.archivos) && contenidoFila.archivos.length > 0) &&
+        !contenidoFila.resultadoEmbebido &&
+        !contenidoFila.esOperativo
+
+      if (!filaValida) {
+        console.log('[CONVERTIR_DOCUMENTO] ejecutado=false motivo=referente_no_disponible')
+      } else {
+        console.log('[CONVERTIR_DOCUMENTO] referente_recuperado=true')
+        // Mismo detector determinista ya existente (ver CASO 3 y el
+        // camino léxico de documentoActivo) — nunca uno nuevo. El
+        // router semántico ya decidió "convertir este contenido"; este
+        // detector solo resuelve A QUÉ FORMATO, exactamente como ya lo
+        // hace hoy para el resto de la aplicación.
+        const formatoResuelto = detectarHerramientaDocumento(mensaje || '')
+        if (formatoResuelto === 'word' || formatoResuelto === 'pdf' || formatoResuelto === 'powerpoint') {
+          const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+          const archivo = await conReintento(
+            () => ejecutarHerramientaDocumento(formatoResuelto, filaReferente.texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdReferente, null),
+            'convertir-documento-referente'
+          )
+          const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
+          const marcadorContenido = `[[DOCUMENTO_CONTENIDO:${Buffer.from(filaReferente.texto, 'utf-8').toString('base64')}]]`
+          console.log(`[CONVERTIR_DOCUMENTO] ejecutado=true formato=${formatoResuelto}`)
+          return respuestaTexto(`Documento generado correctamente.\n${marcador}\n${marcadorContenido}`)
+        }
+        console.log(`[CONVERTIR_DOCUMENTO] ejecutado=false motivo=formato_no_conectado formato=${formatoResuelto ?? 'null'}`)
+      }
+    } catch (err) {
+      console.error('[CONVERTIR_DOCUMENTO] Error recuperando/ejecutando la conversión — continuando flujo normal:', err)
+    }
   }
 
   marcarTelemetria('claude:request_started')
