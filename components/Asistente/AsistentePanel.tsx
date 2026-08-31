@@ -165,25 +165,49 @@ function abrirArchivo(archivo: { url: string; urlVer?: string }) {
   window.open(archivo.urlVer ?? archivo.url, '_blank')
 }
 
-// DESCARGA DIRECTA — sin Blob, sin fetch, sin Web Share API (CORRECCIÓN
-// — diagnóstico "UX/arquitectura de Ver, Descargar y Compartir":
-// descargarArchivo (blob) producía "Error de WebKitBlobResource 1" en
-// Safari/iPhone para documentos, y el mecanismo de hoja nativa que se
-// probó después para PDF terminaba mostrando la misma hoja que
-// "Compartir" — dos acciones que deben distinguirse). Un <a> apuntando
-// DIRECTO a la URL firmada real (que ya trae Content-Disposition:
-// attachment desde que se crea, ver crearUrlFirmada en
-// lib/documentGen/almacenamiento.ts) deja que el propio navegador
-// maneje la descarga nativa contra ese encabezado — el atributo
-// `download` es solo un apoyo adicional (puede no respetarse en
-// algunos navegadores para URLs cross-origin), la cabecera del
-// servidor es la autoridad real. Usada para los cuatro formatos de
-// documento (PDF/Word/PowerPoint/Excel) — todos reciben esa misma URL
-// con ese mismo encabezado.
-function descargarArchivoDirecto(url: string, nombreSugerido: string) {
+// DESCARGA DIRECTA — sin Blob, sin fetch propio, sin Web Share API
+// (CORRECCIÓN — diagnóstico "UX/arquitectura de Ver, Descargar y
+// Compartir": descargarArchivo (blob) producía "Error de
+// WebKitBlobResource 1" en Safari/iPhone, y el mecanismo de hoja
+// nativa que se probó después para PDF terminaba mostrando la misma
+// hoja que "Compartir"). Para Word/PowerPoint/Excel: un <a> apuntando
+// DIRECTO a la URL firmada real (Content-Disposition:attachment desde
+// que se crea, ver crearUrlFirmada en lib/documentGen/almacenamiento.ts)
+// — ya validado con pruebas reales, Safari no tiene visor nativo para
+// esos formatos así que respeta la descarga.
+//
+// Para PDF: la navegación directa NO basta (CORRECCIÓN — "Descargar
+// PDF abre vista previa en Safari/iPhone" — verificado con un HEAD
+// real que Content-Disposition:attachment sí llega, pero Safari
+// prioriza su visor nativo de application/pdf de todos modos). Se
+// envía por POST real del navegador (nunca fetch propio ni Blob) a
+// /api/archivos/descargar, mismo origin — esa ruta hace streaming del
+// archivo y responde con application/octet-stream, un MIME que Safari
+// no sabe previsualizar, forzando la descarga real.
+function descargarArchivoDirecto(archivo: { tipo: string; url: string; nombre: string }) {
+  if (archivo.tipo === 'pdf') {
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = '/api/archivos/descargar'
+    form.style.display = 'none'
+    const campoUrl = document.createElement('input')
+    campoUrl.type = 'hidden'
+    campoUrl.name = 'url'
+    campoUrl.value = archivo.url
+    const campoNombre = document.createElement('input')
+    campoNombre.type = 'hidden'
+    campoNombre.name = 'nombre'
+    campoNombre.value = archivo.nombre
+    form.appendChild(campoUrl)
+    form.appendChild(campoNombre)
+    document.body.appendChild(form)
+    form.submit()
+    form.remove()
+    return
+  }
   const enlace = document.createElement('a')
-  enlace.href = url
-  enlace.download = nombreSugerido
+  enlace.href = archivo.url
+  enlace.download = archivo.nombre
   enlace.rel = 'noopener'
   document.body.appendChild(enlace)
   enlace.click()
@@ -319,7 +343,7 @@ function TarjetaDescarga({
                   👁️ Ver PDF
                 </button>
                 <button
-                  onClick={() => descargarArchivoDirecto(archivo.url, archivo.nombre)}
+                  onClick={() => descargarArchivoDirecto(archivo)}
                   className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
                 >
                   ⬇️ Descargar PDF
@@ -330,7 +354,7 @@ function TarjetaDescarga({
                 key={archivo.tipo}
                 // Word/Excel/PowerPoint y demás formatos — descarga
                 // directa, sin Blob (ver descargarArchivoDirecto).
-                onClick={() => descargarArchivoDirecto(archivo.url, archivo.nombre)}
+                onClick={() => descargarArchivoDirecto(archivo)}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}
