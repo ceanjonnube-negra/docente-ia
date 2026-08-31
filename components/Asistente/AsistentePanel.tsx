@@ -47,11 +47,10 @@ const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', power
 // visor integrado en vez de descargarlo directo, sin importar el
 // mecanismo de blob+<a download> ni el Content-Disposition del
 // servidor — es un comportamiento propio de WebKit con PDFs, no un
-// error de esta app). Nunca se cambió el comportamiento real (el botón
-// sigue llamando a descargarArchivo tal cual): el docente puede
-// guardar o compartir el PDF desde esa misma vista, así que solo hacía
-// falta que la etiqueta dejara de prometer una descarga directa que
-// Safari no siempre entrega.
+// error de esta app): el docente puede guardar o compartir el PDF
+// desde esa misma vista, así que solo hacía falta que la etiqueta
+// dejara de prometer una descarga directa que Safari no siempre
+// entrega.
 function etiquetaDescargar(tipo: string): string {
   if (tipo === 'pdf') return 'Ver / Descargar PDF'
   return `Descargar ${NOMBRE_FORMATO[tipo] || tipo.toUpperCase()}`
@@ -131,19 +130,12 @@ function iconoAdjunto(tipo: string): string {
 // duplicar.
 const VENCIMIENTO_URL_MS = 7 * 24 * 60 * 60 * 1000
 
-// Descarga forzada, robusta en Safari de iPhone (AJUSTE AISLADO —
-// "descarga real en Word y PDF, sin botones redundantes"): el servidor
-// YA manda Content-Type/Content-Disposition:attachment correctos (ver
-// las rutas vista-previa-documento(-word)/route.ts y el pipeline real
-// de FINALIZAR ARCHIVO), pero no depender ÚNICAMENTE de eso — un
-// simple window.open(url) puede terminar ABRIENDO el PDF/Word en la
-// vista Quick Look de iOS en vez de descargarlo, y el atributo HTML
-// `download` en un <a> apuntando a una URL cross-context no es
-// confiable en Safari. En vez de eso: se trae el archivo como blob
-// (mismas cabeceras reales del servidor) y se dispara la descarga
-// desde un <a> temporal con un object URL del propio blob — al ser un
-// blob local, el navegador SIEMPRE lo trata como "hay que guardar
-// esto", nunca como "hay que mostrar esto".
+// Descarga vía Blob — único uso restante: VentanaImagen (más abajo,
+// onDescargar) para imágenes generadas por el Chat IA. Ya NO se usa
+// para documentos (Word/PDF/PowerPoint/Excel, ver descargarArchivoDirecto
+// más abajo): ese mecanismo resultó no confiable en Safari/iPhone para
+// esos formatos ("Error de WebKitBlobResource 1", ver diagnóstico "UX/
+// arquitectura de Ver, Descargar y Compartir").
 async function descargarArchivo(url: string, nombreSugerido: string) {
   try {
     const res = await fetch(url)
@@ -159,37 +151,36 @@ async function descargarArchivo(url: string, nombreSugerido: string) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 10000)
   } catch {
     // Última red de seguridad si el fetch falla (sin red, CORS
-    // inesperado): al menos abre la URL real — el servidor sigue
-    // mandando Content-Disposition:attachment aunque este camino sea
-    // menos confiable en iOS que el de arriba.
+    // inesperado): al menos abre la URL real.
     window.open(url, '_blank')
   }
 }
 
-// Descarga DIRECTA de PDF, sin Blob intermedio (CORRECCIÓN URGENTE —
-// "Error de WebKitBlobResource 1 al descargar PDF en Safari de
-// iPhone"): evidencia real en producción — Safari en iPhone no logra
-// consumir un blob: local (fetch -> arrayBuffer -> new Blob ->
-// createObjectURL), sin importar el `type` con el que se reconstruya
-// el Blob; el intento anterior de forzar la descarga por esa vía
-// terminaba en "No se pudo completar la operación (Error de
-// WebKitBlobResource 1)" en vez de descargar. La técnica correcta y
-// más robusta contra ese bug real de WebKit es no involucrar NUNCA un
-// blob: — un <a> apuntando DIRECTO a la ruta real del servidor
-// (misma URL que ya trae Content-Type:application/octet-stream y
-// Content-Disposition:attachment, ver vista-previa-documento/route.ts
-// y vista-previa-hoja/route.ts) deja que el propio Safari maneje la
-// descarga nativa contra esos encabezados — el atributo `download` es
-// solo un apoyo adicional, la cabecera del servidor es la autoridad
-// real (mismo criterio para las URLs firmadas de Storage: ya llevan
-// `Content-Disposition: attachment` desde que se crean con la opción
-// `download`, ver crearUrlFirmada en lib/documentGen/almacenamiento.ts
-// — nunca se les antepone un blob local tampoco). Sin fetch, sin
-// Blob, sin URL.createObjectURL/revokeObjectURL, sin window.open: una
-// navegación real, síncrona, del navegador — nada que Safari pueda
-// interpretar como "hay que mostrar esto" en vez de "hay que
-// guardarlo".
-function descargarPdfDirecto(url: string, nombreSugerido: string) {
+// VER — navega directo a la URL de visualización real cuando existe
+// (urlVer, sin Content-Disposition:attachment — hoy solo PDF la recibe,
+// ver ejecutarHerramientaDocumento en lib/documentGen/herramientas.ts),
+// o a la URL de descarga si no hay una específica de vista. Sin Blob,
+// sin fetch: navegación real del navegador.
+function abrirArchivo(archivo: { url: string; urlVer?: string }) {
+  window.open(archivo.urlVer ?? archivo.url, '_blank')
+}
+
+// DESCARGA DIRECTA — sin Blob, sin fetch, sin Web Share API (CORRECCIÓN
+// — diagnóstico "UX/arquitectura de Ver, Descargar y Compartir":
+// descargarArchivo (blob) producía "Error de WebKitBlobResource 1" en
+// Safari/iPhone para documentos, y el mecanismo de hoja nativa que se
+// probó después para PDF terminaba mostrando la misma hoja que
+// "Compartir" — dos acciones que deben distinguirse). Un <a> apuntando
+// DIRECTO a la URL firmada real (que ya trae Content-Disposition:
+// attachment desde que se crea, ver crearUrlFirmada en
+// lib/documentGen/almacenamiento.ts) deja que el propio navegador
+// maneje la descarga nativa contra ese encabezado — el atributo
+// `download` es solo un apoyo adicional (puede no respetarse en
+// algunos navegadores para URLs cross-origin), la cabecera del
+// servidor es la autoridad real. Usada para los cuatro formatos de
+// documento (PDF/Word/PowerPoint/Excel) — todos reciben esa misma URL
+// con ese mismo encabezado.
+function descargarArchivoDirecto(url: string, nombreSugerido: string) {
   const enlace = document.createElement('a')
   enlace.href = url
   enlace.download = nombreSugerido
@@ -197,39 +188,6 @@ function descargarPdfDirecto(url: string, nombreSugerido: string) {
   document.body.appendChild(enlace)
   enlace.click()
   enlace.remove()
-}
-
-// Descarga REAL de PDF vía hoja nativa (CORRECCIÓN — "el botón de PDF
-// sigue solo abriendo, no descarga"): evidencia real confirmada dos
-// veces en iPhone — ni descargarArchivo (blob) ni descargarPdfDirecto
-// (navegación directa con Content-Disposition:attachment) logran que
-// Safari guarde el PDF; siempre lo abre en su visor integrado (Quick
-// Look), sin importar el mecanismo. Es un límite real de iOS Safari
-// con application/pdf, no algo que un truco más de JS pueda resolver
-// (ver AJUSTE DE NOMENCLATURA arriba). El único camino con evidencia
-// real de guardar el archivo de verdad es la hoja de compartir nativa
-// — "Guardar en Archivos" ahí SÍ produce un archivo real en el
-// dispositivo. Reutiliza el mismo patrón ya probado de compartirArchivo
-// (fetch → Blob → File → navigator.share), pero SOLO con archivos —
-// nunca cae al respaldo de "compartir la URL" (eso no es una
-// descarga) — si el navegador no soporta compartir archivos, el
-// último recurso es abrir el PDF directo (igual que "Ver").
-async function descargarPdfConHojaNativa(url: string, nombreSugerido: string) {
-  const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { canShare?: (data?: ShareData) => boolean }) : null
-  try {
-    if (nav?.canShare) {
-      const res = await fetch(url)
-      const blob = await res.blob()
-      const file = new File([blob], nombreSugerido, { type: blob.type || 'application/pdf' })
-      if (nav.canShare({ files: [file] })) {
-        await nav.share({ files: [file] })
-        return
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') return // el docente canceló la hoja, no es un error
-  }
-  window.open(url, '_blank')
 }
 
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
@@ -343,50 +301,25 @@ function TarjetaDescarga({
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
           {archivos.map((archivo) => (
-            // "Ver PDF" y "Descargar PDF" (CORRECCIÓN AISLADA —
-            // "separar 'Ver PDF' de 'Descargar PDF' y forzar descarga
-            // real en iPhone"): dos botones y dos callbacks distintos,
-            // solo para el pdf de planeación/hoja de evaluación
-            // (único caso con urlVer real, ver agruparArchivosPorDocumento
-            // y las rutas de vista-previa/Storage que lo generan). Un
-            // pdf genérico sin urlVer (FINALIZAR ARCHIVO fuera de
-            // planeación/hoja) sigue mostrando el botón único de
-            // siempre, sin ningún cambio.
-            archivo.tipo === 'pdf' && archivo.tipoDocumento && archivo.urlVer ? (
-              // Planeación / hoja de evaluación — conservan su flujo
-              // propio tal cual, sin ningún cambio.
+            // "Ver PDF" y "Descargar PDF": dos botones y dos callbacks
+            // distintos, solo para PDF — es el único formato con urlVer
+            // real (ver ejecutarHerramientaDocumento). Ambos casos de
+            // PDF (con tipoDocumento de planeación/hoja, o genérico de
+            // FINALIZAR ARCHIVO/convertir_documento) comparten ahora el
+            // mismo par abrirArchivo/descargarArchivoDirecto — antes el
+            // PDF genérico "Ver" no usaba urlVer aunque ya existía
+            // (inconsistencia corregida, ver diagnóstico "UX/
+            // arquitectura de Ver, Descargar y Compartir").
+            archivo.tipo === 'pdf' ? (
               <div key={archivo.tipo} className="flex gap-1.5">
                 <button
-                  onClick={() => window.open(archivo.urlVer, '_blank')}
+                  onClick={() => abrirArchivo(archivo)}
                   className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
                 >
                   👁️ Ver PDF
                 </button>
                 <button
-                  onClick={() => descargarPdfDirecto(archivo.url, archivo.nombre)}
-                  className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
-                >
-                  ⬇️ Descargar PDF
-                </button>
-              </div>
-            ) : archivo.tipo === 'pdf' ? (
-              // PDF genérico (examen, hoja de actividades, FINALIZAR
-              // ARCHIVO...) — ver "el botón de PDF sigue solo
-              // abriendo, no descarga". "Ver" abre el PDF directo
-              // (Safari lo muestra en su visor, que es exactamente lo
-              // que se espera de "ver"). "Descargar" usa la hoja
-              // nativa (descargarPdfConHojaNativa) — único mecanismo
-              // con evidencia real de guardar el archivo de verdad en
-              // iPhone; nunca el mismo botón que "Ver".
-              <div key={archivo.tipo} className="flex gap-1.5">
-                <button
-                  onClick={() => window.open(archivo.url, '_blank')}
-                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
-                >
-                  👁️ Ver PDF
-                </button>
-                <button
-                  onClick={() => descargarPdfConHojaNativa(archivo.url, archivo.nombre)}
+                  onClick={() => descargarArchivoDirecto(archivo.url, archivo.nombre)}
                   className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
                 >
                   ⬇️ Descargar PDF
@@ -395,9 +328,9 @@ function TarjetaDescarga({
             ) : (
               <button
                 key={archivo.tipo}
-                // Word/Excel/PowerPoint y demás formatos — conservan
-                // descargarArchivo tal cual, sin ningún cambio.
-                onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
+                // Word/Excel/PowerPoint y demás formatos — descarga
+                // directa, sin Blob (ver descargarArchivoDirecto).
+                onClick={() => descargarArchivoDirecto(archivo.url, archivo.nombre)}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}
