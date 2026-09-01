@@ -734,6 +734,14 @@ class AsistenteServiceImpl {
     this.conversacionActivaId = null
     this.mensajes = []
     this.documentoActivo = null
+    // CORRECCIÓN — "materialVisualActivo sobrevive a nuevaConversacion()"
+    // (ver auditoría arquitectónica "consolidación del cerebro del Chat
+    // IA"): a diferencia de documentoActivo, este estado nunca se
+    // limpiaba aquí — una imagen generada/editada en la conversación que
+    // se deja podía seguir activa en la conversación nueva y vacía,
+    // haciendo que una frase de edición de imagen en la conversación B
+    // intentara editar la imagen de la conversación A.
+    this.materialVisualActivo = null
     this.limpiarEstadoTransitorio()
     this.notificar()
   }
