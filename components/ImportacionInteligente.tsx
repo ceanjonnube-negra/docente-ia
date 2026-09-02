@@ -40,6 +40,15 @@ const CLASE_TRIGGER_DEFECTO =
 // opciones, sin ningún menú previo.
 const ACCEPT_IMPORTACION = 'image/*,.heic,.heif,.pdf,.doc,.docx,.xlsx,.xls'
 
+// Límite interno silencioso de archivos por lote — el selector nativo de
+// iOS/Android no permite que una página web restrinja visualmente cuántos
+// elementos puede marcar el docente dentro de Fotos/Archivos, así que el
+// límite se aplica aquí, después de la selección: si llegan más de
+// MAX_ARCHIVOS_IMPORTACION, se toman solo los primeros y el resto del
+// flujo continúa exactamente igual, sin ningún aviso — nunca se
+// manipula ni se intenta restringir el picker nativo en sí.
+const MAX_ARCHIVOS_IMPORTACION = 10
+
 // Botón "Importar" (dispara el único <input type="file"> nativo) +
 // análisis automático + revisión final, todo en un solo componente.
 export default function ImportacionInteligente({
@@ -73,7 +82,9 @@ export default function ImportacionInteligente({
     setEstado('analizando')
     setFase('analizando')
 
-    const listos = await convertirHeicSiNecesario(files, (msg) =>
+    const seleccionados = Array.from(files).slice(0, MAX_ARCHIVOS_IMPORTACION)
+
+    const listos = await convertirHeicSiNecesario(seleccionados, (msg) =>
       setError((prev) => (prev ? `${prev} · ` : '') + msg)
     )
 
