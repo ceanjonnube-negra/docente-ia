@@ -1,5 +1,5 @@
 'use client'
-import { Suspense, useState, useEffect } from 'react'
+import { Suspense, useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion, type AlumnoConPosicion } from '@/lib/rosterGrupo'
@@ -81,127 +81,203 @@ function ListaPageContent() {
   const [estados, setEstados] = useState<Record<string, EstadoAsistencia>>({})
   const [guardandoAsistencia, setGuardandoAsistencia] = useState(false)
 
+  // CORRECCIÓN — "remount de ImportacionInteligente durante refresh
+  // rutinario" (ver diseño "consolidación del cerebro del Chat IA" /
+  // diagnóstico de Lista → Importar): cargarTodo() podía dispararse por
+  // más de una vía a la vez (useEffect de montaje + onAuthStateChange
+  // con INITIAL_SESSION/SIGNED_IN/TOKEN_REFRESHED + acciones reales como
+  // importacionCompletada/guardarAsistenciaHoy), y cada disparo ponía
+  // cargando=true, lo que sustituía TODO el árbol (incluido
+  // ImportacionInteligente) por la pantalla "Cargando lista...",
+  // perdiendo cualquier estado interno que ya existiera. Estos 4 refs
+  // resuelven, sin ningún elemento de UI nuevo:
+  // - cargaEnCursoRef: nunca dos ejecuciones reales de cargarTodo() en
+  //   paralelo.
+  // - recargaPendienteRef: una llamada recibida mientras otra ya corre
+  //   nunca se pierde — se coalesce en una única ejecución adicional
+  //   inmediatamente después de que la actual termine.
+  // - cargaInicialHechaRef: solo el primer intento (éxito o error) puede
+  //   mostrar la pantalla completa; todo refresh posterior es silencioso.
+  // - docenteIdCargadoRef: si la identidad realmente cambia, se limpia
+  //   el estado del docente anterior antes de intentar la nueva carga,
+  //   para que un fallo/retraso de esa carga nunca deje visibles datos
+  //   de la sesión previa.
+  const cargaEnCursoRef = useRef(false)
+  const recargaPendienteRef = useRef(false)
+  const cargaInicialHechaRef = useRef(false)
+  const docenteIdCargadoRef = useRef<string | null>(null)
+
   const cargarTodo = async () => {
-    setCargando(true)
+    if (cargaEnCursoRef.current) {
+      recargaPendienteRef.current = true
+      return
+    }
+    cargaEnCursoRef.current = true
+    if (!cargaInicialHechaRef.current) setCargando(true)
+
+    // CORRECCIÓN — "cargaEnCursoRef puede quedar bloqueado
+    // permanentemente si getUser() lanza" (ver revisión final del
+    // diseño de coalescing): getUser() vivía fuera de cualquier
+    // try/finally — un rechazo inesperado (no solo user===null, un
+    // throw real) dejaba cargaEnCursoRef.current=true para siempre,
+    // bloqueando todas las cargas futuras sin ningún aviso. Mismo
+    // criterio de liberación que ya usa el resto de la función: cuenta
+    // como intento resuelto, nunca pierde una recarga pendiente, nunca
+    // reintenta sola una segunda vez.
+    let user: Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']
+    try {
+      user = (await supabase.auth.getUser()).data.user
+    } catch {
+      setCargando(false)
+      cargaInicialHechaRef.current = true
+      cargaEnCursoRef.current = false
+      if (recargaPendienteRef.current) {
+        recargaPendienteRef.current = false
+        cargarTodo()
+      }
+      return
+    }
 
     // Sin sesión válida — nunca mostrar Lista con ceros ni un mensaje
     // ambiguo (ver "CORRECCIÓN CRÍTICA — DOCENTE NO IDENTIFICADO"):
     // redirige directo a iniciar sesión, la misma pantalla que ya
     // existe, sin inventar ningún dato.
-    const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
+      cargaEnCursoRef.current = false
       router.push('/login')
       return
     }
 
-    const { data: grupos, error: errorGrupo } = await supabase
-      .from('grupos')
-      .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
-      .eq('docente_id', user.id)
-      .eq('ciclos_escolares.activo', true)
-      .order('creado_en', { ascending: false })
-      .limit(1)
-
-    if (errorGrupo || !grupos || grupos.length === 0) {
-      setMensaje('No se encontró un grupo activo.')
-      setCargando(false)
-      return
+    // Identidad distinta a la última carga exitosa/intentada (caso raro,
+    // sin recarga completa de página de por medio) — se limpia el
+    // estado del docente anterior y se trata como carga inicial nueva,
+    // para que nunca queden visibles sus datos mientras se resuelve la
+    // nueva sesión.
+    if (docenteIdCargadoRef.current && docenteIdCargadoRef.current !== user.id) {
+      setCargando(true)
+      setGrupo(null)
+      setNombreGrupo('')
+      setAlumnos([])
+      setResumenes({})
+      setEstados({})
+      setMensaje('')
     }
+    docenteIdCargadoRef.current = user.id
 
-    const grupoActivo = grupos[0]
-    setNombreGrupo(grupoActivo.nombre_grupo)
-    setGrupo({
-      id: grupoActivo.id,
-      institucion_id: grupoActivo.institucion_id,
-      docente_id: grupoActivo.docente_id,
-      ciclo_escolar_id: grupoActivo.ciclo_escolar_id,
-    })
+    try {
+      const { data: grupos, error: errorGrupo } = await supabase
+        .from('grupos')
+        .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
+        .eq('docente_id', user.id)
+        .eq('ciclos_escolares.activo', true)
+        .order('creado_en', { ascending: false })
+        .limit(1)
 
-    const { data: alumnosDelGrupo, error: errorAlumnos } = await obtenerRosterConPosicion(supabase, grupoActivo.id)
-
-    if (errorAlumnos) {
-      setMensaje('No se pudo cargar la lista de alumnos.')
-      setCargando(false)
-      return
-    }
-
-    setAlumnos(alumnosDelGrupo)
-
-    const idsAlumnos = alumnosDelGrupo.map(a => a.id)
-    // Zona horaria real del dispositivo — toISOString() siempre da la
-    // fecha en UTC sin importar dónde corra, así que cerca de medianoche
-    // podía buscar el registro de asistencia del día equivocado.
-    const hoy = fechaISOHoy(obtenerZonaHorariaDispositivo())
-
-    const [{ data: incidenciasTodas }, { data: inscripcionesActivas }] = await Promise.all([
-      supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
-      supabase.from('inscripciones').select('id, alumno_id').eq('grupo_id', grupoActivo.id).eq('estatus', 'activo'),
-    ])
-
-    const inscripcionPorAlumno = new Map(
-      (inscripcionesActivas || []).map((i: { id: string; alumno_id: string }) => [i.alumno_id, i.id])
-    )
-    const inscripcionIds = Array.from(inscripcionPorAlumno.values())
-
-    // Todo el historial (no solo hoy) de una sola consulta — de aquí
-    // salen tanto el estado de hoy como el "Asist"/"Faltas" acumulado de
-    // cada tarjeta (ver "Restaurar Asist/Faltas por alumno"): antes esas
-    // dos cifras venían de la tabla legada `asistencias`, que colapsaba
-    // retardo -> presente (ver escribirAsistencia en motorContexto.ts);
-    // asistencia_registro sí distingue los 3 estados, así que un retardo
-    // ya no infla "Asist" ni cuenta como falta.
-    const { data: registrosTodos } = inscripcionIds.length > 0
-      ? await supabase
-          .from('asistencia_registro')
-          .select('inscripcion_id, fecha, estatus')
-          .in('inscripcion_id', inscripcionIds)
-      : { data: [] as { inscripcion_id: string; fecha: string; estatus: string }[] }
-
-    const estatusPorInscripcion = new Map(
-      (registrosTodos || [])
-        .filter((r: { inscripcion_id: string; fecha: string; estatus: string }) => r.fecha === hoy)
-        .map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
-    )
-
-    const nuevosResumenes: Record<string, Resumen> = {}
-    alumnosDelGrupo.forEach(a => {
-      const inscripcionId = inscripcionPorAlumno.get(a.id)
-      const registrosAlumno = (registrosTodos || []).filter(
-        (r: { inscripcion_id: string }) => r.inscripcion_id === inscripcionId
-      )
-      nuevosResumenes[a.id] = {
-        // clasificarEstadoAsistencia (lib/motorContexto.ts): sin fila
-        // hoy -> 'sin_registrar', NUNCA 'presente' por default. Misma
-        // función que usa asistenciaGrupoResumen para el Chat IA.
-        estadoHoy: clasificarEstadoAsistencia(inscripcionId ? estatusPorInscripcion.get(inscripcionId) : null),
-        totalAsistencias: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'presente').length,
-        totalFaltas: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'falta').length,
-        incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
+      if (errorGrupo || !grupos || grupos.length === 0) {
+        setMensaje('No se encontró un grupo activo.')
+        return
       }
-    })
-    setResumenes(nuevosResumenes)
 
-    const nuevosEstados: Record<string, EstadoAsistencia> = {}
-    alumnosDelGrupo.forEach(a => {
-      nuevosEstados[a.id] = nuevosResumenes[a.id]?.estadoHoy ?? 'sin_registrar'
-    })
-    setEstados(nuevosEstados)
+      const grupoActivo = grupos[0]
+      setNombreGrupo(grupoActivo.nombre_grupo)
+      setGrupo({
+        id: grupoActivo.id,
+        institucion_id: grupoActivo.institucion_id,
+        docente_id: grupoActivo.docente_id,
+        ciclo_escolar_id: grupoActivo.ciclo_escolar_id,
+      })
 
-    // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
-    // Lista y Chat IA en el resumen de asistencia") — mismo formato
-    // que el log del servidor en lib/motorContexto.ts
-    // (asistenciaGrupoResumen) y lib/sesionContexto.ts
-    // (obtenerSesionContexto). Compararlos (grupo, grupo_creado_en,
-    // fecha, conteos) para el mismo instante es la forma directa de
-    // confirmar si Lista y el Chat IA están leyendo el mismo registro.
-    // Se ve en la consola del navegador (F12), no en los logs del
-    // servidor. Quitar una vez confirmado en producción.
-    const conteoHoy = contarEstadosAsistencia(Object.values(nuevosEstados))
-    console.log(
-      `[ASISTENCIA][lista] ts=${new Date().toISOString()} fecha=${hoy} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} presentes=${conteoHoy.presentes} faltas=${conteoHoy.faltas} retardos=${conteoHoy.retardos} sinRegistrar=${conteoHoy.sinRegistrar} total=${conteoHoy.total} origen=lista:cargarTodo`
-    )
+      const { data: alumnosDelGrupo, error: errorAlumnos } = await obtenerRosterConPosicion(supabase, grupoActivo.id)
 
-    setCargando(false)
+      if (errorAlumnos) {
+        setMensaje('No se pudo cargar la lista de alumnos.')
+        return
+      }
+
+      setAlumnos(alumnosDelGrupo)
+
+      const idsAlumnos = alumnosDelGrupo.map(a => a.id)
+      // Zona horaria real del dispositivo — toISOString() siempre da la
+      // fecha en UTC sin importar dónde corra, así que cerca de medianoche
+      // podía buscar el registro de asistencia del día equivocado.
+      const hoy = fechaISOHoy(obtenerZonaHorariaDispositivo())
+
+      const [{ data: incidenciasTodas }, { data: inscripcionesActivas }] = await Promise.all([
+        supabase.from('incidencias').select('alumno_id').in('alumno_id', idsAlumnos),
+        supabase.from('inscripciones').select('id, alumno_id').eq('grupo_id', grupoActivo.id).eq('estatus', 'activo'),
+      ])
+
+      const inscripcionPorAlumno = new Map(
+        (inscripcionesActivas || []).map((i: { id: string; alumno_id: string }) => [i.alumno_id, i.id])
+      )
+      const inscripcionIds = Array.from(inscripcionPorAlumno.values())
+
+      // Todo el historial (no solo hoy) de una sola consulta — de aquí
+      // salen tanto el estado de hoy como el "Asist"/"Faltas" acumulado de
+      // cada tarjeta (ver "Restaurar Asist/Faltas por alumno"): antes esas
+      // dos cifras venían de la tabla legada `asistencias`, que colapsaba
+      // retardo -> presente (ver escribirAsistencia en motorContexto.ts);
+      // asistencia_registro sí distingue los 3 estados, así que un retardo
+      // ya no infla "Asist" ni cuenta como falta.
+      const { data: registrosTodos } = inscripcionIds.length > 0
+        ? await supabase
+            .from('asistencia_registro')
+            .select('inscripcion_id, fecha, estatus')
+            .in('inscripcion_id', inscripcionIds)
+        : { data: [] as { inscripcion_id: string; fecha: string; estatus: string }[] }
+
+      const estatusPorInscripcion = new Map(
+        (registrosTodos || [])
+          .filter((r: { inscripcion_id: string; fecha: string; estatus: string }) => r.fecha === hoy)
+          .map((r: { inscripcion_id: string; estatus: string }) => [r.inscripcion_id, r.estatus])
+      )
+
+      const nuevosResumenes: Record<string, Resumen> = {}
+      alumnosDelGrupo.forEach(a => {
+        const inscripcionId = inscripcionPorAlumno.get(a.id)
+        const registrosAlumno = (registrosTodos || []).filter(
+          (r: { inscripcion_id: string }) => r.inscripcion_id === inscripcionId
+        )
+        nuevosResumenes[a.id] = {
+          // clasificarEstadoAsistencia (lib/motorContexto.ts): sin fila
+          // hoy -> 'sin_registrar', NUNCA 'presente' por default. Misma
+          // función que usa asistenciaGrupoResumen para el Chat IA.
+          estadoHoy: clasificarEstadoAsistencia(inscripcionId ? estatusPorInscripcion.get(inscripcionId) : null),
+          totalAsistencias: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'presente').length,
+          totalFaltas: registrosAlumno.filter((r: { estatus: string }) => r.estatus === 'falta').length,
+          incidencias: (incidenciasTodas || []).filter(i => i.alumno_id === a.id).length,
+        }
+      })
+      setResumenes(nuevosResumenes)
+
+      const nuevosEstados: Record<string, EstadoAsistencia> = {}
+      alumnosDelGrupo.forEach(a => {
+        nuevosEstados[a.id] = nuevosResumenes[a.id]?.estadoHoy ?? 'sin_registrar'
+      })
+      setEstados(nuevosEstados)
+
+      // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
+      // Lista y Chat IA en el resumen de asistencia") — mismo formato
+      // que el log del servidor en lib/motorContexto.ts
+      // (asistenciaGrupoResumen) y lib/sesionContexto.ts
+      // (obtenerSesionContexto). Compararlos (grupo, grupo_creado_en,
+      // fecha, conteos) para el mismo instante es la forma directa de
+      // confirmar si Lista y el Chat IA están leyendo el mismo registro.
+      // Se ve en la consola del navegador (F12), no en los logs del
+      // servidor. Quitar una vez confirmado en producción.
+      const conteoHoy = contarEstadosAsistencia(Object.values(nuevosEstados))
+      console.log(
+        `[ASISTENCIA][lista] ts=${new Date().toISOString()} fecha=${hoy} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} presentes=${conteoHoy.presentes} faltas=${conteoHoy.faltas} retardos=${conteoHoy.retardos} sinRegistrar=${conteoHoy.sinRegistrar} total=${conteoHoy.total} origen=lista:cargarTodo`
+      )
+    } finally {
+      setCargando(false)
+      cargaInicialHechaRef.current = true
+      cargaEnCursoRef.current = false
+      if (recargaPendienteRef.current) {
+        recargaPendienteRef.current = false
+        cargarTodo()
+      }
+    }
   }
 
   useEffect(() => {
