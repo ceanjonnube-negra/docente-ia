@@ -76,6 +76,12 @@ export default function ImportacionInteligente({
   }, [])
 
   async function manejarArchivosSeleccionados(files: FileList) {
+    // INSTRUMENTACIÓN TEMPORAL — diagnóstico "frontera picker iOS →
+    // onChange → FileList → handler" (ver PENDIENTE 1, Lista → Importar
+    // sin efecto tras confirmar el picker). Solo timestamp + conteo,
+    // nunca nombres/rutas/contenido. Retirar una vez obtenida la
+    // evidencia real.
+    console.log(`[ARCHIVOS][lista] handler ts=${new Date().toISOString()} count=${files?.length ?? 0}`)
     if (!files || files.length === 0) return
 
     setError(null)
@@ -193,8 +199,14 @@ export default function ImportacionInteligente({
         multiple
         className="hidden"
         onChange={(e) => {
+          // INSTRUMENTACIÓN TEMPORAL — ver comentario en
+          // manejarArchivosSeleccionados. NO se cambia el orden real
+          // (reset antes de consumir files) a propósito: el objetivo es
+          // observar el comportamiento actual, no corregirlo todavía.
+          console.log(`[ARCHIVOS][lista] change ts=${new Date().toISOString()} count=${e.target.files?.length ?? 0}`)
           const files = e.target.files
           e.target.value = ''
+          console.log(`[ARCHIVOS][lista] post_reset ts=${new Date().toISOString()} count=${files?.length ?? 0}`)
           if (files && files.length > 0) manejarArchivosSeleccionados(files)
         }}
       />
