@@ -694,15 +694,8 @@ export default function AsistentePanel() {
   // documento en Archivos no cambia (ver el camino de "un solo
   // archivo" abajo, idéntico al que ya existía).
   const manejarSeleccionAdjunto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    // INSTRUMENTACIÓN TEMPORAL — diagnóstico "frontera picker iOS →
-    // onChange → FileList → handler" (ver PENDIENTE 1). Solo
-    // timestamp + conteo, nunca nombres/rutas/contenido. Retirar una
-    // vez obtenida la evidencia real.
-    console.log(`[ARCHIVOS][chat] change ts=${new Date().toISOString()} count=${e.target.files?.length ?? 0}`)
     const files = Array.from(e.target.files || [])
-    console.log(`[ARCHIVOS][chat] copiados ts=${new Date().toISOString()} count=${files.length}`)
     e.target.value = ''
-    console.log(`[ARCHIVOS][chat] post_reset ts=${new Date().toISOString()} count=${files.length}`)
     if (files.length === 0) return
 
     // Un solo archivo (foto o documento) — mismo mecanismo de

@@ -75,20 +75,20 @@ export default function ImportacionInteligente({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function manejarArchivosSeleccionados(files: FileList) {
-    // INSTRUMENTACIÓN TEMPORAL — diagnóstico "frontera picker iOS →
-    // onChange → FileList → handler" (ver PENDIENTE 1, Lista → Importar
-    // sin efecto tras confirmar el picker). Solo timestamp + conteo,
-    // nunca nombres/rutas/contenido. Retirar una vez obtenida la
-    // evidencia real.
-    console.log(`[ARCHIVOS][lista] handler ts=${new Date().toISOString()} count=${files?.length ?? 0}`)
+  // CORRECCIÓN — "selección de Fotos en iOS no llegaba al análisis"
+  // (ver PENDIENTE 1, evidencia real de Safari Web Inspector): recibe
+  // ya un File[] real, nunca el FileList vivo del input — la copia a
+  // array ahora ocurre en el propio onChange, ANTES de resetear
+  // input.value, porque en iOS Safari ese reset puede vaciar el
+  // FileList original si todavía no se copió su contenido.
+  async function manejarArchivosSeleccionados(files: File[]) {
     if (!files || files.length === 0) return
 
     setError(null)
     setEstado('analizando')
     setFase('analizando')
 
-    const seleccionados = Array.from(files).slice(0, MAX_ARCHIVOS_IMPORTACION)
+    const seleccionados = files.slice(0, MAX_ARCHIVOS_IMPORTACION)
 
     const listos = await convertirHeicSiNecesario(seleccionados, (msg) =>
       setError((prev) => (prev ? `${prev} · ` : '') + msg)
@@ -199,15 +199,16 @@ export default function ImportacionInteligente({
         multiple
         className="hidden"
         onChange={(e) => {
-          // INSTRUMENTACIÓN TEMPORAL — ver comentario en
-          // manejarArchivosSeleccionados. NO se cambia el orden real
-          // (reset antes de consumir files) a propósito: el objetivo es
-          // observar el comportamiento actual, no corregirlo todavía.
-          console.log(`[ARCHIVOS][lista] change ts=${new Date().toISOString()} count=${e.target.files?.length ?? 0}`)
-          const files = e.target.files
+          // CORRECCIÓN — "selección de Fotos en iOS no llegaba al
+          // análisis" (evidencia real: Safari Web Inspector mostró
+          // [ARCHIVOS][lista] change count=1 seguido de post_reset
+          // count=0 — resetear input.value vaciaba el FileList antes
+          // de que se copiara su contenido). Array.from(...) copia los
+          // File reales ANTES del reset, igual que ya hace de forma
+          // segura el input de adjuntos del Chat IA.
+          const files = Array.from(e.target.files || [])
           e.target.value = ''
-          console.log(`[ARCHIVOS][lista] post_reset ts=${new Date().toISOString()} count=${files?.length ?? 0}`)
-          if (files && files.length > 0) manejarArchivosSeleccionados(files)
+          if (files.length > 0) manejarArchivosSeleccionados(files)
         }}
       />
       <button
