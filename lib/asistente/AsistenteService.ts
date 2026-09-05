@@ -842,15 +842,23 @@ class AsistenteServiceImpl {
   // Borra una conversación guardada de forma permanente — si era la
   // activa, la pantalla vuelve a la vista inicial (null), nunca genera
   // sola una conversación nueva: la existencia/ausencia de datos
-  // guardados no debe asignar activeConversationId por sí misma. PASO
-  // 3: intenta borrarla también de Supabase (best-effort — una
-  // conversación que solo existe en localStorage no está ahí, y eso es
-  // normal, no un error real) además del borrado legacy de siempre.
-  async eliminarConversacion(id: string) {
+  // guardados no debe asignar activeConversationId por sí misma.
+  //
+  // FASE V1-B — éxito condicionado, ya NO best-effort: antes, un fallo
+  // remoto (Storage/assets_visuales/red/auth) solo se logueaba y el
+  // borrado local continuaba igual — la conversación desaparecía de la
+  // UI aunque nada se hubiera borrado de verdad (éxito visual falso).
+  // Ahora la limpieza local (localStorage, lista, conversación activa)
+  // solo ocurre SI eliminarConversacionRemota() no lanzó — si falla, el
+  // estado local queda intacto y la conversación sigue disponible para
+  // reintentar. Retorna boolean para que el caller pueda avisar al
+  // docente con el mecanismo de error que ya existe, sin UI nueva.
+  async eliminarConversacion(id: string): Promise<boolean> {
     try {
       await eliminarConversacionRemota(id)
     } catch (e) {
-      console.error('[PERSISTENCIA_REMOTA] No se pudo borrar la conversación en Supabase (puede que nunca haya existido ahí):', e)
+      console.error('[PERSISTENCIA_REMOTA] No se pudo borrar la conversación:', e)
+      return false
     }
     eliminarConversacionGuardada(id)
     this.listaConversaciones = listarConversaciones()
@@ -861,6 +869,7 @@ class AsistenteServiceImpl {
       this.limpiarEstadoTransitorio()
     }
     this.notificar()
+    return true
   }
 
   // Se dispara al cerrar sesión (ver el listener de onAuthStateChange

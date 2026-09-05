@@ -20,6 +20,7 @@ import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { supabase } from '@/lib/supabaseClient'
 import { AsistenteService } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal, detectarHerramientaDocumento, pareceEdicionDeImagenActiva } from '@/lib/asistente/documentos'
 import { esMensajeTextoNormalReutilizable } from '@/lib/asistente/contextoConversacional'
@@ -243,6 +244,49 @@ async function compartirArchivo(archivo: { tipo: string; nombre: string; url: st
   }
 }
 
+// FASE V1-A ("contexto visual persistente del Chat IA" — ciclo de vida
+// sano de assets): la signed URL guardada en el mensaje vence a los 7
+// días (VENCIMIENTO_URL_SEGUNDOS, almacenamiento.ts), pero el asset
+// real (assetId → storage_path en assets_visuales) sigue vivo — la URL
+// nunca fue la fuente de verdad, solo una representación temporal. Si
+// el <img> falla al cargar, se pide UNA signed URL fresca al servidor
+// (que resuelve storage_path a partir del assetId, nunca al revés — el
+// cliente nunca conoce storage_path) y se reemplaza SOLO en memoria;
+// nunca se vuelve a persistir en DB. Un único intento automático por
+// archivo: si la URL fresca también falla, o el archivo no tiene
+// assetId (documentos no-imagen), no se vuelve a intentar — evita
+// cualquier loop.
+function useUrlAssetConRefresco(archivo: { url: string; assetId?: string }) {
+  const [urlActual, setUrlActual] = useState(archivo.url)
+  const intentadoRef = useRef(false)
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sincroniza urlActual con archivo.url si el mensaje detrás de esta tarjeta cambia (no reactividad continua: solo corre cuando cambia el valor real de archivo.url).
+    setUrlActual(archivo.url)
+    intentadoRef.current = false
+  }, [archivo.url])
+
+  const onError = async () => {
+    if (!archivo.assetId || intentadoRef.current) return
+    intentadoRef.current = true
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`/api/assets-visuales/${archivo.assetId}/url`, {
+        headers: { Authorization: `Bearer ${session?.access_token ?? ''}` },
+      })
+      if (!res.ok) return
+      const { url } = await res.json()
+      if (url) setUrlActual(url)
+    } catch {
+      // sin red o el servidor no respondió — no se reintenta más, la
+      // imagen se queda como estaba (rota), igual que se veía antes de
+      // que existiera este mecanismo.
+    }
+  }
+
+  return { urlActual, onError }
+}
+
 // AJUSTE AISLADO — "descarga real en Word y PDF, sin botones
 // redundantes": esta tarjeta ahora recibe TODOS los formatos del MISMO
 // documento lógico (ej. planeación en Word + PDF) como un solo grupo
@@ -290,6 +334,23 @@ function TarjetaDescarga({
   const fecha = formatearFecha(new Date(creadoEn), obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short' })
   const titulo = (principal.tipoDocumento && TITULO_TIPO_DOCUMENTO[principal.tipoDocumento]) || principal.nombre
 
+  // FASE V1-A — solo la imagen principal puede tener assetId (ver
+  // ArchivoGeneradoInfo.assetId: "solo presente cuando tipo==='imagen'")
+  // y solo esas pueden refrescar su URL. `archivosVista` es la MISMA
+  // lista de archivos, con la única entrada de imagen reemplazada por
+  // su versión con urlActual — nunca una segunda copia paralela del
+  // recurso: <img>, Descargar y Compartir de esa imagen leen todos de
+  // aquí. Documentos (Word/PDF/PowerPoint/Excel) pasan sin tocar.
+  const { urlActual, onError } = useUrlAssetConRefresco(principal)
+  const archivosVista = archivos.map((archivo, i) => (i === 0 && archivo.tipo === 'imagen' && archivo.assetId ? { ...archivo, url: urlActual } : archivo))
+  const principalVista = archivosVista[0]
+  // Un asset con assetId siempre puede pedir una URL fresca — el
+  // heurístico de "vencido" (basado en cuánto tiempo pasó, no en si la
+  // URL real sigue viva) solo debe seguir ocultando la vista previa y
+  // las acciones cuando NO hay forma de refrescar (documentos).
+  const puedeRefrescar = principal.tipo === 'imagen' && !!principal.assetId
+  const ocultarPorVencido = vencido && !puedeRefrescar
+
   return (
     <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
       <div className="px-4 py-3 flex items-center gap-2.5">
@@ -307,8 +368,8 @@ function TarjetaDescarga({
             )}
             {esActivo && <span className="text-purple-600 font-semibold">· {principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'}</span>}
           </p>
-          <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
-            {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
+          <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : 'text-green-600'}`}>
+            {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
           </p>
         </div>
       </div>
@@ -317,14 +378,14 @@ function TarjetaDescarga({
           de los demás formatos de documento, aquí SÍ tiene sentido
           mostrar el contenido real dentro de la tarjeta, no solo un
           ícono. */}
-      {!vencido && principal.tipo === 'imagen' && (
+      {!ocultarPorVencido && principal.tipo === 'imagen' && (
         <div className="px-4 pb-2">
-          <img src={principal.url} alt={principal.descripcion || titulo} className="w-full rounded-xl border border-gray-100 object-contain max-h-64" />
+          <img src={principalVista.url} onError={onError} alt={principal.descripcion || titulo} className="w-full rounded-xl border border-gray-100 object-contain max-h-64" />
         </div>
       )}
-      {!vencido && (
+      {!ocultarPorVencido && (
         <div className="px-3 pb-3 space-y-1.5">
-          {archivos.map((archivo) => (
+          {archivosVista.map((archivo) => (
             // "Ver PDF" y "Descargar PDF": dos botones y dos callbacks
             // distintos, solo para PDF — es el único formato con urlVer
             // real (ver ejecutarHerramientaDocumento). Ambos casos de
@@ -361,9 +422,9 @@ function TarjetaDescarga({
               </button>
             )
           ))}
-          {archivos.length === 1 ? (
+          {archivosVista.length === 1 ? (
             <button
-              onClick={() => compartirArchivo(archivos[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+              onClick={() => compartirArchivo(archivosVista[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
               className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
             >
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
@@ -378,7 +439,7 @@ function TarjetaDescarga({
               </button>
               {mostrarCompartir && (
                 <div className="flex gap-1.5 flex-wrap pt-1.5">
-                  {archivos.map((archivo) => (
+                  {archivosVista.map((archivo) => (
                     <button
                       key={archivo.tipo}
                       onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
@@ -444,17 +505,21 @@ function TarjetaResultadoLista({ resultado, onVer }: { resultado: ResultadoEmbeb
 // recorta el cartel); max-h evita una miniatura gigantesca sin crear
 // scroll horizontal (mismo max-w-sm que el resto de tarjetas del
 // Chat). Tocar la miniatura o el botón "Ver" hacen lo mismo.
-function TarjetaResultadoImagen({ archivo, onVer }: { archivo: ArchivoGeneradoInfo; onVer: () => void }) {
+function TarjetaResultadoImagen({ archivo, onVer }: { archivo: ArchivoGeneradoInfo; onVer: (urlActual: string) => void }) {
+  // FASE V1-A — mismo mecanismo que TarjetaDescarga: onVer recibe la
+  // URL YA fresca (si hizo falta refrescarla), así imagenAbierta y
+  // VentanaImagen nunca terminan con la signed URL vencida original.
+  const { urlActual, onError } = useUrlAssetConRefresco(archivo)
   return (
     <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border border-gray-100 rounded-bl-sm overflow-hidden">
-      <button type="button" onClick={onVer} className="block w-full">
-        <img src={archivo.url} alt="Imagen generada" className="w-full max-h-64 object-contain bg-gray-50" />
+      <button type="button" onClick={() => onVer(urlActual)} className="block w-full">
+        <img src={urlActual} onError={onError} alt="Imagen generada" className="w-full max-h-64 object-contain bg-gray-50" />
       </button>
       <div className="px-4 py-2.5 flex items-center justify-between gap-3">
         <p className="text-sm font-bold text-gray-900">Imagen generada</p>
         <button
           type="button"
-          onClick={onVer}
+          onClick={() => onVer(urlActual)}
           className="px-3 py-1.5 rounded-full text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 transition flex-shrink-0"
         >
           Ver
@@ -954,7 +1019,11 @@ export default function AsistentePanel() {
                 >
                   <span className="flex-1 truncate">{c.titulo}</span>
                   <button
-                    onClick={(e) => { e.stopPropagation(); asistente.eliminarConversacion(c.id) }}
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      const ok = await asistente.eliminarConversacion(c.id)
+                      if (!ok) mostrarAvisoAdjunto('No se pudo eliminar la conversación. Intenta de nuevo.')
+                    }}
                     aria-label="Eliminar conversación"
                     className="text-gray-300 hover:text-red-500 text-xs px-2 py-1.5 rounded-lg flex-shrink-0"
                   >
@@ -1012,7 +1081,7 @@ export default function AsistentePanel() {
                 // sería un riesgo real de "no romper", no solo un
                 // ajuste visual — ver AsistenteService.
                 <div className="flex flex-col items-start gap-2 w-full">
-                  <TarjetaResultadoImagen archivo={m.archivo} onVer={() => setImagenAbierta(m.archivo!)} />
+                  <TarjetaResultadoImagen archivo={m.archivo} onVer={(urlActual) => setImagenAbierta({ ...m.archivo!, url: urlActual })} />
                 </div>
               ) : m.rol === 'asistente' && resultado?.tipo === 'lista_filtrada' ? (
                 // Resultado persistente de lista filtrada (ver

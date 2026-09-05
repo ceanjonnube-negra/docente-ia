@@ -452,11 +452,47 @@ export async function listarConversacionesRemoto(): Promise<ConversacionResumen[
   return (data ?? []).map((fila) => ({ id: fila.id, titulo: fila.titulo, actualizadaEn: new Date(fila.actualizado_en).getTime() }))
 }
 
-// Borra la conversación; mensajes_chat se vacía solo por el ON DELETE
-// CASCADE ya creado en la migración — nunca hace falta borrar los
-// mensajes aparte desde aquí.
+// FASE V1-B — ya NO borra conversaciones_chat directamente: los
+// assets_visuales de la conversación (imágenes generadas/editadas) no
+// tienen cascada real hacia Storage ni policy de DELETE propia (ver
+// diagnóstico "contexto visual persistente" — ciclo de vida sano de
+// assets), así que el borrado real vive en un endpoint server-side que
+// limpia Storage + assets_visuales + conversación EN ESE ORDEN, con
+// service_role solo donde hace falta. mensajes_chat se sigue vaciando
+// solo por el ON DELETE CASCADE ya existente, dentro de ese endpoint.
+// Nunca esconde el error: si la respuesta no es 200 (y no es el 404
+// idempotente de abajo), se lanza — el caller
+// (AsistenteService.eliminarConversacion) depende de esto para no
+// limpiar el estado local sin que el borrado remoto haya funcionado.
+//
+// EXCEPCIÓN — 404 se trata como éxito idempotente: el endpoint (RLS de
+// conversaciones_chat) responde 404 tanto si la conversación nunca
+// existió en Supabase como si es de otro docente — nunca distingue
+// ambos casos, por diseño, para no filtrar esa información (mismo
+// criterio que obtenerConversacionRemota). Una conversación que solo
+// vive en localStorage SIGUE siendo un caso real y vigente hoy:
+// crearConversacionRemota() se llama fire-and-forget (ver
+// persistirMensajeRemoto/persistirMensajeAsegurandoConversacion en
+// AsistenteService.ts) y su fallo solo se loguea, nunca bloquea el
+// chat — así que puede no existir fila remota nunca. Si esta llamada
+// da 404, no hay nada remoto PROPIO que borrar (RLS ya garantiza que
+// nunca es de otro docente) — es seguro dejar seguir la limpieza local.
+// 401/500 (auth inválida, fallo real de Storage/DB/red) NO entran aquí
+// y siguen lanzando.
 export async function eliminarConversacionRemota(id: string): Promise<void> {
-  const { error } = await supabase.from('conversaciones_chat').delete().eq('id', id)
-  if (error) throw error
+  const { data: { session } } = await supabase.auth.getSession()
+  const res = await fetch('/api/assets-visuales/eliminar-conversacion', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session?.access_token ?? ''}`,
+    },
+    body: JSON.stringify({ conversacionId: id }),
+  })
+  if (res.status === 404) return
+  if (!res.ok) {
+    const cuerpo = await res.json().catch(() => null)
+    throw new Error(cuerpo?.error || 'No se pudo eliminar la conversación.')
+  }
 }
 
