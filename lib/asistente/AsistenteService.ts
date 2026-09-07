@@ -655,6 +655,38 @@ class AsistenteServiceImpl {
       .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo asegurar la conversación remota para este mensaje:', e))
   }
 
+  // PRECONDICIÓN ESTRUCTURAL V2 (adjuntos de imagen) — deliberadamente
+  // AISLADO de persistirMensajeRemoto/persistirMensajeAsegurandoConversacion
+  // de arriba: esos dos siguen fire-and-forget, sin cambios, para no
+  // arriesgar ninguno de sus 25+ call sites ya en producción. Este
+  // helper es el ÚNICO pensado para ser AWAITED — solo V2 lo necesita,
+  // porque /api/chat va a intentar actualizar esta misma fila de
+  // mensajes_chat (agregar assetId) y esa fila debe existir de verdad
+  // antes de que el turno salga hacia el servidor. Se apoya
+  // directamente en guardarMensajeRemoto (async real, SÍ propaga con
+  // throw) — nunca en persistirMensajeRemoto, que envuelve esa misma
+  // llamada en una cadena .then/.catch que nunca se retorna.
+  //
+  // El boolean refleja EXCLUSIVAMENTE si el UPSERT del mensaje
+  // terminó bien — actualizar el título de la conversación es
+  // best-effort, igual que en persistirMensajeRemoto, y nunca decide
+  // el resultado: la garantía que V2 necesita es "la fila del mensaje
+  // existe", no "el título ya se refrescó".
+  private async persistirMensajeRemotoConfirmado(conversacionId: string, mensaje: MensajeConversacion): Promise<boolean> {
+    try {
+      await guardarMensajeRemoto(conversacionId, mensaje)
+    } catch (e) {
+      console.error('[V2_ADJUNTO] mensaje_remoto_confirmado=false', e)
+      return false
+    }
+    // El mensaje YA quedó garantizado en este punto — lo de abajo nunca
+    // puede bajar el resultado a false, y su propio .catch() evita
+    // cualquier rechazo sin manejar.
+    actualizarConversacionRemota(conversacionId, { titulo: derivarTitulo(this.mensajes) })
+      .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo actualizar el título de la conversación:', e))
+    return true
+  }
+
   // Persiste materialVisualActivo también en Supabase (ver
   // "recuperación robusta de generación de imágenes — persistencia
   // remota"): ANTES solo se guardaba en localStorage (guardarAhora),
@@ -1782,8 +1814,24 @@ class AsistenteServiceImpl {
     this.generando = true
     this.notificar()
     // PASO 3 — fire-and-forget: nunca retrasa el envío a Claude por la
-    // latencia de Supabase (ver persistirMensajeRemoto).
-    this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
+    // latencia de Supabase (ver persistirMensajeRemoto). V2 (adjuntos
+    // de imagen durables): SOLO una fotografía real (image/*) necesita
+    // la garantía de persistirMensajeRemotoConfirmado — mensajeUsuario.
+    // imagen también puede ser un PDF/documento adjunto para OCR (ver
+    // el fallback de comprimirImagen en AsistentePanel.tsx), y V2
+    // excluye explícitamente ese caso: agregarle el await aquí solo
+    // sumaría latencia a un turno que jamás va a crear un asset.
+    // mensajeUsuarioIdConfirmado viaja null si no hay foto, si el
+    // adjunto no es imagen, o si el guardado confirmado falló — en
+    // todos esos casos el turno de IA sigue igual, solo que el futuro
+    // pipeline V2 server-side no intentará crear ningún asset.
+    let mensajeUsuarioIdConfirmado: string | null = null
+    if (mensajeUsuario.imagen && mensajeUsuario.imagen.tipo.startsWith('image/')) {
+      const persistido = await this.persistirMensajeRemotoConfirmado(this.conversacionActivaId, mensajeUsuario)
+      if (persistido) mensajeUsuarioIdConfirmado = mensajeUsuario.id
+    } else {
+      this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
+    }
 
     try {
       // FASE 2A (ver "contrato del router semántico unificado +
@@ -1794,10 +1842,11 @@ class AsistenteServiceImpl {
       // el maestro. Esta fase NO ejecuta nada con esa decisión — solo
       // viaja y se clasifica, ver route.ts.
       const referentesContextuales = aMetadataReferentes(resolverReferentesDisponibles(this.mensajes, this.documentoActivo, this.materialVisualActivo))
-      // Cast puntual (as any) SOLO para poder pasar debugRequestId sin
-      // ampliar la interfaz MotorConversacional — es instrumentación
-      // temporal, se retira junto con el resto de este bloque.
-      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId)
+      // MotorConversacional.enviarTexto ya declara debugRequestId/
+      // referentesContextuales/conversacionId/mensajeUsuarioId como
+      // parámetros opcionales al final (ver tipos.ts) — ya no hace
+      // falta ningún cast para pasarlos.
+      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId, mensajeUsuarioIdConfirmado)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
@@ -1821,14 +1870,31 @@ class AsistenteServiceImpl {
     this.mensajes = [...this.mensajes, mensajeUsuario]
     this.turnoAbierto = null
     this.notificar()
-    // PASO 3B — la respuesta del asistente para este mensaje sigue el
-    // MISMO motor/pipeline que el texto normal, así que ya queda
-    // cubierta por la persistencia de 'respuesta-final' (ver
-    // manejarEventoMotor) — aquí solo hace falta el mensaje del docente.
-    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
+    // V2 (adjuntos de imagen durables) — mismo criterio que el flujo
+    // singular: varias fotos también necesitan la garantía real de
+    // persistirMensajeRemotoConfirmado, nunca el fire-and-forget de
+    // persistirMensajeAsegurandoConversacion, para el MISMO mensaje.
+    // conversacionId (capturado en un const local, nunca reasignado)
+    // ya está garantizado en la práctica aquí — este método solo se
+    // llama desde enviarMensaje() después de resolver la conversación
+    // activa (ver ese método) — por eso no hace falta un segundo
+    // obtenerOCrearConversacionActivaRemota(). Pero nunca se asume a
+    // ciegas con un non-null assertion: si inesperadamente fuera null,
+    // se omite la persistencia confirmada (sin crear otra conversación
+    // ni lanzar error al docente) y el turno sigue igual, solo que
+    // mensajeUsuarioIdConfirmado queda null.
+    const conversacionId = this.conversacionActivaId
+    let mensajeUsuarioIdConfirmado: string | null = null
+    if (conversacionId) {
+      const persistido = await this.persistirMensajeRemotoConfirmado(conversacionId, mensajeUsuario)
+      if (persistido) mensajeUsuarioIdConfirmado = mensajeUsuario.id
+    }
 
     try {
-      await (await this.motorDeContenido())?.enviarTexto(texto, undefined, undefined, false, adjuntos)
+      // MotorConversacional.enviarTexto ya declara conversacionId/
+      // mensajeUsuarioId como parámetros opcionales al final (ver
+      // tipos.ts) — ya no hace falta ningún cast para pasarlos.
+      await (await this.motorDeContenido())?.enviarTexto(texto, undefined, undefined, false, adjuntos, undefined, undefined, undefined, undefined, undefined, undefined, conversacionId, mensajeUsuarioIdConfirmado)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }

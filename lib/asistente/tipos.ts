@@ -10,6 +10,7 @@
 
 import type { FiltroLista } from '../listaFiltrada'
 import type { DecisionOrquestador } from './decisionOrquestador'
+import type { ReferenteContextualMetadata } from './contextoConversacional'
 
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
@@ -483,7 +484,7 @@ export type DesuscribirFn = () => void
 // adjuntos del Chat IA — ver RFC-CHAT-ADJUNTOS-003. `tipo` es el MIME
 // real del archivo; `nombreArchivo` solo se usa para mostrarlo en la
 // vista previa y el historial, nunca para decidir cómo procesarlo.
-export type AdjuntoImagen = { base64: string; tipo: string; nombreArchivo?: string }
+export type AdjuntoImagen = { base64: string; tipo: string; nombreArchivo?: string; assetId?: string }
 
 // Instrucción de finalizar el documento activo como archivo real (ver
 // TipoHerramienta en lib/asistente/documentos.ts) — solo la implementa
@@ -524,7 +525,7 @@ export interface MotorConversacional {
   // que este turno es "regenerar la imagen activa con este prompt ya
   // combinado", acción mecánica que nunca pasa por Claude (mismo
   // criterio que finalizarArchivo).
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }): Promise<void>
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

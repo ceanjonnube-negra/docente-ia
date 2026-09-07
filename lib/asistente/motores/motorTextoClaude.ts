@@ -176,7 +176,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -373,6 +373,15 @@ export class MotorTextoClaude implements MotorConversacional {
           // servidor demuestra ownership antes de usarlo — ver
           // obtenerConversacionIdAutorizada en app/api/chat/route.ts.
           conversacionId: conversacionId || null,
+          // V2 (adjuntos de imagen durables) — metadata estructural
+          // top-level, igual criterio que conversacionId: nunca dentro
+          // de `contexto`/prompt/historial/referentes, cero tokens
+          // adicionales. null cuando no hay adjunto o cuando el
+          // guardado remoto confirmado del mensaje falló (ver
+          // AsistenteService.persistirMensajeRemotoConfirmado) — en
+          // ese caso el servidor, cuando exista el pipeline V2, no
+          // debe intentar crear ningún asset.
+          mensajeUsuarioId: mensajeUsuarioId || null,
         }),
         signal: this.controlador.signal,
       })
