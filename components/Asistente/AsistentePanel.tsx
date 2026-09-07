@@ -1021,6 +1021,7 @@ export default function AsistentePanel() {
                   <button
                     onClick={async (e) => {
                       e.stopPropagation()
+                      if (!window.confirm('¿Eliminar esta conversación?')) return
                       const ok = await asistente.eliminarConversacion(c.id)
                       if (!ok) mostrarAvisoAdjunto('No se pudo eliminar la conversación. Intenta de nuevo.')
                     }}
