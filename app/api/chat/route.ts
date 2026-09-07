@@ -36,6 +36,8 @@ import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from '@/lib/documentGen/parseContenido'
 import { resolverNivelEducativo } from '@/lib/documentGen/nivelEducativo'
 import { obtenerPerfilNivel } from '@/lib/documentGen/perfilNivelEducativo'
+import { subirBuffer, rutaArchivo, eliminarArchivo, BUCKET_IMAGENES_GENERADAS } from '@/lib/documentGen/almacenamiento'
+import { guardarAssetVisual } from '@/lib/assetsVisuales'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -420,7 +422,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId } = await req.json()
   // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
   // estructural top-level, NUNCA transportada dentro de `contexto`
   // (ese sigue siendo el string de construirInstrucciones, nunca un
@@ -430,6 +432,16 @@ export async function POST(req: NextRequest) {
   // resuelve más abajo, y solo cuando de verdad hace falta (ver
   // obtenerConversacionIdAutorizada).
   const conversacionIdSolicitada = typeof conversacionId === 'string' && conversacionId.trim() ? conversacionId.trim() : null
+  // PERSISTENCIA DURABLE DE ADJUNTOS VISUALES (V2) — mismo criterio
+  // exacto que conversacionIdSolicitada: metadata estructural top-level,
+  // nunca dentro de `contexto`/prompt/historial/referentes. Solo se
+  // normaliza la FORMA aquí — el cliente ya garantiza que este id solo
+  // viaja cuando el mensaje con foto quedó persistido remotamente (ver
+  // AsistenteService.persistirMensajeRemotoConfirmado), pero el
+  // servidor nunca confía en eso a ciegas: la pertenencia real de este
+  // mensaje se demuestra más abajo con supabaseUser + RLS antes de
+  // usarlo para nada (ver bloque V2 después de obtenerConversacionIdAutorizada).
+  const mensajeUsuarioIdSolicitado = typeof mensajeUsuarioId === 'string' && mensajeUsuarioId.trim() ? mensajeUsuarioId.trim() : null
   // FASE 2A (ver "contrato del router semántico unificado + transporte
   // de referentes contextuales") — SEGURIDAD (ver "auditoría 11"): el
   // cliente puede mandar CUALQUIER COSA en este campo, así que nunca
@@ -718,6 +730,196 @@ export async function POST(req: NextRequest) {
   // explícito, nunca una degradación silenciosa.
   if (accessToken && !autenticacion?.ok) {
     return respuestaTexto('Inicia sesión para cargar tu grupo.')
+  }
+
+  // PERSISTENCIA DURABLE DE ADJUNTOS VISUALES (V2 CORE) — cuando el
+  // docente adjunta una o varias FOTOS (nunca un PDF/documento para
+  // OCR, ver el filtro tipo.startsWith('image/') de abajo), se suben a
+  // Storage privado y se registran en assets_visuales, vinculadas a la
+  // conversación real — y el mismo mensaje YA persistido en
+  // mensajes_chat (ver AsistenteService.persistirMensajeRemotoConfirmado)
+  // se actualiza para incluir el assetId real. Esto es persistencia
+  // ADICIONAL, nunca una precondición para que Claude vea la imagen:
+  // Vision/OCR más abajo sigue usando exactamente los mismos
+  // imagenBase64/imagenesBase64 tal como llegaron, sin importar si este
+  // bloque tiene éxito, falla parcialmente, o ni siquiera se ejecuta.
+  // Envuelto en su propio try/catch — ningún fallo de aquí puede
+  // convertirse en "Error al conectar con la IA" para un turno que de
+  // otra forma sería válido.
+  //
+  // GATE (costo cero en turnos sin imagen real): antes de tocar
+  // supabaseUser/conversación/mensaje, se exige al menos una imagen
+  // image/* real. Ni conversacionIdSolicitada ni mensajeUsuarioIdSolicitado
+  // se resuelven contra Supabase todavía en este punto — eso ocurre
+  // solo dentro del bloque, y solo si el gate ya pasó.
+  const adjuntosV2Candidatos: { index: number; base64: string; tipo: string; nombreArchivo?: string }[] = []
+  if (typeof imagenBase64 === 'string' && imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')) {
+    adjuntosV2Candidatos.push({ index: 0, base64: imagenBase64, tipo: imagenTipo, nombreArchivo: typeof nombreArchivo === 'string' ? nombreArchivo : undefined })
+  } else if (Array.isArray(imagenesBase64)) {
+    // Índice ORIGINAL preservado a propósito (ver punto 6/11 del diseño
+    // aprobado) — un elemento no-imagen simplemente no entra a la
+    // lista, pero los que sí entran conservan su posición real dentro
+    // de imagenesBase64, para que el UPDATE final nunca desplace un
+    // assetId al índice equivocado de contenido.imagenes[].
+    imagenesBase64.forEach((img: unknown, index: number) => {
+      if (typeof img !== 'object' || img === null) return
+      const { base64, tipo } = img as Record<string, unknown>
+      if (typeof base64 === 'string' && base64 && typeof tipo === 'string' && tipo.startsWith('image/')) {
+        adjuntosV2Candidatos.push({ index, base64, tipo })
+      }
+    })
+  }
+
+  if (adjuntosV2Candidatos.length > 0 && supabaseUser && userId && mensajeUsuarioIdSolicitado) {
+    // Capturados en const locales, no reasignables — evita depender de
+    // que TypeScript narrowe supabaseUser/userId dentro de funciones
+    // anidadas definidas más abajo en este mismo bloque.
+    const supabaseUserV2 = supabaseUser
+    const userIdV2 = userId
+    try {
+      const conversacionIdActualV2 = await obtenerConversacionIdAutorizada()
+      if (conversacionIdActualV2) {
+        // OWNERSHIP DEL MENSAJE EXACTO — nunca se confía en
+        // mensajeUsuarioIdSolicitado tal cual (ver diseño aprobado,
+        // punto 5): debe existir, pertenecer a ESTA conversación ya
+        // autorizada, y ser un mensaje de rol 'usuario'. Cualquier
+        // desviación (otra conversación del mismo docente incluida)
+        // deja mensajeAutorizadoV2 en null y el bloque completo se
+        // omite sin tocar nada.
+        const { data: mensajeAutorizadoV2, error: errorMensajeV2 } = await supabaseUserV2
+          .from('mensajes_chat')
+          .select('id, contenido, conversacion_id, rol')
+          .eq('id', mensajeUsuarioIdSolicitado)
+          .eq('conversacion_id', conversacionIdActualV2)
+          .eq('rol', 'usuario')
+          .maybeSingle()
+
+        if (errorMensajeV2 || !mensajeAutorizadoV2) {
+          console.log('[V2_ADJUNTO] mensaje_autorizado=false')
+        } else {
+          // Extensión segura derivada del MIME real — nunca del nombre
+          // de archivo que mande el cliente (ver punto 10 del diseño
+          // aprobado: un nombre de archivo jamás determina la ruta).
+          const extensionDesdeMime = (mime: string): string => {
+            const sub = (mime.split('/')[1] || 'jpg').toLowerCase().split('+')[0]
+            const limpio = sub.replace(/[^a-z0-9]/g, '')
+            return limpio || 'jpg'
+          }
+
+          // Storage → assets_visuales, en ese orden estricto, para UNA
+          // imagen candidata. Nunca lanza — cualquier fallo se traduce
+          // en { assetId: null } para ese índice, sin afectar a las
+          // demás (ver punto 14 del diseño aprobado).
+          const persistirUnaImagenV2 = async (item: { index: number; base64: string; tipo: string; nombreArchivo?: string }): Promise<{ index: number; assetId: string | null }> => {
+            let storagePath: string | null = null
+            // Clasificación técnica de la etapa — nunca el error en sí
+            // (ver "logs V2 requieren sanitización"): el propio mensaje
+            // de un error de Storage/Postgres puede ecoar rutas, valores
+            // o metadata de la fila. Solo se registra EN QUÉ ETAPA
+            // ocurrió, nunca el detalle.
+            let etapaV2: 'decode' | 'storage_upload' | 'asset_insert' = 'decode'
+            try {
+              const buffer = Buffer.from(item.base64, 'base64')
+              const extension = extensionDesdeMime(item.tipo)
+              storagePath = rutaArchivo(userIdV2, `adjunto-${item.index}.${extension}`)
+              etapaV2 = 'storage_upload'
+              await subirBuffer(supabaseRAG, storagePath, buffer, item.tipo, BUCKET_IMAGENES_GENERADAS)
+              etapaV2 = 'asset_insert'
+              const assetGuardado = await guardarAssetVisual(supabaseUserV2, {
+                docenteId: userIdV2,
+                conversacionId: conversacionIdActualV2,
+                tipo: 'imagen',
+                formatoArchivo: extension,
+                // Texto veraz y libre, nunca un enum encubierto — jamás
+                // se compara este valor en código para inferir origen.
+                promptOriginal: item.nombreArchivo || 'Imagen adjunta del docente',
+                storagePath,
+                tamanoBytes: buffer.length,
+                grado: null,
+                grupo: null,
+                versionAnteriorId: null,
+              })
+              return { index: item.index, assetId: assetGuardado.id }
+            } catch {
+              console.error(`[V2_ADJUNTO] fallo_persistencia_imagen index=${item.index} etapa=${etapaV2}`)
+              // Si el archivo alcanzó a subirse pero guardarAssetVisual
+              // falló después, limpieza best-effort con el helper ya
+              // existente — nunca lanza, nunca bloquea el resultado.
+              if (storagePath) await eliminarArchivo(supabaseRAG, storagePath, BUCKET_IMAGENES_GENERADAS).catch(() => null)
+              return { index: item.index, assetId: null }
+            }
+          }
+
+          // CONCURRENCIA LIMITADA — lotes de máximo 4, secuenciales
+          // entre sí, Promise.allSettled dentro de cada lote (ver punto
+          // 10 del diseño aprobado). Una sola imagen usa exactamente
+          // esta misma función, en un lote de 1.
+          const TAMANO_LOTE_V2 = 4
+          const resultadosV2: { index: number; assetId: string | null }[] = []
+          for (let i = 0; i < adjuntosV2Candidatos.length; i += TAMANO_LOTE_V2) {
+            const lote = adjuntosV2Candidatos.slice(i, i + TAMANO_LOTE_V2)
+            const resultadosLote = await Promise.allSettled(lote.map((item) => persistirUnaImagenV2(item)))
+            for (const r of resultadosLote) {
+              if (r.status === 'fulfilled') resultadosV2.push(r.value)
+            }
+          }
+
+          const huboExito = resultadosV2.some((r) => r.assetId)
+          if (huboExito) {
+            // MERGE SEGURO — parte del contenido REAL ya recuperado en
+            // el SELECT autorizado de arriba (nunca uno fabricado, ver
+            // punto 12 del diseño aprobado). Un índice fallido nunca se
+            // toca; base64/tipo/nombreArchivo/cualquier otro campo
+            // existente se conserva intacto.
+            const contenidoOriginalV2 = (mensajeAutorizadoV2.contenido ?? {}) as Record<string, unknown>
+            const contenidoNuevoV2: Record<string, unknown> = { ...contenidoOriginalV2 }
+
+            const imagenOriginalV2 = contenidoOriginalV2.imagen as Record<string, unknown> | undefined
+            const resultadoIndice0 = resultadosV2.find((r) => r.index === 0)
+            if (imagenOriginalV2 && resultadoIndice0?.assetId) {
+              contenidoNuevoV2.imagen = { ...imagenOriginalV2, assetId: resultadoIndice0.assetId }
+            }
+
+            const imagenesOriginalesV2 = contenidoOriginalV2.imagenes
+            if (Array.isArray(imagenesOriginalesV2)) {
+              const imagenesNuevasV2 = [...imagenesOriginalesV2]
+              for (const r of resultadosV2) {
+                if (r.assetId && r.index >= 0 && r.index < imagenesNuevasV2.length) {
+                  imagenesNuevasV2[r.index] = { ...(imagenesNuevasV2[r.index] as Record<string, unknown>), assetId: r.assetId }
+                }
+              }
+              contenidoNuevoV2.imagenes = imagenesNuevasV2
+            }
+
+            const { data: filaActualizadaV2, error: errorUpdateV2 } = await supabaseUserV2
+              .from('mensajes_chat')
+              .update({ contenido: contenidoNuevoV2 })
+              .eq('id', mensajeUsuarioIdSolicitado)
+              .eq('conversacion_id', conversacionIdActualV2)
+              .eq('rol', 'usuario')
+              .select('id')
+              .maybeSingle()
+
+            if (errorUpdateV2 || !filaActualizadaV2) {
+              // Nunca message/details/hint/payload — pueden ecoar
+              // contenido o metadata de la fila. Solo el código corto
+              // de error si existe, o una razón estática cuando el
+              // UPDATE simplemente no afectó ninguna fila (RLS/mismatch,
+              // no un error real de Postgres).
+              const codigoUpdateV2 = typeof errorUpdateV2?.code === 'string' ? errorUpdateV2.code : 'sin_codigo'
+              console.error(`[V2_ADJUNTO] mensaje_actualizado=false ${errorUpdateV2 ? `code=${codigoUpdateV2}` : 'reason=sin_fila'}`)
+            } else {
+              console.log(`[V2_ADJUNTO] mensaje_actualizado=true assets=${resultadosV2.filter((r) => r.assetId).length}`)
+            }
+          }
+        }
+      }
+    } catch {
+      // Mensaje estático a propósito — este catch envuelve todo el
+      // pipeline (incluida la lectura de `contenido`), así que no hay
+      // garantía de qué traería el objeto de excepción.
+      console.error('[V2_ADJUNTO] fallo_inesperado_pipeline')
+    }
   }
 
   // REGENERAR IMAGEN (ver "Implementar en Docente IA la capacidad de
