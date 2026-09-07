@@ -420,7 +420,16 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId } = await req.json()
+  // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
+  // estructural top-level, NUNCA transportada dentro de `contexto`
+  // (ese sigue siendo el string de construirInstrucciones, nunca un
+  // objeto — de ahí que contexto?.conversacionId SIEMPRE fuera
+  // undefined). Solo se normaliza la FORMA aquí; la propiedad —que
+  // esta conversación sea realmente del docente autenticado— se
+  // resuelve más abajo, y solo cuando de verdad hace falta (ver
+  // obtenerConversacionIdAutorizada).
+  const conversacionIdSolicitada = typeof conversacionId === 'string' && conversacionId.trim() ? conversacionId.trim() : null
   // FASE 2A (ver "contrato del router semántico unificado + transporte
   // de referentes contextuales") — SEGURIDAD (ver "auditoría 11"): el
   // cliente puede mandar CUALQUIER COSA en este campo, así que nunca
@@ -657,6 +666,37 @@ export async function POST(req: NextRequest) {
   const supabaseUser = autenticacion?.ok ? autenticacion.supabase : null
   const userId = autenticacion?.ok ? autenticacion.user.id : null
 
+  // OWNERSHIP LAZY de conversacionIdSolicitada (V1-C) — nunca se
+  // confía en el UUID tal cual lo manda el cliente: se demuestra
+  // contra conversaciones_chat con el cliente AUTENTICADO del docente
+  // (RLS conversaciones_chat_select_propio, docente_id = auth.uid()),
+  // nunca con supabaseRAG/service_role. Deliberadamente LAZY (nunca
+  // eager): conversacionIdSolicitada viaja en prácticamente todos los
+  // turnos, incluidos los que jamás generan/editan un asset visual —
+  // un SELECT por turno normal sería una consulta desperdiciada en el
+  // hot path del chat. Cacheada por request (promesaConversacionAutorizada)
+  // para que los sitios que sí lo necesitan (varios pueden coexistir en
+  // el mismo request, ej. CASO 3 más abajo) compartan el mismo único
+  // SELECT en vez de repetirlo. Fail-closed: id inexistente, de otro
+  // docente, o cualquier fallo de la consulta → null — la generación
+  // de la imagen puede seguir igual, simplemente sin vincularse a
+  // ninguna conversación no demostrada.
+  let promesaConversacionAutorizada: Promise<string | null> | null = null
+  async function obtenerConversacionIdAutorizada(): Promise<string | null> {
+    if (!conversacionIdSolicitada || !supabaseUser) return null
+    if (!promesaConversacionAutorizada) {
+      promesaConversacionAutorizada = (async () => {
+        const { data, error } = await supabaseUser
+          .from('conversaciones_chat')
+          .select('id')
+          .eq('id', conversacionIdSolicitada)
+          .maybeSingle()
+        return error || !data ? null : (data.id as string)
+      })()
+    }
+    return promesaConversacionAutorizada
+  }
+
   // Indicadores seguros de diagnóstico (nunca tokens, claves ni cookies
   // completas) — permite confirmar en los logs de producción, sin
   // exponer nada sensible, en qué punto se pierde el contexto si vuelve
@@ -692,9 +732,12 @@ export async function POST(req: NextRequest) {
     console.log(`[IMAGEN_EXPORT] userId=${userId} — regeneración solicitada (assetIdAnterior=${regenerarImagen.assetIdAnterior})`)
     try {
       const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
-      const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+      // tipo==='imagen' siempre en esta rama — SIEMPRE puede terminar en
+      // guardarAssetVisual (ver ejecutarGeneracionImagen), así que
+      // ownership se demuestra antes de usarlo.
+      const conversacionIdActual = await obtenerConversacionIdAutorizada()
       const archivo = await conReintento(
-        () => ejecutarHerramientaDocumento('imagen', mensaje, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, regenerarImagen.assetIdAnterior),
+        () => ejecutarHerramientaDocumento('imagen', mensaje, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdActual, regenerarImagen.assetIdAnterior),
         'regenerar-imagen'
       )
       const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
@@ -811,7 +854,13 @@ export async function POST(req: NextRequest) {
         // para escribir ahí. supabaseRAG (service role) sí — causa raíz
         // real confirmada en producción: "new row violates row-level
         // security policy" en la etapa de subida.
-        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null, null), 'generar-archivo')
+        // tipoHerramientaSolicitado puede ser 'imagen' directo, o 'word'/
+        // 'pdf' con ilustraciones embebidas ([[IMAGEN:...]] — ver
+        // ejecutarHerramientaDocumento) — cualquiera de los dos puede
+        // terminar en guardarAssetVisual, así que ownership se demuestra
+        // antes de usarlo.
+        const conversacionIdActual = await obtenerConversacionIdAutorizada()
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdActual, null), 'generar-archivo')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
         return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
@@ -1301,7 +1350,16 @@ export async function POST(req: NextRequest) {
             userId,
             zonaHoraria,
             canal: channel === 'voice' ? 'voice' : 'text',
-            conversacionId: typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null,
+            // ALCANCE V1-C: este dispatcher (correcciones_alumno) nunca
+            // llega a guardarAssetVisual — V1-C solo vincula assets
+            // visuales, no amplía qué conversacionId reciben otros
+            // consumos históricos. Semántica efectiva idéntica a la de
+            // antes de este cambio (contexto?.conversacionId, un string
+            // que siempre daba undefined → null). Una corrección real de
+            // trazabilidad para correcciones_alumno, si algún día hace
+            // falta, es una fase aparte con su propia semántica de
+            // ownership — no se adelanta aquí.
+            conversacionId: null,
           })
       marcarTelemetria('tool:execution_finished')
       if (diagnosticoCurpActivo) {
@@ -2357,7 +2415,12 @@ Grado: [grado] | Grupo: [grupo]
       if (texto && (esImagenSuelta || esDocumentoFormal(texto))) {
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
         const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
-        const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+        // esImagenSuelta/formatosAGenerar con ilustraciones embebidas —
+        // ambos caminos de abajo pueden terminar en guardarAssetVisual,
+        // así que ownership se demuestra una sola vez aquí (cacheada:
+        // ambos usos comparten el mismo SELECT, ver
+        // obtenerConversacionIdAutorizada).
+        const conversacionIdActual = await obtenerConversacionIdAutorizada()
 
         // Varios formatos pedidos en el MISMO mensaje ("...Genera
         // también Word y PDF.", ver "fallo crítico: guía ilustrada
@@ -2384,7 +2447,7 @@ Grado: [grado] | Grupo: [grupo]
         if (!esImagenSuelta && (formatosAGenerar.includes('word') || formatosAGenerar.includes('pdf'))) {
           const descripciones = extraerDescripcionesDeImagen(analizarContenido(texto)).slice(0, MAX_IMAGENES_POR_DOCUMENTO)
           if (descripciones.length > 0) {
-            imagenesPreGeneradas = await generarImagenesParaDocumento(descripciones, perfil, supabaseRAG, userId, supabaseUser, conversacionId, estiloVisualNivelEducativo)
+            imagenesPreGeneradas = await generarImagenesParaDocumento(descripciones, perfil, supabaseRAG, userId, supabaseUser, conversacionIdActual, estiloVisualNivelEducativo)
           }
         }
 
@@ -2395,7 +2458,7 @@ Grado: [grado] | Grupo: [grupo]
             // ejecutarGeneracionImagen cuando tipo==='imagen' (ver
             // "mejora de calidad visual de imágenes escolares"); word/
             // pdf/powerpoint/excel lo ignoran, sin ningún cambio.
-            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionId, null, imagenesPreGeneradas, estiloVisualNivelEducativo, mensaje || undefined), `generar-archivo-combinado-${tipo}`)
+            conReintento(() => ejecutarHerramientaDocumento(tipo, texto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdActual, null, imagenesPreGeneradas, estiloVisualNivelEducativo, mensaje || undefined), `generar-archivo-combinado-${tipo}`)
           )
         )
         const primario = resultados[0]

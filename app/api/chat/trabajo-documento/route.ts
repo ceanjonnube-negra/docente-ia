@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
   // lo interpreta, el único generador/editor real sigue siendo
   // /api/chat (ver REGENERAR IMAGEN en route.ts, que ya valida su forma
   // antes de usarlo).
-  const { mensaje, historial, contexto, institucionId, userId: userIdCliente, accessToken, zonaHoraria, requestId, regenerarImagen } = body
+  const { mensaje, historial, contexto, institucionId, userId: userIdCliente, accessToken, zonaHoraria, requestId, regenerarImagen, conversacionId } = body
 
   if (typeof requestId !== 'string' || !requestId) {
     return NextResponse.json({ error: 'Falta requestId.' }, { status: 400 })
@@ -84,11 +84,22 @@ export async function POST(req: NextRequest) {
   const auth = await autenticarRequestApi(accessToken)
   if (!auth.ok) return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
 
-  const conversacionId = typeof contexto?.conversacionId === 'string' ? contexto.conversacionId : null
+  // Metadata estructural top-level (nunca dentro de `contexto`, ver
+  // comentario de arriba sobre regenerarImagen) — este endpoint SOLO la
+  // normaliza sintácticamente y la reenvía tal cual en el fetch interno
+  // de abajo; nunca la usa para nada propio de este endpoint (ver
+  // ALCANCE V1-C: este id todavía NO pasó por ownership — esa
+  // autorización real, RLS + supabaseUser, ocurre exclusivamente en
+  // /api/chat, único lugar que puede terminar en guardarAssetVisual).
+  const conversacionIdSolicitada = typeof conversacionId === 'string' && conversacionId.trim() ? conversacionId.trim() : null
 
   let trabajo: Awaited<ReturnType<typeof crearOTrabajoRecuperarPorRequestId>>['trabajo']
   try {
-    const resultado = await crearOTrabajoRecuperarPorRequestId(auth.supabase, auth.user.id, conversacionId, requestId)
+    // ALCANCE V1-C: bookkeeping de trabajos_documento queda EXACTAMENTE
+    // como antes (null) — V1-C no amplía qué se asocia a un trabajo,
+    // solo corrige el transporte/autorización de conversacionId para
+    // assets_visuales, que ocurre más abajo en /api/chat.
+    const resultado = await crearOTrabajoRecuperarPorRequestId(auth.supabase, auth.user.id, null, requestId)
     trabajo = resultado.trabajo
     // Idempotencia real (doble tap, reconexión que reenvía el mismo
     // POST): si el trabajo ya existía, NUNCA se vuelve a arrancar la
@@ -121,6 +132,12 @@ export async function POST(req: NextRequest) {
           accessToken,
           zonaHoraria,
           regenerarImagen,
+          // Reenviado TAL CUAL al body interno de /api/chat — este
+          // endpoint nunca es la autoridad de ownership (ver comentario
+          // arriba); /api/chat es el único lugar que demuestra
+          // pertenencia real (RLS + supabaseUser) antes de usarlo para
+          // guardarAssetVisual.
+          conversacionId: conversacionIdSolicitada,
         }),
       })
       if (!res.ok) {

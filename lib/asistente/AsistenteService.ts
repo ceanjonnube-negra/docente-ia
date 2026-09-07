@@ -1797,7 +1797,7 @@ class AsistenteServiceImpl {
       // Cast puntual (as any) SOLO para poder pasar debugRequestId sin
       // ampliar la interfaz MotorConversacional — es instrumentación
       // temporal, se retira junto con el resto de este bloque.
-      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales)
+      await ((await this.motorDeContenido()) as any)?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
@@ -2361,7 +2361,7 @@ ${instruccion}`
 
     const requestId = generarRequestIdTrabajo()
     try {
-      const { trabajoId } = await iniciarTrabajoDocumento(textoParaModelo, this.contexto, historialPrevio, requestId, null, regenerarImagen)
+      const { trabajoId } = await iniciarTrabajoDocumento(textoParaModelo, this.contexto, historialPrevio, requestId, null, regenerarImagen, this.conversacionActivaId)
       this.trabajoDocumentoActivoId = trabajoId
       guardarTrabajoActivo({ trabajoId, requestId, conversacionId: this.conversacionActivaId })
       this.notificar()

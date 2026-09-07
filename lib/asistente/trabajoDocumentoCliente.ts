@@ -85,7 +85,16 @@ export async function iniciarTrabajoDocumento(
   // {assetIdAnterior} que ya usa motorTextoClaude.ts/AsistenteService.ts
   // para el camino síncrono, nunca un tipo nuevo. Ausente para
   // documentos e imágenes NUEVAS — mismo comportamiento de siempre.
-  regenerarImagen?: { assetIdAnterior: string }
+  regenerarImagen?: { assetIdAnterior: string },
+  // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
+  // estructural top-level, nunca dentro de `contexto` (ver comentario
+  // en el body de abajo). A esta altura del flujo (enviarMensaje ya
+  // esperó obtenerOCrearConversacionActivaRemota) siempre es un id real
+  // ya confirmado en conversaciones_chat, o null en casos que no pasan
+  // por ese flujo. El servidor demuestra ownership antes de usarlo —
+  // nunca se confía en este valor tal cual (ver
+  // obtenerConversacionIdAutorizada en app/api/chat/route.ts).
+  conversacionId?: string | null
 ): Promise<{ trabajoId: string; estado: string }> {
   const { user, session, perfil } = await obtenerPerfilYSesion()
   if (!user || !session?.access_token) throw new Error('Sesión no encontrada.')
@@ -108,6 +117,9 @@ export async function iniciarTrabajoDocumento(
       zonaHoraria: obtenerZonaHorariaDispositivo(),
       requestId,
       regenerarImagen: regenerarImagen || undefined,
+      // Nunca dentro de `contexto` (ese sigue siendo el string de
+      // construirInstrucciones) — metadata estructural aparte.
+      conversacionId: conversacionId || null,
     }),
   })
   if (!res.ok) {

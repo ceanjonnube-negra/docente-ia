@@ -176,7 +176,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[]) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -367,6 +367,12 @@ export class MotorTextoClaude implements MotorConversacional {
           // trabajo async, voz sin candidatos) — mismo comportamiento
           // de siempre para esas rutas.
           referentesContextuales: referentesContextuales?.length ? referentesContextuales : undefined,
+          // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) —
+          // metadata estructural top-level, nunca dentro de `contexto`
+          // (ese sigue siendo el string de construirInstrucciones). El
+          // servidor demuestra ownership antes de usarlo — ver
+          // obtenerConversacionIdAutorizada en app/api/chat/route.ts.
+          conversacionId: conversacionId || null,
         }),
         signal: this.controlador.signal,
       })
