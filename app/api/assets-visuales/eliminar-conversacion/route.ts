@@ -18,9 +18,11 @@
 // Por eso los assets a borrar se resuelven de DOS fuentes:
 //   FUENTE A — vínculo directo: assets_visuales.conversacion_id = id.
 //   FUENTE B — fallback histórico: los assetId estructurados que ya
-//     viajan en mensajes_chat.contenido.archivo/archivos de ESA
-//     conversación (mensajes_chat.conversacion_id sí es una columna
-//     real, not null, siempre correcta — nunca tuvo este problema).
+//     viajan en mensajes_chat.contenido.archivo/archivos (archivos
+//     generados/editados por la IA) O contenido.imagen/imagenes
+//     (fotos subidas por el docente, ver V2) de ESA conversación
+//     (mensajes_chat.conversacion_id sí es una columna real, not null,
+//     siempre correcta — nunca tuvo este problema).
 // Deliberadamente NO se usa version_anterior_id como fuente de
 // ownership: demuestra línea de versionado, no pertenencia a ESTA
 // conversación. Un asset creado por una conversación B contaminada por
@@ -74,11 +76,13 @@ async function eliminarObjetoVerificado(sb: SupabaseClient, storagePath: string)
 }
 
 // FUENTE B (fallback histórico) — extrae, de forma defensiva, los
-// assetId estructurados de UN mensaje ya persistido. Nunca confía en
-// storage_path/url del propio mensaje (pueden venir de una signed URL
-// vieja) — solo el assetId, que después se re-resuelve contra
-// assets_visuales con el cliente autenticado. Ignora null/undefined/
-// strings vacíos/valores que no sean string.
+// assetId estructurados de UN mensaje ya persistido, tanto de
+// archivo/archivos (generado/editado por la IA) como de imagen/imagenes
+// (subido por el docente, ver V2). Nunca confía en storage_path/url del
+// propio mensaje (pueden venir de una signed URL vieja) — solo el
+// assetId, que después se re-resuelve contra assets_visuales con el
+// cliente autenticado. Ignora null/undefined/strings vacíos/valores que
+// no sean string.
 function extraerAssetIdsDeMensaje(contenido: unknown): string[] {
   if (!contenido || typeof contenido !== 'object') return []
   const c = contenido as Record<string, unknown>
@@ -90,6 +94,24 @@ function extraerAssetIdsDeMensaje(contenido: unknown): string[] {
   const archivos = c.archivos
   if (Array.isArray(archivos)) {
     for (const item of archivos) {
+      const assetId = (item as Record<string, unknown> | null)?.assetId
+      if (typeof assetId === 'string' && assetId) ids.push(assetId)
+    }
+  }
+
+  // EXTENSIÓN V2 (adjuntos de imagen subidos por el docente) — mismo
+  // criterio exacto que archivo/archivos de arriba, nunca una fuente
+  // nueva: contenido.imagen/imagenes es donde V2 persiste el assetId
+  // real de una foto adjunta (ver app/api/chat/route.ts, bloque
+  // "PERSISTENCIA DURABLE DE ADJUNTOS VISUALES"). Se une al MISMO
+  // arreglo que ya se deduplica en el caller (idsDeMensajes, un Set) —
+  // nunca una Fuente C aparte.
+  const imagen = c.imagen as Record<string, unknown> | undefined
+  if (imagen && typeof imagen.assetId === 'string' && imagen.assetId) ids.push(imagen.assetId)
+
+  const imagenes = c.imagenes
+  if (Array.isArray(imagenes)) {
+    for (const item of imagenes) {
       const assetId = (item as Record<string, unknown> | null)?.assetId
       if (typeof assetId === 'string' && assetId) ids.push(assetId)
     }
