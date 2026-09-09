@@ -185,10 +185,19 @@ export async function POST(req: NextRequest) {
       // Re-resolución con el cliente AUTENTICADO (RLS) — un assetId
       // ajeno (mensaje corrupto o de otra cuenta) simplemente no
       // devuelve fila; nunca se usa service_role para esto.
+      // conversacionId ya fue validado arriba contra conversaciones_chat.id
+      // (columna uuid) — si no fuera un uuid válido, esa consulta ya habría
+      // fallado antes de llegar aquí, así que es seguro interpolarlo en el
+      // filtro .or() de PostgREST sin riesgo de inyección de sintaxis.
+      // Ownership real de Fuente B: un assetId ajeno (de otra conversación
+      // del mismo docente) NO debe resolver fila aquí solo por pasar RLS de
+      // docente_id — se exige además que la fila sea de ESTA conversación o
+      // que sea un asset histórico sin conversacion_id (null).
       const { data: resueltos, error: errorResueltos } = await supabase
         .from('assets_visuales')
-        .select('id, storage_path')
+        .select('id, storage_path, conversacion_id')
         .in('id', idsSoloDeMensajes)
+        .or(`conversacion_id.eq.${conversacionId},conversacion_id.is.null`)
       if (errorResueltos) {
         return NextResponse.json({ error: 'No se pudieron resolver los archivos históricos de la conversación.' }, { status: 500 })
       }
