@@ -1613,7 +1613,11 @@ class AsistenteServiceImpl {
 
   async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
     const limpio = texto.trim()
-    if (!limpio || this.generando) return
+    // Una imagen (o varias) sola, sin texto, ES un turno válido — ver
+    // auditoría "imagen sin texto" + pruebas runtime (Anthropic acepta
+    // content solo con bloque(s) image). Solo se bloquea cuando no hay
+    // absolutamente nada que enviar: ni texto ni adjunto(s).
+    if (this.generando || (!limpio && !adjunto && (!adjuntos || adjuntos.length === 0))) return
 
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
     // roundtrip de comparación de CURP sin depender de vercel logs") —

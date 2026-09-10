@@ -841,7 +841,13 @@ export default function AsistentePanel() {
     // está vacío — enviar en ese momento mandaría el texto SIN las
     // fotos que el docente acaba de elegir. Se bloquea el envío hasta
     // que termine (comprimiendo se apaga solo, ver manejarSeleccionAdjunto).
-    if (!texto || comprimiendo) return
+    // Una imagen (o varias) ES contenido válido por sí sola — igual que
+    // cualquier chat multimodal moderno, el maestro puede adjuntar una
+    // foto y enviarla sin escribir nada (ver auditoría "imagen sin
+    // texto" + pruebas runtime: Anthropic acepta content solo con
+    // bloque(s) image). Solo se bloquea cuando de verdad no hay NADA
+    // que enviar (ni texto ni adjuntos) — nunca se inventa un prompt.
+    if (comprimiendo || (!texto && adjuntosPendientes.length === 0)) return
     setInput('')
     const adjuntos = adjuntosPendientes
     setAdjuntosPendientes([])
@@ -1551,7 +1557,7 @@ export default function AsistentePanel() {
                 : asistente.modoVoz ? '🛑' : '🎤'}
             </span>
           </button>
-          <button type="button" onClick={enviar} disabled={asistente.generando || !!comprimiendo} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
+          <button type="button" onClick={enviar} disabled={asistente.generando || !!comprimiendo || (!input.trim() && adjuntosPendientes.length === 0)} className="w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-500 text-white rounded-full flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 flex-shrink-0">
             ↑
           </button>
         </div>

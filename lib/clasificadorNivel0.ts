@@ -837,6 +837,18 @@ export async function clasificarNivel0(
   // contextual siempre null, ver normalizarClasificacionNivel0).
   referentesContextuales: ReferenteContextualMetadata[] = []
 ): Promise<ClasificacionNivel0> {
+  // BYPASS — imagen(es) sin texto (ver auditoría "imagen sin texto" +
+  // pruebas runtime): Anthropic RECHAZA con 400 "user messages must
+  // have non-empty content" un mensaje cuyo content sea el string
+  // vacío — exactamente lo que esta función mandaría más abajo
+  // (`content: mensaje`) si se le dejara seguir con mensaje==''. Sin
+  // texto no hay nada que clasificar de todos modos (el clasificador
+  // es estrictamente de texto — nunca ve la imagen en sí, ver
+  // tieneImagenAdjunta abajo), así que se evita la llamada real (cero
+  // tokens, cero error de proveedor) y se usa el MISMO FALLBACK crudo
+  // que ya devuelve el catch de abajo ante cualquier otro fallo —
+  // nunca una estructura nueva, mismo criterio exacto.
+  if (!mensaje.trim()) return FALLBACK
   // Fast path determinista — microfase 1 (ver "auditoría técnica y
   // diseño — fast path determinista"). Se comprueba ANTES de construir
   // o enviar cualquier petición a Anthropic: si hay match, la función

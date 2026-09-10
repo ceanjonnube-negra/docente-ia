@@ -1089,7 +1089,12 @@ export async function POST(req: NextRequest) {
   // su resultado — se disparan de inmediato en paralelo con él en vez de
   // esperar a que termine para empezar recién ahí (eran ~2 llamadas de
   // red seguidas antes de llegar siquiera a Claude).
-  const contextoRAGPromise = buscarContextoRAG(mensaje, institucionId || null)
+  // Sin texto (turno de imagen sola) no hay consulta semántica real que
+  // buscar — se evita la llamada a OpenAI embeddings (aceptaría input
+  // vacío en runtime, pero sería semánticamente inútil) y se resuelve
+  // directo al mismo resultado que ya usa la función cuando no hay
+  // contexto que aportar (ver buscarContextoRAG: `return ''`).
+  const contextoRAGPromise = mensaje.trim() ? buscarContextoRAG(mensaje, institucionId || null) : Promise.resolve('')
   const procesoActivoPromise = userId
     ? Promise.resolve(
         supabaseRAG
@@ -2565,10 +2570,20 @@ Grado: [grado] | Grupo: [grupo]
                 { type: 'text' as const, text: mensaje }
               ]
             : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
-              ? [
-                  { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } },
-                  { type: 'text' as const, text: mensaje }
-                ]
+              // Una foto sola sin texto ES un turno válido (ver auditoría
+              // "imagen sin texto" + pruebas runtime): Anthropic acepta
+              // content solo con bloque image, pero RECHAZA con 400 un
+              // bloque text vacío ("text content blocks must be
+              // non-empty") — nunca se manda ese bloque cuando mensaje
+              // está vacío, y nunca se inventa un prompt sintético.
+              ? mensaje.trim()
+                ? [
+                    { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } },
+                    { type: 'text' as const, text: mensaje }
+                  ]
+                : [
+                    { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } }
+                  ]
               : mensajeConDocumento
       },
     ],
