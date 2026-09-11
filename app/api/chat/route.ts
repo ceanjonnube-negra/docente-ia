@@ -36,8 +36,8 @@ import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor
 import { extraerTitulo, analizarContenido, extraerDescripcionesDeImagen } from '@/lib/documentGen/parseContenido'
 import { resolverNivelEducativo } from '@/lib/documentGen/nivelEducativo'
 import { obtenerPerfilNivel } from '@/lib/documentGen/perfilNivelEducativo'
-import { subirBuffer, rutaArchivo, eliminarArchivo, BUCKET_IMAGENES_GENERADAS } from '@/lib/documentGen/almacenamiento'
-import { guardarAssetVisual } from '@/lib/assetsVisuales'
+import { subirBuffer, rutaArchivo, eliminarArchivo, descargarBuffer, BUCKET_IMAGENES_GENERADAS } from '@/lib/documentGen/almacenamiento'
+import { guardarAssetVisual, obtenerAssetVisualPorId } from '@/lib/assetsVisuales'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -1354,8 +1354,87 @@ export async function POST(req: NextRequest) {
   // más abajo — nunca se reconstruye por heurística sobre historialMensajes.
   let esCandidataConvertirDocumento = false
   let referenteIdParaConvertirDocumento: string | null = null
+  // V3-A (ver "referente visual histórico") — mismo criterio que las
+  // variables de arriba: declaradas antes del try para que la
+  // resolución real (más abajo, después del bloque de Nivel0, ANTES
+  // de la llamada conversacional) y la construcción final de `content`
+  // (mucho más abajo) puedan leerlas. `esCandidataReutilizarImagenSubida`
+  // es true SOLO cuando Nivel0 ya resolvió
+  // capacidad_contextual==='reutilizar_imagen_subida' con
+  // confianza_contextual==='alta', referente_elegido.tipo==='imagen' Y
+  // ese referente, re-validado contra referentesContextuales (nunca
+  // confiado a secas), tiene origen==='mensaje' — nunca
+  // 'material_visual_activo' (eso es editar_imagen, capacidad
+  // completamente distinta, nunca tocada aquí). `imagenesHistoricasResueltas`
+  // arranca vacío y SOLO se llena si la resolución real (assetId real,
+  // ownership fuerte por conversacion_id, descarga de Storage) tiene
+  // éxito — cualquier fallo en cualquier paso la deja vacía, fail-closed,
+  // el turno sigue exactamente igual que si esta fase no existiera.
+  type BloqueImagenHistorica = {
+    type: 'image'
+    source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string }
+  }
+  let esCandidataReutilizarImagenSubida = false
+  let referenteMensajeIdParaImagenHistorica: string | null = null
+  let imagenesHistoricasResueltas: BloqueImagenHistorica[] = []
   if (supabaseUser && userId && sesion) {
     try {
+      // V3-A — DESCUBRIMIENTO SERVER-SIDE del candidato visual
+      // histórico (ver "referente visual histórico"). Nunca confía en
+      // nada que mande el cliente — un único SELECT contra
+      // mensajes_chat de ESTA conversación ya autorizada
+      // (obtenerConversacionIdAutorizada, mismo mecanismo V1-C que ya
+      // usa V2, ningún ownership nuevo). Gate de costo: solo se intenta
+      // cuando el turno actual NO trae imagen propia (la imagen actual
+      // siempre gana, ver más abajo en la construcción de `content` —
+      // esto además evita el SELECT por completo cuando ni falta hace).
+      // Ventana acotada (nunca ilimitada) de los mensajes de usuario
+      // más recientes — se expone SOLO metadata mínima a Nivel0 (id +
+      // tipo + origen, ver ReferenteContextualMetadata): NUNCA el
+      // assetId, NUNCA el contenido, NUNCA bytes — Nivel0 solo necesita
+      // saber que "existe una foto reciente" para poder clasificar si
+      // el mensaje actual la referencia; la resolución real (assetId,
+      // ownership fuerte, Storage) ocurre DESPUÉS, solo si Nivel0 la
+      // selecciona con confianza alta (ver más abajo, después de este
+      // bloque). Nunca decide nada por sí solo — mismo criterio que ya
+      // usa el cliente con documentoActivo/materialVisualActivo.
+      if (!tieneImagenAdjunta) {
+        try {
+          const conversacionIdParaReferenteVisual = await obtenerConversacionIdAutorizada()
+          if (conversacionIdParaReferenteVisual) {
+            const { data: mensajesRecientesConImagen } = await supabaseUser
+              .from('mensajes_chat')
+              .select('id, contenido')
+              .eq('conversacion_id', conversacionIdParaReferenteVisual)
+              .eq('rol', 'usuario')
+              .order('creado_en', { ascending: false })
+              .limit(30)
+            const candidatoVisualHistorico = (mensajesRecientesConImagen ?? []).find((m) => {
+              const c = m.contenido as Record<string, unknown> | null
+              if (!c || typeof c !== 'object') return false
+              const imagenSingular = c.imagen as Record<string, unknown> | undefined
+              if (imagenSingular && typeof imagenSingular.assetId === 'string' && imagenSingular.assetId) return true
+              const imagenes = c.imagenes
+              if (Array.isArray(imagenes)) {
+                return imagenes.some((img) => typeof (img as Record<string, unknown>)?.assetId === 'string' && !!(img as Record<string, unknown>).assetId)
+              }
+              return false
+            })
+            if (
+              candidatoVisualHistorico &&
+              !referentesContextuales.some((r) => r.tipo === 'imagen' && r.id === candidatoVisualHistorico.id)
+            ) {
+              referentesContextuales.push({ id: candidatoVisualHistorico.id, tipo: 'imagen', origen: 'mensaje' })
+            }
+          }
+        } catch {
+          // Nunca el objeto Error completo (ver "logs V3-A requieren
+          // sanitización") — puede traer mensaje del SDK, ruta u otra
+          // metadata de Supabase/Storage. Solo la razón técnica corta.
+          console.error('[REUTILIZAR_IMAGEN_SUBIDA] descubrimiento=false motivo=error_db')
+        }
+      }
+
       // Últimos turnos reales — solo para que el clasificador pueda
       // resolver una confirmación breve ("sí") como continuación de su
       // propia pregunta "¿Te refieres a...?" del turno anterior (ver
@@ -1489,6 +1568,32 @@ export async function POST(req: NextRequest) {
       if (esCandidataConvertirDocumento) {
         referenteIdParaConvertirDocumento = clasificacion.referente_elegido!.id
         console.log('[CONVERTIR_DOCUMENTO] candidato=true')
+      }
+      // V3-A — activación SOLO si Nivel0 seleccionó el candidato visual
+      // histórico con confianza alta Y ese candidato, re-validado
+      // contra referentesContextuales (nunca contra lo que diga
+      // clasificacion.referente_elegido a secas — mismo patrón exacto
+      // que ya usa esCandidataAShortCircuitCliente en
+      // decisionOrquestador.ts), es realmente de origen 'mensaje'
+      // (foto subida por el docente) — nunca 'material_visual_activo'
+      // (esa combinación pertenece exclusivamente a editar_imagen,
+      // nunca reutilizada aquí). Solo guarda el candidato — la
+      // resolución real (assetId, ownership fuerte, Storage) ocurre
+      // más abajo, después del bloque de Nivel0, igual que
+      // convertir_documento.
+      if (
+        clasificacion.capacidad_contextual === 'reutilizar_imagen_subida' &&
+        clasificacion.confianza_contextual === 'alta' &&
+        clasificacion.referente_elegido?.tipo === 'imagen'
+      ) {
+        const referenteVisualReal = referentesContextuales.find(
+          (r) => r.tipo === 'imagen' && r.id === clasificacion.referente_elegido!.id
+        )
+        if (referenteVisualReal && referenteVisualReal.origen === 'mensaje') {
+          esCandidataReutilizarImagenSubida = true
+          referenteMensajeIdParaImagenHistorica = referenteVisualReal.id
+          console.log('[REUTILIZAR_IMAGEN_SUBIDA] candidato=true')
+        }
       }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
       // nombre del alumno ni el valor propuesto crudo (ver TrazaDiagnosticoCurp).
@@ -2019,6 +2124,143 @@ export async function POST(req: NextRequest) {
     }
   }
   // --- Fin Clasificador de Nivel 0 ---
+
+  // V3-A (ver "referente visual histórico") — RESOLUCIÓN REAL, solo si
+  // Nivel0 seleccionó el candidato con confianza alta (ver arriba). A
+  // diferencia de convertir_documento (más abajo), esto NUNCA retorna
+  // aquí mismo — el turno sigue siendo una respuesta conversacional
+  // normal; solo se le agregan, más abajo en la construcción de
+  // `content`, la(s) imagen(es) histórica(s) real(es) ya resueltas
+  // aquí. Cualquier fallo en cualquier paso deja
+  // imagenesHistoricasResueltas vacío y el turno continúa exactamente
+  // igual que si esta fase no existiera — fail-closed, nunca inventa
+  // contenido, nunca usa el texto del assistant anterior como
+  // sustituto.
+  if (esCandidataReutilizarImagenSubida && referenteMensajeIdParaImagenHistorica && supabaseUser) {
+    try {
+      const conversacionIdParaResolucion = await obtenerConversacionIdAutorizada()
+      if (conversacionIdParaResolucion) {
+        // RE-CONSULTA server-side por el id EXACTO que Nivel0 eligió —
+        // nunca se confía en el candidato descubierto antes (arriba):
+        // se vuelve a leer el contenido REAL persistido de ESE
+        // mensaje, en ESA conversación, de rol 'usuario', con el
+        // cliente AUTENTICADO del docente (RLS) — mismo patrón exacto
+        // que ya usa 2B2B2 (convertir_documento) unas líneas abajo.
+        const { data: mensajeReferente, error: errorMensajeReferente } = await supabaseUser
+          .from('mensajes_chat')
+          .select('id, rol, contenido')
+          .eq('id', referenteMensajeIdParaImagenHistorica)
+          .eq('conversacion_id', conversacionIdParaResolucion)
+          .eq('rol', 'usuario')
+          .maybeSingle()
+
+        if (errorMensajeReferente || !mensajeReferente) {
+          console.log('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=mensaje_no_encontrado')
+        } else {
+          const contenidoReferente = (mensajeReferente.contenido ?? {}) as Record<string, unknown>
+          const assetIdsReferente: string[] = []
+          const imagenSingularRef = contenidoReferente.imagen as Record<string, unknown> | undefined
+          if (imagenSingularRef && typeof imagenSingularRef.assetId === 'string' && imagenSingularRef.assetId) {
+            assetIdsReferente.push(imagenSingularRef.assetId)
+          }
+          const imagenesRef = contenidoReferente.imagenes
+          if (Array.isArray(imagenesRef)) {
+            for (const img of imagenesRef) {
+              const assetId = (img as Record<string, unknown> | null)?.assetId
+              if (typeof assetId === 'string' && assetId) assetIdsReferente.push(assetId)
+            }
+          }
+
+          // Máximo 4 imágenes por mensaje histórico (mismo tope que ya
+          // usa V2 para un mensaje con varias fotos). Más de 4
+          // assetId en un mismo mensaje es una inconsistencia (dato
+          // histórico corrupto/anómalo — V2 nunca produce esto en
+          // condiciones normales) — se invalida el referente COMPLETO
+          // en vez de truncar en silencio a 4: un slice silencioso
+          // convertiría "5 de 5" en un falso "4 de 4", violando el
+          // mismo principio de fail-closed por mensaje completo (ver
+          // corrección aprobada) que ya protege contra fallas de
+          // ownership/formato/Storage. Orden original conservado
+          // (nunca se reordena). Un único mensaje visual histórico
+          // como referente (nunca se mezclan imágenes de mensajes
+          // históricos distintos).
+          const MAXIMO_IMAGENES_HISTORICAS = 4
+          if (assetIdsReferente.length === 0) {
+            console.log('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=sin_assetId')
+          } else if (assetIdsReferente.length > MAXIMO_IMAGENES_HISTORICAS) {
+            console.log('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=demasiados_assets')
+          } else {
+            const assetIdsLimitados = assetIdsReferente
+            const bloquesResueltos: BloqueImagenHistorica[] = []
+            // FAIL-CLOSED POR MENSAJE COMPLETO (ver corrección aprobada
+            // — nunca por-asset): el referente visual es UN mensaje
+            // histórico completo, no fotos sueltas. Si cualquiera de
+            // sus assetId esperados falla (inexistente, conversación
+            // distinta, formato no soportado, Storage), el mensaje
+            // ENTERO se invalida — nunca se manda a Claude un
+            // subconjunto parcial que podría hacerle creer que ve el
+            // mensaje completo cuando en realidad falta una fotografía.
+            // `break` en cuanto falla el primero: no tiene sentido
+            // seguir descargando el resto si el resultado final de
+            // todas formas se va a descartar completo.
+            let resolucionCompleta = true
+            for (const assetId of assetIdsLimitados) {
+              const asset = await obtenerAssetVisualPorId(supabaseUser, assetId)
+              // OWNERSHIP FUERTE (ver diseño aprobado V3-A): conversacion_id
+              // DEBE coincidir exactamente con la conversación actual —
+              // nunca null. La compatibilidad histórica de aceptar
+              // conversacion_id=null es válida para borrado (V1-B),
+              // nunca para reutilizar visualmente un asset aquí.
+              if (!asset || asset.conversacionId !== conversacionIdParaResolucion) {
+                console.log(`[REUTILIZAR_IMAGEN_SUBIDA] asset_rechazado motivo=${!asset ? 'inexistente' : 'conversacion_no_coincide'}`)
+                resolucionCompleta = false
+                break
+              }
+              const mediaType = `image/${asset.formatoArchivo}`
+              if (mediaType !== 'image/jpeg' && mediaType !== 'image/png' && mediaType !== 'image/gif' && mediaType !== 'image/webp') {
+                console.log('[REUTILIZAR_IMAGEN_SUBIDA] asset_rechazado motivo=formato_no_soportado')
+                resolucionCompleta = false
+                break
+              }
+              try {
+                // Storage privado, sin RLS propia (ver diseño ya
+                // establecido de V2/regeneración de imagen) — mismo
+                // cliente service_role (supabaseRAG) que ya usa ese
+                // flujo para leer/escribir el mismo bucket, SOLO
+                // después de que el ownership ya quedó demostrado
+                // arriba con el cliente autenticado.
+                const buffer = await descargarBuffer(supabaseRAG, asset.storagePath, BUCKET_IMAGENES_GENERADAS)
+                bloquesResueltos.push({
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: buffer.toString('base64') },
+                })
+              } catch {
+                // Nunca el objeto Error ni storagePath (ver "logs V3-A
+                // requieren sanitización") — solo la razón técnica corta.
+                console.error('[REUTILIZAR_IMAGEN_SUBIDA] asset_rechazado motivo=error_storage')
+                resolucionCompleta = false
+                break
+              }
+            }
+            // 0 de N o N de N — nunca un resultado parcial. No hace
+            // falta deshacer nada en Storage (nunca se escribió nada
+            // aquí, solo lecturas) — solo se descartan en memoria los
+            // bloques ya descargados si el conjunto no quedó completo.
+            if (resolucionCompleta && bloquesResueltos.length === assetIdsLimitados.length) {
+              imagenesHistoricasResueltas = bloquesResueltos
+              console.log(`[REUTILIZAR_IMAGEN_SUBIDA] resuelto=true assets=${bloquesResueltos.length}`)
+            } else {
+              console.log('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=mensaje_incompleto')
+            }
+          }
+        }
+      }
+    } catch {
+      // Nunca el objeto Error completo (ver "logs V3-A requieren
+      // sanitización") — solo la razón técnica corta.
+      console.error('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=error_resolucion')
+    }
+  }
 
   // FASE 2B2B2 (ver "convertir_documento desde referente textual") —
   // ejecución determinista PRE-conversacional: si todas las
@@ -2615,7 +2857,21 @@ Grado: [grado] | Grupo: [grupo]
                 : [
                     { type: 'image' as const, source: { type: 'base64' as const, media_type: imagenTipo as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: imagenBase64 } }
                   ]
-              : mensajeConDocumento
+              : imagenesHistoricasResueltas.length > 0
+                // V3-A — referente visual histórico ya validado y
+                // resuelto arriba (ver [REUTILIZAR_IMAGEN_SUBIDA]).
+                // Nunca reconstruye un turno histórico falso, nunca
+                // reintroduce user(content='') en el historial (esa
+                // sanitización, ya cerrada, sigue intacta) — esto es
+                // contenido del turno ACTUAL: el texto REAL que
+                // escribió el maestro junto a la(s) imagen(es) real(es)
+                // recuperada(s) de Storage privado. Mismo criterio ya
+                // establecido de nunca mandar un bloque text vacío a
+                // Anthropic.
+                ? mensaje.trim()
+                  ? [...imagenesHistoricasResueltas, { type: 'text' as const, text: mensaje }]
+                  : imagenesHistoricasResueltas
+                : mensajeConDocumento
       },
     ],
   }

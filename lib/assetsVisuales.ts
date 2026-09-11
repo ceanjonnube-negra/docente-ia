@@ -38,6 +38,14 @@ export type AssetVisualGuardado = {
   version: number
   promptOriginal: string
   storagePath: string
+  // V3-A (ver "referente visual histórico") — agregados de forma
+  // aditiva: ningún consumidor existente que solo lea
+  // id/version/promptOriginal/storagePath se ve afectado. Necesarios
+  // para que app/api/chat/route.ts pueda validar ownership fuerte
+  // (conversacionId === conversación actual, exige no-null) y construir
+  // el media_type real del bloque image sin una consulta aparte.
+  conversacionId: string | null
+  formatoArchivo: string
 }
 
 // Ver "corrección — edición real de imágenes con el asset visual
@@ -49,11 +57,18 @@ export type AssetVisualGuardado = {
 export async function obtenerAssetVisualPorId(sb: SupabaseClient, id: string): Promise<AssetVisualGuardado | null> {
   const { data, error } = await sb
     .from('assets_visuales')
-    .select('id, version, prompt_original, storage_path')
+    .select('id, version, prompt_original, storage_path, conversacion_id, formato_archivo')
     .eq('id', id)
     .maybeSingle()
   if (error || !data) return null
-  return { id: data.id, version: data.version, promptOriginal: data.prompt_original, storagePath: data.storage_path }
+  return {
+    id: data.id,
+    version: data.version,
+    promptOriginal: data.prompt_original,
+    storagePath: data.storage_path,
+    conversacionId: data.conversacion_id,
+    formatoArchivo: data.formato_archivo,
+  }
 }
 
 export async function guardarAssetVisual(sb: SupabaseClient, datos: AssetVisualNuevo): Promise<AssetVisualGuardado> {
@@ -97,5 +112,15 @@ export async function guardarAssetVisual(sb: SupabaseClient, datos: AssetVisualN
     )
   }
 
-  return { id: data.id, version: data.version, promptOriginal: data.prompt_original, storagePath: data.storage_path }
+  // conversacionId/formatoArchivo ya conocidos del propio `datos` de
+  // entrada (V3-A, ver AssetVisualGuardado) — nunca hace falta
+  // volver a seleccionarlos.
+  return {
+    id: data.id,
+    version: data.version,
+    promptOriginal: data.prompt_original,
+    storagePath: data.storage_path,
+    conversacionId: datos.conversacionId,
+    formatoArchivo: datos.formatoArchivo,
+  }
 }

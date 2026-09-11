@@ -12,7 +12,19 @@
 
 import type { ReferenteContextualMetadata, TipoReferenteContextual } from './contextoConversacional'
 
-export type CapacidadContextual = 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento'
+// V3-A (ver "referente visual histórico") — 'reutilizar_imagen_subida'
+// agregado AQUÍ (única fuente real del tipo, ver import en
+// clasificadorNivel0.ts) para que capacidad_contextual pueda expresar
+// la nueva capacidad. Deliberadamente NO se agrega a
+// CAPACIDADES_VALIDAS/esCandidataAShortCircuitCliente más abajo en
+// este mismo archivo: esta capacidad nunca pasa por el transporte de
+// header ni por el short-circuit de cliente — su activación y
+// ejecución son 100% server-side, dentro de la misma request (ver
+// app/api/chat/route.ts). validarDecisionOrquestador ya la descarta
+// sola (no está en el Set), así que decisionOrquestadorParaHeader
+// simplemente nunca se llena para este valor — comportamiento
+// correcto y ya cubierto sin tocar nada más aquí.
+export type CapacidadContextual = 'transformar_texto' | 'generar_imagen' | 'editar_imagen' | 'convertir_documento' | 'reutilizar_imagen_subida'
 export type ConfianzaContextual = 'alta' | 'media' | 'baja'
 
 export type DecisionOrquestador = {
