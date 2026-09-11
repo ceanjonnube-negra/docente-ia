@@ -360,7 +360,7 @@ const DIAS_POR_MES = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 // escribir (ver herramientaCorregirDatoAlumno y
 // app/api/alumnos/aplicar-correccion/route.ts) — fortalecerla aquí
 // fortalece automáticamente ambas barreras sin duplicar la regla.
-function validarEstructuraCurp(valor: string): ResultadoValidacionCampoAlumno {
+export function validarEstructuraCurp(valor: string): ResultadoValidacionCampoAlumno {
   if (valor.length !== 18) {
     const detalle = valor.length < 18
       ? `tiene ${valor.length} de 18 caracteres, por lo que está incompleta`

@@ -7,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // alumno_id, y nunca asume una coincidencia de baja confianza (mejor
 // reportar "no resuelto" que guardar en el alumno equivocado).
 
-function normalizarNombre(nombre: string): string {
+export function normalizarNombre(nombre: string): string {
   return nombre
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -38,7 +38,7 @@ function distanciaLevenshtein(a: string, b: string): number {
   return matriz[filas - 1][columnas - 1]
 }
 
-function calcularSimilitud(a: string, b: string): number {
+export function calcularSimilitud(a: string, b: string): number {
   if (!a || !b) return 0
 
   const distancia = distanciaLevenshtein(a, b)
