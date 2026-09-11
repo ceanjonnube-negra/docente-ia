@@ -1817,25 +1817,27 @@ class AsistenteServiceImpl {
     // false toda la espera real y el indicador nunca aparecía.
     this.generando = true
     this.notificar()
-    // PASO 3 — fire-and-forget: nunca retrasa el envío a Claude por la
-    // latencia de Supabase (ver persistirMensajeRemoto). V2 (adjuntos
-    // de imagen durables): SOLO una fotografía real (image/*) necesita
-    // la garantía de persistirMensajeRemotoConfirmado — mensajeUsuario.
-    // imagen también puede ser un PDF/documento adjunto para OCR (ver
-    // el fallback de comprimirImagen en AsistentePanel.tsx), y V2
-    // excluye explícitamente ese caso: agregarle el await aquí solo
-    // sumaría latencia a un turno que jamás va a crear un asset.
-    // mensajeUsuarioIdConfirmado viaja null si no hay foto, si el
-    // adjunto no es imagen, o si el guardado confirmado falló — en
-    // todos esos casos el turno de IA sigue igual, solo que el futuro
-    // pipeline V2 server-side no intentará crear ningún asset.
+    // PASO 3 — antes solo V2 (foto real, image/*) esperaba la
+    // confirmación de persistirMensajeRemotoConfirmado; el resto
+    // (texto puro, PDF/adjunto no-image) usaba persistirMensajeRemoto
+    // fire-and-forget. Ver "corrección estructural — identidad
+    // confirmada del mensaje usuario actual": OPCIÓN D
+    // (app/api/chat/route.ts) necesita que el servidor pueda
+    // verificar, con el id REAL ya persistido, que este mensaje es el
+    // turno de usuario inmediatamente anterior — algo que un id
+    // fire-and-forget no puede garantizar (la fila podía no existir
+    // todavía cuando /api/chat consulta). Por eso TODO mensaje que
+    // pasa por este enviarMensaje normal (con o sin adjunto, sea
+    // imagen o no) ahora usa la MISMA escritura ya existente
+    // (persistirMensajeRemotoConfirmado — reutiliza guardarMensajeRemoto,
+    // nunca una segunda escritura) de forma awaited, unificando el
+    // camino que antes distinguía imagen de "cualquier otra cosa".
+    // mensajeUsuarioIdConfirmado viaja null si el guardado confirmado
+    // falló — mismo fail-closed que V2 ya usaba: el turno de IA sigue
+    // igual, solo que ni V2 ni OPCIÓN D podrán actuar con este mensaje.
     let mensajeUsuarioIdConfirmado: string | null = null
-    if (mensajeUsuario.imagen && mensajeUsuario.imagen.tipo.startsWith('image/')) {
-      const persistido = await this.persistirMensajeRemotoConfirmado(this.conversacionActivaId, mensajeUsuario)
-      if (persistido) mensajeUsuarioIdConfirmado = mensajeUsuario.id
-    } else {
-      this.persistirMensajeRemoto(this.conversacionActivaId, mensajeUsuario)
-    }
+    const persistido = await this.persistirMensajeRemotoConfirmado(this.conversacionActivaId, mensajeUsuario)
+    if (persistido) mensajeUsuarioIdConfirmado = mensajeUsuario.id
 
     try {
       // FASE 2A (ver "contrato del router semántico unificado +
