@@ -1377,6 +1377,14 @@ export async function POST(req: NextRequest) {
   let esCandidataReutilizarImagenSubida = false
   let referenteMensajeIdParaImagenHistorica: string | null = null
   let imagenesHistoricasResueltas: BloqueImagenHistorica[] = []
+  // OPCIÓN D (ver "elevación determinista media→alta por inmediatez
+  // verificada") — true SOLO cuando el candidato visual histórico
+  // descubierto abajo se demuestra, por orden real de mensajes_chat
+  // (mismo array ya consultado, sin SELECT adicional), como el mensaje
+  // de usuario INMEDIATAMENTE anterior al mensaje actual — cero
+  // mensajes de usuario intermedios. Nunca "el más reciente entre los
+  // últimos 30": eso es exactamente lo que esta bandera NO acepta.
+  let referenteVisualHistoricoEsInmediatoAnterior = false
   if (supabaseUser && userId && sesion) {
     try {
       // V3-A — DESCUBRIMIENTO SERVER-SIDE del candidato visual
@@ -1402,14 +1410,15 @@ export async function POST(req: NextRequest) {
         try {
           const conversacionIdParaReferenteVisual = await obtenerConversacionIdAutorizada()
           if (conversacionIdParaReferenteVisual) {
-            const { data: mensajesRecientesConImagen } = await supabaseUser
+            const { data: mensajesRecientesConImagenData } = await supabaseUser
               .from('mensajes_chat')
               .select('id, contenido')
               .eq('conversacion_id', conversacionIdParaReferenteVisual)
               .eq('rol', 'usuario')
               .order('creado_en', { ascending: false })
               .limit(30)
-            const candidatoVisualHistorico = (mensajesRecientesConImagen ?? []).find((m) => {
+            const mensajesRecientesConImagen = mensajesRecientesConImagenData ?? []
+            const candidatoVisualHistorico = mensajesRecientesConImagen.find((m) => {
               const c = m.contenido as Record<string, unknown> | null
               if (!c || typeof c !== 'object') return false
               const imagenSingular = c.imagen as Record<string, unknown> | undefined
@@ -1425,6 +1434,22 @@ export async function POST(req: NextRequest) {
               !referentesContextuales.some((r) => r.tipo === 'imagen' && r.id === candidatoVisualHistorico.id)
             ) {
               referentesContextuales.push({ id: candidatoVisualHistorico.id, tipo: 'imagen', origen: 'mensaje' })
+              // OPCIÓN D — inmediatez verificada SOLO contra el mismo
+              // array ya traído arriba (ordenado desc, ya filtrado a
+              // rol='usuario' de esta conversación autorizada): el
+              // mensaje actual (mensajeUsuarioIdSolicitado, ya conocido
+              // desde el body de este mismo request) debe estar en
+              // índice 0 Y el candidato en índice 1 — inmediatamente
+              // consecutivos, cero usuarios intermedios. Si
+              // mensajeUsuarioIdSolicitado no llegó o no aparece en la
+              // lista (ej. aún no persistido por el cliente), la
+              // verificación no puede completarse — fail-closed, queda
+              // false, igual que si esta fase no existiera.
+              const indiceMensajeActual = mensajeUsuarioIdSolicitado
+                ? mensajesRecientesConImagen.findIndex((m) => m.id === mensajeUsuarioIdSolicitado)
+                : -1
+              const indiceCandidato = mensajesRecientesConImagen.findIndex((m) => m.id === candidatoVisualHistorico.id)
+              referenteVisualHistoricoEsInmediatoAnterior = indiceMensajeActual === 0 && indiceCandidato === 1
             }
           }
         } catch {
@@ -1570,7 +1595,11 @@ export async function POST(req: NextRequest) {
         console.log('[CONVERTIR_DOCUMENTO] candidato=true')
       }
       // V3-A — activación SOLO si Nivel0 seleccionó el candidato visual
-      // histórico con confianza alta Y ese candidato, re-validado
+      // histórico con confianza alta —o, OPCIÓN D, confianza media
+      // cuando la inmediatez ya se demostró arriba de forma
+      // determinista (referenteVisualHistoricoEsInmediatoAnterior),
+      // nunca al revés: esta bandera nunca se calcula a partir de la
+      // confianza, siempre al revés— Y ese candidato, re-validado
       // contra referentesContextuales (nunca contra lo que diga
       // clasificacion.referente_elegido a secas — mismo patrón exacto
       // que ya usa esCandidataAShortCircuitCliente en
@@ -1581,9 +1610,16 @@ export async function POST(req: NextRequest) {
       // resolución real (assetId, ownership fuerte, Storage) ocurre
       // más abajo, después del bloque de Nivel0, igual que
       // convertir_documento.
+      const confianzaReutilizarImagenElevadaPorInmediatez =
+        clasificacion.capacidad_contextual === 'reutilizar_imagen_subida' &&
+        clasificacion.confianza_contextual === 'media' &&
+        clasificacion.referente_elegido?.tipo === 'imagen' &&
+        clasificacion.intencion_principal === 'conversacion_general' &&
+        !tieneImagenAdjunta &&
+        referenteVisualHistoricoEsInmediatoAnterior
       if (
         clasificacion.capacidad_contextual === 'reutilizar_imagen_subida' &&
-        clasificacion.confianza_contextual === 'alta' &&
+        (clasificacion.confianza_contextual === 'alta' || confianzaReutilizarImagenElevadaPorInmediatez) &&
         clasificacion.referente_elegido?.tipo === 'imagen'
       ) {
         const referenteVisualReal = referentesContextuales.find(
@@ -1592,7 +1628,7 @@ export async function POST(req: NextRequest) {
         if (referenteVisualReal && referenteVisualReal.origen === 'mensaje') {
           esCandidataReutilizarImagenSubida = true
           referenteMensajeIdParaImagenHistorica = referenteVisualReal.id
-          console.log('[REUTILIZAR_IMAGEN_SUBIDA] candidato=true')
+          console.log(`[REUTILIZAR_IMAGEN_SUBIDA] candidato=true confianza_elevada=${confianzaReutilizarImagenElevadaPorInmediatez}`)
         }
       }
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — solo indicadores, NUNCA el
