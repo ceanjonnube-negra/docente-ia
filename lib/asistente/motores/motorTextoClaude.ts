@@ -140,10 +140,37 @@ export class MotorTextoClaude implements MotorConversacional {
   // enviarTexto — así Claude ve la conversación completa como turnos
   // reales (messages[]), no solo el mensaje suelto de este momento. Esto
   // es lo que evita que "hazlo en Word" olvide de qué se estaba hablando.
+  //
+  // CORRECCIÓN — "historial con turno de usuario vacío tras imagen sin
+  // texto": un turno histórico de imagen sin texto (ver "imagen sin
+  // texto", V2) tiene texto='' — válido y correcto en mensajes_chat,
+  // pero Anthropic RECHAZA con 400 cualquier mensaje de usuario cuyo
+  // content sea el string vacío (confirmado en pruebas runtime propias:
+  // "user messages must have non-empty content"). Ese turno visual no
+  // puede representarse fielmente aquí (la imagen real no viaja en el
+  // historial — solo texto, ver V3/reconstrucción, fuera de alcance).
+  // Nunca se inventa un texto sustituto ("[imagen adjunta]" u
+  // equivalente) — eso sería contenido sintético. En vez de eso, se
+  // omite el turno completo E, junto con él, la respuesta del asistente
+  // que le corresponde inmediatamente después: dejar esa respuesta sola
+  // produciría dos turnos 'assistant' consecutivos en el arreglo final
+  // (el mismo tipo de historial mal formado que este cambio busca
+  // evitar), así que se retiran como par, nunca uno solo.
   establecerHistorial(mensajes: { rol: 'usuario' | 'asistente' | 'herramienta'; texto: string }[]) {
-    this.historial = mensajes
+    const mapeado = mensajes
       .filter(m => m.rol === 'usuario' || m.rol === 'asistente')
       .map(m => ({ role: m.rol === 'usuario' ? 'user' as const : 'assistant' as const, content: m.texto }))
+
+    const historialValido: TurnoHistorial[] = []
+    for (let i = 0; i < mapeado.length; i++) {
+      const turno = mapeado[i]
+      if (turno.role === 'user' && turno.content === '') {
+        if (mapeado[i + 1]?.role === 'assistant') i++
+        continue
+      }
+      historialValido.push(turno)
+    }
+    this.historial = historialValido
   }
 
   async iniciar(contexto: ContextoAplicacion, herramientas: Herramienta[]) {

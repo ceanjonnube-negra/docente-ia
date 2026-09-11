@@ -640,13 +640,44 @@ export async function POST(req: NextRequest) {
   // Turnos previos reales de la conversación (ver MotorTextoClaude.
   // establecerHistorial) — sin esto Claude solo ve el mensaje suelto de
   // ahora mismo y "olvida" de qué se habló un turno antes.
-  const historialMensajes: { role: 'user' | 'assistant'; content: string }[] = Array.isArray(historial)
+  //
+  // DEFENSA EN PROFUNDIDAD — "historial con turno de usuario vacío tras
+  // imagen sin texto": MotorTextoClaude.establecerHistorial ya retira
+  // estos turnos del lado cliente (ver ese archivo), pero el servidor
+  // nunca confía únicamente en eso — mismo criterio que el resto de
+  // esta ruta (ownership, grupo activo, etc.). Primero se valida forma
+  // (role válido, content string) — un content vacío SIGUE siendo
+  // estructuralmente válido en este paso, se resuelve aparte abajo.
+  const historialConFormaValida: { role: 'user' | 'assistant'; content: string }[] = Array.isArray(historial)
     ? historial.filter((h: unknown): h is { role: 'user' | 'assistant'; content: string } =>
         typeof h === 'object' && h !== null &&
         typeof (h as { content?: unknown }).content === 'string' &&
         ((h as { role?: unknown }).role === 'user' || (h as { role?: unknown }).role === 'assistant')
       )
     : []
+
+  // Misma regla exacta que MotorTextoClaude.establecerHistorial (ver ese
+  // archivo): Anthropic responde 400 ("user messages must have
+  // non-empty content") ante cualquier mensaje de usuario con content
+  // vacío (confirmado en pruebas runtime propias) — ese turno visual no
+  // puede representarse fielmente aquí (la imagen real no viaja en el
+  // historial, ver V3/reconstrucción, fuera de alcance). Nunca se
+  // inventa un texto sustituto. Se omite el turno vacío Y, junto con
+  // él, el turno assistant que le sigue inmediatamente si existe —
+  // conservar solo esa respuesta la dejaría huérfana de su fuente
+  // visual y produciría dos turnos 'assistant' consecutivos, el mismo
+  // tipo de historial mal formado que esto evita. Duplicado a propósito
+  // (no una utilidad compartida): esta es una segunda capa de defensa
+  // deliberadamente independiente de la del cliente.
+  const historialMensajes: { role: 'user' | 'assistant'; content: string }[] = []
+  for (let i = 0; i < historialConFormaValida.length; i++) {
+    const turno = historialConFormaValida[i]
+    if (turno.role === 'user' && turno.content === '') {
+      if (historialConFormaValida[i + 1]?.role === 'assistant') i++
+      continue
+    }
+    historialMensajes.push(turno)
+  }
 
   // Cliente con la sesión real del docente (necesario para que
   // auth.uid() funcione dentro de las RPC del Motor de Contexto).
