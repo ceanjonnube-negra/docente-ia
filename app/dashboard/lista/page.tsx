@@ -165,20 +165,52 @@ function ListaPageContent() {
     docenteIdCargadoRef.current = user.id
 
     try {
-      const { data: grupos, error: errorGrupo } = await supabase
-        .from('grupos')
-        .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
-        .eq('docente_id', user.id)
-        .eq('ciclos_escolares.activo', true)
-        .order('creado_en', { ascending: false })
-        .limit(1)
+      // MG-A (ver "fuente de verdad del grupo activo — auditoría
+      // multigrupo") — misma semántica que lib/sesionContexto.ts:
+      // intenta primero el contexto que el docente ya seleccionó
+      // (docente_contexto_activo.grupo_id), pero esa fila es una
+      // PREFERENCIA, nunca una autorización — se revalida contra
+      // `grupos` filtrando por ESE id Y por docente_id/ciclo activo.
+      // Si no produce un grupo válido (ajeno, inexistente, ciclo no
+      // activo), se descarta y se usa exactamente la heurística de
+      // siempre, sin cambios. grupos.activo deliberadamente NUNCA se
+      // usa (ver auditoría "semántica real de grupos.activo").
+      type GrupoActivoLista = { id: string; nombre_grupo: string; institucion_id: string; docente_id: string; ciclo_escolar_id: string; creado_en: string }
 
-      if (errorGrupo || !grupos || grupos.length === 0) {
-        setMensaje('No se encontró un grupo activo.')
-        return
+      let grupoActivo: GrupoActivoLista | undefined
+
+      const { data: contextoPersistido } = await supabase
+        .from('docente_contexto_activo')
+        .select('grupo_id')
+        .eq('docente_id', user.id)
+        .maybeSingle()
+
+      if (contextoPersistido?.grupo_id) {
+        const { data: grupoValidado } = await supabase
+          .from('grupos')
+          .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
+          .eq('id', contextoPersistido.grupo_id)
+          .eq('docente_id', user.id)
+          .eq('ciclos_escolares.activo', true)
+          .maybeSingle()
+        if (grupoValidado) grupoActivo = grupoValidado as GrupoActivoLista
       }
 
-      const grupoActivo = grupos[0]
+      if (!grupoActivo) {
+        const { data: grupos, error: errorGrupo } = await supabase
+          .from('grupos')
+          .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
+          .eq('docente_id', user.id)
+          .eq('ciclos_escolares.activo', true)
+          .order('creado_en', { ascending: false })
+          .limit(1)
+
+        if (errorGrupo || !grupos || grupos.length === 0) {
+          setMensaje('No se encontró un grupo activo.')
+          return
+        }
+        grupoActivo = grupos[0] as GrupoActivoLista
+      }
       setNombreGrupo(grupoActivo.nombre_grupo)
       setGrupo({
         id: grupoActivo.id,

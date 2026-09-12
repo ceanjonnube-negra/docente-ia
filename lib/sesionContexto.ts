@@ -55,28 +55,62 @@ export async function obtenerSesionContexto(
     alumnos_del_grupo_activo: [],
   };
 
-  // CAUSA RAÍZ real de "el Chat IA dice que no tiene acceso" en
-  // cualquier módulo (no solo asistencia): esta función resolvía el
-  // "grupo activo" leyendo un puntero aparte, docente_contexto_activo,
-  // que SOLO se escribe una vez al crear un grupo nuevo (ver
-  // app/dashboard/grupos/nuevo/page.tsx) y nunca se vuelve a actualizar
-  // después — ni hay ninguna pantalla para cambiarlo. Si ese puntero
-  // quedaba ausente o apuntando a un ciclo escolar ya no activo,
-  // grupo_activo_id salía null (o apuntaba al grupo equivocado) para
-  // el Chat, mientras que app/dashboard/lista/page.tsx (cargarTodo)
-  // sigue mostrando datos reales porque calcula el grupo activo DE
-  // CERO cada vez, sin depender de ningún puntero guardado. Fuente
-  // única de verdad real: la misma consulta que ya usa Lista, no un
-  // caché aparte que puede desincronizarse en silencio.
-  const { data: grupos } = await sb
-    .from('grupos')
-    .select('id, institucion_id, ciclo_escolar_id, creado_en, nivel_educativo, grado, grupo, ciclos_escolares!inner(activo)')
-    .eq('docente_id', docenteId)
-    .eq('ciclos_escolares.activo', true)
-    .order('creado_en', { ascending: false })
-    .limit(1);
+  // MG-A (ver "fuente de verdad del grupo activo — auditoría
+  // multigrupo") — antes esta función iba directo a la heurística de
+  // "más reciente" (ver abajo). Ahora intenta PRIMERO el contexto que
+  // el propio docente ya seleccionó explícitamente
+  // (docente_contexto_activo.grupo_id) — pero ese valor es una
+  // PREFERENCIA, nunca una autorización: se vuelve a consultar
+  // `grupos` filtrando por ESE id Y por docente_id/ciclo activo. Si
+  // esa segunda consulta no encuentra nada (grupo ajeno, inexistente,
+  // o de un ciclo ya no activo — incluso si alguien lograra alterar
+  // grupo_id hacia un uuid que no le pertenece), el contexto se
+  // descarta por completo y se cae exactamente al fallback de
+  // siempre, sin ninguna heurística nueva. grupos.activo
+  // deliberadamente NUNCA se usa aquí (ver auditoría "semántica real
+  // de grupos.activo": sin ningún uso operativo demostrado en todo el
+  // proyecto, ni lectura ni escritura — usarlo introduciría un
+  // criterio de origen desconocido).
+  type GrupoActivoResuelto = { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string; nivel_educativo: string | null; grado: string | null; grupo: string | null };
 
-  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string; nivel_educativo: string | null; grado: string | null; grupo: string | null } | undefined;
+  let grupoActivo: GrupoActivoResuelto | undefined;
+
+  const { data: contextoPersistido } = await sb
+    .from('docente_contexto_activo')
+    .select('grupo_id')
+    .eq('docente_id', docenteId)
+    .maybeSingle();
+
+  if (contextoPersistido?.grupo_id) {
+    const { data: grupoValidado } = await sb
+      .from('grupos')
+      .select('id, institucion_id, ciclo_escolar_id, creado_en, nivel_educativo, grado, grupo, ciclos_escolares!inner(activo)')
+      .eq('id', contextoPersistido.grupo_id)
+      .eq('docente_id', docenteId)
+      .eq('ciclos_escolares.activo', true)
+      .maybeSingle();
+    if (grupoValidado) grupoActivo = grupoValidado as GrupoActivoResuelto;
+  }
+
+  // Fallback — CAUSA RAÍZ real de "el Chat IA dice que no tiene
+  // acceso" en cualquier módulo (no solo asistencia), ya documentada
+  // aquí desde antes de MG-A: heurística "más reciente con ciclo
+  // activo", idéntica a la que ya usa app/dashboard/lista/page.tsx.
+  // Ahora solo se ejecuta cuando el contexto persistido de arriba no
+  // produjo un grupo válido (ausente, grupo_id null, grupo ajeno,
+  // inexistente, o ciclo no activo) — sin cambios respecto al
+  // comportamiento previo a MG-A en ese caso.
+  if (!grupoActivo) {
+    const { data: grupos } = await sb
+      .from('grupos')
+      .select('id, institucion_id, ciclo_escolar_id, creado_en, nivel_educativo, grado, grupo, ciclos_escolares!inner(activo)')
+      .eq('docente_id', docenteId)
+      .eq('ciclos_escolares.activo', true)
+      .order('creado_en', { ascending: false })
+      .limit(1);
+    grupoActivo = grupos?.[0] as GrupoActivoResuelto | undefined;
+  }
+
   if (!grupoActivo) {
     console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
     return base;
