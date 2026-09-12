@@ -142,42 +142,32 @@ export type GrupoParaImportar = {
 
 // Alumno permanente (solo identidad); su relación con el grupo vive
 // únicamente en inscripciones (alumno + grupo + ciclo escolar) — Decisión 11.
+//
+// La escritura real ocurre por completo dentro de la RPC
+// importar_alumnos_a_grupo (SECURITY DEFINER, atómica): docente_id/
+// institucion_id/ciclo_escolar_id se derivan ahí del grupo ya validado
+// contra auth.uid(), nunca se envían desde aquí como autoritativos —
+// grupo.id es solo el recurso solicitado, no una autorización. Único
+// camino de alta soportado: no existe ningún INSERT directo restante
+// sobre alumnos/inscripciones en este archivo.
 export async function guardarAlumnosImportados(
   sb: SupabaseClient,
   grupo: GrupoParaImportar,
   alumnosValidos: AlumnoPreview[]
 ): Promise<{ error: string | null }> {
-  const registrosAlumnos = alumnosValidos.map((a) => ({
-    institucion_id: grupo.institucion_id,
+  const payload = alumnosValidos.map((a) => ({
     nombre: a.nombre.trim(),
     curp: a.curp,
     sexo: a.sexo,
   }))
 
-  const { data: alumnosCreados, error: insertError } = await sb
-    .from('alumnos')
-    .insert(registrosAlumnos)
-    .select('id')
+  const { error } = await sb.rpc('importar_alumnos_a_grupo', {
+    p_grupo_id: grupo.id,
+    p_alumnos: payload,
+  })
 
-  if (insertError || !alumnosCreados) {
+  if (error) {
     return { error: 'Ocurrió un error al guardar los alumnos. Intenta de nuevo.' }
-  }
-
-  const registrosInscripciones = alumnosCreados.map((nuevo, i) => ({
-    alumno_id: nuevo.id,
-    grupo_id: grupo.id,
-    ciclo_escolar_id: grupo.ciclo_escolar_id,
-    docente_id: grupo.docente_id,
-    numero_lista: alumnosValidos[i].numero_lista,
-    estatus: 'activo',
-  }))
-
-  const { error: inscripcionError } = await sb.from('inscripciones').insert(registrosInscripciones)
-
-  if (inscripcionError) {
-    return {
-      error: `Se guardaron los alumnos, pero no se pudo crear su inscripción al grupo (${inscripcionError.message}). No aparecerán en Lista hasta corregir esto.`,
-    }
   }
 
   return { error: null }
