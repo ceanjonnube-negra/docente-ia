@@ -38,6 +38,10 @@ import { resolverNivelEducativo } from '@/lib/documentGen/nivelEducativo'
 import { obtenerPerfilNivel } from '@/lib/documentGen/perfilNivelEducativo'
 import { subirBuffer, rutaArchivo, eliminarArchivo, descargarBuffer, BUCKET_IMAGENES_GENERADAS } from '@/lib/documentGen/almacenamiento'
 import { guardarAssetVisual, obtenerAssetVisualPorId } from '@/lib/assetsVisuales'
+import { analizarImagenesListaOficial, type ImagenListaOficial, type MediaTypeImagenListaOficial } from '@/lib/listaOficial/analisisListaOficial'
+import { compararListaOficial, type AlumnoRosterListaOficial } from '@/lib/listaOficial/matchingListaOficial'
+import { firmarPropuestaListaOficial } from '@/lib/listaOficial/propuestaFirmada'
+import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 
 // Límite explícito de duración de la función — sin esto, Vercel aplica
 // el límite implícito del plan/proyecto, que puede ser más corto que
@@ -1465,6 +1469,15 @@ export async function POST(req: NextRequest) {
   let esCandidataReutilizarImagenSubida = false
   let referenteMensajeIdParaImagenHistorica: string | null = null
   let imagenesHistoricasResueltas: BloqueImagenHistorica[] = []
+  // V1-C3 (ver diseño aprobado "integración read-only de
+  // actualizar_lista_oficial") — mismo criterio que las variables de
+  // arriba: `clasificacion` solo existe dentro del bloque
+  // `if (supabaseUser && userId && sesion)` (más abajo), pero el
+  // dispatch real de esta intención debe ejecutarse DESPUÉS del
+  // bloque V3-A (que corre fuera de ese `if`, ya cerrado) porque
+  // depende de imagenesHistoricasResueltas ya resuelto. Se captura
+  // aquí, como booleano plano, exactamente lo mínimo necesario.
+  let esActualizarListaOficial = false
   // OPCIÓN D (ver "elevación determinista media→alta por inmediatez
   // verificada") — true SOLO cuando el candidato visual histórico
   // descubierto abajo se demuestra, por orden real de mensajes_chat
@@ -1569,6 +1582,9 @@ export async function POST(req: NextRequest) {
         usageClasificacion.valor = usage
       }, referentesContextuales)
       marcarTelemetria('intent:classification_finished')
+      // V1-C3 — captura mínima para uso posterior fuera de este bloque
+      // (ver declaración de esActualizarListaOficial más arriba).
+      esActualizarListaOficial = clasificacion.intencion_principal === 'actualizar_lista_oficial' && clasificacion.nivel_ejecucion === 1
       if (diagnosticoCurpActivo) {
         const msClasificacion = Date.now() - tClasificacionInicio
         trazaDebug.clasificacionEjecutada = true
@@ -2383,6 +2399,197 @@ export async function POST(req: NextRequest) {
       // Nunca el objeto Error completo (ver "logs V3-A requieren
       // sanitización") — solo la razón técnica corta.
       console.error('[REUTILIZAR_IMAGEN_SUBIDA] resuelto=false motivo=error_resolucion')
+    }
+  }
+
+  // V1-C3 (ver diseño aprobado "integración read-only de
+  // actualizar_lista_oficial") — colocado DELIBERADAMENTE aquí, después
+  // del bloque V3-A de arriba: depende de imagenesHistoricasResueltas
+  // ya resuelto (o no), nunca antes. Termina el request en respuestaTexto
+  // sin excepción — nunca cae al flujo conversacional normal ni a una
+  // segunda llamada Sonnet. 100% read-only respecto a alumnos: ningún
+  // camino de este bloque escribe en Supabase.
+  if (esActualizarListaOficial) {
+    console.log('[LISTA_OFICIAL] candidato=true')
+
+    // GATE DE GRUPO SEGURO — para esta operación sensible (puede derivar
+    // en una escritura real en una fase posterior) solo un snapshot
+    // MG-B ya fijado cuenta como grupo inequívoco y autorizado.
+    // undefined (legacy, heurístico MG-A) y {modo:'fail_closed'} quedan
+    // EXCLUIDOS aquí — ambos siguen funcionando con normalidad para el
+    // resto del chat (sesion ya se calculó arriba con las mismas
+    // reglas de siempre), pero nunca para esta operación. Nunca se usa
+    // sesion.grupo_activo_id ni ninguna otra fuente aproximada.
+    if (opcionesSesionMgB?.modo !== 'snapshot') {
+      console.log('[LISTA_OFICIAL] grupo_seguro=false')
+      return respuestaTexto(
+        'Para actualizar la lista oficial necesito que esta conversación tenga un grupo confirmado de forma segura. Abre una conversación nueva o continúa en una donde ya se haya confirmado el grupo, y vuelve a intentarlo.'
+      )
+    }
+    const grupoIdSeguro = opcionesSesionMgB.grupoIdForzado
+
+    // PDF — fuera de alcance de V1 a propósito (ver diseño aprobado).
+    if (tipoDocumentoAdjunto === 'pdf') {
+      console.log('[LISTA_OFICIAL] fuente=pdf_no_soportado')
+      return respuestaTexto('Por ahora actualizo la lista oficial a partir de fotografías. Envíame fotos claras de las hojas de la lista.')
+    }
+
+    // FUENTE — precedencia estricta: actuales primero, nunca mezcladas
+    // con históricas. Históricas solo si `esCandidataReutilizarImagenSubida`
+    // ya quedó true (mismo booleano exacto que ya usa reutilizar_imagen_subida
+    // arriba — dado el gate del clasificador, en la rama
+    // actualizar_lista_oficial esto SOLO puede haberse vuelto true por
+    // confianza_contextual='alta' genuina: la elevación media→alta "por
+    // inmediatez" está scopeada exclusivamente a conversacion_general,
+    // ver confianzaReutilizarImagenElevadaPorInmediatez más arriba) Y
+    // V3-A resolvió imágenes reales — nunca "la última imagen" como
+    // aproximación silenciosa.
+    const imagenesActualesCrudas: { base64: string; tipo: string }[] =
+      imagenesValidas.length > 0
+        ? imagenesValidas
+        : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
+          ? [{ base64: imagenBase64, tipo: imagenTipo }]
+          : []
+
+    let imagenesFuente: { base64: string; mediaType: MediaTypeImagenListaOficial }[] = []
+    let origenFuente: 'actual' | 'historica' | null = null
+
+    if (imagenesActualesCrudas.length > 0) {
+      imagenesFuente = imagenesActualesCrudas.map((img) => ({ base64: img.base64, mediaType: img.tipo as MediaTypeImagenListaOficial }))
+      origenFuente = 'actual'
+    } else if (esCandidataReutilizarImagenSubida && imagenesHistoricasResueltas.length > 0) {
+      imagenesFuente = imagenesHistoricasResueltas.map((b) => ({ base64: b.source.data, mediaType: b.source.media_type as MediaTypeImagenListaOficial }))
+      origenFuente = 'historica'
+    }
+
+    console.log(`[LISTA_OFICIAL] fuente=${origenFuente ?? 'ninguna'}`)
+
+    if (imagenesFuente.length === 0) {
+      return respuestaTexto('Para actualizar la lista oficial necesito que me envíes una o varias fotos claras de la lista. Adjúntalas y vuelve a pedírmelo.')
+    }
+    // V1-A ya soporta máximo 4 — un conjunto más grande se rechaza
+    // completo, nunca se trunca en silencio (mismo criterio ya
+    // establecido para el referente histórico V3-A).
+    if (imagenesFuente.length > 4) {
+      console.log('[LISTA_OFICIAL] fuente_rechazada=demasiadas_imagenes')
+      return respuestaTexto('Recibí demasiadas fotos para procesar la lista de una vez (máximo 4). Envíame hasta 4 fotos claras de la lista.')
+    }
+
+    // V1-A — exactamente UNA vez, para todo el lote. Cualquier fallo
+    // (formato no soportado, respuesta no interpretable, excepción de
+    // red) es fail-closed total: nunca se sigue a roster/V1-B/HMAC, y
+    // nunca se revela el detalle interno del error.
+    let extraccion: Awaited<ReturnType<typeof analizarImagenesListaOficial>>
+    try {
+      const imagenesParaV1A: ImagenListaOficial[] = imagenesFuente.map((img) => ({ base64: img.base64, mediaType: img.mediaType }))
+      extraccion = await analizarImagenesListaOficial(client, imagenesParaV1A)
+    } catch {
+      console.error('[LISTA_OFICIAL] extraccion_ok=false')
+      return respuestaTexto('No pude leer la lista con claridad suficiente. Intenta de nuevo con fotos más claras y bien iluminadas.')
+    }
+    if (extraccion.registros.length === 0) {
+      console.log('[LISTA_OFICIAL] extraccion_ok=true registros=0')
+      return respuestaTexto('No encontré ningún registro legible en la foto. Intenta de nuevo con una foto más clara.')
+    }
+    console.log(`[LISTA_OFICIAL] extraccion_ok=true registros=${extraccion.registros.length}`)
+
+    // ROSTER real — único SELECT nuevo de V1-C3, con supabaseUser/RLS
+    // (nunca service_role), del grupo ya validado como seguro arriba.
+    // Único lugar donde CURP entra a memoria en este turno — nunca se
+    // loguea, nunca se guarda aparte, nunca se amplía la sesión global
+    // (sesion.alumnos_del_grupo_activo sigue sin CURP, sin cambios).
+    const { data: rosterCompleto, error: errorRoster } = await obtenerRosterConPosicion(supabaseUser!, grupoIdSeguro)
+    if (errorRoster) {
+      console.error('[LISTA_OFICIAL] roster_ok=false')
+      return respuestaTexto('No pude leer la lista de tu grupo en este momento. Intenta de nuevo en unos segundos.')
+    }
+    const rosterParaMatching: AlumnoRosterListaOficial[] = rosterCompleto.map((a) => ({ id: a.id, nombre: a.nombre, curp: a.curp }))
+
+    // V1-B — puro, determinista, 0 IA, 0 writes.
+    const comparacion = compararListaOficial(extraccion.registros, rosterParaMatching)
+    // Único criterio de "accionable": el flag que V1-B ya calculó —
+    // nunca se recalcula aquí ni se reinterpreta ninguna categoría.
+    const accionables = comparacion.resultados.filter(
+      (r): r is typeof r & { alumnoId: string } => r.accionableV1 === true && typeof r.alumnoId === 'string' && !!r.registro.curpLeida
+    )
+    console.log(`[LISTA_OFICIAL] comparacion_ok=true accionables=${accionables.length}`)
+
+    // Conteos deterministas — nunca CURP ni nombres en el resumen.
+    let sinCambio = 0, curpDiferente = 0, lecturaDudosa = 0, ambiguo = 0, nuevoPosible = 0, duplicado = 0, curpFaltanteRequiereRevision = 0
+    for (const r of comparacion.resultados) {
+      switch (r.categoriaDiff) {
+        case 'SIN_CAMBIO': sinCambio++; break
+        case 'CURP_DIFERENTE': curpDiferente++; break
+        case 'LECTURA_DUDOSA': lecturaDudosa++; break
+        case 'MATCH_AMBIGUO': ambiguo++; break
+        case 'NUEVO_POSIBLE': nuevoPosible++; break
+        case 'CURP_DUPLICADA':
+        case 'REGISTRO_DUPLICADO_EN_DOCUMENTO':
+          duplicado++
+          break
+        case 'CURP_FALTANTE_EN_DB':
+          // V1-C3.1 (ajuste B) — ya contabilizado dentro de
+          // `accionables` cuando cumple la política de acción V1; los
+          // que NO la cumplen (nombre no exacto, confianza no alta,
+          // etc.) ya no quedan sin contador: cuentan aquí como
+          // "requiere revisión" — sin recalcular NI reinspeccionar por
+          // qué no fue accionable, solo leyendo r.accionableV1 (la
+          // única fuente de verdad de V1-B, la misma que ya usa el
+          // filtro de `accionables` arriba).
+          if (r.accionableV1 !== true) curpFaltanteRequiereRevision++
+          break
+      }
+    }
+    const ausentes = comparacion.ausentesEnDocumento.length
+
+    const partesResumen: string[] = [`${sinCambio} sin cambios`]
+    if (accionables.length > 0) partesResumen.push(`${accionables.length} CURP que pueden completarse con seguridad`)
+    if (curpFaltanteRequiereRevision > 0) partesResumen.push(`${curpFaltanteRequiereRevision} CURP faltantes que requieren revisión`)
+    if (curpDiferente > 0) partesResumen.push(`${curpDiferente} con posible diferencia de CURP`)
+    if (lecturaDudosa > 0) partesResumen.push(`${lecturaDudosa} con lectura dudosa`)
+    if (ambiguo > 0) partesResumen.push(`${ambiguo} coincidencias ambiguas`)
+    if (nuevoPosible > 0) partesResumen.push(`${nuevoPosible} posibles alumnos nuevos`)
+    if (duplicado > 0) partesResumen.push(`${duplicado} registros duplicados`)
+    if (ausentes > 0) partesResumen.push(`${ausentes} alumnos de tu grupo no aparecen en la foto`)
+
+    let resumenListaOficial = `Revisé la lista: ${partesResumen.join(', ')}.`
+    resumenListaOficial += accionables.length > 0
+      ? ' No hice ningún cambio todavía.'
+      : ' No encontré datos que puedan actualizarse automáticamente con seguridad.'
+
+    if (accionables.length === 0) {
+      return respuestaTexto(resumenListaOficial)
+    }
+
+    // HMAC — solo si hay accionables. Fail-closed total sin fallback
+    // unsigned: si falta el secreto o firmar falla, el resumen
+    // informativo SÍ se muestra, pero jamás se agrega el marcador —
+    // nunca se transporta una propuesta sin firma real.
+    //
+    // V1-C3.1 (ajuste A) — mismo comportamiento de seguridad de
+    // siempre, solo hace visible al docente que la parte aplicable no
+    // pudo prepararse (antes quedaba en silencio, indistinguible de un
+    // turno sin accionables). Frase fija y sanitizada — nunca HMAC,
+    // secret, firma ni ningún detalle técnico.
+    const AVISO_HMAC_NO_DISPONIBLE = ' La comparación quedó lista, pero no pude preparar la actualización en este momento. Inténtalo de nuevo más tarde.'
+    try {
+      const conversacionParaFirma = await obtenerConversacionAutorizadaCompleta()
+      if (!conversacionParaFirma) {
+        console.error('[LISTA_OFICIAL] hmac_ok=false motivo=conversacion_no_confirmada')
+        return respuestaTexto(`${resumenListaOficial}${AVISO_HMAC_NO_DISPONIBLE}`)
+      }
+      const sobreFirmado = firmarPropuestaListaOficial({
+        docenteId: userId!,
+        conversacionId: conversacionParaFirma.id,
+        generadoEn: new Date().toISOString(),
+        propuesta: accionables.map((r) => ({ alumnoId: r.alumnoId, campo: 'curp' as const, valorPropuesto: r.registro.curpLeida as string })),
+      })
+      const marcadorPropuesta = `[[PROPUESTA_LISTA_OFICIAL:${Buffer.from(JSON.stringify(sobreFirmado), 'utf-8').toString('base64')}]]`
+      console.log('[LISTA_OFICIAL] hmac_ok=true')
+      return respuestaTexto(`${resumenListaOficial}\n${marcadorPropuesta}`)
+    } catch {
+      console.error('[LISTA_OFICIAL] hmac_ok=false')
+      return respuestaTexto(`${resumenListaOficial}${AVISO_HMAC_NO_DISPONIBLE}`)
     }
   }
 
