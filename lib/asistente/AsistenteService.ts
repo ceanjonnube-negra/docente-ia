@@ -1488,6 +1488,19 @@ class AsistenteServiceImpl {
               },
               ...this.mensajes.slice(idx + 1),
             ]
+          } else if (msg && evento.propuestaListaOficialFirmada) {
+            // V1-C2 (ver "contrato HMAC + transporte + persistencia") —
+            // a diferencia de datosAccionAlumno, esta fase NUNCA adjunta
+            // acciones/botones: solo persiste el sobre pegado al
+            // mensaje (mismo spread genérico de persistencia.ts) para
+            // que una fase posterior (V1-D) lo recupere server-side.
+            // Ningún código de esta fase interpreta ni actúa sobre su
+            // contenido.
+            this.mensajes = [
+              ...this.mensajes.slice(0, idx),
+              { ...msg, propuestaListaOficialFirmada: evento.propuestaListaOficialFirmada },
+              ...this.mensajes.slice(idx + 1),
+            ]
           }
         }
         // PASO 3 — el turno del asistente ya quedó en su estado final

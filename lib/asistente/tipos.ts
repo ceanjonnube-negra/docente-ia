@@ -137,6 +137,40 @@ export type DiferenciaAlumno = {
   fuente: 'texto'
 }
 
+// V1-C2 (ver diseño aprobado "contrato HMAC + transporte + persistencia
+// de la propuesta de lista oficial") — sobre firmado server-side que
+// V1-C genera y V1-D verificará/aplicará. Deliberadamente mínimo: SOLO
+// las entradas realmente accionableV1=true de la comparación
+// determinista (ver lib/listaOficial/matchingListaOficial.ts) — nunca
+// roster completo, nombres, observaciones de Vision, ni categorías
+// SOLO_REPORTE. `campo` se limita a 'curp' a propósito: es el único
+// campo que V1-B puede marcar accionableV1 hoy.
+export type CambioListaOficialFirmable = {
+  alumnoId: string
+  campo: 'curp'
+  valorPropuesto: string
+}
+
+// Exactamente lo que la firma HMAC protege — ver
+// lib/listaOficial/propuestaFirmada.ts (canonicalización). docenteId/
+// conversacionId identifican el contexto autorizado en el momento de
+// generar la propuesta; generadoEn es la marca de tiempo ISO real de
+// esa generación (nunca reconstruida después) — ambos existen para que
+// V1-D pueda, en su propia fase, comparar contra auth.uid()/la
+// conversación real/una ventana de expiración, nunca para que este
+// tipo por sí solo autorice nada.
+export type PayloadPropuestaListaOficial = {
+  docenteId: string
+  conversacionId: string
+  generadoEn: string
+  propuesta: CambioListaOficialFirmable[]
+}
+
+export type PropuestaListaOficialFirmada = {
+  payload: PayloadPropuestaListaOficial
+  firma: string
+}
+
 // Resultado reutilizable/reabrible producido por el Chat IA — ver
 // "resultado persistente del Chat IA". A diferencia de
 // datosAccionNavegacion (que solo describe una acción PENDIENTE de
@@ -227,6 +261,15 @@ export type MensajeConversacion = {
   // datosAccionCalendario/datosAccionNavegacion: viaja pegada al
   // mensaje, nunca a un "proceso activo" en el servidor.
   datosAccionAlumno?: DiferenciaAlumno
+  // Sobre firmado de la propuesta de actualización de lista oficial
+  // (ver "V1-C2 — contrato HMAC") — a diferencia de datosAccionAlumno,
+  // esta fase NUNCA ofrece botón ni confirmación: solo viaja pegada al
+  // mensaje para que, una vez persistida (mismo spread genérico de
+  // lib/asistente/persistencia.ts), una fase posterior (V1-D) pueda
+  // recuperarla server-side por mensaje_id y verificar su HMAC — nunca
+  // se interpreta ni se usa aquí. Opcional y aditivo: ausente en
+  // absolutamente todos los mensajes ya persistidos.
+  propuestaListaOficialFirmada?: PropuestaListaOficialFirmada
   // Resultado persistente ya entregado en este mensaje (ver
   // ResultadoEmbebido arriba) — a diferencia de los campos
   // "datosAccion*" (que esperan una confirmación), este ya es
@@ -335,7 +378,7 @@ export type EventoMotor =
   // AsistenteService intercepta este caso ANTES de crear o persistir
   // cualquier burbuja de asistente. Ausente/false = comportamiento de
   // siempre (decisionOrquestador, si viene, es solo informativa).
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

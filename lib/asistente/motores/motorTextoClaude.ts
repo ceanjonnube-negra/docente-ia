@@ -23,6 +23,7 @@ import type {
   FinalizarArchivoInfo,
   Herramienta,
   MotorConversacional,
+  PropuestaListaOficialFirmada,
   TrazaDiagnosticoCurp,
 } from '../tipos'
 
@@ -495,7 +496,8 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
-      const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinCorreccionAlumno)
+      const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionAlumno)
+      const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinPropuestaListaOficial)
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — se extrae y se retira del
       // texto ANTES de guardarEnHistorial, exactamente igual que los
       // demás marcadores de arriba — nunca llega a Supabase ni al texto
@@ -510,6 +512,7 @@ export class MotorTextoClaude implements MotorConversacional {
         contenidoOriginal,
         accionNavegacion,
         datosAccionAlumno,
+        propuestaListaOficialFirmada,
         perfilActualizado,
         decisionOrquestador: decisionOrquestador ?? undefined,
         shortCircuitOrquestador: esShortCircuitOrquestador || undefined,
@@ -737,6 +740,77 @@ export class MotorTextoClaude implements MotorConversacional {
       return { texto: respuesta.replace(match[0], '').trim(), datosAccionAlumno }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico con el sobre firmado de la propuesta de
+  // actualización de lista oficial (ver "V1-C2 — contrato HMAC +
+  // transporte + persistencia", futuro V1-C3) — mismo patrón exacto
+  // que procesarMarcadorDeCorreccionAlumno: el docente NUNCA ve esta
+  // línea. A diferencia de CORRECCION_ALUMNO, esta fase no adjunta
+  // ninguna acción/botón — solo transporta el sobre para que se
+  // persista pegado al mensaje (ver AsistenteService.manejarEventoMotor)
+  // y una fase posterior (V1-D) lo recupere server-side.
+  //
+  // Validación de forma DELIBERADAMENTE duplicada en este archivo (en
+  // vez de importar lib/listaOficial/propuestaFirmada.ts, que usa
+  // node:crypto): este módulo corre en el navegador, y ese helper es
+  // server-only por diseño — nunca debe entrar al bundle del cliente.
+  // Esta función solo verifica FORMA (nunca la firma HMAC — el cliente
+  // no tiene el secreto y no le corresponde verificar nada aquí).
+  //
+  // V1-C2.1 (hardening) — mismo criterio de whitelist EXACTA que ya
+  // aplica el servidor (ver lib/listaOficial/propuestaFirmada.ts): un
+  // objeto con una propiedad extra (top-level, en el payload, o en un
+  // cambio) se rechaza por completo — nunca se persiste en
+  // mensajes_chat.contenido metadata que ni siquiera pertenece al
+  // contrato firmado, aunque el cliente no pueda verificar la firma.
+  private esSobrePropuestaListaOficialConFormaMinima(valor: unknown): valor is PropuestaListaOficialFirmada {
+    const tieneExactamenteLasClaves = (obj: Record<string, unknown>, clavesPermitidas: readonly string[]): boolean => {
+      const claves = Object.keys(obj)
+      return claves.length === clavesPermitidas.length && clavesPermitidas.every((clave) => Object.prototype.hasOwnProperty.call(obj, clave))
+    }
+
+    if (typeof valor !== 'object' || valor === null) return false
+    const sobre = valor as Record<string, unknown>
+    if (!tieneExactamenteLasClaves(sobre, ['payload', 'firma'])) return false
+    if (typeof sobre.firma !== 'string' || sobre.firma.length === 0) return false
+    if (typeof sobre.payload !== 'object' || sobre.payload === null) return false
+
+    const payload = sobre.payload as Record<string, unknown>
+    if (!tieneExactamenteLasClaves(payload, ['docenteId', 'conversacionId', 'generadoEn', 'propuesta'])) return false
+    if (typeof payload.docenteId !== 'string' || !payload.docenteId) return false
+    if (typeof payload.conversacionId !== 'string' || !payload.conversacionId) return false
+    if (typeof payload.generadoEn !== 'string' || !payload.generadoEn) return false
+    if (!Array.isArray(payload.propuesta) || payload.propuesta.length === 0) return false
+
+    return payload.propuesta.every((c) => {
+      if (typeof c !== 'object' || c === null) return false
+      const cambio = c as Record<string, unknown>
+      if (!tieneExactamenteLasClaves(cambio, ['alumnoId', 'campo', 'valorPropuesto'])) return false
+      return typeof cambio.alumnoId === 'string' && !!cambio.alumnoId && cambio.campo === 'curp' && typeof cambio.valorPropuesto === 'string' && !!cambio.valorPropuesto
+    })
+  }
+
+  private procesarMarcadorDePropuestaListaOficial(respuesta: string): { texto: string; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada } {
+    const match = respuesta.match(/\[\[PROPUESTA_LISTA_OFICIAL:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    const textoSinMarcador = respuesta.replace(match[0], '').trim()
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const parseado: unknown = JSON.parse(new TextDecoder('utf-8').decode(bytes))
+      if (!this.esSobrePropuestaListaOficialConFormaMinima(parseado)) {
+        // Forma inválida — nunca se adjunta metadata a medias; el
+        // texto humano legítimo sigue intacto de todas formas.
+        return { texto: textoSinMarcador }
+      }
+      return { texto: textoSinMarcador, propuestaListaOficialFirmada: parseado }
+    } catch {
+      // Marcador corrupto (base64/JSON inválido) — mismo criterio que
+      // el resto de los marcadores: nunca se muestra el blob crudo,
+      // nunca se lanza, solo se retira del texto visible.
+      return { texto: textoSinMarcador }
     }
   }
 
