@@ -6,7 +6,7 @@ import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConversacional'
 import { validarDecisionOrquestador, esCandidataAShortCircuitCliente, HEADER_DECISION_ORQUESTADOR, HEADER_DECISION_ORQUESTADOR_MODO, type DecisionOrquestador } from '@/lib/asistente/decisionOrquestador'
-import { obtenerSesionContexto } from '@/lib/sesionContexto'
+import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
   actualizarPerfilDocente,
@@ -724,20 +724,32 @@ export async function POST(req: NextRequest) {
   // docente, o cualquier fallo de la consulta → null — la generación
   // de la imagen puede seguir igual, simplemente sin vincularse a
   // ninguna conversación no demostrada.
-  let promesaConversacionAutorizada: Promise<string | null> | null = null
-  async function obtenerConversacionIdAutorizada(): Promise<string | null> {
+  // MG-B2 (ver diseño aprobado "snapshot de grupo por conversación") —
+  // la fila cacheada ahora también trae grupo_contexto_version/grupo_id,
+  // ampliando el MISMO SELECT en vez de sumar uno nuevo. Los 7
+  // llamadores existentes de obtenerConversacionIdAutorizada() siguen
+  // recibiendo exactamente string|null como antes (esa función solo
+  // proyecta `.id` del resultado de abajo) — ningún llamador existente
+  // cambia de comportamiento.
+  type ConversacionAutorizada = { id: string; grupo_contexto_version: number | null; grupo_id: string | null }
+  let promesaConversacionAutorizadaCompleta: Promise<ConversacionAutorizada | null> | null = null
+  async function obtenerConversacionAutorizadaCompleta(): Promise<ConversacionAutorizada | null> {
     if (!conversacionIdSolicitada || !supabaseUser) return null
-    if (!promesaConversacionAutorizada) {
-      promesaConversacionAutorizada = (async () => {
+    if (!promesaConversacionAutorizadaCompleta) {
+      promesaConversacionAutorizadaCompleta = (async () => {
         const { data, error } = await supabaseUser
           .from('conversaciones_chat')
-          .select('id')
+          .select('id, grupo_contexto_version, grupo_id')
           .eq('id', conversacionIdSolicitada)
           .maybeSingle()
-        return error || !data ? null : (data.id as string)
+        return error || !data ? null : (data as ConversacionAutorizada)
       })()
     }
-    return promesaConversacionAutorizada
+    return promesaConversacionAutorizadaCompleta
+  }
+  async function obtenerConversacionIdAutorizada(): Promise<string | null> {
+    const fila = await obtenerConversacionAutorizadaCompleta()
+    return fila?.id ?? null
   }
 
   // Indicadores seguros de diagnóstico (nunca tokens, claves ni cookies
@@ -1141,6 +1153,82 @@ export async function POST(req: NextRequest) {
         .catch(() => null)
     : Promise.resolve(null)
 
+  // MG-B2 (ver diseño aprobado "snapshot de grupo por conversación") —
+  // resuelto ANTES de obtenerSesionContexto para poder elegirle uno de
+  // sus 3 modos sin ambigüedad. Nunca lee grupo_id/grupo_contexto_version
+  // del body (esta petición ni siquiera los transporta — ver
+  // destructuring de arriba): el único origen posible es la fila ya
+  // demostrada como propia del docente vía RLS
+  // (obtenerConversacionAutorizadaCompleta). Sin conversacionId, este
+  // bloque no ejecuta ninguna consulta nueva (opcionesSesionMgB queda
+  // undefined → comportamiento MG-A de siempre, idéntico a hoy).
+  let opcionesSesionMgB: OpcionesSesionContexto | undefined
+  if (conversacionIdSolicitada && supabaseUser && userId) {
+    // Mismo criterio de timeout que el resto del archivo (autenticación,
+    // sesión) — un hang de red en la RPC o su relectura nunca debe
+    // colgar el turno completo; un timeout se trata igual que
+    // cualquier otro fallo de la RPC: snapshot no resuelto, fail-closed.
+    opcionesSesionMgB = await conLimiteDeTiempo(
+      (async (): Promise<OpcionesSesionContexto | undefined> => {
+        const conversacionAutorizada = await obtenerConversacionAutorizadaCompleta()
+        if (!conversacionAutorizada) {
+          // conversacionId presente pero RLS no la devolvió (ajena,
+          // inexistente, o error) — fail-closed para el grupo de ESTE
+          // turno; nunca aproximar cayendo al heurístico MG-A como si
+          // la conversación no existiera.
+          return { modo: 'fail_closed' }
+        }
+        if (conversacionAutorizada.grupo_contexto_version !== 1) {
+          // grupo_contexto_version === null (legacy): undefined a
+          // propósito → mismo comportamiento MG-A de siempre, sin RPC
+          // (ver diseño aprobado, punto 4). Una conversación legacy no
+          // adquiere por esto ninguna identidad de grupo estable.
+          return undefined
+        }
+        if (conversacionAutorizada.grupo_id) {
+          // Snapshot ya fijado en un turno anterior — identidad
+          // estable, 0 RPC.
+          console.log('[MG-B] version=1 snapshot=true')
+          return { modo: 'snapshot', grupoIdForzado: conversacionAutorizada.grupo_id }
+        }
+        // Snapshot todavía sin resolver — como máximo UN intento de
+        // RPC por request (nunca estado persistente de reintentos: ver
+        // diseño aprobado, punto 3). Cualquier error de la RPC o de la
+        // relectura posterior se trata igual: snapshot no resuelto,
+        // fail-closed para este turno — nunca aproximar.
+        let grupoIdTrasRpc: string | null = null
+        try {
+          const { error: errorRpc } = await supabaseUser.rpc('fijar_grupo_conversacion', {
+            p_conversacion_id: conversacionAutorizada.id,
+          })
+          if (errorRpc) {
+            console.log('[MG-B] rpc_error=true')
+          } else {
+            const { data: relectura, error: errorRelectura } = await supabaseUser
+              .from('conversaciones_chat')
+              .select('grupo_id')
+              .eq('id', conversacionAutorizada.id)
+              .maybeSingle()
+            if (!errorRelectura && relectura?.grupo_id) grupoIdTrasRpc = relectura.grupo_id as string
+          }
+        } catch {
+          console.log('[MG-B] rpc_error=true')
+        }
+        if (grupoIdTrasRpc) {
+          console.log('[MG-B] snapshot_resuelto=true')
+          return { modo: 'snapshot', grupoIdForzado: grupoIdTrasRpc }
+        }
+        console.log('[MG-B] snapshot_resuelto=false')
+        return { modo: 'fail_closed' }
+      })(),
+      TIMEOUT_SESION_MS,
+      'Tiempo de espera agotado resolviendo el snapshot de grupo (MG-B)'
+    ).catch((e) => {
+      console.error('Error resolviendo snapshot de grupo (MG-B):', e)
+      return { modo: 'fail_closed' } as OpcionesSesionContexto
+    })
+  }
+
   // La sesión real (grupo activo + lista de alumnos con nombre e ID) se
   // obtiene SIEMPRE que haya un docente autenticado — no solo cuando el
   // mensaje parece pedir una acción concreta. Son 2 consultas indexadas
@@ -1149,7 +1237,7 @@ export async function POST(req: NextRequest) {
   // IA responder "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez
   // de fingir que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
   const sesion = (supabaseUser && userId)
-    ? await conLimiteDeTiempo(obtenerSesionContexto(supabaseUser, userId, zonaHoraria), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
+    ? await conLimiteDeTiempo(obtenerSesionContexto(supabaseUser, userId, zonaHoraria, opcionesSesionMgB), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
         console.error('Error obteniendo sesión de contexto:', e)
         return null
       })
