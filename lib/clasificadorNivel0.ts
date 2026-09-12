@@ -40,6 +40,7 @@ export type ClasificacionNivel0 = {
     | 'navegar_lista_filtrada'
     | 'actualizar_perfil_docente'
     | 'registrar_incidencia'
+    | 'actualizar_lista_oficial'
     | 'conversacion_general'
     | 'intencion_no_reconocida';
   nivel_ejecucion: 1 | 2 | 3 | 4;
@@ -314,6 +315,7 @@ const NIVEL_EJECUCION_POR_INTENCION: Record<ClasificacionNivel0['intencion_princ
   navegar_lista_filtrada: 1,
   actualizar_perfil_docente: 1,
   registrar_incidencia: 1,
+  actualizar_lista_oficial: 1,
   conversacion_general: 3,
   intencion_no_reconocida: 3,
 };
@@ -393,7 +395,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida — estas 4 claves son OBLIGATORIAS siempre, en cualquier clasificación, sin excepción:
 {
-  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "corregir_dato_alumno" | "revisar_datos_alumnos" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "corregir_dato_alumno" | "revisar_datos_alumnos" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "actualizar_lista_oficial" | "conversacion_general" | "intencion_no_reconocida",
   "entidades_resueltas": {
     "alumno_id": string | null,
     "alumno_nombre_detectado": string | null,
@@ -432,7 +434,7 @@ Además de esas 4 claves siempre presentes, incluye ÚNICAMENTE las claves opcio
 "accion_planeacion_generar": "crear" | "ajustar" | "aprobar" — solo en planeacion_generar.
 "requiere_consulta_oficial": boolean — inclúyela SOLO cuando sea true (ver regla 18); si es false, omítela por completo.
 "alumno_resuelto_por_fonetica": boolean — inclúyela SOLO con valor true, y SOLO en marcar_asistencia_individual, cuando el alumno se resolvió por semejanza FONÉTICA y no por coincidencia de texto (ver regla 9, segunda viñeta); en cualquier otro caso, omítela por completo.
-"capacidad_contextual": "transformar_texto" | "generar_imagen" | "editar_imagen" | "convertir_documento" | "reutilizar_imagen_subida" — ver regla 24. SOLO cuando intencion_principal="conversacion_general" Y encontraste un referente real en REFERENTES CONTEXTUALES DISPONIBLES; en cualquier otro caso, omítela por completo.
+"capacidad_contextual": "transformar_texto" | "generar_imagen" | "editar_imagen" | "convertir_documento" | "reutilizar_imagen_subida" — ver regla 24 y regla 25. SOLO cuando intencion_principal="conversacion_general" (regla 24) o intencion_principal="actualizar_lista_oficial" (regla 25, únicamente con "reutilizar_imagen_subida") Y encontraste un referente real en REFERENTES CONTEXTUALES DISPONIBLES; en cualquier otro caso, omítela por completo.
 "referente_elegido_tipo": "texto" | "documento" | "imagen" | "lista_filtrada" — junto con capacidad_contextual, el TIPO del referente elegido (copiado tal cual de la lista). Omítela si omites capacidad_contextual.
 "referente_elegido_id": string — junto con capacidad_contextual, el id EXACTO del referente elegido, copiado carácter por carácter de REFERENTES CONTEXTUALES DISPONIBLES — NUNCA inventes un id que no esté ahí. Omítela si omites capacidad_contextual.
 "confianza_contextual": "alta" | "media" | "baja" — junto con capacidad_contextual, qué tan seguro estás de esa lectura. Omítela si omites capacidad_contextual.
@@ -487,14 +489,27 @@ Si estos cuatro elementos están presentes (el texto literal, o la excepción de
 Si el mensaje trae la intención de comparar pero le falta el alumno, el campo, o el valor concreto a comparar, NO actives esta regla ni la 22 — usa el mismo mecanismo de datos_faltantes ya existente ("alumno" si falta el alumno, "campo_alumno" si falta el campo, "valor_alumno" si falta el valor) — nunca asumas ni completes lo que el docente no dio.
 Frases como "no corrijas nada todavía", "no cambies nada", "sin corregir", "no lo apliques" NUNCA impiden que esta regla se active — al contrario, son exactamente la señal de que el docente quiere solo la comparación de solo lectura, que es exactamente lo que accion_correccion_alumno="proponer" ya garantiza (nunca escribe por sí solo).
 DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docente SOLO pregunta por el valor YA registrado, sin traer ningún valor propio para comparar. En cuanto el mensaje trae, además del alumno y el campo, un valor concreto del propio docente para comparar contra lo registrado, es esta regla (22.2), nunca la 21.
-23. REVISIÓN INTERNA de posibles errores en los datos de los alumnos (ver "fallo: Chat IA niega poder editar datos de alumnos"): si el maestro pide revisar, checar o buscar posibles errores/inconsistencias en los datos de sus alumnos o de "la lista" SIN nombrar un alumno y un campo específicos con un valor nuevo (eso ya es la regla 22) → intencion_principal="revisar_datos_alumnos", entidades_resueltas.alumno_id=null. Ejemplos: "Revisa otros posibles errores", "Revisa otros posibles errores y corrige", "Revisa la lista", "Busca errores en los datos de mis alumnos", "Corrige la lista de la app", "Quiero que corrijas la lista, de la app", "¿Hay datos mal capturados en mi grupo?", "Checa que los datos de mis alumnos estén bien". Esta regla es SIEMPRE sobre los datos YA guardados dentro de la aplicación — NUNCA la uses, y usa "conversacion_general" en su lugar, si el mensaje menciona explícitamente RENAPO, "verificación oficial", "fuente oficial", "validar oficialmente" o cualquier equivalente que pida contrastar contra una fuente externa: eso NO es esta intención, es una pregunta que el chat debe responder con honestidad (no tiene acceso a RENAPO ni a ninguna fuente oficial de identidad), nunca confundirla con revisar los datos internos.
-24. CAPACIDAD CONTEXTUAL (ver REFERENTES CONTEXTUALES DISPONIBLES en el contexto dinámico más abajo) — SOLO aplica cuando intencion_principal="conversacion_general" (si cualquiera de las reglas 1-23 ya aplicó, IGNORA esta regla por completo: NUNCA incluyas capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual en ese caso — datos internos siempre ganan). Si hay al menos un referente en esa lista, evalúa si el mensaje actual pretende TRANSFORMAR o REUTILIZAR ese contenido reciente en vez de empezar algo nuevo sin relación con él:
+23. REVISIÓN INTERNA de posibles errores en los datos de los alumnos (ver "fallo: Chat IA niega poder editar datos de alumnos"): si el maestro pide revisar, checar o buscar posibles errores/inconsistencias en los datos de sus alumnos o de "la lista" SIN nombrar un alumno y un campo específicos con un valor nuevo (eso ya es la regla 22) → intencion_principal="revisar_datos_alumnos", entidades_resueltas.alumno_id=null. Ejemplos: "Revisa otros posibles errores", "Revisa otros posibles errores y corrige", "Revisa la lista", "Busca errores en los datos de mis alumnos", "Corrige la lista de la app", "Quiero que corrijas la lista, de la app", "¿Hay datos mal capturados en mi grupo?", "Checa que los datos de mis alumnos estén bien". Esta regla es SIEMPRE sobre los datos YA guardados dentro de la aplicación — NUNCA la uses, y usa "conversacion_general" en su lugar, si el mensaje menciona explícitamente RENAPO, "verificación oficial", "fuente oficial", "validar oficialmente" o cualquier equivalente que pida contrastar contra una fuente externa: eso NO es esta intención, es una pregunta que el chat debe responder con honestidad (no tiene acceso a RENAPO ni a ninguna fuente oficial de identidad), nunca confundirla con revisar los datos internos. TAMPOCO uses esta regla — usa "actualizar_lista_oficial" (regla 25) en su lugar — cuando el mensaje trae o referencia una FOTOGRAFÍA/DOCUMENTO de una lista/listado de alumnos como fuente para comparar o actualizar: "revisa esta lista" con una foto de lista oficial adjunta, "corrige la lista de la app con esta foto", "actualiza mi lista con estas imágenes" NO son esta regla — son actualizar_lista_oficial. La distinción es exclusivamente esa: revisar_datos_alumnos es SIEMPRE sin ninguna foto/documento de lista como fuente (una auditoría puramente interna); en cuanto existe una foto/documento de lista real como fuente de comparación, es siempre actualizar_lista_oficial, nunca esta regla.
+24. CAPACIDAD CONTEXTUAL (ver REFERENTES CONTEXTUALES DISPONIBLES en el contexto dinámico más abajo) — SOLO aplica cuando intencion_principal="conversacion_general" (si cualquiera de las reglas 1-23 ya aplicó, IGNORA esta regla por completo: NUNCA incluyas capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual en ese caso — datos internos siempre ganan). La ÚNICA excepción a "IGNORA esta regla" es intencion_principal="actualizar_lista_oficial" — ver regla 25, que reutiliza exactamente esta misma capacidad "reutilizar_imagen_subida" con su propio criterio, más estricto. Si hay al menos un referente en esa lista, evalúa si el mensaje actual pretende TRANSFORMAR o REUTILIZAR ese contenido reciente en vez de empezar algo nuevo sin relación con él:
    - "transformar_texto": pide modificar/reescribir un texto ya generado en la conversación (más corto, más formal, traducirlo, resumirlo, cambiar el tono, simplificarlo...) — el referente elegido debe ser tipo "texto" o "documento".
    - "generar_imagen": pide convertir ese contenido ya generado en una imagen/tarjeta/gráfico visual nuevo — referente tipo "texto" o "documento".
    - "editar_imagen": pide modificar una imagen YA generada (cambiar fondo, colores, agregar/quitar algo, tipografía) — referente tipo "imagen", solo tiene sentido si existe uno en la lista.
    - "convertir_documento": pide el archivo descargable (Word/PDF/PowerPoint/Excel) de contenido ya generado — referente tipo "texto" o "documento".
    - "reutilizar_imagen_subida": pide seguir usando, analizar de nuevo, revisar otra vez, comparar o continuar trabajando con una FOTOGRAFÍA que el propio maestro subió/adjuntó anteriormente en esta conversación (nunca una imagen generada por IA) — referente tipo "imagen" con origen="mensaje" en la lista (NUNCA origen="material_visual_activo" — eso pertenece exclusivamente a "editar_imagen", nunca a esta capacidad). Ejemplos: "continúa con la imagen anterior", "usa esa foto", "revisa otra vez la imagen", "compárala con esto", "trabaja con la foto que mandé", "actualiza la lista con esa foto". NUNCA la confundas con "editar_imagen": esa es para modificar/regenerar una imagen creada por IA; una fotografía real que el maestro subió nunca se "edita" con esta app, solo se vuelve a consultar/analizar. Un simple "Continúa" o "sigue" SIN ninguna mención a la imagen/foto/fotografía/lo que mandó NO es evidencia suficiente por sí sola para esta capacidad — usa confianza_contextual="media" o "baja" en ese caso (o simplemente no la incluyas), salvo que el resto del mensaje o el sentido completo de la conversación deje clara la intención específica de seguir trabajando con esa fotografía. También cuenta como esta capacidad una referencia que habla de la(s) fotografía(s) sin nombrarlas literalmente cuando el sentido ya es inequívoco: preguntas sobre orden/secuencia/posición entre varias ("¿en qué orden están?", "¿cuál va primero?", "¿cuál es la segunda?", "¿cuál es la de en medio?", "ordénamelas", "¿cómo están acomodadas?"), sobre su contenido individual con plural implícito ("¿qué aparece en cada una?", "¿qué ves en cada una?", "¿cuál corresponde a cada cosa?"), o de comparación/diferenciación entre varias ("compáralas", "¿qué diferencia hay entre ellas?", "¿cuál de las tres tiene texto?"). La existencia de un referente tipo "imagen" con origen="mensaje" en la lista es condición NECESARIA pero NUNCA suficiente por sí sola para estos casos plurales/ambiguos: actívala solo cuando el mensaje actual, leído junto con el contexto reciente real de la conversación, deje claro que se refiere específicamente a esa(s) fotografía(s) — nunca por la sola presencia de una palabra plural o de orden. Si el contexto reciente en realidad trata de otra cosa (pasos de una actividad, varios alumnos, un documento o lista de texto, cualquier otro contenido plural no visual), NUNCA fuerces esta capacidad solo porque también exista un referente visual disponible en la lista — en ese caso usa confianza_contextual="baja" o simplemente omite capacidad_contextual.
-   Estas 5 capacidades expresan la MISMA intención de muchas formas naturales distintas — no busques una frase exacta, entiende el significado. Pero NO fuerces ninguna solo porque existan referentes disponibles: si el mensaje pide algo nuevo sin relación con el contenido reciente, o es charla/pregunta general (ej. "cuéntame una historia sobre dinosaurios", aunque exista un texto anterior en la conversación), NO incluyas capacidad_contextual — la sola existencia de un referente NUNCA implica que el maestro quiere reutilizarlo. Si hay ambigüedad real entre dos referentes posibles o entre dos capacidades, usa confianza_contextual="media" o "baja" en vez de forzar una elección para sonar seguro. referente_elegido_id SIEMPRE debe copiarse EXACTAMENTE de la lista de REFERENTES CONTEXTUALES DISPONIBLES — un id que no aparezca ahí, tal cual, se descarta por completo.`;
+   Estas 5 capacidades expresan la MISMA intención de muchas formas naturales distintas — no busques una frase exacta, entiende el significado. Pero NO fuerces ninguna solo porque existan referentes disponibles: si el mensaje pide algo nuevo sin relación con el contenido reciente, o es charla/pregunta general (ej. "cuéntame una historia sobre dinosaurios", aunque exista un texto anterior en la conversación), NO incluyas capacidad_contextual — la sola existencia de un referente NUNCA implica que el maestro quiere reutilizarlo. Si hay ambigüedad real entre dos referentes posibles o entre dos capacidades, usa confianza_contextual="media" o "baja" en vez de forzar una elección para sonar seguro. referente_elegido_id SIEMPRE debe copiarse EXACTAMENTE de la lista de REFERENTES CONTEXTUALES DISPONIBLES — un id que no aparezca ahí, tal cual, se descarta por completo.
+25. ACTUALIZAR LISTA OFICIAL — operación sobre el GRUPO COMPLETO en la que el maestro quiere comparar, revisar o actualizar su lista de alumnos usando una FOTOGRAFÍA o documento de una lista/listado (con nombres, y normalmente CURP) como fuente real → intencion_principal="actualizar_lista_oficial", entidades_resueltas.alumno_id=null (esto nunca es sobre un alumno específico). Ejemplos: "Actualiza la lista oficial con esta foto.", "Revisa esta lista y completa las CURP que falten.", "Compara esta lista oficial con mis alumnos.", "Actualiza mi lista con estas imágenes.", "Compara esta lista con mi grupo.". NO exijas literalmente la palabra "oficial" — basta que el contexto (una lista/documento + el grupo + una imagen actual o referenciada) deje claro que se trata de esto.
+   EXCLUSIONES — nunca uses esta regla en estos casos:
+   (A) "Corrige la CURP de Juan." → corregir_dato_alumno (regla 22): un alumno específico, sin foto como fuente.
+   (B) "Corrige la CURP de este alumno usando esta foto." (o cualquier variante que nombre o deje claro que se refiere a UN alumno específico, aunque la fuente sea una imagen) → corregir_dato_alumno (regla 22.2, comparación visual): esta regla 25 es EXCLUSIVAMENTE para el grupo completo, nunca para un alumno nombrado — en cuanto el mensaje identifica a un alumno en particular, es siempre 22/22.2, nunca 25, sin importar que también haya una foto.
+   (C) "Muéstrame la lista." → la intención de navegación/consulta que ya corresponda (14/16), nunca esta.
+   (D) "¿Cuántos alumnos hay?" → consultar_asistencia_grupo u otra intención existente de conteo, nunca esta.
+   (E) "Genera una lista de asistencia." → NO es esta regla (es una solicitud de generación de documento, ver regla 7 y su excepción) — no compara nada contra ningún alumno.
+   (F) "Analiza esta imagen." (sin ninguna mención de comparar/actualizar la lista del grupo) → NO esta regla; queda en conversacion_general o en la capacidad contextual que corresponda si aplica.
+   (G) "¿Qué dice esta foto?" → mismo caso que (F), NO esta regla.
+   PRECEDENCIA: si el mensaje combina la actualización de la lista con cualquier otra petición en el mismo turno (ej. "Actualiza la lista oficial y dime quién faltó hoy", "Actualiza esta lista y genera una lista de asistencia"), actualizar_lista_oficial GANA como única intencion_principal — nunca intentes resolver ambas peticiones en el mismo turno; el maestro puede repetir la petición secundaria en un turno posterior.
+   FUENTE DE LA FOTO — dos casos, nunca un tercero inventado:
+   (i) el mensaje actual trae una imagen adjunta → esta regla se activa sin necesitar ningún referente contextual (la resolución de la imagen actual la hace el código, no el clasificador).
+   (ii) el mensaje actual NO trae imagen, pero se refiere claramente a una fotografía de lista ya subida antes en esta conversación (ej. "Con la foto que te mandé antes, actualiza la lista oficial.") → intencion_principal="actualizar_lista_oficial" Y ADEMÁS capacidad_contextual="reutilizar_imagen_subida" (reutiliza EXACTAMENTE esa capacidad existente, nunca crees una nueva) con referente_elegido_tipo/referente_elegido_id copiados EXACTAMENTE de REFERENTES CONTEXTUALES DISPONIBLES (mismo criterio exacto de la regla 24) y confianza_contextual="alta" únicamente si el referente es inequívoco. Si el mensaje no trae imagen actual Y no hay un referente histórico claro e inequívoco de una foto de lista, NO inventes ni aproximes ningún referente — omite capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual por completo; la aplicación le pedirá la foto al maestro. NUNCA elijas "la última imagen" de la conversación como aproximación silenciosa cuando el mensaje no da evidencia clara de a cuál foto se refiere.`;
 
 // Contexto de sesión + últimos turnos — la parte que sí cambia en
 // cada request (grupo, alumnos, señal de imagen, historial
@@ -564,10 +579,22 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
   // en código, nunca confiando en que el modelo haya omitido los
   // campos correctamente — cualquier intención interna (1-23) fuerza
   // los 3 a null sin excepción, pase lo que pase en la salida cruda.
+  //
+  // V1-C (ver regla 25 y auditoría "generalizar gate contextual, sin
+  // fallback a última imagen"): actualizar_lista_oficial es la ÚNICA
+  // excepción añadida a esta lista — necesita poder reutilizar
+  // exactamente "reutilizar_imagen_subida" para referenciar una foto de
+  // lista subida en un turno anterior. Ninguna otra intención (1-23)
+  // se agrega aquí: todas las demás siguen forzando los 3 campos a
+  // null exactamente como antes.
+  const INTENCIONES_QUE_ADMITEN_REFERENTE_CONTEXTUAL = new Set<ClasificacionNivel0['intencion_principal']>([
+    'conversacion_general',
+    'actualizar_lista_oficial',
+  ])
   let capacidadContextual: ClasificacionNivel0['capacidad_contextual'] = null
   let referenteElegido: ClasificacionNivel0['referente_elegido'] = null
   let confianzaContextual: ClasificacionNivel0['confianza_contextual'] = null
-  if (modelo.intencion_principal === 'conversacion_general') {
+  if (INTENCIONES_QUE_ADMITEN_REFERENTE_CONTEXTUAL.has(modelo.intencion_principal)) {
     const capacidadValida =
       modelo.capacidad_contextual === 'transformar_texto' ||
       modelo.capacidad_contextual === 'generar_imagen' ||
@@ -583,10 +610,19 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
     const referenteReal = modelo.referente_elegido_id
       ? referentesContextuales.find((r) => r.id === modelo.referente_elegido_id && r.tipo === modelo.referente_elegido_tipo)
       : undefined
+    // actualizar_lista_oficial (regla 25) solo puede reutilizar
+    // EXACTAMENTE "reutilizar_imagen_subida" — nunca las otras 4
+    // capacidades (transformar_texto/generar_imagen/editar_imagen/
+    // convertir_documento no tienen sentido para esta intención y el
+    // prompt nunca las instruye aquí). Defensivo: no se confía en que
+    // el modelo respete esto por sí solo, igual que el resto de esta
+    // función nunca confía en la salida cruda sin revalidarla en código.
+    const capacidadCoherenteConIntencion =
+      modelo.intencion_principal === 'actualizar_lista_oficial' ? modelo.capacidad_contextual === 'reutilizar_imagen_subida' : true
     // Los 3 campos son todo-o-nada: una capacidad sin un referente
     // real y válido no significa nada ejecutable, así que tampoco se
     // conserva sola.
-    if (capacidadValida && confianzaValida && referenteReal) {
+    if (capacidadValida && capacidadCoherenteConIntencion && confianzaValida && referenteReal) {
       capacidadContextual = modelo.capacidad_contextual!
       referenteElegido = { tipo: referenteReal.tipo, id: referenteReal.id }
       confianzaContextual = modelo.confianza_contextual!
