@@ -693,6 +693,15 @@ export default function FichaAlumnoPage() {
             {(errorAsistencia || errorIncidencias || errorEvaluaciones || errorEvidencias || errorNecesidades) && (
               <BannerError mensaje="Algunos datos no se pudieron cargar por completo." />
             )}
+
+            <div className="pt-2">
+              <button
+                onClick={() => setMostrarConfirmacionBaja(true)}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
+              >
+                Eliminar alumno
+              </button>
+            </div>
           </div>
         )}
 
@@ -746,15 +755,6 @@ export default function FichaAlumnoPage() {
             </button>
 
             {mensaje && <p className="text-xs text-center text-gray-500 mt-3">{mensaje}</p>}
-
-            <div className="mt-6 pt-5 border-t border-gray-100">
-              <button
-                onClick={() => setMostrarConfirmacionBaja(true)}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
-              >
-                Dar de baja
-              </button>
-            </div>
           </div>
         )}
 
