@@ -948,6 +948,22 @@ export default function AsistentePanel() {
                 <div className="absolute left-0 top-11 w-52 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
                   <a href="/documentos" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">📤 Subir documentos</a>
                   <a href="/dashboard/configuracion" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">⚙️ Configuración</a>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setMenuConfigAbierto(false)
+                      setMenuAbierto(false)
+                      const { error } = await supabase.auth.signOut()
+                      if (error) {
+                        console.error('[AsistentePanel] Error al cerrar sesión:', error.message)
+                        return
+                      }
+                      router.push('/bienvenida')
+                    }}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    🚪 Cerrar sesión
+                  </button>
                 </div>
               )}
             </div>
