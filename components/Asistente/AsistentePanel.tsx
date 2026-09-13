@@ -958,7 +958,7 @@ export default function AsistentePanel() {
                         console.error('[AsistentePanel] Error al cerrar sesión:', error.message)
                         return
                       }
-                      router.push('/bienvenida')
+                      window.location.href = '/bienvenida'
                     }}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
                   >
