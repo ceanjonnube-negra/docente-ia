@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { ResultadoComparacionListaOficial } from './listaOficial/matchingListaOficial'
 
 export type AlumnoPreview = {
   numero_lista: number | null
@@ -150,6 +151,80 @@ export type GrupoParaImportar = {
 // grupo.id es solo el recurso solicitado, no una autorización. Único
 // camino de alta soportado: no existe ningún INSERT directo restante
 // sobre alumnos/inscripciones en este archivo.
+// Rama de COMPARACIÓN/ACTUALIZACIÓN (fase 1, read-only) — solo aplica
+// cuando el grupo ya tiene roster y el lote seleccionado son imágenes
+// (V1-A hoy solo lee imágenes; máximo 4 por análisis, mismo límite que
+// ya impone analizarImagenesListaOficial). Cualquier archivo o cantidad
+// que no cumpla esto queda deliberadamente fuera de esta rama — el
+// caller debe entonces usar el flujo de ALTA existente sin cambios, en
+// vez de intentar una extracción nueva no auditada.
+const EXTENSIONES_IMAGEN_COMPARABLE = ['jpg', 'jpeg', 'png', 'gif', 'webp']
+const MAX_IMAGENES_COMPARACION = 4
+
+// Fuente de verdad REAL para decidir ALTA vs COMPARACIÓN — nunca un
+// prop calculado en un render anterior (puede quedar desactualizado si
+// el roster cambia en otra pestaña/dispositivo o vía Chat IA mientras
+// Lista permanece abierta). Lectura fresca, mínima y read-only: solo
+// existencia (LIMIT 1), nunca el roster completo — misma tabla/filtro
+// que ya usa obtenerRosterConPosicion (grupo_id + estatus='activo'),
+// mismo cliente autenticado del navegador, mismas policies RLS ya
+// probadas — no introduce una segunda definición de "qué es el
+// roster". Propaga cualquier error del lado del caller: quien llama
+// decide fail-closed, esta función nunca aproxima "vacío" ante un
+// fallo.
+export async function tieneRosterActivo(sb: SupabaseClient, grupoId: string): Promise<boolean> {
+  const { data, error } = await sb
+    .from('inscripciones')
+    .select('id')
+    .eq('grupo_id', grupoId)
+    .eq('estatus', 'activo')
+    .limit(1)
+
+  if (error) {
+    throw new Error('No se pudo verificar el estado actual del grupo.')
+  }
+  return (data?.length ?? 0) > 0
+}
+
+export function esLoteComparableConRoster(archivos: File[]): boolean {
+  return (
+    archivos.length > 0 &&
+    archivos.length <= MAX_IMAGENES_COMPARACION &&
+    archivos.every((a) => EXTENSIONES_IMAGEN_COMPARABLE.includes((a.name.split('.').pop() || '').toLowerCase()))
+  )
+}
+
+// Llama al endpoint READ-ONLY /api/importar-alumnos/comparar — nunca
+// escribe nada. La comparación en sí (V1-B, compararListaOficial) y la
+// extracción (V1-A) ocurren del lado servidor, sin cambios respecto a
+// esos módulos; esta función solo empaqueta la llamada HTTP, mismo
+// patrón de sesión ya usado por analizarArchivos.
+export async function compararConRosterActual(
+  archivos: File[],
+  sb: SupabaseClient,
+  grupoId: string
+): Promise<ResultadoComparacionListaOficial> {
+  const { data: { session } } = await sb.auth.getSession()
+  if (!session?.access_token) {
+    throw new Error('No se encontró una sesión activa. Inicia sesión de nuevo.')
+  }
+
+  const formData = new FormData()
+  formData.append('grupo_id', grupoId)
+  for (const archivo of archivos) {
+    formData.append('archivos', archivo)
+  }
+
+  const res = await fetch('/api/importar-alumnos/comparar', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${session.access_token}` },
+    body: formData,
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'No se pudo comparar la lista con el grupo actual.')
+  return data.comparacion as ResultadoComparacionListaOficial
+}
+
 export async function guardarAlumnosImportados(
   sb: SupabaseClient,
   grupo: GrupoParaImportar,

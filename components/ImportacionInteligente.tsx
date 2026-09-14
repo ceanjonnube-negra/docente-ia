@@ -12,9 +12,13 @@ import {
   convertirHeicSiNecesario,
   analizarArchivos,
   guardarAlumnosImportados,
+  esLoteComparableConRoster,
+  compararConRosterActual,
+  tieneRosterActivo,
 } from '@/lib/importacionInteligente'
+import type { CategoriaDiffListaOficial, ResultadoComparacionListaOficial } from '@/lib/listaOficial/matchingListaOficial'
 
-type Estado = 'inicial' | 'analizando' | 'revisando' | 'guardando'
+type Estado = 'inicial' | 'analizando' | 'revisando' | 'guardando' | 'comparando' | 'revisando_comparacion'
 
 type Props = {
   grupo: GrupoParaImportar | null
@@ -49,6 +53,31 @@ const ACCEPT_IMPORTACION = 'image/*,.heic,.heif,.pdf,.doc,.docx,.xlsx,.xls'
 // manipula ni se intenta restringir el picker nativo en sí.
 const MAX_ARCHIVOS_IMPORTACION = 10
 
+// Etiquetas visibles para la preview READ-ONLY de la rama de
+// comparación (fase 1) — texto únicamente, no cambia ningún criterio de
+// clasificación (eso vive por completo en V1-B, matchingListaOficial.ts).
+const CATEGORIA_LABEL: Record<CategoriaDiffListaOficial, string> = {
+  SIN_CAMBIO: 'Sin cambio',
+  NUEVO_POSIBLE: 'Posible alumno nuevo',
+  CURP_FALTANTE_EN_DB: 'CURP faltante en el sistema',
+  CURP_DIFERENTE: 'CURP diferente (conflicto)',
+  LECTURA_DUDOSA: 'Lectura dudosa',
+  MATCH_AMBIGUO: 'Coincidencia ambigua',
+  CURP_DUPLICADA: 'CURP ya pertenece a otro alumno',
+  REGISTRO_DUPLICADO_EN_DOCUMENTO: 'Duplicado dentro del documento',
+}
+
+const ORDEN_CATEGORIAS: CategoriaDiffListaOficial[] = [
+  'SIN_CAMBIO',
+  'NUEVO_POSIBLE',
+  'CURP_FALTANTE_EN_DB',
+  'CURP_DIFERENTE',
+  'LECTURA_DUDOSA',
+  'MATCH_AMBIGUO',
+  'CURP_DUPLICADA',
+  'REGISTRO_DUPLICADO_EN_DOCUMENTO',
+]
+
 // Botón "Importar" (dispara el único <input type="file"> nativo) +
 // análisis automático + revisión final, todo en un solo componente.
 export default function ImportacionInteligente({
@@ -63,6 +92,7 @@ export default function ImportacionInteligente({
   const [alumnos, setAlumnos] = useState<AlumnoPreview[]>([])
   const [error, setError] = useState<string | null>(null)
   const [progreso, setProgreso] = useState({ completados: 0, total: 0 })
+  const [resultadoComparacion, setResultadoComparacion] = useState<ResultadoComparacionListaOficial | null>(null)
   const primeraFilaConAtencionRef = useRef<HTMLInputElement | null>(null)
   const inputArchivoRef = useRef<HTMLInputElement | null>(null)
 
@@ -104,6 +134,49 @@ export default function ImportacionInteligente({
       return
     }
 
+    // Fuente de verdad REAL para decidir ALTA vs COMPARACIÓN: lectura
+    // FRESCA de existencia de roster en este mismo instante — nunca un
+    // valor calculado en un render anterior (podría estar desactualizado
+    // si el roster cambió en otra pestaña/dispositivo o vía Chat IA
+    // mientras esta pantalla permanecía abierta). Fail-closed explícito:
+    // si esta verificación falla, NO se intenta ni ALTA ni comparación.
+    let rosterActivo: boolean
+    try {
+      rosterActivo = await tieneRosterActivo(supabase, grupo.id)
+    } catch {
+      setError('No se pudo verificar el estado actual del grupo. Intenta de nuevo.')
+      setEstado('inicial')
+      return
+    }
+
+    // Grupo YA poblado (confirmado ahora mismo): la ÚNICA rama permitida
+    // a partir de aquí es comparación/actualización — NUNCA el alta
+    // clásica. Un PDF/Word/Excel o un lote de 5+ imágenes en un grupo
+    // con roster jamás debe caer en analizarArchivos/
+    // guardarAlumnosImportados (ese camino podría intentar dar de alta
+    // alumnos que ya existen); si el lote no es comparable todavía, se
+    // falla cerrado con un mensaje claro, sin ninguna escritura.
+    if (rosterActivo) {
+      if (!esLoteComparableConRoster(listos)) {
+        setError('Para actualizar una lista existente, por ahora selecciona de 1 a 4 imágenes.')
+        setEstado('inicial')
+        return
+      }
+      try {
+        setEstado('comparando')
+        const resultado = await compararConRosterActual(listos, supabase, grupo.id)
+        setResultadoComparacion(resultado)
+        setEstado('revisando_comparacion')
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ocurrió un error al comparar la lista.')
+        setEstado('inicial')
+      }
+      return
+    }
+
+    // Grupo sin roster activo (confirmado ahora mismo): flujo de ALTA
+    // histórico, sin cambios — soporta imágenes, PDF, Word y Excel
+    // exactamente como antes.
     try {
       const combinados = await analizarArchivos(
         listos,
@@ -154,6 +227,15 @@ export default function ImportacionInteligente({
 
   function cancelarRevision() {
     setAlumnos([])
+    setError(null)
+    setEstado('inicial')
+  }
+
+  // Fase 1 de la rama de comparación es exclusivamente de revisión: no
+  // existe ningún "confirmar" aquí — cerrar es la única salida posible,
+  // y no cambia ningún dato.
+  function cerrarComparacion() {
+    setResultadoComparacion(null)
     setError(null)
     setEstado('inicial')
   }
@@ -239,6 +321,93 @@ export default function ImportacionInteligente({
                 </div>
               </div>
             )}
+
+            {estado === 'comparando' && (
+              <div className="rounded-2xl border border-gray-200 px-6 py-12 text-center">
+                <p className="text-base font-medium text-gray-800">Comparando con la lista actual del grupo...</p>
+              </div>
+            )}
+
+            {estado === 'revisando_comparacion' && resultadoComparacion && (() => {
+              const conteos = ORDEN_CATEGORIAS.reduce((acc, cat) => {
+                acc[cat] = 0
+                return acc
+              }, {} as Record<CategoriaDiffListaOficial, number>)
+              for (const r of resultadoComparacion.resultados) conteos[r.categoriaDiff] += 1
+              const filasParaRevisar = resultadoComparacion.resultados.filter((r) => r.categoriaDiff !== 'SIN_CAMBIO')
+              const ausentes = resultadoComparacion.ausentesEnDocumento
+
+              return (
+                <div>
+                  <div className="mb-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                    Vista previa de solo lectura. Ningún dato del grupo se ha modificado.
+                  </div>
+
+                  <p className="mb-3 text-sm text-gray-600">
+                    <span className="font-medium">{resultadoComparacion.resultados.length}</span> registro{resultadoComparacion.resultados.length === 1 ? '' : 's'} leído{resultadoComparacion.resultados.length === 1 ? '' : 's'} del documento
+                  </p>
+
+                  <div className="mb-5 flex flex-wrap gap-2">
+                    {ORDEN_CATEGORIAS.filter((cat) => conteos[cat] > 0).map((cat) => (
+                      <span key={cat} className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
+                        {CATEGORIA_LABEL[cat]}: {conteos[cat]}
+                      </span>
+                    ))}
+                    {ausentes.length > 0 && (
+                      <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
+                        Ausentes en el documento: {ausentes.length}
+                      </span>
+                    )}
+                  </div>
+
+                  {filasParaRevisar.length > 0 && (
+                    <div className="mb-5">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Casos que requieren revisión</p>
+                      <div className="divide-y divide-gray-100 rounded-2xl border border-gray-200">
+                        {filasParaRevisar.map((r, i) => (
+                          <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                            <div className="min-w-0">
+                              <p className="truncate font-medium text-gray-800">
+                                {r.alumnoNombre || r.registro.nombreLeido || 'Sin nombre legible'}
+                              </p>
+                              {r.registro.curpLeida && (
+                                <p className="truncate text-xs text-gray-400">{r.registro.curpLeida}</p>
+                              )}
+                            </div>
+                            <span className="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                              {CATEGORIA_LABEL[r.categoriaDiff]}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {ausentes.length > 0 && (
+                    <div className="mb-5">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Ausentes en el documento (solo informativo — no se da de baja a nadie)
+                      </p>
+                      <div className="divide-y divide-gray-100 rounded-2xl border border-gray-200">
+                        {ausentes.map((a) => (
+                          <div key={a.alumnoId} className="px-3 py-2 text-sm text-gray-700">
+                            {a.alumnoNombre}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={cerrarComparacion}
+                    className="w-full rounded-2xl border border-gray-300 py-3.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              )
+            })()}
 
             {(estado === 'revisando' || estado === 'guardando') && (
               <div>
