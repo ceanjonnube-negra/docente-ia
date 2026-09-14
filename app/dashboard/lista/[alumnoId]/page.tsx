@@ -24,7 +24,6 @@ type Evaluacion = { id: string; campo_formativo: string | null; periodo: string 
 type Evidencia = { id: string; tipo: string | null; descripcion: string | null; archivo_url: string | null; creado_en: string }
 type NecesidadApoyo = { id: string; tipo: string | null; descripcion: string | null; activa: boolean; creado_en: string }
 type FichaDescriptiva = { id: string; periodo: string | null; contenido: unknown; creado_en: string }
-type NotaAlumno = { id: string; tipo: string | null; contenido: string | null; fuente_modulo: string | null; estado: string; fecha: string }
 type PeriodoEvaluacion = { id: string; nombre: string; numero_periodo: number }
 
 type BorradorFicha = {
@@ -43,9 +42,7 @@ const CAMPOS_BORRADOR: { campo: keyof BorradorFicha; etiqueta: string }[] = [
   { campo: 'recomendaciones', etiqueta: 'Recomendaciones' },
 ]
 
-type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas' | 'historial'
-
-type HistorialItem = { key: string; origen: string; fecha: string; titulo: string; descripcion: string }
+type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas'
 
 function formatFecha(fecha: string | null | undefined): string {
   if (!fecha) return '—'
@@ -67,33 +64,6 @@ function getIniciales(nombre: string): string {
   if (partes.length === 0) return '?'
   if (partes.length === 1) return partes[0].slice(0, 2).toUpperCase()
   return (partes[0][0] + partes[1][0]).toUpperCase()
-}
-
-const ICONOS_PESTANA: Record<Pestana, string> = {
-  resumen: '📊',
-  datos: '📝',
-  asistencia: '✅',
-  incidencias: '⚠️',
-  evaluaciones: '🏆',
-  evidencias: '📎',
-  fichas: '📝',
-  historial: '🕓',
-}
-
-const ICONOS_ORIGEN: Record<string, string> = {
-  Asistencia: '✅',
-  Incidencia: '⚠️',
-  Evaluación: '🏆',
-  Evidencia: '📎',
-  Nota: '🗒️',
-}
-
-const CHIP_ORIGEN: Record<string, string> = {
-  Asistencia: 'bg-green-50 text-green-600',
-  Incidencia: 'bg-amber-50 text-amber-600',
-  Evaluación: 'bg-violet-50 text-violet-600',
-  Evidencia: 'bg-blue-50 text-blue-600',
-  Nota: 'bg-indigo-50 text-indigo-600',
 }
 
 function EstadoVacio({ icono, mensaje }: { icono: string; mensaje: string }) {
@@ -159,7 +129,6 @@ export default function FichaAlumnoPage() {
   const [evidencias, setEvidencias] = useState<Evidencia[]>([])
   const [necesidadesApoyo, setNecesidadesApoyo] = useState<NecesidadApoyo[]>([])
   const [fichasDescriptivas, setFichasDescriptivas] = useState<FichaDescriptiva[]>([])
-  const [notasAlumno, setNotasAlumno] = useState<NotaAlumno[]>([])
   const [periodosEvaluacion, setPeriodosEvaluacion] = useState<PeriodoEvaluacion[]>([])
   const [cicloEscolarId, setCicloEscolarId] = useState<string | null>(null)
   const [observacionesInscripcion, setObservacionesInscripcion] = useState<string | null>(null)
@@ -171,7 +140,6 @@ export default function FichaAlumnoPage() {
   const [errorEvidencias, setErrorEvidencias] = useState(false)
   const [errorNecesidades, setErrorNecesidades] = useState(false)
   const [errorFichas, setErrorFichas] = useState(false)
-  const [errorNotas, setErrorNotas] = useState(false)
 
   const [estadoGeneral, setEstadoGeneral] = useState<{ texto: string; clase: string }>({
     texto: 'Sin datos suficientes',
@@ -188,7 +156,7 @@ export default function FichaAlumnoPage() {
   const [pestana, setPestana] = useState<Pestana>(() => {
     if (typeof window === 'undefined') return 'resumen'
     const tab = new URLSearchParams(window.location.search).get('tab')
-    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas', 'historial']
+    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas']
     return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
   })
   const [cargando, setCargando] = useState(true)
@@ -245,7 +213,7 @@ export default function FichaAlumnoPage() {
       setObservacionesInscripcion(inscripcionActiva?.observaciones ?? null)
       setGrupoId(grupoIdActivo)
 
-      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evaluacionesRes, evidenciasRes, necesidadesRes, fichasRes, notasRes, periodosRes] = await Promise.allSettled([
+      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evaluacionesRes, evidenciasRes, necesidadesRes, fichasRes, periodosRes] = await Promise.allSettled([
         grupoIdActivo
           ? supabase.from('grupos').select('grado, grupo, nombre_grupo, docente_id').eq('id', grupoIdActivo).single()
           : Promise.resolve({ data: null, error: null }),
@@ -258,7 +226,6 @@ export default function FichaAlumnoPage() {
         supabase.from('evidencias').select('id, tipo, descripcion, archivo_url, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('necesidades_apoyo').select('id, tipo, descripcion, activa, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('fichas_descriptivas').select('id, periodo, contenido, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
-        supabase.from('perfil_alumno_notas').select('id, tipo, contenido, fuente_modulo, estado, fecha').eq('alumno_id', alumnoId).neq('estado', 'pendiente_confirmar').order('fecha', { ascending: false }),
         cicloEscolarIdActivo
           ? supabase.from('periodos_evaluacion').select('id, nombre, numero_periodo').eq('ciclo_escolar_id', cicloEscolarIdActivo).order('numero_periodo')
           : Promise.resolve({ data: [], error: null }),
@@ -343,14 +310,6 @@ export default function FichaAlumnoPage() {
       } else {
         setFichasDescriptivas([])
         setErrorFichas(true)
-      }
-
-      if (notasRes.status === 'fulfilled' && !notasRes.value.error) {
-        setNotasAlumno(notasRes.value.data || [])
-        setErrorNotas(false)
-      } else {
-        setNotasAlumno([])
-        setErrorNotas(true)
       }
 
       setCargando(false)
@@ -529,54 +488,14 @@ export default function FichaAlumnoPage() {
   if (!observacionesInscripcion || !observacionesInscripcion.trim()) faltantesExpediente.push('No hay observaciones registradas.')
   const expedienteCompleto = faltantesExpediente.length === 0
 
-  const pestanas: { id: Pestana; label: string }[] = [
-    { id: 'resumen', label: 'Resumen' },
-    { id: 'datos', label: 'Datos' },
-    { id: 'asistencia', label: 'Asistencia' },
-    { id: 'incidencias', label: 'Incidencias' },
-    { id: 'evaluaciones', label: 'Evaluaciones' },
-    { id: 'evidencias', label: 'Evidencias' },
-    { id: 'fichas', label: 'Ficha descriptiva' },
-    { id: 'historial', label: 'Historial' },
-  ]
-
-  const historialItems: HistorialItem[] = [
-    ...asistencias.map(a => ({
-      key: `asistencia-${a.fecha}`,
-      origen: 'Asistencia',
-      fecha: a.fecha,
-      titulo: a.presente ? 'Presente' : 'Falta',
-      descripcion: '',
-    })),
-    ...incidencias.map(i => ({
-      key: `incidencia-${i.id}`,
-      origen: 'Incidencia',
-      fecha: i.fecha,
-      titulo: i.tipo || 'Incidencia',
-      descripcion: i.descripcion || '',
-    })),
-    ...evaluaciones.map(ev => ({
-      key: `evaluacion-${ev.id}`,
-      origen: 'Evaluación',
-      fecha: ev.creado_en,
-      titulo: ev.campo_formativo || 'Evaluación',
-      descripcion: [ev.periodo ? `Periodo: ${ev.periodo}` : null, ev.calificacion ? `Calificación: ${ev.calificacion}` : null].filter(Boolean).join(' · '),
-    })),
-    ...evidencias.map(ev => ({
-      key: `evidencia-${ev.id}`,
-      origen: 'Evidencia',
-      fecha: ev.creado_en,
-      titulo: ev.tipo || 'Evidencia',
-      descripcion: ev.descripcion || '',
-    })),
-    ...notasAlumno.map(n => ({
-      key: `nota-${n.id}`,
-      origen: 'Nota',
-      fecha: n.fecha,
-      titulo: n.tipo || n.fuente_modulo || 'Nota',
-      descripcion: n.contenido || '',
-    })),
-  ].sort((x, y) => (x.fecha < y.fecha ? 1 : x.fecha > y.fecha ? -1 : 0))
+  // Dirty-state mínimo: deriva directamente de los mismos 3 estados
+  // controlados ya existentes (curp/sexo/fechaNacimiento) comparados
+  // contra el último valor cargado/guardado en `alumno` — sin estado
+  // nuevo, sin tocar guardarDatos.
+  const hayCambiosDatos =
+    curp !== (alumno.curp || '') ||
+    sexo !== (alumno.sexo || '') ||
+    fechaNacimiento !== (alumno.fecha_nacimiento || '')
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
@@ -621,92 +540,11 @@ export default function FichaAlumnoPage() {
         </div>
       </header>
 
-      <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-gray-100 shadow-sm">
-        <div className="relative max-w-5xl mx-auto">
-          <div className="flex gap-1.5 px-4 py-2.5 sm:px-6 overflow-x-auto text-sm [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" style={{ WebkitOverflowScrolling: 'touch' }}>
-            {pestanas.map(p => (
-              <button
-                key={p.id}
-                onClick={() => setPestana(p.id)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full whitespace-nowrap font-medium flex-shrink-0 transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === p.id ? 'bg-gradient-to-r from-purple-600 to-blue-500 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 active:bg-gray-200'}`}
-              >
-                <span aria-hidden="true" className="text-sm leading-none opacity-80">{ICONOS_PESTANA[p.id]}</span>
-                {p.label}
-              </button>
-            ))}
-          </div>
-          <div aria-hidden="true" className="pointer-events-none absolute top-0 right-0 h-full w-10 bg-gradient-to-l from-white/95 to-transparent" />
-        </div>
-      </div>
-
       <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-        <div className="max-w-3xl mx-auto">
-        {pestana === 'resumen' && (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <button onClick={() => setPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-sm flex-shrink-0">✅</span>
-                  <p className="text-xs font-medium text-gray-500">Asistencia</p>
-                </div>
-                <p className="text-xl font-bold text-gray-900">{porcentajeAsistencia !== null ? `${porcentajeAsistencia}%` : 'Sin registros'}</p>
-                {porcentajeAsistencia !== null && <p className="text-xs text-gray-400 mt-0.5">{totalAsistencias} de {asistencias.length} días</p>}
-              </button>
-              <button onClick={() => setPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center text-sm flex-shrink-0">❌</span>
-                  <p className="text-xs font-medium text-gray-500">Faltas</p>
-                </div>
-                <p className="text-xl font-bold text-gray-900">{asistencias.length > 0 ? totalFaltas : 'Sin registros'}</p>
-              </button>
-              <button onClick={() => setPestana('incidencias')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-sm flex-shrink-0">⚠️</span>
-                  <p className="text-xs font-medium text-gray-500">Incidencias</p>
-                </div>
-                <p className="text-xl font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
-              </button>
-              <button onClick={() => setPestana('evaluaciones')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-sm flex-shrink-0">🏆</span>
-                  <p className="text-xs font-medium text-gray-500">Evaluaciones</p>
-                </div>
-                <p className="text-xl font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
-              </button>
-              <button onClick={() => setPestana('evidencias')} className="col-span-2 text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-sm flex-shrink-0">📎</span>
-                  <p className="text-xs font-medium text-gray-500">Evidencias</p>
-                </div>
-                <p className="text-xl font-bold text-gray-900">{evidencias.length > 0 ? evidencias.length : 'Sin registros'}</p>
-              </button>
-            </div>
+        <div className="max-w-3xl mx-auto space-y-6">
 
-            <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
-              <span aria-hidden="true" className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-base flex-shrink-0">🕓</span>
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-gray-500">Última actividad registrada</p>
-                <p className="text-sm font-semibold text-gray-900">{ultimaActividad ? formatFecha(ultimaActividad) : 'Sin registros'}</p>
-              </div>
-            </div>
-
-            {(errorAsistencia || errorIncidencias || errorEvaluaciones || errorEvidencias || errorNecesidades) && (
-              <BannerError mensaje="Algunos datos no se pudieron cargar por completo." />
-            )}
-
-            <div className="pt-2">
-              <button
-                onClick={() => setMostrarConfirmacionBaja(true)}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
-              >
-                Eliminar alumno
-              </button>
-            </div>
-          </div>
-        )}
-
-        {pestana === 'datos' && (
           <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4 sm:p-6">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Datos del alumno</p>
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-gray-500 mb-1.5 block">CURP</label>
@@ -746,29 +584,76 @@ export default function FichaAlumnoPage() {
               </div>
             </div>
 
-            <button
-              onClick={guardarDatos}
-              disabled={guardando}
-              className="w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 mt-5 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
-            >
-              {guardando ? 'Guardando...' : 'Guardar datos'}
-            </button>
+            {hayCambiosDatos && (
+              <button
+                onClick={guardarDatos}
+                disabled={guardando}
+                className="w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 mt-5 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
+              >
+                {guardando ? 'Guardando...' : 'Guardar cambios'}
+              </button>
+            )}
 
             {mensaje && <p className="text-xs text-center text-gray-500 mt-3">{mensaje}</p>}
           </div>
-        )}
 
-        {pestana === 'asistencia' && (
           <div className="space-y-3">
-            <div className="flex gap-3 text-xs">
-              <div className="flex-1 bg-green-50 border border-green-100 rounded-2xl py-3 text-center shadow-sm">
-                <p className="font-bold text-green-700 text-lg">{totalAsistencias}</p>
-                <p className="text-green-600 font-medium">Asistencias</p>
-              </div>
-              <div className="flex-1 bg-red-50 border border-red-100 rounded-2xl py-3 text-center shadow-sm">
-                <p className="font-bold text-red-700 text-lg">{totalFaltas}</p>
-                <p className="text-red-600 font-medium">Faltas</p>
-              </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <button onClick={() => setPestana('asistencia')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-sm flex-shrink-0">✅</span>
+                  <p className="text-xs font-medium text-gray-500">Asistencia</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{porcentajeAsistencia !== null ? `${porcentajeAsistencia}%` : 'Sin registros'}</p>
+                {porcentajeAsistencia !== null && <p className="text-xs text-gray-400 mt-0.5">{totalAsistencias} de {asistencias.length} días</p>}
+              </button>
+              <button onClick={() => setPestana('asistencia')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center text-sm flex-shrink-0">❌</span>
+                  <p className="text-xs font-medium text-gray-500">Faltas</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{asistencias.length > 0 ? totalFaltas : 'Sin registros'}</p>
+              </button>
+              <button onClick={() => setPestana('incidencias')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'incidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-sm flex-shrink-0">⚠️</span>
+                  <p className="text-xs font-medium text-gray-500">Incidencias</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
+              </button>
+              <button onClick={() => setPestana('evaluaciones')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evaluaciones' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-sm flex-shrink-0">🏆</span>
+                  <p className="text-xs font-medium text-gray-500">Evaluaciones</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
+              </button>
+              <button onClick={() => setPestana('evidencias')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-sm flex-shrink-0">📎</span>
+                  <p className="text-xs font-medium text-gray-500">Evidencias</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{evidencias.length > 0 ? evidencias.length : 'Sin registros'}</p>
+              </button>
+              <button onClick={() => setPestana('fichas')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'fichas' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center text-sm flex-shrink-0">📝</span>
+                  <p className="text-xs font-medium text-gray-500">Ficha descriptiva</p>
+                </div>
+                <p className="text-xl font-bold text-gray-900">{fichasDescriptivas.length > 0 ? fichasDescriptivas.length : 'Sin registros'}</p>
+              </button>
+            </div>
+
+            {(errorAsistencia || errorIncidencias || errorEvaluaciones || errorEvidencias || errorNecesidades) && (
+              <BannerError mensaje="Algunos datos no se pudieron cargar por completo." />
+            )}
+          </div>
+
+          {pestana === 'asistencia' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Asistencia</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
             </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               {errorAsistencia && <BannerError mensaje="No se pudieron cargar los registros de asistencia." />}
@@ -783,220 +668,238 @@ export default function FichaAlumnoPage() {
               ))}
             </div>
           </div>
-        )}
+          )}
 
-        {pestana === 'incidencias' && (
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {errorIncidencias && <BannerError mensaje="No se pudieron cargar las incidencias." />}
-            {!errorIncidencias && incidencias.length === 0 && <EstadoVacio icono="⚠️" mensaje="Sin incidencias registradas." />}
-            {incidencias.map(i => (
-              <div key={i.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                    <span aria-hidden="true" className="w-6 h-6 rounded-md bg-amber-50 text-amber-600 flex items-center justify-center text-xs flex-shrink-0">⚠️</span>
-                    {i.tipo}
-                  </span>
-                  <span className="text-xs text-gray-400">{formatFecha(i.fecha)}</span>
-                </div>
-                <p className="text-xs text-gray-600">{i.descripcion}</p>
-                {i.seguimiento != null && (
-                  <div className="mt-2 pt-2 border-t border-gray-100">
-                    <p className="text-xs font-semibold text-gray-500 mb-1">Seguimiento</p>
-                    <ResumenJson valor={i.seguimiento} vacio="Sin detalle de seguimiento." />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {pestana === 'evaluaciones' && (
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {errorEvaluaciones && <BannerError mensaje="No se pudieron cargar las evaluaciones." />}
-            {!errorEvaluaciones && evaluaciones.length === 0 && <EstadoVacio icono="🏆" mensaje="Sin evaluaciones registradas." />}
-            {evaluaciones.map(ev => (
-              <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                    <span aria-hidden="true" className="w-6 h-6 rounded-md bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
-                    {ev.campo_formativo || 'Campo formativo sin registrar'}
-                  </span>
-                  <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5 mb-1">
-                  <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Periodo: {ev.periodo || '—'}</span>
-                  <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Calificación: {ev.calificacion || '—'}</span>
-                </div>
-                {ev.rubrica != null && (
-                  <div className="mt-2 pt-2 border-t border-gray-100">
-                    <p className="text-xs font-semibold text-gray-500 mb-1">Rúbrica</p>
-                    <ResumenJson valor={ev.rubrica} vacio="Sin detalle de rúbrica." />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {pestana === 'evidencias' && (
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {errorEvidencias && <BannerError mensaje="No se pudieron cargar las evidencias." />}
-            {!errorEvidencias && evidencias.length === 0 && <EstadoVacio icono="📎" mensaje="Sin evidencias registradas." />}
-            {evidencias.map(ev => (
-              <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                    <span aria-hidden="true" className="w-6 h-6 rounded-md bg-blue-50 text-blue-600 flex items-center justify-center text-xs flex-shrink-0">📎</span>
-                    {ev.tipo || 'Evidencia sin tipo registrado'}
-                  </span>
-                  <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
-                </div>
-                {ev.descripcion && <p className="text-xs text-gray-600 mb-1">{ev.descripcion}</p>}
-                {ev.archivo_url && (
-                  <a
-                    href={ev.archivo_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-purple-600 mt-1 focus:outline-none focus:ring-2 focus:ring-purple-400 rounded"
-                  >
-                    📎 Abrir archivo
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {pestana === 'fichas' && (
-          <div className="space-y-5">
-            <div className={`rounded-2xl border p-4 shadow-sm ${expedienteCompleto ? 'bg-green-50 border-green-100' : 'bg-amber-50 border-amber-100'}`}>
-              <p className={`text-sm font-bold ${expedienteCompleto ? 'text-green-700' : 'text-amber-700'}`}>
-                {expedienteCompleto ? '🟢 Todo listo para generar la ficha descriptiva.' : '🟡 Faltan elementos para generar la ficha descriptiva.'}
-              </p>
-              {!expedienteCompleto && (
-                <ul className="mt-1.5 space-y-0.5">
-                  {faltantesExpediente.map((f, i) => (
-                    <li key={i} className="text-xs text-amber-700">• {f}</li>
-                  ))}
-                </ul>
-              )}
+          {pestana === 'incidencias' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Incidencias</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
             </div>
-
-            {!borrador && expedienteCompleto && (
-              <button
-                type="button"
-                onClick={generarBorrador}
-                disabled={generandoBorrador}
-                className="w-full px-5 py-3.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-500 text-white text-base font-semibold shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
-              >
-                {generandoBorrador ? 'Generando borrador...' : '✨ Generar borrador con IA'}
-              </button>
-            )}
-
-            {errorBorrador && (
-              <p className="text-xs text-center text-red-600 bg-red-50 border border-red-100 rounded-xl py-2 px-3">{errorBorrador}</p>
-            )}
-
-            {borrador && (
-              <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4 sm:p-6 space-y-4">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Borrador generado por IA — puedes editarlo antes de guardar</p>
-                {CAMPOS_BORRADOR.map(({ campo, etiqueta }) => (
-                  <div key={campo}>
-                    <label className="text-xs font-semibold text-gray-500 mb-1.5 block">{etiqueta}</label>
-                    <textarea
-                      value={borrador[campo]}
-                      onChange={e => actualizarBorrador(campo, e.target.value)}
-                      rows={3}
-                      className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-shadow resize-y"
-                    />
-                  </div>
-                ))}
-                <div className="flex flex-col sm:flex-row gap-2.5">
-                  <button
-                    type="button"
-                    onClick={guardarFicha}
-                    disabled={guardandoFicha}
-                    className="flex-1 bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
-                  >
-                    {guardandoFicha ? 'Guardando...' : 'Guardar ficha'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setBorrador(null); setErrorBorrador('') }}
-                    disabled={guardandoFicha}
-                    className="rounded-full border border-gray-300 px-5 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
-                  >
-                    Descartar
-                  </button>
-                </div>
-              </div>
-            )}
-
             <div className="grid sm:grid-cols-2 gap-2.5">
-              {errorFichas && <BannerError mensaje="No se pudieron cargar las fichas descriptivas." />}
-              {!errorFichas && fichasDescriptivas.length === 0 && <EstadoVacio icono="📝" mensaje="Sin fichas descriptivas registradas." />}
-              {fichasDescriptivas.map(f => (
-                <div key={f.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+              {errorIncidencias && <BannerError mensaje="No se pudieron cargar las incidencias." />}
+              {!errorIncidencias && incidencias.length === 0 && <EstadoVacio icono="⚠️" mensaje="Sin incidencias registradas." />}
+              {incidencias.map(i => (
+                <div key={i.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                      <span aria-hidden="true" className="w-6 h-6 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center text-xs flex-shrink-0">📝</span>
-                      {f.periodo || 'Ficha descriptiva'}
+                      <span aria-hidden="true" className="w-6 h-6 rounded-md bg-amber-50 text-amber-600 flex items-center justify-center text-xs flex-shrink-0">⚠️</span>
+                      {i.tipo}
                     </span>
-                    <span className="text-xs text-gray-400">{formatFecha(f.creado_en)}</span>
+                    <span className="text-xs text-gray-400">{formatFecha(i.fecha)}</span>
                   </div>
-                  <ResumenJson valor={f.contenido} vacio="Sin contenido registrado." />
+                  <p className="text-xs text-gray-600">{i.descripcion}</p>
+                  {i.seguimiento != null && (
+                    <div className="mt-2 pt-2 border-t border-gray-100">
+                      <p className="text-xs font-semibold text-gray-500 mb-1">Seguimiento</p>
+                      <ResumenJson valor={i.seguimiento} vacio="Sin detalle de seguimiento." />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
+          </div>
+          )}
 
-            <div>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2.5">Necesidades de apoyo</p>
+          {pestana === 'evaluaciones' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Evaluaciones</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {errorEvaluaciones && <BannerError mensaje="No se pudieron cargar las evaluaciones." />}
+              {!errorEvaluaciones && evaluaciones.length === 0 && <EstadoVacio icono="🏆" mensaje="Sin evaluaciones registradas." />}
+              {evaluaciones.map(ev => (
+                <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                      <span aria-hidden="true" className="w-6 h-6 rounded-md bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
+                      {ev.campo_formativo || 'Campo formativo sin registrar'}
+                    </span>
+                    <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mb-1">
+                    <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Periodo: {ev.periodo || '—'}</span>
+                    <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Calificación: {ev.calificacion || '—'}</span>
+                  </div>
+                  {ev.rubrica != null && (
+                    <div className="mt-2 pt-2 border-t border-gray-100">
+                      <p className="text-xs font-semibold text-gray-500 mb-1">Rúbrica</p>
+                      <ResumenJson valor={ev.rubrica} vacio="Sin detalle de rúbrica." />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {pestana === 'evidencias' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Evidencias</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {errorEvidencias && <BannerError mensaje="No se pudieron cargar las evidencias." />}
+              {!errorEvidencias && evidencias.length === 0 && <EstadoVacio icono="📎" mensaje="Sin evidencias registradas." />}
+              {evidencias.map(ev => (
+                <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                      <span aria-hidden="true" className="w-6 h-6 rounded-md bg-blue-50 text-blue-600 flex items-center justify-center text-xs flex-shrink-0">📎</span>
+                      {ev.tipo || 'Evidencia sin tipo registrado'}
+                    </span>
+                    <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
+                  </div>
+                  {ev.descripcion && <p className="text-xs text-gray-600 mb-1">{ev.descripcion}</p>}
+                  {ev.archivo_url && (
+                    <a
+                      href={ev.archivo_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-purple-600 mt-1 focus:outline-none focus:ring-2 focus:ring-purple-400 rounded"
+                    >
+                      📎 Abrir archivo
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          )}
+
+          {pestana === 'fichas' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Ficha descriptiva</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+            </div>
+            <div className="space-y-5">
+              <div className={`rounded-2xl border p-4 shadow-sm ${expedienteCompleto ? 'bg-green-50 border-green-100' : 'bg-amber-50 border-amber-100'}`}>
+                <p className={`text-sm font-bold ${expedienteCompleto ? 'text-green-700' : 'text-amber-700'}`}>
+                  {expedienteCompleto ? '🟢 Todo listo para generar la ficha descriptiva.' : '🟡 Faltan elementos para generar la ficha descriptiva.'}
+                </p>
+                {!expedienteCompleto && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {faltantesExpediente.map((f, i) => (
+                      <li key={i} className="text-xs text-amber-700">• {f}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {!borrador && expedienteCompleto && (
+                <button
+                  type="button"
+                  onClick={generarBorrador}
+                  disabled={generandoBorrador}
+                  className="w-full px-5 py-3.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-500 text-white text-base font-semibold shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
+                >
+                  {generandoBorrador ? 'Generando borrador...' : '✨ Generar borrador con IA'}
+                </button>
+              )}
+
+              {errorBorrador && (
+                <p className="text-xs text-center text-red-600 bg-red-50 border border-red-100 rounded-xl py-2 px-3">{errorBorrador}</p>
+              )}
+
+              {borrador && (
+                <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4 sm:p-6 space-y-4">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Borrador generado por IA — puedes editarlo antes de guardar</p>
+                  {CAMPOS_BORRADOR.map(({ campo, etiqueta }) => (
+                    <div key={campo}>
+                      <label className="text-xs font-semibold text-gray-500 mb-1.5 block">{etiqueta}</label>
+                      <textarea
+                        value={borrador[campo]}
+                        onChange={e => actualizarBorrador(campo, e.target.value)}
+                        rows={3}
+                        className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-shadow resize-y"
+                      />
+                    </div>
+                  ))}
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <button
+                      type="button"
+                      onClick={guardarFicha}
+                      disabled={guardandoFicha}
+                      className="flex-1 bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
+                    >
+                      {guardandoFicha ? 'Guardando...' : 'Guardar ficha'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setBorrador(null); setErrorBorrador('') }}
+                      disabled={guardandoFicha}
+                      className="rounded-full border border-gray-300 px-5 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-40"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid sm:grid-cols-2 gap-2.5">
-                {errorNecesidades && <BannerError mensaje="No se pudieron cargar las necesidades de apoyo." />}
-                {!errorNecesidades && necesidadesApoyo.length === 0 && <EstadoVacio icono="🤝" mensaje="Sin necesidades de apoyo registradas." />}
-                {necesidadesApoyo.map(n => (
-                  <div key={n.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                {errorFichas && <BannerError mensaje="No se pudieron cargar las fichas descriptivas." />}
+                {!errorFichas && fichasDescriptivas.length === 0 && <EstadoVacio icono="📝" mensaje="Sin fichas descriptivas registradas." />}
+                {fichasDescriptivas.map(f => (
+                  <div key={f.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                        <span aria-hidden="true" className="w-6 h-6 rounded-md bg-orange-50 text-orange-600 flex items-center justify-center text-xs flex-shrink-0">🤝</span>
-                        {n.tipo || 'Necesidad de apoyo sin tipo registrado'}
+                        <span aria-hidden="true" className="w-6 h-6 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center text-xs flex-shrink-0">📝</span>
+                        {f.periodo || 'Ficha descriptiva'}
                       </span>
-                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${n.activa ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-                        {n.activa ? 'Activa' : 'Inactiva'}
-                      </span>
+                      <span className="text-xs text-gray-400">{formatFecha(f.creado_en)}</span>
                     </div>
-                    {n.descripcion && <p className="text-xs text-gray-600 mb-1">{n.descripcion}</p>}
-                    <p className="text-xs text-gray-400">{formatFecha(n.creado_en)}</p>
+                    <ResumenJson valor={f.contenido} vacio="Sin contenido registrado." />
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-        )}
 
-        {pestana === 'historial' && (
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {(errorAsistencia || errorIncidencias || errorEvaluaciones || errorEvidencias || errorNotas) && (
-              <BannerError mensaje="Algunos registros no se pudieron incluir en el historial." />
-            )}
-            {historialItems.length === 0 && <EstadoVacio icono="🕓" mensaje="Sin registros en el historial." />}
-            {historialItems.map(item => (
-              <div key={item.key} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                    <span aria-hidden="true" className={`w-6 h-6 rounded-md flex items-center justify-center text-xs flex-shrink-0 ${CHIP_ORIGEN[item.origen] || 'bg-gray-100 text-gray-500'}`}>{ICONOS_ORIGEN[item.origen] || '•'}</span>
-                    {item.titulo}
-                  </span>
-                  <span className="text-xs text-gray-400">{formatFecha(item.fecha)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  {item.descripcion && <p className="text-xs text-gray-600">{item.descripcion}</p>}
-                  <span className="text-xs text-gray-400 whitespace-nowrap ml-auto bg-gray-50 px-2 py-0.5 rounded-full">{item.origen}</span>
+              <div>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2.5">Necesidades de apoyo</p>
+                <div className="grid sm:grid-cols-2 gap-2.5">
+                  {errorNecesidades && <BannerError mensaje="No se pudieron cargar las necesidades de apoyo." />}
+                  {!errorNecesidades && necesidadesApoyo.length === 0 && <EstadoVacio icono="🤝" mensaje="Sin necesidades de apoyo registradas." />}
+                  {necesidadesApoyo.map(n => (
+                    <div key={n.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                          <span aria-hidden="true" className="w-6 h-6 rounded-md bg-orange-50 text-orange-600 flex items-center justify-center text-xs flex-shrink-0">🤝</span>
+                          {n.tipo || 'Necesidad de apoyo sin tipo registrado'}
+                        </span>
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${n.activa ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {n.activa ? 'Activa' : 'Inactiva'}
+                        </span>
+                      </div>
+                      {n.descripcion && <p className="text-xs text-gray-600 mb-1">{n.descripcion}</p>}
+                      <p className="text-xs text-gray-400">{formatFecha(n.creado_en)}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            </div>
           </div>
-        )}
+          )}
+
+          <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
+            <span aria-hidden="true" className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-base flex-shrink-0">🕓</span>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-gray-500">Última actividad registrada</p>
+              <p className="text-sm font-semibold text-gray-900">{ultimaActividad ? formatFecha(ultimaActividad) : 'Sin registros'}</p>
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <button
+              onClick={() => setMostrarConfirmacionBaja(true)}
+              className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
+            >
+              Eliminar alumno
+            </button>
+          </div>
+
         </div>
       </div>
 
