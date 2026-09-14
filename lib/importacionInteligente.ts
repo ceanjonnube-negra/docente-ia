@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResultadoComparacionListaOficial } from './listaOficial/matchingListaOficial'
-import type { ResultadoPropuestasReparacionCurp } from './listaOficial/propuestasReparacionCurp'
+import type { ResultadoPropuestasReparacionCurpPublico } from './listaOficial/propuestasReparacionCurp'
 
 export type AlumnoPreview = {
   numero_lista: number | null
@@ -197,7 +197,7 @@ export function esLoteComparableConRoster(archivos: File[]): boolean {
 
 export type ResultadoCompararConRoster = {
   comparacion: ResultadoComparacionListaOficial
-  propuestasReparacionCurp: ResultadoPropuestasReparacionCurp
+  propuestasReparacionCurp: ResultadoPropuestasReparacionCurpPublico
 }
 
 // Llama al endpoint READ-ONLY /api/importar-alumnos/comparar — nunca

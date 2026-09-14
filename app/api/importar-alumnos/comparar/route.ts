@@ -30,7 +30,7 @@ import {
   type MediaTypeImagenListaOficial,
 } from '@/lib/listaOficial/analisisListaOficial'
 import { compararListaOficial, type AlumnoRosterListaOficial } from '@/lib/listaOficial/matchingListaOficial'
-import { clasificarPropuestasReparacionCurp } from '@/lib/listaOficial/propuestasReparacionCurp'
+import { clasificarPropuestasReparacionCurp, aResultadoPublico } from '@/lib/listaOficial/propuestasReparacionCurp'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 
 export const runtime = 'nodejs'
@@ -113,15 +113,24 @@ export async function POST(req: NextRequest) {
     // Capa posterior, fuera de V1-B — mismo resultado y mismo roster ya
     // en memoria, sin ninguna consulta adicional a Supabase. Solo lectura,
     // solo diagnóstico: nunca escribe, nunca se persiste.
-    const propuestasReparacionCurp = clasificarPropuestasReparacionCurp(comparacion, rosterParaComparar)
+    const resultadoPropuestas = clasificarPropuestasReparacionCurp(comparacion, rosterParaComparar)
 
     console.log('[importar-alumnos/comparar] comparación read-only completada', {
       totalRegistrosDocumento: extraccion.registros.length,
       totalRoster: rosterParaComparar.length,
       totalAusentes: comparacion.ausentesEnDocumento.length,
-      totalCurpDiferente: propuestasReparacionCurp.totalCurpDiferente,
-      totalCandidatosReparacionCurp: propuestasReparacionCurp.candidatos.length,
+      totalCurpDiferente: resultadoPropuestas.totalCurpDiferente,
+      totalCandidatosReparacionCurp: resultadoPropuestas.candidatos.length,
     })
+
+    // Instrumentación TEMPORAL de diagnóstico (ver auditoría aprobada
+    // "embudo diagnóstico CURP_DIFERENTE → 0 candidatos") — únicamente
+    // en logs de servidor, agregado, nunca en la respuesta al cliente.
+    console.log('[importar-alumnos/comparar] diagnóstico propuestas de reparación (temporal)', resultadoPropuestas.diagnostico)
+
+    // Contrato explícito client-safe — nunca el resultado interno
+    // completo (que incluye `diagnostico`) directamente en la respuesta.
+    const propuestasReparacionCurp = aResultadoPublico(resultadoPropuestas)
 
     return NextResponse.json({ comparacion, propuestasReparacionCurp })
   } catch (error: unknown) {
