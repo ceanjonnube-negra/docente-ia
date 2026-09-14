@@ -13,7 +13,10 @@
 // se importa desde matchingListaOficial.ts ni le agrega parámetros.
 //
 // Política deliberadamente conservadora (perder automatización antes que
-// arriesgar identidad): exige match EXACTO por nombre (nunca fuzzy),
+// arriesgar identidad): exige un origenMatch EXACTO — 'nombre' (exacto
+// tal cual) O 'formato' (exacto tras canonicalización determinista de
+// formato explícito, ver FASE 3/canonicalizarNombreListaOficial.ts) —
+// nunca 'curp' como vía de reparación de conflicto, nunca 'fuzzy';
 // nombreConfianza='alta' (V1-B no lo exige para CURP_DIFERENTE por sí
 // solo — este archivo lo añade como requisito extra), CURP actual
 // estructuralmente inválida, y CURP nueva utilizable (legible + confianza
@@ -42,7 +45,11 @@ export type CandidatoReparacionCurp = {
   alumnoNombre: string
   curpActual: string
   curpPropuesta: string
-  origenMatch: 'nombre'
+  // FASE 3 — refleja el origen REAL del match que produjo este
+  // candidato: 'nombre' (exacto tal cual) o 'formato' (exacto tras
+  // canonicalización determinista) — nunca hardcodeado, nunca 'curp' ni
+  // 'fuzzy' (ver el filtro de la Regla 2 más abajo).
+  origenMatch: 'nombre' | 'formato'
 }
 
 export type DiagnosticoPropuestasReparacionCurp = {
@@ -51,8 +58,17 @@ export type DiagnosticoPropuestasReparacionCurp = {
   // CURP_DIFERENTE que tengan el dato necesario para evaluarla, sin
   // importar si ya fueron descartados por una condición anterior. Sirven
   // para ver el peso individual de cada regla, no el efecto acumulado.
-  origenMatchExacto: number
-  origenMatchNoExacto: number
+  //
+  // FASE 3 — renombrado desde origenMatchExacto/origenMatchNoExacto:
+  // "exacto" ya no describe correctamente la regla real (ahora dos vías
+  // distintas, 'nombre' y 'formato', cuentan como permitidas). Se separa
+  // en 4 campos para no perder granularidad: cuáles fueron por 'nombre'
+  // tal cual, cuáles por 'formato', y el agregado permitido/no permitido
+  // que corresponde al paso real del embudo.
+  origenMatchNombre: number
+  origenMatchFormato: number
+  origenMatchPermitido: number
+  origenMatchNoPermitido: number
   nombreConfianzaAlta: number
   nombreConfianzaNoAlta: number
   // Solo contabilizados entre los casos donde se pudo resolver
@@ -72,7 +88,10 @@ export type DiagnosticoPropuestasReparacionCurp = {
   // diagnóstico. Cada paso solo cuenta lo que sobrevivió al anterior.
   embudo: {
     totalCurpDiferente: number
-    despuesOrigenMatchExacto: number
+    // FASE 3 — renombrado desde despuesOrigenMatchExacto: el primer
+    // paso real del embudo ahora es "¿el origenMatch es uno de los
+    // permitidos (nombre o formato)?", no exclusivamente nombre exacto.
+    despuesOrigenMatchPermitido: number
     despuesNombreConfianzaAlta: number
     despuesAlumnoIdYRoster: number
     despuesCurpDbInvalida: number
@@ -124,8 +143,10 @@ export function clasificarPropuestasReparacionCurp(
   let totalNoAccionables = 0
 
   const diag = {
-    origenMatchExacto: 0,
-    origenMatchNoExacto: 0,
+    origenMatchNombre: 0,
+    origenMatchFormato: 0,
+    origenMatchPermitido: 0,
+    origenMatchNoPermitido: 0,
     nombreConfianzaAlta: 0,
     nombreConfianzaNoAlta: 0,
     curpDbInvalida: 0,
@@ -136,7 +157,7 @@ export function clasificarPropuestasReparacionCurp(
     alumnoNoEncontradoEnRoster: 0,
     curpNuevaValida: 0,
     curpNuevaInvalida: 0,
-    despuesOrigenMatchExacto: 0,
+    despuesOrigenMatchPermitido: 0,
     despuesNombreConfianzaAlta: 0,
     despuesAlumnoIdYRoster: 0,
     despuesCurpDbInvalida: 0,
@@ -148,8 +169,11 @@ export function clasificarPropuestasReparacionCurp(
     totalCurpDiferente += 1
 
     // --- Conteos independientes (no afectan el flujo de decisión) ---
-    if (r.origenMatch === 'nombre') diag.origenMatchExacto += 1
-    else diag.origenMatchNoExacto += 1
+    if (r.origenMatch === 'nombre') diag.origenMatchNombre += 1
+    else if (r.origenMatch === 'formato') diag.origenMatchFormato += 1
+
+    if (r.origenMatch === 'nombre' || r.origenMatch === 'formato') diag.origenMatchPermitido += 1
+    else diag.origenMatchNoPermitido += 1
 
     if (r.registro.nombreConfianza === 'alta') diag.nombreConfianzaAlta += 1
     else diag.nombreConfianzaNoAlta += 1
@@ -187,12 +211,16 @@ export function clasificarPropuestasReparacionCurp(
     // poder medir cada uno, sin alterar el resultado (misma condición
     // AND aplicada en el mismo punto de la secuencia). ---
 
-    // Paso 1 — match EXACTO por nombre.
-    if (r.origenMatch !== 'nombre') {
+    // Paso 1 — FASE 3: origenMatch permitido — 'nombre' (exacto tal
+    // cual) O 'formato' (exacto tras canonicalización determinista,
+    // nunca aproximado). Único cambio funcional autorizado en esta
+    // fase: antes solo 'nombre'; ahora también 'formato'. 'curp' y
+    // 'fuzzy' siguen rechazados igual que antes.
+    if (r.origenMatch !== 'nombre' && r.origenMatch !== 'formato') {
       totalNoAccionables += 1
       continue
     }
-    diag.despuesOrigenMatchExacto += 1
+    diag.despuesOrigenMatchPermitido += 1
 
     // Paso 2 — nombreConfianza='alta' (V1-B no lo exige para
     // CURP_DIFERENTE por sí solo — requisito extra de esta capa).
@@ -249,14 +277,18 @@ export function clasificarPropuestasReparacionCurp(
       alumnoNombre: alumnoActual.nombre,
       curpActual,
       curpPropuesta: curpNueva,
-      origenMatch: 'nombre',
+      // r.origenMatch ya quedó acotado a 'nombre' | 'formato' por el
+      // Paso 1 de arriba — nunca hardcodeado.
+      origenMatch: r.origenMatch,
     })
   }
 
   const diagnostico: DiagnosticoPropuestasReparacionCurp = {
     totalCurpDiferente,
-    origenMatchExacto: diag.origenMatchExacto,
-    origenMatchNoExacto: diag.origenMatchNoExacto,
+    origenMatchNombre: diag.origenMatchNombre,
+    origenMatchFormato: diag.origenMatchFormato,
+    origenMatchPermitido: diag.origenMatchPermitido,
+    origenMatchNoPermitido: diag.origenMatchNoPermitido,
     nombreConfianzaAlta: diag.nombreConfianzaAlta,
     nombreConfianzaNoAlta: diag.nombreConfianzaNoAlta,
     curpDbInvalida: diag.curpDbInvalida,
@@ -269,7 +301,7 @@ export function clasificarPropuestasReparacionCurp(
     curpNuevaInvalida: diag.curpNuevaInvalida,
     embudo: {
       totalCurpDiferente,
-      despuesOrigenMatchExacto: diag.despuesOrigenMatchExacto,
+      despuesOrigenMatchPermitido: diag.despuesOrigenMatchPermitido,
       despuesNombreConfianzaAlta: diag.despuesNombreConfianzaAlta,
       despuesAlumnoIdYRoster: diag.despuesAlumnoIdYRoster,
       despuesCurpDbInvalida: diag.despuesCurpDbInvalida,
