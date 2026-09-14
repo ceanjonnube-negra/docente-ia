@@ -30,6 +30,7 @@ import {
   type MediaTypeImagenListaOficial,
 } from '@/lib/listaOficial/analisisListaOficial'
 import { compararListaOficial, type AlumnoRosterListaOficial } from '@/lib/listaOficial/matchingListaOficial'
+import { clasificarPropuestasReparacionCurp } from '@/lib/listaOficial/propuestasReparacionCurp'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 
 export const runtime = 'nodejs'
@@ -109,13 +110,20 @@ export async function POST(req: NextRequest) {
 
     const comparacion = compararListaOficial(extraccion.registros, rosterParaComparar)
 
+    // Capa posterior, fuera de V1-B — mismo resultado y mismo roster ya
+    // en memoria, sin ninguna consulta adicional a Supabase. Solo lectura,
+    // solo diagnóstico: nunca escribe, nunca se persiste.
+    const propuestasReparacionCurp = clasificarPropuestasReparacionCurp(comparacion, rosterParaComparar)
+
     console.log('[importar-alumnos/comparar] comparación read-only completada', {
       totalRegistrosDocumento: extraccion.registros.length,
       totalRoster: rosterParaComparar.length,
       totalAusentes: comparacion.ausentesEnDocumento.length,
+      totalCurpDiferente: propuestasReparacionCurp.totalCurpDiferente,
+      totalCandidatosReparacionCurp: propuestasReparacionCurp.candidatos.length,
     })
 
-    return NextResponse.json({ comparacion })
+    return NextResponse.json({ comparacion, propuestasReparacionCurp })
   } catch (error: unknown) {
     console.error('Error en importar-alumnos/comparar:', error instanceof Error ? error.message : 'error desconocido')
     return NextResponse.json(

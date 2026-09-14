@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResultadoComparacionListaOficial } from './listaOficial/matchingListaOficial'
+import type { ResultadoPropuestasReparacionCurp } from './listaOficial/propuestasReparacionCurp'
 
 export type AlumnoPreview = {
   numero_lista: number | null
@@ -194,16 +195,22 @@ export function esLoteComparableConRoster(archivos: File[]): boolean {
   )
 }
 
+export type ResultadoCompararConRoster = {
+  comparacion: ResultadoComparacionListaOficial
+  propuestasReparacionCurp: ResultadoPropuestasReparacionCurp
+}
+
 // Llama al endpoint READ-ONLY /api/importar-alumnos/comparar — nunca
-// escribe nada. La comparación en sí (V1-B, compararListaOficial) y la
-// extracción (V1-A) ocurren del lado servidor, sin cambios respecto a
-// esos módulos; esta función solo empaqueta la llamada HTTP, mismo
-// patrón de sesión ya usado por analizarArchivos.
+// escribe nada. La comparación en sí (V1-B, compararListaOficial), la
+// extracción (V1-A) y la capa posterior de propuestas de reparación de
+// CURP ocurren del lado servidor, sin cambios respecto a esos módulos;
+// esta función solo empaqueta la llamada HTTP, mismo patrón de sesión ya
+// usado por analizarArchivos.
 export async function compararConRosterActual(
   archivos: File[],
   sb: SupabaseClient,
   grupoId: string
-): Promise<ResultadoComparacionListaOficial> {
+): Promise<ResultadoCompararConRoster> {
   const { data: { session } } = await sb.auth.getSession()
   if (!session?.access_token) {
     throw new Error('No se encontró una sesión activa. Inicia sesión de nuevo.')
@@ -222,7 +229,7 @@ export async function compararConRosterActual(
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'No se pudo comparar la lista con el grupo actual.')
-  return data.comparacion as ResultadoComparacionListaOficial
+  return { comparacion: data.comparacion, propuestasReparacionCurp: data.propuestasReparacionCurp }
 }
 
 export async function guardarAlumnosImportados(

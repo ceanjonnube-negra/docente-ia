@@ -16,7 +16,8 @@ import {
   compararConRosterActual,
   tieneRosterActivo,
 } from '@/lib/importacionInteligente'
-import type { CategoriaDiffListaOficial, ResultadoComparacionListaOficial } from '@/lib/listaOficial/matchingListaOficial'
+import type { CategoriaDiffListaOficial } from '@/lib/listaOficial/matchingListaOficial'
+import type { ResultadoCompararConRoster } from '@/lib/importacionInteligente'
 
 type Estado = 'inicial' | 'analizando' | 'revisando' | 'guardando' | 'comparando' | 'revisando_comparacion'
 
@@ -92,7 +93,7 @@ export default function ImportacionInteligente({
   const [alumnos, setAlumnos] = useState<AlumnoPreview[]>([])
   const [error, setError] = useState<string | null>(null)
   const [progreso, setProgreso] = useState({ completados: 0, total: 0 })
-  const [resultadoComparacion, setResultadoComparacion] = useState<ResultadoComparacionListaOficial | null>(null)
+  const [resultadoComparacion, setResultadoComparacion] = useState<ResultadoCompararConRoster | null>(null)
   const primeraFilaConAtencionRef = useRef<HTMLInputElement | null>(null)
   const inputArchivoRef = useRef<HTMLInputElement | null>(null)
 
@@ -329,13 +330,15 @@ export default function ImportacionInteligente({
             )}
 
             {estado === 'revisando_comparacion' && resultadoComparacion && (() => {
+              const { comparacion, propuestasReparacionCurp } = resultadoComparacion
               const conteos = ORDEN_CATEGORIAS.reduce((acc, cat) => {
                 acc[cat] = 0
                 return acc
               }, {} as Record<CategoriaDiffListaOficial, number>)
-              for (const r of resultadoComparacion.resultados) conteos[r.categoriaDiff] += 1
-              const filasParaRevisar = resultadoComparacion.resultados.filter((r) => r.categoriaDiff !== 'SIN_CAMBIO')
-              const ausentes = resultadoComparacion.ausentesEnDocumento
+              for (const r of comparacion.resultados) conteos[r.categoriaDiff] += 1
+              const filasParaRevisar = comparacion.resultados.filter((r) => r.categoriaDiff !== 'SIN_CAMBIO')
+              const ausentes = comparacion.ausentesEnDocumento
+              const candidatosReparacion = propuestasReparacionCurp?.candidatos ?? []
 
               return (
                 <div>
@@ -344,7 +347,7 @@ export default function ImportacionInteligente({
                   </div>
 
                   <p className="mb-3 text-sm text-gray-600">
-                    <span className="font-medium">{resultadoComparacion.resultados.length}</span> registro{resultadoComparacion.resultados.length === 1 ? '' : 's'} leído{resultadoComparacion.resultados.length === 1 ? '' : 's'} del documento
+                    <span className="font-medium">{comparacion.resultados.length}</span> registro{comparacion.resultados.length === 1 ? '' : 's'} leído{comparacion.resultados.length === 1 ? '' : 's'} del documento
                   </p>
 
                   <div className="mb-5 flex flex-wrap gap-2">
@@ -359,6 +362,21 @@ export default function ImportacionInteligente({
                       </span>
                     )}
                   </div>
+
+                  {candidatosReparacion.length > 0 && (
+                    <div className="mb-5">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Datos que podrían corregirse</p>
+                      <div className="divide-y divide-gray-100 rounded-2xl border border-gray-200">
+                        {candidatosReparacion.map((c) => (
+                          <div key={c.alumnoId} className="px-3 py-2 text-sm">
+                            <p className="mb-1 font-medium text-gray-800">{c.alumnoNombre}</p>
+                            <p className="text-xs text-gray-500">Dato actual: <span className="text-gray-700">{c.curpActual}</span></p>
+                            <p className="text-xs text-gray-500">Dato encontrado en la lista oficial: <span className="text-gray-700">{c.curpPropuesta}</span></p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {filasParaRevisar.length > 0 && (
                     <div className="mb-5">
