@@ -23,6 +23,12 @@
 import type { RegistroExtraidoListaOficial } from './analisisListaOficial'
 import { normalizarNombre, calcularSimilitud } from '../emparejarAlumno'
 import { validarEstructuraCurp } from '../motorContexto'
+// FASE 2 — "equivalencia de nombre por formato explícito" (ver diseño
+// aprobado): función pura y ya validada de forma aislada en su propia
+// ronda, sin cambios aquí. V1-B solo la CONSULTA como una vía adicional
+// de resolución de identidad, determinista, nunca aproximada — nunca la
+// reimplementa ni la modifica.
+import { canonicalizarNombreListaOficial } from './canonicalizarNombreListaOficial'
 
 export type AlumnoRosterListaOficial = {
   id: string
@@ -62,7 +68,16 @@ export type ResultadoMatchRegistro = {
   // defendible en código, no solo "por construcción lógica") que
   // accionableV1 nunca puede ser true salvo por match de nombre
   // exacto — ver la sección de política de acción V1.
-  origenMatch?: 'curp' | 'nombre' | 'fuzzy'
+  // 'formato' — FASE 2: coincidencia EXACTA de cadena tras canonicalizar
+  // un formato explícito de lista oficial (APELLIDO1[/APELLIDO2]*NOMBRES),
+  // nunca aproximada — ver canonicalizarNombreListaOficial. Distinta de
+  // 'nombre' (exacta sin transformación) y de 'fuzzy' (similitud, nunca
+  // igualdad exacta). Deliberadamente NO tratada como 'nombre' por
+  // ningún caller: la capa de propuestas de reparación de CURP
+  // (propuestasReparacionCurp.ts) sigue exigiendo origenMatch==='nombre'
+  // exactamente — un resultado 'formato' nunca se vuelve candidato
+  // todavía, por diseño explícito de esta fase.
+  origenMatch?: 'curp' | 'nombre' | 'formato' | 'fuzzy'
 }
 
 export type ResultadoComparacionListaOficial = {
@@ -136,8 +151,40 @@ function compararUnRegistro(registro: RegistroExtraidoListaOficial, roster: Cand
     return construirResultado(registro, 'MATCH_EXACTO', coincidenciasPorNombre[0].alumno, curpLeida, curpUtilizable, roster, 'nombre')
   }
 
-  // PRIORIDAD C — fuzzy, solo si no hubo ningún match exacto y hay
-  // nombre que comparar.
+  // PRIORIDAD B.5 — FASE 2, "nombre equivalente por formato explícito".
+  // Solo se intenta cuando NADA de lo anterior (CURP exacta, nombre
+  // exacto normalizado) ya resolvió el registro — la vía exacta sigue
+  // ganando siempre, sin excepción. canonicalizarNombreListaOficial es
+  // fail-closed por diseño propio: si nombreLeido no calza EXACTAMENTE
+  // con la sintaxis APELLIDO1[/APELLIDO2]*NOMBRES, regresa
+  // valido=false y este bloque se salta por completo, cayendo a fuzzy
+  // exactamente como antes de esta fase — nunca se aproxima ni se
+  // reintenta con una interpretación alternativa.
+  //
+  // Comparación de IGUALDAD EXACTA de cadena completa —
+  // c.nombreNormalizado ya es normalizarNombre(alumno.nombre)
+  // (precalculado en compararListaOficial) y nombreCanonical ya está
+  // normalizado con la misma regla de caracteres (ver
+  // canonicalizarNombreListaOficial) — nunca un score, nunca Set, nunca
+  // Levenshtein, nunca calcularSimilitud.
+  const canonicalizacion = registro.nombreLeido ? canonicalizarNombreListaOficial(registro.nombreLeido) : null
+  if (canonicalizacion?.valido) {
+    const coincidenciasPorFormato = roster.filter((c) => c.nombreNormalizado === canonicalizacion.nombreCanonical)
+
+    // Misma regla de ambigüedad que la PRIORIDAD B (regla K): dos o más
+    // alumnos con el mismo canonical nunca se resuelven arbitrariamente
+    // — fail-closed, misma categoría MATCH_AMBIGUO ya existente, sin
+    // inventar una selección.
+    if (coincidenciasPorFormato.length > 1) {
+      return { registro, estadoMatch: 'MATCH_AMBIGUO', categoriaDiff: 'MATCH_AMBIGUO', accionableV1: false }
+    }
+    if (coincidenciasPorFormato.length === 1) {
+      return construirResultado(registro, 'MATCH_EXACTO', coincidenciasPorFormato[0].alumno, curpLeida, curpUtilizable, roster, 'formato')
+    }
+  }
+
+  // PRIORIDAD C — fuzzy, solo si no hubo ningún match exacto, ni por
+  // formato, y hay nombre que comparar.
   if (!nombreLeidoNormalizado || roster.length === 0) {
     return { registro, estadoMatch: 'SIN_MATCH', categoriaDiff: 'NUEVO_POSIBLE', accionableV1: false }
   }
@@ -173,7 +220,7 @@ function construirResultado(
   curpLeida: string | null,
   curpUtilizable: boolean,
   roster: CandidatoRoster[],
-  origenMatch: 'curp' | 'nombre' | 'fuzzy'
+  origenMatch: 'curp' | 'nombre' | 'formato' | 'fuzzy'
 ): ResultadoMatchRegistro {
   const base = { registro, estadoMatch, alumnoId: alumno.id, alumnoNombre: alumno.nombre, origenMatch }
 
