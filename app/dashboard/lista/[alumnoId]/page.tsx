@@ -68,9 +68,9 @@ function getIniciales(nombre: string): string {
 
 function EstadoVacio({ icono, mensaje }: { icono: string; mensaje: string }) {
   return (
-    <div className="sm:col-span-2 flex flex-col items-center justify-center gap-2 py-10 px-4 text-center">
-      <span aria-hidden="true" className="text-2xl opacity-40">{icono}</span>
-      <p className="text-sm text-gray-400">{mensaje}</p>
+    <div className="sm:col-span-2 flex items-center gap-2 py-2.5 px-3 text-sm text-gray-400">
+      <span aria-hidden="true" className="text-sm opacity-50 flex-shrink-0">{icono}</span>
+      <p>{mensaje}</p>
     </div>
   )
 }
@@ -540,14 +540,14 @@ export default function FichaAlumnoPage() {
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-        <div className="max-w-3xl mx-auto space-y-6">
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-16 sm:px-6 sm:pt-6 sm:pb-16 lg:px-8">
+        <div className="max-w-3xl mx-auto space-y-4">
 
-          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4 sm:p-6">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Datos del alumno</p>
-            <div className="grid sm:grid-cols-2 gap-4">
+          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2.5">Datos del alumno</p>
+            <div className="grid sm:grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-semibold text-gray-500 mb-1.5 block">CURP</label>
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">CURP</label>
                 <input
                   type="text"
                   value={curp}
@@ -557,7 +557,7 @@ export default function FichaAlumnoPage() {
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-gray-500 mb-1.5 block">Sexo</label>
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Sexo</label>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setSexo('M')}
@@ -574,7 +574,7 @@ export default function FichaAlumnoPage() {
                 </div>
               </div>
               <div>
-                <label className="text-xs font-semibold text-gray-500 mb-1.5 block">Fecha de nacimiento</label>
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Fecha de nacimiento</label>
                 <input
                   type="date"
                   value={fechaNacimiento}
@@ -588,59 +588,59 @@ export default function FichaAlumnoPage() {
               <button
                 onClick={guardarDatos}
                 disabled={guardando}
-                className="w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white py-3 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 mt-5 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
+                className="w-full bg-gradient-to-r from-purple-600 to-blue-500 text-white py-2.5 rounded-full font-semibold text-sm shadow-sm hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-50 mt-3.5 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2"
               >
                 {guardando ? 'Guardando...' : 'Guardar cambios'}
               </button>
             )}
 
-            {mensaje && <p className="text-xs text-center text-gray-500 mt-3">{mensaje}</p>}
+            {mensaje && <p className="text-xs text-center text-gray-500 mt-2">{mensaje}</p>}
           </div>
 
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <button onClick={() => setPestana('asistencia')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-sm flex-shrink-0">✅</span>
-                  <p className="text-xs font-medium text-gray-500">Asistencia</p>
+          <div className="space-y-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              <button onClick={() => setPestana('asistencia')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-xs flex-shrink-0">✅</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Asistencia</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{porcentajeAsistencia !== null ? `${porcentajeAsistencia}%` : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{porcentajeAsistencia !== null ? `${porcentajeAsistencia}%` : 'Sin registros'}</p>
                 {porcentajeAsistencia !== null && <p className="text-xs text-gray-400 mt-0.5">{totalAsistencias} de {asistencias.length} días</p>}
               </button>
-              <button onClick={() => setPestana('asistencia')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center text-sm flex-shrink-0">❌</span>
-                  <p className="text-xs font-medium text-gray-500">Faltas</p>
+              <button onClick={() => setPestana('asistencia')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'asistencia' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-red-50 text-red-600 flex items-center justify-center text-xs flex-shrink-0">❌</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Faltas</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{asistencias.length > 0 ? totalFaltas : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{asistencias.length > 0 ? totalFaltas : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('incidencias')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'incidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-sm flex-shrink-0">⚠️</span>
-                  <p className="text-xs font-medium text-gray-500">Incidencias</p>
+              <button onClick={() => setPestana('incidencias')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'incidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-xs flex-shrink-0">⚠️</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Incidencias</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('evaluaciones')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evaluaciones' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-sm flex-shrink-0">🏆</span>
-                  <p className="text-xs font-medium text-gray-500">Evaluaciones</p>
+              <button onClick={() => setPestana('evaluaciones')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evaluaciones' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Evaluaciones</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('evidencias')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-sm flex-shrink-0">📎</span>
-                  <p className="text-xs font-medium text-gray-500">Evidencias</p>
+              <button onClick={() => setPestana('evidencias')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-xs flex-shrink-0">📎</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Evidencias</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{evidencias.length > 0 ? evidencias.length : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{evidencias.length > 0 ? evidencias.length : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('fichas')} className={`text-left bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'fichas' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center text-sm flex-shrink-0">📝</span>
-                  <p className="text-xs font-medium text-gray-500">Ficha descriptiva</p>
+              <button onClick={() => setPestana('fichas')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'fichas' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center text-xs flex-shrink-0">📝</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Ficha descriptiva</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{fichasDescriptivas.length > 0 ? fichasDescriptivas.length : 'Sin registros'}</p>
+                <p className="text-lg font-bold text-gray-900">{fichasDescriptivas.length > 0 ? fichasDescriptivas.length : 'Sin registros'}</p>
               </button>
             </div>
 
@@ -653,7 +653,7 @@ export default function FichaAlumnoPage() {
           <div>
             <div className="flex items-center justify-between mb-2.5">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Asistencia</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
             </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               {errorAsistencia && <BannerError mensaje="No se pudieron cargar los registros de asistencia." />}
@@ -674,7 +674,7 @@ export default function FichaAlumnoPage() {
           <div>
             <div className="flex items-center justify-between mb-2.5">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Incidencias</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
             </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               {errorIncidencias && <BannerError mensaje="No se pudieron cargar las incidencias." />}
@@ -705,7 +705,7 @@ export default function FichaAlumnoPage() {
           <div>
             <div className="flex items-center justify-between mb-2.5">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Evaluaciones</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
             </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               {errorEvaluaciones && <BannerError mensaje="No se pudieron cargar las evaluaciones." />}
@@ -739,7 +739,7 @@ export default function FichaAlumnoPage() {
           <div>
             <div className="flex items-center justify-between mb-2.5">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Evidencias</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
             </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               {errorEvidencias && <BannerError mensaje="No se pudieron cargar las evidencias." />}
@@ -774,7 +774,7 @@ export default function FichaAlumnoPage() {
           <div>
             <div className="flex items-center justify-between mb-2.5">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Ficha descriptiva</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 rounded">✕ Cerrar</button>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
             </div>
             <div className="space-y-5">
               <div className={`rounded-2xl border p-4 shadow-sm ${expedienteCompleto ? 'bg-green-50 border-green-100' : 'bg-amber-50 border-amber-100'}`}>
@@ -883,15 +883,15 @@ export default function FichaAlumnoPage() {
           </div>
           )}
 
-          <div className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
-            <span aria-hidden="true" className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-base flex-shrink-0">🕓</span>
+          <div className="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm flex items-center gap-2.5">
+            <span aria-hidden="true" className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-base flex-shrink-0">🕓</span>
             <div className="min-w-0">
               <p className="text-xs font-medium text-gray-500">Última actividad registrada</p>
               <p className="text-sm font-semibold text-gray-900">{ultimaActividad ? formatFecha(ultimaActividad) : 'Sin registros'}</p>
             </div>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-3 border-t border-gray-100">
             <button
               onClick={() => setMostrarConfirmacionBaja(true)}
               className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
