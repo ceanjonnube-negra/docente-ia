@@ -26,6 +26,8 @@ import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesP
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
+import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
+import { construirPlaneacionActivaCreada, guardarPlaneacionActivaCreada } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -1405,6 +1407,14 @@ export async function POST(req: NextRequest) {
   // importar qué pasó dentro de ese try — mismo criterio ya usado por
   // requiereConsultaOficial.
   let esTurnoDeBorradorPlaneacion = false
+  // FASE 2 (C-005 — planeación activa) — mismo criterio que
+  // esTurnoDeBorradorPlaneacion arriba: declarada antes del try del
+  // clasificador para que el bloque de streaming, mucho más abajo,
+  // pueda leerla sin depender del scope de `clasificacion`. Solo true
+  // cuando esta generación es una CREACIÓN nueva ('crear') — 'ajustar'
+  // deja esta variable en false, así el guardado de planeacion_activa
+  // nunca se dispara desde un ajuste en esta fase.
+  let esCreacionNuevaDePlaneacion = false
   // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
   // — mismo criterio que las dos variables de arriba: declarada antes
   // del try del clasificador para que el Response final (mucho más
@@ -2183,6 +2193,7 @@ export async function POST(req: NextRequest) {
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
             esTurnoDeBorradorPlaneacion = true
+            esCreacionNuevaDePlaneacion = clasificacion.accion_planeacion_generar === 'crear'
             console.log(
               `[NIVEL4][planeacion_generar] calendarioConsultado=true diasExcluidosPorCalendario=${resultadoGeneracion.eventosCalendarioDelPeriodo.length} cicloEscolarPresente=${!!sesion.ciclo_escolar_id} periodoEvaluacionPresente=${!!resultadoGeneracion.periodoEvaluacionActual} conflicto=${resultadoGeneracion.fechas.conflicto} totalDiasEfectivos=${resultadoGeneracion.fechas.totalDiasEfectivos}`
             )
@@ -3858,6 +3869,40 @@ Grado: [grado] | Grupo: [grupo]
             console.log(`[STREAM][chat] errorEtapa=hoja_pdf nombreError=${e instanceof Error ? e.name : 'desconocido'}`)
           }
         }
+
+        // FASE 2 (C-005 — planeación activa, diseño aprobado por
+        // separado) — persiste el snapshot estructurado SOLO cuando
+        // esta generación fue una CREACIÓN nueva ('crear'; 'ajustar'
+        // queda intacto, no se toca en esta fase). Efecto server-side
+        // puro, posterior al streaming — nunca puede convertir una
+        // generación ya exitosa (el docente ya tiene el borrador en
+        // pantalla) en un error visible: cualquier fallo aquí se
+        // registra sin PII y se descarta, dejando planeacion_activa sin
+        // modificar (nunca una escritura parcial). Reutiliza
+        // textoBorradorAcumulado (ya acumulado arriba, sin reconstruir
+        // contenido) y obtenerConversacionIdAutorizada() (cacheada por
+        // request — no agrega un SELECT nuevo).
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && esCreacionNuevaDePlaneacion) {
+          try {
+            const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
+            if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok) {
+              const conversacionIdParaSnapshot = await obtenerConversacionIdAutorizada()
+              if (conversacionIdParaSnapshot && supabaseUser) {
+                const snapshot = construirPlaneacionActivaCreada(resumenParaSnapshot, sesion.grupo_activo_id, null)
+                const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
+                console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
+              } else {
+                console.log('[PLANEACION_ACTIVA] sin conversacionId autorizado — se omite el guardado')
+              }
+            }
+          } catch {
+            // Nunca el objeto de excepción crudo — categoría cerrada,
+            // igual que el resto de esta fase (ver
+            // lib/planeacion/planeacionActiva.ts).
+            console.error('[PLANEACION_ACTIVA] guardado=false motivo=EXCEPCION_PERSISTENCIA')
+          }
+        }
+
         console.log(`[STREAM][chat] eventoFinalEnviado=true cantidadAdjuntos=${cantidadAdjuntos} duracionTotalMs=${Date.now() - inicioRequestMs}`)
         // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — mismo marcador que la
         // ruta determinista de arriba, aplicado aquí al streaming de
