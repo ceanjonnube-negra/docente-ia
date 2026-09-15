@@ -17,13 +17,26 @@
 // (grado, grupo, ciclo, institución, docente): contexto.grupoId es la
 // única ancla, todo lo demás se resuelve en vivo desde ahí cuando haga
 // falta (ver diseño aprobado, "grupoId como ancla").
+//
+// schemaVersion 2 (Fase 3A.1/3A.2, ver auditoría "fuente canónica
+// completa" aprobada por separado) — agrega contenidoCompleto: el
+// string canónico completo de la planeación (extraerTextoCompletoBorrador,
+// lib/planeacion/extraerBorrador.ts), la MISMA fuente que ya alimenta
+// Word/PDF en app/api/chat/route.ts — nunca una transformación nueva.
+// Contrato discriminado por schemaVersion a propósito: un snapshot
+// schemaVersion=2 sin contenidoCompleto (o vacío) NUNCA es un
+// PlaneacionActiva válido — TypeScript lo rechaza en tiempo de
+// compilación (unión discriminada), y esPlaneacionActivaValida lo
+// rechaza en runtime. Los snapshots schemaVersion=1 ya persistidos
+// siguen siendo válidos tal cual, sin contenidoCompleto — NUNCA se
+// migran ni se completan en caliente; heredar/ajustar sobre un v1 queda
+// fuera de alcance de esta ronda (Fase 3, no autorizada todavía).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResumenBorrador } from './extraerBorrador'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 
-export type PlaneacionActiva = {
-  schemaVersion: 1
+type CamposComunesPlaneacionActiva = {
   version: number
   contexto: {
     grupoId: string
@@ -33,21 +46,31 @@ export type PlaneacionActiva = {
   actualizadoEn: string
 }
 
+export type PlaneacionActivaV1 = CamposComunesPlaneacionActiva & { schemaVersion: 1 }
+export type PlaneacionActivaV2 = CamposComunesPlaneacionActiva & { schemaVersion: 2; contenidoCompleto: string }
+
+export type PlaneacionActiva = PlaneacionActivaV1 | PlaneacionActivaV2
+
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // Construye el snapshot de una CREACIÓN nueva — version siempre 1 en
 // esta fase (heredar/incrementar desde un ajuste es una fase posterior
-// no autorizada todavía). Pura, sin I/O.
+// no autorizada todavía). Pura, sin I/O. `contenidoCompleto` debe ser
+// la MISMA cadena ya calculada por el llamador (route.ts) para
+// Word/PDF — esta función nunca la reconstruye ni vuelve a llamar
+// extraerTextoCompletoBorrador por su cuenta.
 export function construirPlaneacionActivaCreada(
   resumen: ResumenBorrador,
+  contenidoCompleto: string,
   grupoId: string,
   origenMensajeId: string | null
-): PlaneacionActiva {
+): PlaneacionActivaV2 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version: 1,
     contexto: { grupoId },
     borrador: resumen,
+    contenidoCompleto,
     origenMensajeId,
     actualizadoEn: new Date().toISOString(),
   }
@@ -58,12 +81,10 @@ export function construirPlaneacionActivaCreada(
 // se completa con un valor inventado. Reutiliza validarContenidoBorrador
 // (lib/planeacion/validarContenidoBorrador.ts) como única fuente de
 // verdad sobre qué hace válido un ResumenBorrador, en vez de duplicar
-// esas reglas aquí.
-export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionActiva {
-  if (typeof valor !== 'object' || valor === null) return false
-  const v = valor as Record<string, unknown>
-
-  if (v.schemaVersion !== 1) return false
+// esas reglas aquí. Acepta schemaVersion 1 (histórico, sin
+// contenidoCompleto) y schemaVersion 2 (exige contenidoCompleto no
+// vacío) — cualquier otro valor de schemaVersion se rechaza.
+function camposComunesValidos(v: Record<string, unknown>): boolean {
   if (typeof v.version !== 'number' || !Number.isInteger(v.version) || v.version <= 0) return false
 
   const contexto = v.contexto as Record<string, unknown> | null | undefined
@@ -77,6 +98,19 @@ export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionAct
   if (typeof v.actualizadoEn !== 'string' || Number.isNaN(Date.parse(v.actualizadoEn))) return false
 
   return true
+}
+
+export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionActiva {
+  if (typeof valor !== 'object' || valor === null) return false
+  const v = valor as Record<string, unknown>
+
+  if (!camposComunesValidos(v)) return false
+
+  if (v.schemaVersion === 1) return true
+  if (v.schemaVersion === 2) {
+    return typeof v.contenidoCompleto === 'string' && v.contenidoCompleto.trim().length > 0
+  }
+  return false
 }
 
 // Categorías técnicas CERRADAS — nunca el texto crudo de un error de

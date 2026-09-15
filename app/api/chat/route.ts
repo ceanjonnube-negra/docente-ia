@@ -3719,6 +3719,13 @@ Grado: [grado] | Grupo: [grupo]
         // realmente construidos en este turno (0, 1 o 2), nunca su
         // contenido.
         let cantidadAdjuntos = 0
+        // FASE 3A.2 (C-005 — planeación activa v2) — UNA sola cadena
+        // canónica por turno: se fija dentro del bloque de Word/PDF
+        // justo abajo (misma extraerTextoCompletoBorrador que ya usan
+        // esos dos documentos) y el bloque de guardado de
+        // planeacion_activa, más abajo, la reutiliza tal cual — nunca
+        // hace una segunda extracción independiente.
+        let textoCompletoParaSnapshot: string | null = null
 
         // Corrección funcional — "falta mostrar y descargar la
         // planeación": el borrador completo (no solo su hoja de
@@ -3743,6 +3750,7 @@ Grado: [grado] | Grupo: [grupo]
           try {
             const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
             console.log(`[STREAM][chat] borradorExtraido=${!!textoCompleto}`)
+            textoCompletoParaSnapshot = textoCompleto
             if (textoCompleto) {
               const resumenParaTitulo = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
               const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null }
@@ -3880,15 +3888,17 @@ Grado: [grado] | Grupo: [grupo]
         // registra sin PII y se descarta, dejando planeacion_activa sin
         // modificar (nunca una escritura parcial). Reutiliza
         // textoBorradorAcumulado (ya acumulado arriba, sin reconstruir
-        // contenido) y obtenerConversacionIdAutorizada() (cacheada por
-        // request — no agrega un SELECT nuevo).
+        // contenido), textoCompletoParaSnapshot (FASE 3A.2 — misma
+        // cadena canónica ya calculada para Word/PDF arriba, nunca una
+        // segunda extracción) y obtenerConversacionIdAutorizada()
+        // (cacheada por request — no agrega un SELECT nuevo).
         if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && esCreacionNuevaDePlaneacion) {
           try {
             const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
-            if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok) {
+            if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok && textoCompletoParaSnapshot) {
               const conversacionIdParaSnapshot = await obtenerConversacionIdAutorizada()
               if (conversacionIdParaSnapshot && supabaseUser) {
-                const snapshot = construirPlaneacionActivaCreada(resumenParaSnapshot, sesion.grupo_activo_id, null)
+                const snapshot = construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
               } else {
