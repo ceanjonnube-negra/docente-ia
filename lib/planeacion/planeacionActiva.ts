@@ -30,7 +30,20 @@
 // rechaza en runtime. Los snapshots schemaVersion=1 ya persistidos
 // siguen siendo válidos tal cual, sin contenidoCompleto — NUNCA se
 // migran ni se completan en caliente; heredar/ajustar sobre un v1 queda
-// fuera de alcance de esta ronda (Fase 3, no autorizada todavía).
+// fuera de alcance (Fase 3, no autorizada todavía).
+//
+// schemaVersion 3 (Fase 3B.1/3B.2, ver decisión arquitectónica
+// "planeacion_activa como fuente de verdad de continuidad" aprobada por
+// separado) — agrega el ciclo de vida borrador/implementada. Discriminado
+// dos veces a propósito: primero por schemaVersion (igual que v1/v2),
+// y DENTRO de v3, otra vez por `estado`, para que sea IMPOSIBLE en
+// tiempo de compilación construir un v3 con estado='borrador' e
+// implementadaEn distinto de null, o estado='implementada' con
+// implementadaEn null — la misma garantía que ya usa esPlaneacionActivaValida
+// en runtime, ahora reforzada también por el tipo. Esta fase SOLO cambia
+// el shape que escribe una CREACIÓN nueva (siempre nace 'borrador',
+// version=1) — 'ajustar'/'implementar'/'descartar'/'finalizar' quedan
+// fuera de alcance, no autorizados todavía.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResumenBorrador } from './extraerBorrador'
@@ -49,30 +62,38 @@ type CamposComunesPlaneacionActiva = {
 export type PlaneacionActivaV1 = CamposComunesPlaneacionActiva & { schemaVersion: 1 }
 export type PlaneacionActivaV2 = CamposComunesPlaneacionActiva & { schemaVersion: 2; contenidoCompleto: string }
 
-export type PlaneacionActiva = PlaneacionActivaV1 | PlaneacionActivaV2
+type CamposV3Base = CamposComunesPlaneacionActiva & { schemaVersion: 3; contenidoCompleto: string }
+export type PlaneacionActivaV3Borrador = CamposV3Base & { estado: 'borrador'; implementadaEn: null }
+export type PlaneacionActivaV3Implementada = CamposV3Base & { estado: 'implementada'; implementadaEn: string }
+export type PlaneacionActivaV3 = PlaneacionActivaV3Borrador | PlaneacionActivaV3Implementada
+
+export type PlaneacionActiva = PlaneacionActivaV1 | PlaneacionActivaV2 | PlaneacionActivaV3
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// Construye el snapshot de una CREACIÓN nueva — version siempre 1 en
-// esta fase (heredar/incrementar desde un ajuste es una fase posterior
-// no autorizada todavía). Pura, sin I/O. `contenidoCompleto` debe ser
-// la MISMA cadena ya calculada por el llamador (route.ts) para
-// Word/PDF — esta función nunca la reconstruye ni vuelve a llamar
+// Construye el snapshot de una CREACIÓN nueva — version siempre 1,
+// estado siempre 'borrador' e implementadaEn siempre null (una creación
+// NUNCA nace implementada; 'implementar' es una transición aparte, no
+// autorizada todavía). Pura, sin I/O. `contenidoCompleto` debe ser la
+// MISMA cadena ya calculada por el llamador (route.ts) para Word/PDF —
+// esta función nunca la reconstruye ni vuelve a llamar
 // extraerTextoCompletoBorrador por su cuenta.
 export function construirPlaneacionActivaCreada(
   resumen: ResumenBorrador,
   contenidoCompleto: string,
   grupoId: string,
   origenMensajeId: string | null
-): PlaneacionActivaV2 {
+): PlaneacionActivaV3Borrador {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     version: 1,
+    estado: 'borrador',
     contexto: { grupoId },
     borrador: resumen,
     contenidoCompleto,
     origenMensajeId,
     actualizadoEn: new Date().toISOString(),
+    implementadaEn: null,
   }
 }
 
@@ -82,8 +103,9 @@ export function construirPlaneacionActivaCreada(
 // (lib/planeacion/validarContenidoBorrador.ts) como única fuente de
 // verdad sobre qué hace válido un ResumenBorrador, en vez de duplicar
 // esas reglas aquí. Acepta schemaVersion 1 (histórico, sin
-// contenidoCompleto) y schemaVersion 2 (exige contenidoCompleto no
-// vacío) — cualquier otro valor de schemaVersion se rechaza.
+// contenidoCompleto), schemaVersion 2 (exige contenidoCompleto no
+// vacío) y schemaVersion 3 (exige además estado/implementadaEn
+// coherentes) — cualquier otro valor de schemaVersion se rechaza.
 function camposComunesValidos(v: Record<string, unknown>): boolean {
   if (typeof v.version !== 'number' || !Number.isInteger(v.version) || v.version <= 0) return false
 
@@ -100,6 +122,60 @@ function camposComunesValidos(v: Record<string, unknown>): boolean {
   return true
 }
 
+// Compartida entre v2 y v3 — mismo criterio exacto en ambas, nunca dos
+// implementaciones que puedan divergir.
+function contenidoCompletoValido(v: Record<string, unknown>): boolean {
+  return typeof v.contenidoCompleto === 'string' && v.contenidoCompleto.trim().length > 0
+}
+
+// Formato EXACTO que produce new Date().toISOString() en JS —
+// YYYY-MM-DDTHH:mm:ss.sssZ (milisegundos siempre a 3 dígitos, siempre
+// terminado en Z) — la MISMA forma que ya usa
+// construirPlaneacionActivaCreada() para actualizadoEn/implementadaEn.
+// Deliberadamente MÁS estricto que Date.parse() a secas: Date.parse
+// acepta "September 16, 2026", "09/16/2026" o "2026-09-16" como fechas
+// válidas, ninguna de las cuales es el contrato real que este código
+// escribe — fail-closed, nunca aproxima un formato "parecido" a ISO.
+const REGEX_ISO_8601_ESTRICTO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+// La forma sola no basta: Date.parse/new Date() NORMALIZAN fechas
+// calendáricamente imposibles con forma correcta (ej. "2026-02-31" se
+// interpreta como "3 de marzo", "2026-04-31" como "1 de mayo") en vez
+// de rechazarlas. El roundtrip exacto — reconstruir la fecha desde el
+// timestamp parseado y exigir que produzca el MISMO string de vuelta —
+// es lo único que garantiza que `valor` sea literalmente un timestamp
+// canónico real, no una fecha imposible "corregida" en silencio por el
+// motor de fechas.
+function esFechaIsoEstricta(valor: unknown): valor is string {
+  if (typeof valor !== 'string' || !REGEX_ISO_8601_ESTRICTO.test(valor)) return false
+  const timestamp = Date.parse(valor)
+  if (Number.isNaN(timestamp)) return false
+  return new Date(timestamp).toISOString() === valor
+}
+
+// SOLO para schemaVersion=3 — refuerza en runtime la misma coherencia
+// que la unión discriminada de PlaneacionActivaV3 ya exige en tiempo de
+// compilación: 'borrador' exige implementadaEn EXACTAMENTE null (nunca
+// un string, ni siquiera vacío); 'implementada' exige implementadaEn
+// como fecha ISO 8601 ESTRICTA (ver esFechaIsoEstricta arriba), no
+// cualquier valor meramente parseable por Date.parse. Cualquier otro
+// valor de `estado`, o cualquier combinación cruzada, es inválido —
+// fail-closed, nunca se aproxima ni se corrige el valor.
+//
+// NOTA — actualizadoEn (camposComunesValidos, compartido por v1/v2/v3)
+// sigue validándose solo con Date.parse, el mismo criterio laxo de
+// siempre: NO se amplió a esFechaIsoEstricta en esta ronda porque no
+// pude confirmar sin riesgo que TODOS los snapshots v1/v2 ya
+// persistidos cumplan exactamente ese formato estricto (nunca
+// inspeccioné el string crudo, solo su valor ya interpretado como
+// fecha) — endurecerlo aquí podría invalidar un snapshot histórico
+// real. Queda señalado como pendiente, no corregido.
+function estadoV3Valido(v: Record<string, unknown>): boolean {
+  if (v.estado === 'borrador') return v.implementadaEn === null
+  if (v.estado === 'implementada') return esFechaIsoEstricta(v.implementadaEn)
+  return false
+}
+
 export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionActiva {
   if (typeof valor !== 'object' || valor === null) return false
   const v = valor as Record<string, unknown>
@@ -107,9 +183,8 @@ export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionAct
   if (!camposComunesValidos(v)) return false
 
   if (v.schemaVersion === 1) return true
-  if (v.schemaVersion === 2) {
-    return typeof v.contenidoCompleto === 'string' && v.contenidoCompleto.trim().length > 0
-  }
+  if (v.schemaVersion === 2) return contenidoCompletoValido(v)
+  if (v.schemaVersion === 3) return contenidoCompletoValido(v) && estadoV3Valido(v)
   return false
 }
 
