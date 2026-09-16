@@ -142,32 +142,6 @@ export function construirPlaneacionActivaAjustada(
   return { ...base, estado: 'implementada', implementadaEn: snapshotAnterior.implementadaEn }
 }
 
-// Construye el snapshot de IMPLEMENTAR una planeación V3 en 'borrador'
-// (Fase 3B.4) — pura, sin I/O. NO es un ajuste: es solo una transición
-// de estado. version, contexto.grupoId, borrador, contenidoCompleto y
-// origenMensajeId se copian EXACTAMENTE igual (implementar nunca
-// modifica el contenido de la planeación, solo su ciclo de vida) — la
-// entrada se tipa como PlaneacionActivaV3Borrador a propósito (no el
-// union PlaneacionActivaV3 completo) para que TypeScript garantice en
-// compilación que el llamador ya descartó el caso 'implementada' antes
-// de invocar esta función, sin depender de una aserción de tipo.
-// actualizadoEn e implementadaEn usan EXACTAMENTE el mismo timestamp,
-// generado una sola vez aquí — no hay razón técnica para que difieran.
-export function construirPlaneacionActivaImplementada(snapshotAnterior: PlaneacionActivaV3Borrador): PlaneacionActivaV3Implementada {
-  const ahora = new Date().toISOString()
-  return {
-    schemaVersion: 3,
-    version: snapshotAnterior.version,
-    estado: 'implementada',
-    contexto: { grupoId: snapshotAnterior.contexto.grupoId },
-    borrador: snapshotAnterior.borrador,
-    contenidoCompleto: snapshotAnterior.contenidoCompleto,
-    origenMensajeId: snapshotAnterior.origenMensajeId,
-    actualizadoEn: ahora,
-    implementadaEn: ahora,
-  }
-}
-
 // Validación defensiva mínima, fail-closed: cualquier campo ausente o
 // mal formado invalida el snapshot COMPLETO — nunca se aproxima, nunca
 // se completa con un valor inventado. Reutiliza validarContenidoBorrador

@@ -27,8 +27,7 @@ import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBo
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
-import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, construirPlaneacionActivaImplementada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, type PlaneacionActivaV3 } from '@/lib/planeacion/planeacionActiva'
-import { detectarImplementarPlaneacion } from '@/lib/planeacion/detectarImplementarPlaneacion'
+import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, type PlaneacionActivaV3 } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -1360,125 +1359,6 @@ export async function POST(req: NextRequest) {
     }
 
     return respuestaTexto(textoLista)
-  }
-
-  // IMPLEMENTAR PLANEACIÓN (Fase 3B.4, ver "implementar planeación —
-  // arquitectura definitiva" aprobada por separado) — mismo principio
-  // que FINALIZAR ARCHIVO y LISTA DE ALUMNOS arriba: transición
-  // DETERMINISTA de estado (borrador → implementada), nunca pasa por
-  // Claude ni por el Clasificador de Nivel 0 — IA total = 0. Se excluye
-  // esEdicionDocumento por la misma razón que los interceptores de
-  // arriba: ahí `mensaje` sería el prompt interno de
-  // construirPromptEdicion (AsistenteService.ts), nunca las palabras
-  // reales del docente. NUNCA modifica 3B.3 (construirPlaneacionActivaAjustada
-  // y el flujo de ajustar quedan intactos, sin tocar) ni el flujo
-  // preexistente de 'aprobar' (accion_planeacion_generar==='aprobar',
-  // más abajo, después de Nivel0 — semántica distinta, fuera de esta
-  // fase). Máximo 1 SELECT nuevo (planeacion_activa) + máximo 1 UPDATE
-  // condicionado — nunca dos escrituras, nunca una segunda lectura tras
-  // el UPDATE (ver más abajo, "sin relectura" — diseño aprobado).
-  //
-  // GATE (ver auditoría "orden reconocida no debe caer a IA" aprobada
-  // por separado) — la detección de la intención es el gate PRINCIPAL:
-  // una vez que detectarImplementarPlaneacion(mensaje) es true (y no es
-  // una edición de documento), NO existe ningún camino hacia
-  // clasificarNivel0() más abajo. supabaseUser/userId/sesion.grupo_activo_id
-  // NO son prerrequisitos del `if` externo (a diferencia de LISTA DE
-  // ALUMNOS/FINALIZAR ARCHIVO, que si faltan simplemente dejan pasar el
-  // mensaje al flujo normal) — aquí, si falta cualquiera de ellos, es
-  // un fail-closed determinista DENTRO del bloque, nunca un fall-through
-  // silencioso hacia Nivel0/IA.
-  if (!esEdicionDocumento && detectarImplementarPlaneacion(mensaje || '')) {
-    console.log('[PLANEACION_IMPLEMENTAR] detectado=true')
-
-    if (!supabaseUser || !userId || !sesion?.grupo_activo_id) {
-      console.log('[PLANEACION_IMPLEMENTAR] snapshot_valido=false motivo=prerequisito_faltante')
-      return respuestaTexto('No tengo una planeación activa lista para implementar en esta conversación. Pídeme que genere o ajuste una planeación primero.')
-    }
-
-    const conversacionIdParaImplementar = await obtenerConversacionIdAutorizada()
-    if (!conversacionIdParaImplementar) {
-      console.log('[PLANEACION_IMPLEMENTAR] snapshot_valido=false motivo=sin_conversacion')
-      return respuestaTexto('No tengo una planeación activa lista para implementar en esta conversación. Pídeme que genere o ajuste una planeación primero.')
-    }
-
-    // Fail-closed uniforme (mismo criterio que 3B.3): v1/v2, ausente,
-    // corrupto o de OTRO grupo se tratan exactamente igual — nunca se
-    // reconstruye desde historial, nunca se busca otra planeación ni
-    // otro grupo. La invariante multigrupo real: contexto.grupoId debe
-    // coincidir con sesion.grupo_activo_id (que MG-B ya ancla de forma
-    // estable a esta conversación) — nunca se "corrige".
-    const { data: filaParaImplementar } = await supabaseUser
-      .from('conversaciones_chat')
-      .select('planeacion_activa')
-      .eq('id', conversacionIdParaImplementar)
-      .maybeSingle()
-    const candidatoImplementar = filaParaImplementar?.planeacion_activa
-    const snapshotValidoParaImplementar: PlaneacionActivaV3 | null =
-      candidatoImplementar &&
-      esPlaneacionActivaValida(candidatoImplementar) &&
-      candidatoImplementar.schemaVersion === 3 &&
-      candidatoImplementar.contexto.grupoId === sesion.grupo_activo_id
-        ? candidatoImplementar
-        : null
-
-    if (!snapshotValidoParaImplementar) {
-      console.log('[PLANEACION_IMPLEMENTAR] snapshot_valido=false')
-      return respuestaTexto('No tengo una planeación activa lista para implementar en esta conversación. Pídeme que genere o ajuste una planeación primero.')
-    }
-
-    // Idempotencia (diseño aprobado): ya implementada → 0 IA, 0 UPDATE,
-    // version/implementadaEn/actualizadoEn intactos — responde y
-    // termina aquí, sin llegar a la escritura de abajo.
-    if (snapshotValidoParaImplementar.estado === 'implementada') {
-      console.log('[PLANEACION_IMPLEMENTAR] ya_implementada=true')
-      return respuestaTexto('Esta planeación ya está implementada. Puedes seguir ajustándola cuando lo necesites.')
-    }
-
-    // TypeScript ya sabe aquí que snapshotValidoParaImplementar es
-    // PlaneacionActivaV3Borrador (estado==='implementada' se descartó
-    // arriba con un return) — construirPlaneacionActivaImplementada
-    // exige ese tipo exacto, sin aserciones.
-    const nuevoSnapshotImplementado = construirPlaneacionActivaImplementada(snapshotValidoParaImplementar)
-
-    // Concurrencia (diseño aprobado, sin locking; ver auditoría
-    // "concurrencia con ajustar" aprobada por separado) — el UPDATE
-    // solo aplica si, EN ESE MOMENTO en DB, el estado sigue siendo
-    // 'borrador' Y la version sigue siendo EXACTAMENTE la que se leyó
-    // arriba (filtros sobre planeacion_activa->>estado y
-    // planeacion_activa->>version, sintaxis validada por separado
-    // contra PostgREST real). La condición de estado por sí sola NO
-    // basta: un AJUSTE concurrente conserva estado='borrador' pero
-    // incrementa version — sin el guard de version, el UPDATE de
-    // implementar podría sobrescribir un ajuste más reciente con el
-    // snapshot viejo. version es la señal correcta (nunca
-    // actualizadoEn): AJUSTAR siempre incrementa version, IMPLEMENTAR
-    // nunca la toca — es estructurada y determinista, no un timestamp
-    // aproximado. .select('id') encadenado al propio UPDATE
-    // (RETURNING) es la única forma de saber si la condición realmente
-    // aplicó — nunca una segunda query independiente. Si
-    // filasActualizadas queda vacío (0 filas), NO se vuelve a leer:
-    // fail-closed inmediato, el docente puede reintentar y el SELECT
-    // de arriba en ese segundo intento ya resolverá el estado real.
-    const { data: filasActualizadasImplementar, error: errorImplementar } = await supabaseUser
-      .from('conversaciones_chat')
-      .update({ planeacion_activa: nuevoSnapshotImplementado })
-      .eq('id', conversacionIdParaImplementar)
-      .eq('planeacion_activa->>estado', 'borrador')
-      .eq('planeacion_activa->>version', String(snapshotValidoParaImplementar.version))
-      .select('id')
-
-    if (errorImplementar) {
-      console.log('[PLANEACION_IMPLEMENTAR] actualizado=false motivo=error_db')
-      return respuestaTexto('No fue posible implementar la planeación en este momento. Intenta de nuevo en unos segundos.')
-    }
-    if (!filasActualizadasImplementar || filasActualizadasImplementar.length === 0) {
-      console.log('[PLANEACION_IMPLEMENTAR] conflicto_concurrencia=true')
-      return respuestaTexto('La planeación cambió mientras se intentaba implementar. Inténtalo de nuevo.')
-    }
-
-    console.log('[PLANEACION_IMPLEMENTAR] actualizado=true')
-    return respuestaTexto('Planeación implementada. Puedes seguir ajustándola cuando lo necesites.')
   }
 
   // CAUSA RAÍZ de "el Chat responde como si nunca hubiera recibido la

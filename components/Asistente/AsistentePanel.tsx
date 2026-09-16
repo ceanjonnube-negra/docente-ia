@@ -308,10 +308,14 @@ function TarjetaDescarga({
   // grupo de 1, sin ningún cambio de comportamiento.
   archivos: ArchivoGeneradoInfo[]
   creadoEn: number
-  // esActivo: solo hace falta para el indicador "· Documento activo"
-  // (llega como prop en vez de que la tarjeta llame useAsistente() por
-  // su cuenta, para no duplicar la suscripción que ya tiene
-  // AsistentePanel).
+  // esActivo (Fase L1 — "Documento activo" es contexto técnico interno
+  // del Chat, ver documentoActivo/documentoActivoId en AsistenteService;
+  // el maestro nunca necesita conocerlo, así que el indicador visual
+  // que dependía de esta prop se retiró) — se conserva la prop y su
+  // cálculo tal cual (llega como prop en vez de que la tarjeta llame
+  // useAsistente() por su cuenta, para no duplicar la suscripción que
+  // ya tiene AsistentePanel) por si un futuro indicador visual distinto
+  // vuelve a necesitarla, sin tener que rehacer ese cableado.
   esActivo: boolean
   className?: string
   resaltado?: boolean
@@ -366,7 +370,6 @@ function TarjetaDescarga({
                 {tamano && <span>· {tamano}</span>}
               </>
             )}
-            {esActivo && <span className="text-purple-600 font-semibold">· {principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'}</span>}
           </p>
           <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : 'text-green-600'}`}>
             {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
