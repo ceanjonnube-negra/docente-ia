@@ -1629,7 +1629,7 @@ export async function POST(req: NextRequest) {
       // viene null (el contexto activo del docente no tiene ciclo
       // escolar configurado), o si consultarAsistenciaAlumno falló.
       console.log(
-        `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id}`
+        `[NIVEL0] intencion=${clasificacion.intencion_principal} nivel=${clasificacion.nivel_ejecucion} alumno_id=${clasificacion.entidades_resueltas.alumno_id} alumno_detectado=${clasificacion.entidades_resueltas.alumno_nombre_detectado} datos_faltantes=${JSON.stringify(clasificacion.datos_faltantes)} ciclo_escolar_id=${sesion.ciclo_escolar_id} accion_planeacion=${clasificacion.accion_planeacion_generar ?? 'null'}`
       )
       // FASE 2A (ver "contrato del router semántico unificado +
       // transporte de referentes contextuales") — SOLO diagnóstico:
