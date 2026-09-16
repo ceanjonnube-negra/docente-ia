@@ -706,6 +706,26 @@ class AsistenteServiceImpl {
       .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo actualizar materialVisualActivo:', e))
   }
 
+  // Mismo patrón EXACTO que persistirMaterialVisualActivoRemoto arriba
+  // (ver esa nota) — pero para documentoActivo, que hasta ahora tenía
+  // columna (conversaciones_chat.documento_activo), lectura
+  // (obtenerConversacionRemota) y función de escritura
+  // (actualizarConversacionRemota) ya existentes, pero NINGÚN
+  // call-site que realmente la invocara: abrirConversacion() siempre
+  // recibía documentoActivo=null desde Supabase, así que "Documento
+  // activo" (y la tarjeta correspondiente) se perdía en cada
+  // refresh/reapertura aunque siguiera visible en el historial (ver
+  // auditoría "persistencia de documentoActivo" aprobada por
+  // separado). Fire-and-forget: nunca bloquea, nunca rompe el chat, y
+  // si falla, this.documentoActivo en memoria sigue exactamente igual
+  // — el comportamiento local existente no cambia en absoluto, solo se
+  // conecta la escritura remota que faltaba.
+  private persistirDocumentoActivoRemoto() {
+    if (!this.conversacionActivaId) return
+    actualizarConversacionRemota(this.conversacionActivaId, { documentoActivo: this.documentoActivo })
+      .catch((e) => console.error('[PERSISTENCIA_REMOTA] No se pudo actualizar documentoActivo:', e))
+  }
+
   // Refresca la lista de conversaciones desde Supabase y la COMBINA
   // con lo que ya hubiera en this.listaConversaciones (legacy/
   // localStorage) — nunca la reemplaza de golpe: una conversación que
@@ -2257,6 +2277,13 @@ class AsistenteServiceImpl {
     const archivosGenerados = archivoNuevo ? { ...archivosPrevios, [archivoNuevo.tipo]: archivoNuevo } : archivosPrevios
     const ultimoFormatoGenerado = archivoNuevo?.tipo ?? (mismoDocumentoSinCambios ? this.documentoActivo?.ultimoFormatoGenerado : undefined)
     this.documentoActivo = { id, texto, archivosGenerados, ultimoFormatoGenerado }
+    // Único punto de mutación real de documentoActivo (los 7 llamadores
+    // de esta función, incluido actualizarMensaje, pasan todos por
+    // aquí) — persistir aquí, una sola vez por turno/edición
+    // completada, cubre todos los casos sin duplicar la llamada en
+    // cada sitio (a diferencia de materialVisualActivo, que no tiene
+    // un setter único y persiste en cada asignación directa).
+    this.persistirDocumentoActivoRemoto()
   }
 
   // Edición manual directa (botón "Editar"): sobrescribe el texto sin
