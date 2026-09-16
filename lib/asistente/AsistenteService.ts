@@ -11,6 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarFormatosExplicitosMultiples, detectarHerramientaDocumento, esDocumentoFormal, pareceEdicionDeImagenActiva, pareceNuevoDocumento, pareceOperacionSobreDatoPersonalAlumno, quiereIlustracion, type TipoHerramienta } from './documentos'
+import { detectarImplementarPlaneacion } from '@/lib/planeacion/detectarImplementarPlaneacion'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { esMensajeTextoNormalReutilizable, resolverReferentesDisponibles, aMetadataReferentes, idDeCandidato } from './contextoConversacional'
 import { esCandidataAShortCircuitCliente, type DecisionOrquestador } from './decisionOrquestador'
@@ -1742,7 +1743,28 @@ class AsistenteServiceImpl {
     // lógica de "documento activo" (tipoFinalizar/enviarComoEdicion),
     // cae directo al camino normal (más abajo), exactamente como si no
     // hubiera ningún documento activo.
-    if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno) {
+    //
+    // EXCLUSIÓN "IMPLEMENTAR" (Fase 3B.4, ver auditoría "causa raíz —
+    // cliente envuelve el mensaje como edición documental" aprobada por
+    // separado) — CAUSA RAÍZ real confirmada: "Implementa la
+    // planeación." con un documentoActivo presente pasaba las dos
+    // condiciones de arriba (no es documento nuevo, no es dato personal
+    // de alumno) y terminaba envuelto por construirPromptEdicion() con
+    // esEdicionDocumento=true — el fast-path determinista 0-IA de
+    // /api/chat (detectarImplementarPlaneacion, mismo módulo
+    // compartido) nunca llegaba a ver el texto limpio del docente, y el
+    // mensaje cae a clasificarNivel0/IA. Misma disciplina que
+    // pareceNuevoDocumento arriba: se comprueba ANTES de entrar a la
+    // lógica de "documento activo", así el mensaje ni siquiera se
+    // envuelve — sigue el camino normal (más abajo) con `limpio` intacto,
+    // exactamente como si no hubiera documento activo, y es
+    // exclusivamente /api/chat quien decide y ejecuta la transición
+    // real (este detector aquí SOLO evita el envoltorio de edición,
+    // nunca cambia estado por sí mismo — la autoridad sigue siendo
+    // 100% servidor). Reutiliza el MISMO detector que ya usa el
+    // servidor (lib/planeacion/detectarImplementarPlaneacion.ts) — una
+    // sola fuente de verdad, nunca una segunda implementación aquí.
+    if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno && !detectarImplementarPlaneacion(limpio)) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
