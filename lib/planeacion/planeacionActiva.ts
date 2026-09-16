@@ -8,10 +8,10 @@
 // mismo rol arquitectónico que documento_activo/material_visual_activo
 // de esa misma tabla.
 //
-// Esta fase NUNCA lee el snapshot para heredar/ajustar (eso es una fase
-// posterior no autorizada todavía) — solo lo construye y lo persiste
-// cuando una generación NUEVA ('crear') terminó con un borrador
-// completo y válido.
+// Fase 2 (creación, SOLO ESCRITURA) construye y persiste el snapshot
+// cuando una generación NUEVA ('crear') termina con un borrador
+// completo y válido. Fase 3B.3 (ver bloque más abajo) agrega el ajuste
+// sobre un snapshot V3 ya existente — ver construirPlaneacionActivaAjustada.
 //
 // Contrato aprobado — nunca duplica datos institucionales derivables
 // (grado, grupo, ciclo, institución, docente): contexto.grupoId es la
@@ -40,10 +40,23 @@
 // tiempo de compilación construir un v3 con estado='borrador' e
 // implementadaEn distinto de null, o estado='implementada' con
 // implementadaEn null — la misma garantía que ya usa esPlaneacionActivaValida
-// en runtime, ahora reforzada también por el tipo. Esta fase SOLO cambia
-// el shape que escribe una CREACIÓN nueva (siempre nace 'borrador',
-// version=1) — 'ajustar'/'implementar'/'descartar'/'finalizar' quedan
-// fuera de alcance, no autorizados todavía.
+// en runtime, ahora reforzada también por el tipo. Esta fase (3B.1/3B.2)
+// SOLO cambia el shape que escribe una CREACIÓN nueva (siempre nace
+// 'borrador', version=1) — 'implementar'/'descartar'/'finalizar' quedan
+// fuera de alcance. 'ajustar' se agrega en la fase siguiente (ver abajo).
+//
+// Fase 3B.3 (ajustar, ver decisión arquitectónica "planeacion_activa
+// como fuente de verdad de continuidad" aprobada por separado) — agrega
+// construirPlaneacionActivaAjustada: permite ajustar una
+// PlaneacionActivaV3 YA EXISTENTE. El ajuste parte EXCLUSIVAMENTE del
+// snapshot V3 previamente leído y validado por el llamador (route.ts) —
+// nunca se reconstruye desde el historial de la conversación, Word/PDF
+// ni ningún marcador de texto. Conserva contexto.grupoId, estado e
+// implementadaEn exactamente como estaban en el snapshot anterior (un
+// ajuste nunca implementa, desimplementa ni cambia de grupo);
+// incrementa version en +1 y sustituye borrador/contenidoCompleto por
+// los nuevos. La creación V3 (arriba) sigue existiendo sin cambios.
+// 'implementar'/'descartar'/'finalizar' siguen fuera de esta fase.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResumenBorrador } from './extraerBorrador'
@@ -95,6 +108,38 @@ export function construirPlaneacionActivaCreada(
     actualizadoEn: new Date().toISOString(),
     implementadaEn: null,
   }
+}
+
+// Construye el snapshot de un AJUSTE sobre una planeación V3 YA
+// existente (Fase 3B.3) — pura, sin I/O. Preserva estrictamente lo que
+// un ajuste NUNCA debe tocar: contexto.grupoId (siempre el mismo grupo
+// del snapshot anterior — invariante multigrupo, nunca se re-deriva de
+// otra fuente aquí), estado y implementadaEn (copiados literalmente,
+// tanto si es null como si es una fecha real) — un ajuste jamás
+// implementa ni desimplementa. Solo version (+1), borrador,
+// contenidoCompleto y actualizadoEn cambian. Construida por rama de
+// `estado` (nunca spread + cast) para que TypeScript garantice en
+// compilación que el resultado sigue siendo un PlaneacionActivaV3
+// coherente, sin depender de una aserción de tipo.
+export function construirPlaneacionActivaAjustada(
+  snapshotAnterior: PlaneacionActivaV3,
+  nuevoBorrador: ResumenBorrador,
+  nuevoContenidoCompleto: string,
+  origenMensajeId: string | null
+): PlaneacionActivaV3 {
+  const base = {
+    schemaVersion: 3 as const,
+    version: snapshotAnterior.version + 1,
+    contexto: { grupoId: snapshotAnterior.contexto.grupoId },
+    borrador: nuevoBorrador,
+    contenidoCompleto: nuevoContenidoCompleto,
+    origenMensajeId,
+    actualizadoEn: new Date().toISOString(),
+  }
+  if (snapshotAnterior.estado === 'borrador') {
+    return { ...base, estado: 'borrador', implementadaEn: null }
+  }
+  return { ...base, estado: 'implementada', implementadaEn: snapshotAnterior.implementadaEn }
 }
 
 // Validación defensiva mínima, fail-closed: cualquier campo ausente o

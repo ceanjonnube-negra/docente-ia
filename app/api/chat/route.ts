@@ -27,7 +27,7 @@ import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBo
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
-import { construirPlaneacionActivaCreada, guardarPlaneacionActivaCreada } from '@/lib/planeacion/planeacionActiva'
+import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, type PlaneacionActivaV3 } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -1411,10 +1411,17 @@ export async function POST(req: NextRequest) {
   // esTurnoDeBorradorPlaneacion arriba: declarada antes del try del
   // clasificador para que el bloque de streaming, mucho más abajo,
   // pueda leerla sin depender del scope de `clasificacion`. Solo true
-  // cuando esta generación es una CREACIÓN nueva ('crear') — 'ajustar'
-  // deja esta variable en false, así el guardado de planeacion_activa
-  // nunca se dispara desde un ajuste en esta fase.
+  // cuando esta generación es una CREACIÓN nueva ('crear').
   let esCreacionNuevaDePlaneacion = false
+  // FASE 3B.3 — snapshot V3 ya leído, validado y autorizado (schemaVersion=3,
+  // estado válido, contexto.grupoId === sesion.grupo_activo_id) para un
+  // turno de 'ajustar'. Mismo criterio de declaración temprana que las
+  // dos variables de arriba — el bloque de guardado, mucho más abajo,
+  // lo usa para decidir construirPlaneacionActivaAjustada() en vez de
+  // construirPlaneacionActivaCreada(), sin depender del scope de la
+  // rama donde se leyó. null en cualquier turno que no sea un ajuste
+  // válido — 'crear' nunca lo toca.
+  let planeacionActivaParaAjuste: PlaneacionActivaV3 | null = null
   // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
   // — mismo criterio que las dos variables de arriba: declarada antes
   // del try del clasificador para que el Response final (mucho más
@@ -2174,6 +2181,66 @@ export async function POST(req: NextRequest) {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
             const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
+          } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id && clasificacion.accion_planeacion_generar === 'ajustar') {
+            // FASE 3B.3 — AJUSTAR desde planeacion_activa (diseño
+            // aprobado por separado, "planeacion_activa como fuente de
+            // verdad de continuidad"). planeacion_activa.contenidoCompleto/
+            // borrador son la ÚNICA fuente real de la planeación vigente
+            // — NUNCA el historial de la conversación, NUNCA Word/PDF,
+            // NUNCA el marcador "📎 RESUMEN PARA GUARDAR". 1 SELECT
+            // nuevo, condicionado EXCLUSIVAMENTE a este caso (nunca para
+            // texto normal, crear, imágenes ni otros intents).
+            const conversacionIdParaAjuste = await obtenerConversacionIdAutorizada()
+            let snapshotValidoParaAjuste: PlaneacionActivaV3 | null = null
+            if (conversacionIdParaAjuste && supabaseUser) {
+              const { data: filaParaAjuste } = await supabaseUser
+                .from('conversaciones_chat')
+                .select('planeacion_activa')
+                .eq('id', conversacionIdParaAjuste)
+                .maybeSingle()
+              const candidato = filaParaAjuste?.planeacion_activa
+              // Fail-closed uniforme: v1/v2, ausente, corrupto o de OTRO
+              // grupo se tratan exactamente igual — nunca se reconstruye
+              // desde historial, nunca se reclasifica como 'crear' en
+              // silencio. La invariante multigrupo real:
+              // contexto.grupoId debe coincidir con sesion.grupo_activo_id,
+              // que MG-B ya ancla de forma estable a esta conversación
+              // (ver diseño aprobado) — nunca se "corrige" ni se busca
+              // otro grupo si no coincide.
+              if (
+                candidato &&
+                esPlaneacionActivaValida(candidato) &&
+                candidato.schemaVersion === 3 &&
+                candidato.contexto.grupoId === sesion.grupo_activo_id
+              ) {
+                snapshotValidoParaAjuste = candidato
+              }
+            }
+            if (!snapshotValidoParaAjuste) {
+              console.log('[PLANEACION_ACTIVA] ajuste_sin_snapshot_valido=true')
+              return respuestaTexto('No tengo una planeación activa lista para ajustar en esta conversación. Pídeme que genere una planeación nueva primero.')
+            }
+            planeacionActivaParaAjuste = snapshotValidoParaAjuste
+            const resultadoGeneracionAjuste = await prepararContextoGeneracionPlaneacion(supabaseUser, sesion, {
+              tema: clasificacion.tema_planeacion,
+              fechaInicio: clasificacion.fecha_inicio_planeacion,
+              fechaFin: clasificacion.fecha_fin_planeacion,
+              duracionDias: clasificacion.duracion_dias_planeacion,
+              duracionSemanas: clasificacion.duracion_semanas_planeacion,
+              momentoRelativo: clasificacion.momento_relativo_planeacion,
+            }, snapshotValidoParaAjuste)
+            contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracionAjuste)}`
+            // Instrucción mínima y ESPECÍFICA de este turno (no un
+            // cambio a instruccionesPlaneacionGenerar.ts, que sigue
+            // intacto) — el propio contenidoCompleto real ya viaja
+            // arriba dentro de resultadoGeneracionAjuste.planeacionVigente;
+            // esta línea solo aclara cómo usarlo.
+            contextoEnriquecido += `\n\nEsta es la planeación vigente que debes ajustar (ver "planeacionVigente" en el contexto de arriba). Modifica ÚNICAMENTE lo que el docente pidió en este turno y conserva TODO lo demás exactamente igual.`
+            contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
+            esTurnoDeBorradorPlaneacion = true
+            console.log(
+              `[NIVEL4][planeacion_generar] ajuste=true calendarioConsultado=true diasExcluidosPorCalendario=${resultadoGeneracionAjuste.eventosCalendarioDelPeriodo.length} cicloEscolarPresente=${!!sesion.ciclo_escolar_id} periodoEvaluacionPresente=${!!resultadoGeneracionAjuste.periodoEvaluacionActual} conflicto=${resultadoGeneracionAjuste.fechas.conflicto} totalDiasEfectivos=${resultadoGeneracionAjuste.fechas.totalDiasEfectivos}`
+            )
           } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id) {
             // C-005, Paso 3B — reemplaza lo que antes era planeacion_nueva
             // (solo inyectaba contextoGrupo). Ahora también calcula fechas
@@ -3880,8 +3947,9 @@ Grado: [grado] | Grupo: [grupo]
 
         // FASE 2 (C-005 — planeación activa, diseño aprobado por
         // separado) — persiste el snapshot estructurado SOLO cuando
-        // esta generación fue una CREACIÓN nueva ('crear'; 'ajustar'
-        // queda intacto, no se toca en esta fase). Efecto server-side
+        // esta generación fue una CREACIÓN nueva ('crear') o un AJUSTE
+        // sobre una planeacion_activa V3 ya autorizada y leída arriba
+        // (FASE 3B.3, planeacionActivaParaAjuste). Efecto server-side
         // puro, posterior al streaming — nunca puede convertir una
         // generación ya exitosa (el docente ya tiene el borrador en
         // pantalla) en un error visible: cualquier fallo aquí se
@@ -3891,14 +3959,19 @@ Grado: [grado] | Grupo: [grupo]
         // contenido), textoCompletoParaSnapshot (FASE 3A.2 — misma
         // cadena canónica ya calculada para Word/PDF arriba, nunca una
         // segunda extracción) y obtenerConversacionIdAutorizada()
-        // (cacheada por request — no agrega un SELECT nuevo).
-        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && esCreacionNuevaDePlaneacion) {
+        // (cacheada por request — no agrega un SELECT nuevo). Crear y
+        // ajustar comparten este ÚNICO UPDATE final — solo cambia qué
+        // constructor arma el snapshot antes de guardarlo, nunca dos
+        // escrituras separadas en el mismo turno.
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && (esCreacionNuevaDePlaneacion || planeacionActivaParaAjuste)) {
           try {
             const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
             if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok && textoCompletoParaSnapshot) {
               const conversacionIdParaSnapshot = await obtenerConversacionIdAutorizada()
               if (conversacionIdParaSnapshot && supabaseUser) {
-                const snapshot = construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
+                const snapshot = planeacionActivaParaAjuste
+                  ? construirPlaneacionActivaAjustada(planeacionActivaParaAjuste, resumenParaSnapshot, textoCompletoParaSnapshot, null)
+                  : construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
               } else {

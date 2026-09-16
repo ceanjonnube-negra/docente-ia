@@ -25,6 +25,8 @@ import {
 import { listarPlaneaciones } from './persistencia'
 import { calcularFechasPlaneacion, type DiaNoLaborable, type ResultadoCalculoFechas } from './calculoFechasHabiles'
 import type { SesionContexto } from '../sesionContexto'
+import type { ResumenBorrador } from './extraerBorrador'
+import type { PlaneacionActivaV3 } from './planeacionActiva'
 
 export type SolicitudGeneracionPlaneacion = {
   tema: string | null
@@ -44,6 +46,13 @@ export type ResultadoContextoGeneracion = {
   periodoEvaluacionActual: PeriodoEvaluacion | null
   planeacionesPrevias: ResumenPlaneacionPrevia[]
   eventosCalendarioDelPeriodo: { fecha: string; titulo: string; motivo: string }[]
+  // Fase 3B.3 — presente SOLO cuando el llamador pasó un snapshot V3
+  // heredado (turno de 'ajustar' con planeacion_activa válida). Es la
+  // fuente canónica real de la planeación vigente — nunca el
+  // historial de la conversación ni el marcador "📎 RESUMEN PARA
+  // GUARDAR" — para que la generación pueda modificar únicamente lo
+  // solicitado y conservar el resto.
+  planeacionVigente: { borrador: ResumenBorrador; contenidoCompleto: string } | null
 }
 
 // Solo eventos OFICIALES SEP cancelan clases automáticamente — una
@@ -86,6 +95,17 @@ export function resolverPeriodoEvaluacionActual(periodos: PeriodoEvaluacion[], h
 // que el borrador lo mencione con honestidad en vez de fingir certeza.
 const PATRON_INICIO_CICLO = /inicio de clases|primer d[ií]a de clases|comienzo (del |de )?(ciclo|curso)|regreso a clases|inicio del? ciclo escolar|inicio de ciclo|primeras?.*de clases/
 
+// Espeja el default NO exportado de diasEfectivosPorSemana en
+// calculoFechasHabiles.ts (DIAS_EFECTIVOS_POR_SEMANA_DEFAULT = 5) —
+// usado ÚNICAMENTE para la validación fail-closed de los casos 7/8
+// (fechaFin/fechaInicio+fechaFin junto con duracionSemanas explícita),
+// NUNCA para alimentar al calculador (que sigue resolviendo su propio
+// default internamente, sin cambios). Ningún llamador de este archivo
+// pasa hoy un diasEfectivosPorSemana distinto; si eso cambiara en el
+// futuro, esta constante tendría que actualizarse junto con esa
+// decisión — no antes.
+const DIAS_EFECTIVOS_POR_SEMANA_ASUMIDO = 5
+
 function resolverFechaReferencia(
   momentoRelativo: string | null,
   eventos: EventoCalendarioCompleto[],
@@ -121,7 +141,8 @@ function resolverFechaReferencia(
 export async function prepararContextoGeneracionPlaneacion(
   sb: SupabaseClient,
   sesion: SesionContexto,
-  solicitud: SolicitudGeneracionPlaneacion
+  solicitud: SolicitudGeneracionPlaneacion,
+  snapshotHeredado?: PlaneacionActivaV3
 ): Promise<ResultadoContextoGeneracion> {
   const grupoId = sesion.grupo_activo_id!
   const anio = Number(sesion.fecha_actual.slice(0, 4))
@@ -140,14 +161,111 @@ export async function prepararContextoGeneracionPlaneacion(
   const diasNoLaborables = mapearEventosADiasNoLaborables(eventosCiclo)
   const { fechaReferencia, explicacion: explicacionMomentoRelativo } = resolverFechaReferencia(solicitud.momentoRelativo, eventosCiclo, sesion.fecha_actual, inicioCiclo)
 
+  // Fase 3B.3 — herencia de fechas/duración POR RESTRICCIONES (corrige
+  // la regla TODO-O-NADA anterior, que perdía fechaInicio al cambiar
+  // solo la duración, perdía la duración al cambiar solo fechaInicio,
+  // fallaba con conflicto al cambiar solo fechaFin, e ignoraba en
+  // silencio duracionSemanas explícita — ver auditoría "herencia
+  // temporal de ajuste" aprobada por separado, verificada por
+  // ejecución real contra calcularFechasPlaneacion, NUNCA
+  // reimplementada aquí). calcularFechasPlaneacion() NO se modifica —
+  // sigue siendo la única autoridad aritmética; este bloque solo decide
+  // QUÉ argumentos recibe, agrupando por cuáles de las 4 señales
+  // (fechaInicio/fechaFin/duracionDias/duracionSemanas) llegaron
+  // explícitas en ESTE turno — nunca mezcladas campo por campo, que es
+  // precisamente el error que ya se había detectado y corregido antes
+  // para el caso "todo o nada".
+  const tieneInicio = solicitud.fechaInicio != null
+  const tieneFin = solicitud.fechaFin != null
+  const tieneDuracionDias = solicitud.duracionDias != null
+  const tieneDuracionSemanas = solicitud.duracionSemanas != null
+  const tieneAlgunaDuracion = tieneDuracionDias || tieneDuracionSemanas
+
+  let fechaInicioEfectiva = solicitud.fechaInicio
+  let fechaFinEfectiva = solicitud.fechaFin
+  let duracionDiasEfectiva = solicitud.duracionDias
+  // Solo se llena en los casos 7/8 (fechaFin y/o fechaInicio explícitos
+  // JUNTO con una duración explícita) — calcularFechasPlaneacion ya
+  // ignora la duración por completo en cuanto recibe un rango completo
+  // (fechaInicio && fechaFin), así que la duración explícita del
+  // docente nunca llega a validarse por sí sola dentro del calculador.
+  // Aquí se valida DESPUÉS, comparando el resultado real del rango
+  // contra lo que el docente pidió explícitamente — nunca se elige
+  // arbitrariamente entre fechaFin y duración, nunca se ignora
+  // ninguna de las dos en silencio.
+  let duracionExplicitaAValidar: number | null = null
+
+  if (snapshotHeredado) {
+    if (!tieneInicio && !tieneFin && !tieneAlgunaDuracion) {
+      // CASO 1 — ninguna señal temporal: mantener exactamente la
+      // temporalidad vigente.
+      fechaInicioEfectiva = snapshotHeredado.borrador.fechaInicio
+      fechaFinEfectiva = snapshotHeredado.borrador.fechaFin
+      duracionDiasEfectiva = snapshotHeredado.borrador.duracionDias
+    } else if (!tieneInicio && !tieneFin && tieneAlgunaDuracion) {
+      // CASO 2 — solo duración (días o semanas): mismo inicio, nueva
+      // duración → nuevo fin. NUNCA se hereda duracionDias si lo
+      // explícito fue duracionSemanas (duracionDiasEfectiva/
+      // solicitud.duracionSemanas ya vienen intactos, sin tocar).
+      fechaInicioEfectiva = snapshotHeredado.borrador.fechaInicio
+    } else if (tieneInicio && !tieneFin && !tieneAlgunaDuracion) {
+      // CASO 3 — solo fechaInicio nueva: nuevo inicio + duración
+      // vigente → nuevo fin.
+      duracionDiasEfectiva = snapshotHeredado.borrador.duracionDias
+    } else if (!tieneInicio && tieneFin && !tieneAlgunaDuracion) {
+      // CASO 4 — solo fechaFin nueva: mantener el inicio, respetar el
+      // fin nuevo tal cual (nunca imponer la duración vieja).
+      fechaInicioEfectiva = snapshotHeredado.borrador.fechaInicio
+    } else if (!tieneInicio && tieneFin && tieneAlgunaDuracion) {
+      // CASO 7 — fechaFin + duración explícitas, sin fechaInicio:
+      // calcularFechasPlaneacion no puede calcular hacia atrás desde
+      // fechaFin, así que se hereda TENTATIVAMENTE el inicio vigente
+      // para formar un rango literal (inicio heredado + fin
+      // explícito) — y se valida después que la duración efectiva de
+      // ese rango coincida con la duración explícita pedida.
+      fechaInicioEfectiva = snapshotHeredado.borrador.fechaInicio
+      duracionExplicitaAValidar = tieneDuracionDias
+        ? solicitud.duracionDias
+        : (solicitud.duracionSemanas as number) * DIAS_EFECTIVOS_POR_SEMANA_ASUMIDO
+      duracionDiasEfectiva = null // nunca se envía al calculador en este caso — solo sirve para la validación posterior
+    } else if (tieneInicio && tieneFin && tieneAlgunaDuracion) {
+      // CASO 8 — las tres explícitas: calcularFechasPlaneacion ignora
+      // la duración en cuanto recibe el rango completo, así que se
+      // valida después que la duración efectiva del rango coincida
+      // con la duración explícita — nunca se ignora en silencio.
+      duracionExplicitaAValidar = tieneDuracionDias
+        ? solicitud.duracionDias
+        : (solicitud.duracionSemanas as number) * DIAS_EFECTIVOS_POR_SEMANA_ASUMIDO
+      duracionDiasEfectiva = null
+    }
+    // CASO 5 (inicio+duración, sin fin) y CASO 6 (inicio+fin, sin
+    // duración) no requieren herencia ni validación adicional: ya
+    // traen lo necesario, mismo comportamiento que 'crear' hoy.
+  }
+
   const fechas = calcularFechasPlaneacion({
-    fechaInicio: solicitud.fechaInicio,
-    fechaFin: solicitud.fechaFin,
-    duracionDiasEfectivos: solicitud.duracionDias,
+    fechaInicio: fechaInicioEfectiva,
+    fechaFin: fechaFinEfectiva,
+    duracionDiasEfectivos: duracionDiasEfectiva,
     duracionSemanas: solicitud.duracionSemanas,
     diasNoLaborables,
     fechaReferencia,
   })
+
+  // Validación fail-closed de los casos 7/8 — reutiliza el MISMO
+  // mecanismo de conflicto ya existente (conflicto/explicacion, ya
+  // consumido tal cual por instruccionesPlaneacionGenerar.ts, sin
+  // segunda arquitectura de errores). Si el rango ya venía en
+  // conflicto por su cuenta, se deja tal cual — no hay nada que
+  // sobreescribir.
+  const fechasFinal: ResultadoCalculoFechas =
+    duracionExplicitaAValidar != null && !fechas.conflicto && fechas.totalDiasEfectivos !== duracionExplicitaAValidar
+      ? {
+          ...fechas,
+          conflicto: true,
+          explicacion: `La fecha de fin solicitada (${fechaFinEfectiva}) no es compatible con la duración solicitada (${duracionExplicitaAValidar} día(s) efectivo(s)) a partir del ${fechaInicioEfectiva}: ese rango tiene realmente ${fechas.totalDiasEfectivos} día(s) efectivo(s). Indica solo uno de los dos (la fecha de fin o la duración) para evitar la ambigüedad.`,
+        }
+      : fechas
 
   const periodoEvaluacionActual = resolverPeriodoEvaluacionActual(periodos, sesion.fecha_actual)
 
@@ -160,16 +278,19 @@ export async function prepararContextoGeneracionPlaneacion(
       }))
     : []
 
-  const eventosCalendarioDelPeriodo = fechas.fechasExcluidas
+  const eventosCalendarioDelPeriodo = fechasFinal.fechasExcluidas
     .filter((f) => f.motivo !== 'fin_de_semana')
     .map((f) => ({ fecha: f.fecha, titulo: f.descripcion || f.motivo, motivo: f.motivo }))
 
   return {
     contextoGrupo: ctxGrupo,
-    fechas,
+    fechas: fechasFinal,
     explicacionMomentoRelativo,
     periodoEvaluacionActual,
     planeacionesPrevias: resumenPrevias,
     eventosCalendarioDelPeriodo,
+    planeacionVigente: snapshotHeredado
+      ? { borrador: snapshotHeredado.borrador, contenidoCompleto: snapshotHeredado.contenidoCompleto }
+      : null,
   }
 }
