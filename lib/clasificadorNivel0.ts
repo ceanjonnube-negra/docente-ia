@@ -374,6 +374,72 @@ const FALLBACK: ClasificacionNivel0 = {
 // mandarle la conversación completa, solo lo último.
 type TurnoReciente = { role: 'user' | 'assistant'; content: string };
 
+// COMPACTACIÓN DE HISTORIAL PARA NIVEL0 (ver auditoría "contexto
+// ilimitado en Nivel0 — causa raíz del fallo de clasificación real con
+// un documento de 10158 caracteres, SyntaxError 'Unexpected token,
+// "📋 PLANEAC"... is not valid JSON'" aprobada por separado) — causa
+// raíz demostrada: construirContextoDinamico insertaba t.content
+// VERBATIM y sin límite para cada uno de los últimos 4 turnos; un
+// documento formal completo (planeación/rúbrica/examen/etc., hasta
+// 13053 caracteres reales observados) dominaba por completo un prompt
+// cuyo propio texto dice explícitamente "no lo uses para nada más" que
+// resolver confirmaciones breves de seguimiento — y el modelo,
+// abrumado por ese contexto, respondió una vez con el propio cuerpo
+// del documento en vez de JSON.
+//
+// UMBRAL_INTACTO = 6000 — justificado por la distribución REAL de
+// longitudes del proyecto (últimos 30 días, ver auditoría): mensajes
+// del docente hasta 245 caracteres, respuestas conversacionales
+// normales (sin importar si son o no "documento formal") hasta 5301
+// caracteres, documentos formales reales desde 9980 hasta 13053
+// caracteres. 6000 queda estrictamente por encima del máximo
+// conversacional real observado y estrictamente por debajo del mínimo
+// de documento largo real observado — nunca compacta una respuesta
+// normal, siempre compacta un documento real. Deliberadamente NO
+// depende de esDocumentoFormal: cubre también cualquier turno futuro
+// excepcionalmente largo que no empiece con uno de los títulos
+// reconocidos.
+const UMBRAL_INTACTO_NIVEL0 = 6000;
+// CABEZA = 200 — verificado contra los 9 documentos formales reales
+// >6000 caracteres disponibles en la muestra de 30 días: en los 9,
+// los primeros 200 caracteres ya incluyen el emoji+título
+// ("📋 PLANEACIÓN DIDÁCTICA"), grado, grupo, fase y el inicio del
+// campo formativo — suficiente para que Nivel0 reconozca que el turno
+// fue un documento, sin necesitar su cuerpo.
+const CABEZA_NIVEL0 = 200;
+// COLA = 4000 — NO 1500. Verificado mecánicamente contra los mismos 9
+// documentos reales: la sección "📎 RESUMEN PARA GUARDAR" (con el
+// campo "Nombre:" que necesita la regla 20 para resolver referencias
+// vagas a una planeación guardada) aparece entre 2764 y 3767
+// caracteres ANTES DEL FINAL en esos 9 documentos — un tail de 1500
+// la habría cortado en el 100% de los casos reales disponibles. 4000
+// deja margen (~233 caracteres) sobre el máximo real demostrado
+// (3767) sin inflar innecesariamente el contexto. La pregunta de
+// cierre de aprobación ("¿Deseas corregir algo... o la apruebo para
+// guardarla?", que necesita la regla 4 para distinguir "ajustar" de
+// "aprobar") vive en los últimos ~120 caracteres en 8 de los 9 casos
+// reales — sobradamente cubierta por esta misma cola.
+const COLA_NIVEL0 = 4000;
+const MARCADOR_COMPACTACION_NIVEL0 =
+  '\n[...contenido extenso omitido únicamente del contexto de clasificación...]\n';
+
+// Función pura, determinista, sin IA, sin estado — nunca muta `turno`
+// (devuelve un objeto nuevo o el mismo `turno` sin tocar cuando ya
+// cabe). Se aplica EXCLUSIVAMENTE a la representación que ve Nivel0
+// (construirContextoDinamico, abajo) — mensajes_chat/documentoActivo/
+// planeacion_activa/Diseño 2 nunca pasan por aquí, siguen persistiendo
+// y mostrándose con el texto real completo, sin cambios.
+function compactarTurnoParaNivel0(turno: TurnoReciente): TurnoReciente {
+  if (turno.content.length <= UMBRAL_INTACTO_NIVEL0) return turno;
+  return {
+    ...turno,
+    content:
+      turno.content.slice(0, CABEZA_NIVEL0) +
+      MARCADOR_COMPACTACION_NIVEL0 +
+      turno.content.slice(-COLA_NIVEL0),
+  };
+}
+
 // Bloque estático — intro, contrato de formato de salida y las 23
 // reglas del Clasificador de Nivel 0. Byte-idéntico entre requests:
 // nunca cambia con el docente, la sesión, el grupo, el historial ni
@@ -523,7 +589,7 @@ alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
 imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
 
 ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
-${historialReciente.length > 0 ? historialReciente.map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
+${historialReciente.length > 0 ? historialReciente.map((t) => compactarTurnoParaNivel0(t)).map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
 
 REFERENTES CONTEXTUALES DISPONIBLES (ver regla 24 — SOLO relevantes si intencion_principal="conversacion_general"; metadata breve, nunca el contenido real):
 ${referentesContextuales.length > 0 ? referentesContextuales.map((r) => `- id=${r.id} tipo=${r.tipo} origen=${r.origen}${r.formato ? ` formato=${r.formato}` : ''}`).join('\n') : '(ninguno disponible en este turno)'}`;
