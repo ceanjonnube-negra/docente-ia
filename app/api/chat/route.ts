@@ -2190,15 +2190,35 @@ export async function POST(req: NextRequest) {
             // NUNCA el marcador "📎 RESUMEN PARA GUARDAR". 1 SELECT
             // nuevo, condicionado EXCLUSIVAMENTE a este caso (nunca para
             // texto normal, crear, imágenes ni otros intents).
+            // OBSERVABILIDAD — microfase dedicada exclusivamente a
+            // diagnosticar "ajuste_sin_snapshot_valido=true" cuando
+            // planeacion_activa en DB parece válida (ver auditoría
+            // "aislar el fallo de ajuste" aprobada por separado): el log
+            // anterior colapsaba varias causas distintas en un único
+            // booleano. Reutiliza EXACTAMENTE los mismos datos ya
+            // disponibles en este request — 0 SELECT/UPDATE/IA
+            // adicionales, solo se nombran y registran los resultados
+            // intermedios que antes se descartaban en el mismo `if`
+            // encadenado. Nunca imprime contenidoCompleto, borrador, ni
+            // ningún dato personal — solo metadata técnica (booleans,
+            // ids técnicos, schemaVersion/version/estado).
+            console.log(`[PLANEACION_ACTIVA_DEBUG] fase=entrada accion=ajustar mensajeUsuarioId=${mensajeUsuarioIdSolicitado ?? 'ninguno'} conversacionIdRecibido=${!!conversacionId} grupoActivoIdPresente=${!!sesion.grupo_activo_id}`)
             const conversacionIdParaAjuste = await obtenerConversacionIdAutorizada()
+            console.log(`[PLANEACION_ACTIVA_DEBUG] fase=autorizacion conversacion_autorizada=${!!conversacionIdParaAjuste} conversacionId=${conversacionIdParaAjuste ?? 'ninguna'}`)
             let snapshotValidoParaAjuste: PlaneacionActivaV3 | null = null
+            // Razón por defecto: si el bloque de abajo nunca corre, es
+            // porque la conversación no se autorizó — única categoría
+            // que puede quedar sin sobreescribir.
+            let razonFalloAjuste = 'conversacion_no_autorizada'
             if (conversacionIdParaAjuste && supabaseUser) {
-              const { data: filaParaAjuste } = await supabaseUser
+              const { data: filaParaAjuste, error: errorSelectAjuste } = await supabaseUser
                 .from('conversaciones_chat')
                 .select('planeacion_activa')
                 .eq('id', conversacionIdParaAjuste)
                 .maybeSingle()
               const candidato = filaParaAjuste?.planeacion_activa
+              const filaEncontrada = !!filaParaAjuste
+              const snapshotPresente = candidato != null
               // Fail-closed uniforme: v1/v2, ausente, corrupto o de OTRO
               // grupo se tratan exactamente igual — nunca se reconstruye
               // desde historial, nunca se reclasifica como 'crear' en
@@ -2207,17 +2227,33 @@ export async function POST(req: NextRequest) {
               // que MG-B ya ancla de forma estable a esta conversación
               // (ver diseño aprobado) — nunca se "corrige" ni se busca
               // otro grupo si no coincide.
-              if (
-                candidato &&
-                esPlaneacionActivaValida(candidato) &&
-                candidato.schemaVersion === 3 &&
-                candidato.contexto.grupoId === sesion.grupo_activo_id
-              ) {
+              const snapshotValido = snapshotPresente && esPlaneacionActivaValida(candidato) && candidato.schemaVersion === 3
+              const grupoCoincide = snapshotValido && candidato.contexto.grupoId === sesion.grupo_activo_id
+
+              console.log(
+                `[PLANEACION_ACTIVA_DEBUG] fase=select select_ejecutado=true error=${!!errorSelectAjuste} fila_encontrada=${filaEncontrada} planeacion_activa_presente=${snapshotPresente}` +
+                (snapshotPresente
+                  ? ` schemaVersion=${candidato.schemaVersion ?? 'null'} version=${candidato.version ?? 'null'} estado=${candidato.estado ?? 'null'} contenidoCompletoPresente=${!!candidato.contenidoCompleto}`
+                  : '')
+              )
+              console.log(`[PLANEACION_ACTIVA_DEBUG] fase=validacion snapshot_valido=${snapshotValido} grupo_coincide=${grupoCoincide}`)
+
+              if (grupoCoincide) {
                 snapshotValidoParaAjuste = candidato
+              } else if (errorSelectAjuste) {
+                razonFalloAjuste = 'select_error'
+              } else if (!filaEncontrada) {
+                razonFalloAjuste = 'fila_no_encontrada'
+              } else if (!snapshotPresente) {
+                razonFalloAjuste = 'snapshot_ausente'
+              } else if (!snapshotValido) {
+                razonFalloAjuste = 'snapshot_invalido'
+              } else {
+                razonFalloAjuste = 'grupo_no_coincide'
               }
             }
             if (!snapshotValidoParaAjuste) {
-              console.log('[PLANEACION_ACTIVA] ajuste_sin_snapshot_valido=true')
+              console.log(`[PLANEACION_ACTIVA] ajuste_sin_snapshot_valido=true razon=${razonFalloAjuste}`)
               return respuestaTexto('No tengo una planeación activa lista para ajustar en esta conversación. Pídeme que genere una planeación nueva primero.')
             }
             planeacionActivaParaAjuste = snapshotValidoParaAjuste
