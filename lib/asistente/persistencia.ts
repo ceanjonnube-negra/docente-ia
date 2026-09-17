@@ -307,9 +307,46 @@ export function borrarTodasLasConversaciones() {
 // Aceptarlo como argumento sería confiar en un dato que el propio
 // docente podría manipular antes de que RLS lo rechace.
 
+// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ver auditoría "observabilidad
+// del fallo silencioso de persistencia client-side tras respuesta-final"
+// aprobada por separado, y app/api/diagnostico-persistencia/route.ts
+// (receptor real, mismo criterio de gate). Mismo gate EXACTO que el
+// resto del diagnóstico ya existente en el proyecto
+// (NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO) — fuera de ese gate esta
+// función es un no-op inmediato, ni siquiera construye el body.
+// Best-effort puro: fire-and-forget, nunca lanza, nunca bloquea, nunca
+// cambia el resultado de la persistencia real que instrumenta. Solo
+// metadata técnica — nunca contenido de mensajes, tokens/credenciales
+// ni datos de alumnos. Retirar junto con el resto del diagnóstico
+// temporal cuando termine de usarse.
+function reportarDiagnosticoPersistencia(fase: string, datos: Record<string, unknown> = {}) {
+  if (process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO !== '1') return
+  fetch('/api/diagnostico-persistencia', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fase, ...datos }),
+  }).catch(() => {})
+}
+
 async function docenteIdActual(): Promise<string | null> {
-  const { data: { user } } = await supabase.auth.getUser()
-  return user?.id ?? null
+  const tInicio = Date.now()
+  reportarDiagnosticoPersistencia('docenteIdActual_inicio')
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser()
+    reportarDiagnosticoPersistencia('docenteIdActual_fin', {
+      userPresente: !!user?.id,
+      exito: !error,
+      errorCode: error?.name ?? null,
+      ms: Date.now() - tInicio,
+    })
+    return user?.id ?? null
+  } catch (e) {
+    reportarDiagnosticoPersistencia('docenteIdActual_excepcion', {
+      errorCode: e instanceof Error ? e.name : 'desconocido',
+      ms: Date.now() - tInicio,
+    })
+    throw e
+  }
 }
 
 // Separa los campos "núcleo" (columnas reales de mensajes_chat) del
@@ -410,10 +447,22 @@ export async function obtenerConversacionRemota(id: string): Promise<{
 // diferencia de guardarConversacion (legacy), que reescribía el
 // arreglo completo cada vez.
 export async function guardarMensajeRemoto(conversacionId: string, mensaje: MensajeConversacion): Promise<void> {
+  const tInicio = Date.now()
+  reportarDiagnosticoPersistencia('guardarMensajeRemoto_inicio', { conversacionId, mensajeId: mensaje.id })
   const docenteId = await docenteIdActual()
-  if (!docenteId) throw new Error('Sesión no encontrada.')
+  if (!docenteId) {
+    reportarDiagnosticoPersistencia('guardarMensajeRemoto_sin_docente', { conversacionId, mensajeId: mensaje.id, ms: Date.now() - tInicio })
+    throw new Error('Sesión no encontrada.')
+  }
   const fila = mensajeAFilaRemota(conversacionId, docenteId, mensaje)
   const { error } = await supabase.from('mensajes_chat').upsert(fila, { onConflict: 'id' })
+  reportarDiagnosticoPersistencia('guardarMensajeRemoto_fin', {
+    conversacionId,
+    mensajeId: mensaje.id,
+    exito: !error,
+    errorCode: error?.code ?? null,
+    ms: Date.now() - tInicio,
+  })
   if (error) throw error
 }
 
@@ -425,13 +474,30 @@ export async function actualizarConversacionRemota(
   id: string,
   cambios: { titulo?: string; documentoActivo?: DocumentoActivoGuardado | null; materialVisualActivo?: MaterialVisualActivoGuardado | null }
 ): Promise<void> {
+  const tInicio = Date.now()
+  const esDocumentoActivo = cambios.documentoActivo !== undefined
+  reportarDiagnosticoPersistencia('actualizarConversacionRemota_inicio', {
+    conversacionId: id,
+    esDocumentoActivo,
+    mensajeId: cambios.documentoActivo ? cambios.documentoActivo.id : null,
+  })
   const docenteId = await docenteIdActual()
-  if (!docenteId) throw new Error('Sesión no encontrada.')
+  if (!docenteId) {
+    reportarDiagnosticoPersistencia('actualizarConversacionRemota_sin_docente', { conversacionId: id, esDocumentoActivo, ms: Date.now() - tInicio })
+    throw new Error('Sesión no encontrada.')
+  }
   const filaCambios: Record<string, unknown> = { actualizado_en: new Date().toISOString() }
   if (cambios.titulo !== undefined) filaCambios.titulo = cambios.titulo
   if (cambios.documentoActivo !== undefined) filaCambios.documento_activo = cambios.documentoActivo
   if (cambios.materialVisualActivo !== undefined) filaCambios.material_visual_activo = cambios.materialVisualActivo
   const { error } = await supabase.from('conversaciones_chat').update(filaCambios).eq('id', id)
+  reportarDiagnosticoPersistencia('actualizarConversacionRemota_fin', {
+    conversacionId: id,
+    esDocumentoActivo,
+    exito: !error,
+    errorCode: error?.code ?? null,
+    ms: Date.now() - tInicio,
+  })
   if (error) throw error
 }
 
