@@ -1249,17 +1249,20 @@ class AsistenteServiceImpl {
           break
         }
 
-        // Editando un documento existente: el texto que llega reemplaza
-        // ESE mensaje, nunca abre una burbuja nueva.
-        if (this.editandoDocumentoId) {
+        // FINALIZAR ARCHIVO (Word/PDF/PowerPoint — nunca una edición de
+        // contenido real, ver auditoría "discriminador finalización vs
+        // edición" aprobada por separado): el servidor transmite
+        // "Documento generado correctamente." + el marcador técnico,
+        // nunca el documento — la burbuja debe seguir mostrando el
+        // documento real (ver textoDocumentoFinalizando) para que la
+        // vista previa nunca desaparezca ni se reemplace por ese texto
+        // genérico. documentoFinalizandoId===editandoDocumentoId es el
+        // discriminador demostrado (ver auditoría): solo es true durante
+        // una finalización real. Comportamiento byte-idéntico al
+        // anterior para este caso, sin cambios.
+        if (this.editandoDocumentoId && this.documentoFinalizandoId === this.editandoDocumentoId) {
           const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
           if (idx !== -1) {
-            // FINALIZAR ARCHIVO (no una edición de contenido real): el
-            // servidor transmite "Documento generado correctamente." +
-            // el marcador técnico, nunca el documento — la burbuja debe
-            // seguir mostrando el documento real (ver
-            // textoDocumentoFinalizando) para que la vista previa nunca
-            // desaparezca ni se reemplace por ese texto genérico.
             const texto = this.documentoFinalizandoId === this.editandoDocumentoId && this.textoDocumentoFinalizando
               ? this.textoDocumentoFinalizando
               : evento.texto
@@ -1269,6 +1272,14 @@ class AsistenteServiceImpl {
           this.notificar()
           break
         }
+        // EDICIÓN DE CONTENIDO (editandoDocumentoId set, pero NO es una
+        // finalización) — Diseño 2, append-only: el documento histórico
+        // (editandoDocumentoId, documento FUENTE) nunca se toca, ni
+        // siquiera durante el streaming. Se deja caer intencionalmente a
+        // la lógica normal de turnoAbierto de abajo, que ya sabe crear
+        // la respuesta nueva en el primer chunk y actualizarla en los
+        // siguientes — mismo mecanismo que cualquier turno conversacional
+        // normal, sin duplicar lógica.
 
         // Turno normal: todo lo que el asistente diga hasta que el
         // docente vuelva a hablar/escribir cae en la MISMA burbuja,
@@ -1345,39 +1356,58 @@ class AsistenteServiceImpl {
             this.notificar()
             break
           }
-          // FINALIZAR ARCHIVO: el marcador [[DOCUMENTO_ARCHIVO:...]] ya
-          // se procesó en el motor (ver motorTextoClaude) y llega aquí
+          // FINALIZAR ARCHIVO (documentoFinalizandoId===editandoDocumentoId
+          // es el discriminador demostrado, ver auditoría "discriminador
+          // finalización vs edición" aprobada por separado — nunca una
+          // edición de contenido real): el marcador [[DOCUMENTO_ARCHIVO:...]]
+          // ya se procesó en el motor (ver motorTextoClaude) y llega aquí
           // como evento.archivo — se adjunta al mensaje para que la
-          // tarjeta muestre el botón de descarga real.
-          if (evento.archivo) {
-            const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
-            if (idx !== -1) {
-              this.mensajes = [
-                ...this.mensajes.slice(0, idx),
-                { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
-                ...this.mensajes.slice(idx + 1),
-              ]
+          // tarjeta muestre el botón de descarga real. Bloque byte-idéntico
+          // al anterior para este caso, sin cambios de comportamiento.
+          if (this.documentoFinalizandoId === this.editandoDocumentoId) {
+            if (evento.archivo) {
+              const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
+              if (idx !== -1) {
+                this.mensajes = [
+                  ...this.mensajes.slice(0, idx),
+                  { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
+                  ...this.mensajes.slice(idx + 1),
+                ]
+              }
             }
+            // El documento sigue activo (con su texto real intacto, ver
+            // arriba) tras finalizar a archivo — así un segundo formato
+            // ("también en PDF") reutiliza el contenido real en vez de
+            // partir de cero o de "Documento generado correctamente.".
+            const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
+            if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
+            // PASO 3 — el mensaje finalizado ya quedó en su estado final
+            // (nunca durante streaming parcial): se guarda (upsert por
+            // id, ver guardarMensajeRemoto) tanto si es la primera vez
+            // como si es una finalización sobre uno ya persistido.
+            if (doc) this.persistirMensajeAsegurandoConversacion(doc)
+            this.editandoDocumentoId = null
+            this.documentoFinalizandoId = null
+            this.textoDocumentoFinalizando = null
+            this.intentosFinalizacionActual = 0
+            this.ultimoIntentoEdicion = null
+            this.notificar()
+            break
           }
-          // El documento sigue activo (con su texto real intacto, ver
-          // arriba) tanto si se acaba de finalizar a archivo como si fue
-          // una edición de contenido — así un segundo formato ("también
-          // en PDF") o una nueva edición reutilizan el contenido real en
-          // vez de partir de cero o de "Documento generado correctamente.".
-          const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
-          if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
-          // PASO 3 — el mensaje editado/finalizado ya quedó en su
-          // estado final (nunca durante streaming parcial): se guarda
-          // (upsert por id, ver guardarMensajeRemoto) tanto si es la
-          // primera vez como si es una edición sobre uno ya persistido.
-          if (doc) this.persistirMensajeAsegurandoConversacion(doc)
+          // EDICIÓN DE CONTENIDO con texto real (Diseño 2, append-only,
+          // ver auditoría "edit-in-place" aprobada por separado): el
+          // documento histórico (editandoDocumentoId, documento FUENTE)
+          // nunca se localiza ni se toca aquí. Se limpia el estado de
+          // "documento en edición" — verificado mecánicamente que ningún
+          // bloque posterior de este case consulta editandoDocumentoId
+          // ni ultimoIntentoEdicion — y se deja caer, SIN break, al path
+          // normal de turnoAbierto de abajo, que ya sabe completar la
+          // respuesta nueva, adjuntar archivo/archivos, actualizar
+          // documentoActivo con el id nuevo y persistirla una sola vez
+          // (mismo mecanismo que cualquier turno conversacional normal,
+          // sin duplicar lógica).
           this.editandoDocumentoId = null
-          this.documentoFinalizandoId = null
-          this.textoDocumentoFinalizando = null
-          this.intentosFinalizacionActual = 0
           this.ultimoIntentoEdicion = null
-          this.notificar()
-          break
         }
 
         if (textoVacio && this.turnoAbierto) {
@@ -1587,6 +1617,12 @@ class AsistenteServiceImpl {
         this.estadoMotor = 'error'
         const estabaEditandoUnDocumento = this.editandoDocumentoId !== null
         const estabaFinalizandoArchivo = this.documentoFinalizandoId !== null
+        // Diseño 2 — append-only (ver auditoría "edit-in-place" aprobada
+        // por separado): capturado ANTES de resetear turnoAbierto, para
+        // poder limpiar más abajo una respuesta nueva parcial que haya
+        // quedado a medias si el stream de una EDICIÓN DE CONTENIDO
+        // falló después de que ya llegó al menos un chunk real.
+        const turnoParcial = this.turnoAbierto
         this.editandoDocumentoId = null
         this.documentoFinalizandoId = null
         this.textoDocumentoFinalizando = null
@@ -1594,6 +1630,17 @@ class AsistenteServiceImpl {
         this.turnoUsuarioPendiente = false
         this.textoAsistentePendiente = ''
         this.finalPendiente = false
+        if (estabaEditandoUnDocumento && !estabaFinalizandoArchivo && turnoParcial) {
+          // EDICIÓN DE CONTENIDO que falló a medio stream: el documento
+          // histórico (editandoDocumentoId, documento FUENTE) nunca se
+          // tocó, así que no hay nada que restaurar ahí — pero la
+          // respuesta NUEVA que ya se había empezado a mostrar (turnoParcial)
+          // queda huérfana e incompleta, y debe eliminarse para no dejar
+          // una burbuja fantasma. Nunca toca el mensaje del docente, el
+          // documento histórico, ni ninguna tarjeta de finalización
+          // (esa rama tiene estabaFinalizandoArchivo=true y no entra aquí).
+          this.mensajes = this.mensajes.filter(m => m.id !== turnoParcial)
+        }
         if (estabaEditandoUnDocumento) {
           // Falla generando/editando un documento — nunca se mete al
           // chat como si fuera una respuesta del asistente. El documento
@@ -2618,6 +2665,12 @@ ${instruccion}`
     this.transcripcionParcial = ''
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }
     this.mensajes = [...this.mensajes, mensajeUsuario]
+    // Diseño 2 — append-only (ver auditoría "edit-in-place" aprobada por
+    // separado): mismo patrón que enviarMensaje/enviarConMultiplesImagenes/
+    // etc. — un turno de edición de contenido es un turno NUEVO, nunca
+    // continuación de un turnoAbierto residual de antes. editandoDocumentoId
+    // sigue siendo exclusivamente el documento FUENTE.
+    this.turnoAbierto = null
     this.editandoDocumentoId = idDocumento
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion(). Se limpia solo cuando la edición
@@ -2756,6 +2809,13 @@ ${instruccion}`
       this.avisoGeneracionTimer = null
     }
     await this.asegurarMotor()
+    // Diseño 2 — append-only (ver auditoría "edit-in-place" aprobada por
+    // separado): un reintento de edición de contenido debe crear SU
+    // PROPIA respuesta nueva, nunca reutilizar un turnoAbierto residual
+    // de un intento anterior (fallido o exitoso). No afecta a
+    // finalización — esa rama sigue reutilizando la misma fila por id,
+    // sin cambios.
+    this.turnoAbierto = null
     this.editandoDocumentoId = idDocumento
     if (finalizarArchivo) {
       this.documentoFinalizandoId = idDocumento
