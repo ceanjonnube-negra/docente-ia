@@ -1807,7 +1807,27 @@ export async function POST(req: NextRequest) {
         if (clasificacion.datos_faltantes.includes('descripcion_incidencia')) {
           return respuestaTexto(conDiagnostico('¿Qué fue lo que pasó exactamente?'))
         }
-        if (clasificacion.datos_faltantes.includes('fecha_o_duracion')) {
+        // EXCEPCIÓN AJUSTAR (ver auditoría "fallo real en ajuste de
+        // planeación vigente" aprobada por separado) — CAUSA RAÍZ real
+        // confirmada: este interceptor decide únicamente con
+        // datos_faltantes (juicio de Nivel0 sobre el HISTORIAL
+        // conversacional visible — nunca consulta planeacion_activa), y
+        // la excepción que el propio prompt de Nivel0 ya declara ("si el
+        // turno anterior presentó un borrador, nunca agregues
+        // fecha_o_duracion") depende de que el último mensaje visible
+        // del asistente SIGA pareciendo un borrador — algo que puede
+        // fallar sin que planeacion_activa (la fuente de verdad
+        // estructurada) haya cambiado en absoluto. Cuando Nivel0 ya
+        // resolvió accion_planeacion_generar==='ajustar', la pregunta de
+        // fechas/duración NUNCA debe cortar aquí — se deja pasar a la
+        // rama 3B.3 (más abajo), que consulta planeacion_activa
+        // directamente y hereda fecha/duración vigentes por sí misma
+        // (herencia por restricciones, ver diseño aprobado) o
+        // falla-cerrado con su propio mensaje si el snapshot no existe o
+        // es inválido — nunca inventa una planeación nueva. 'crear' y
+        // cualquier otra acción conservan exactamente el comportamiento
+        // anterior, sin cambios.
+        if (clasificacion.datos_faltantes.includes('fecha_o_duracion') && clasificacion.accion_planeacion_generar !== 'ajustar') {
           return respuestaTexto(conDiagnostico('¿Para cuántos días o qué fechas te gustaría esta planeación?'))
         }
         if (clasificacion.datos_faltantes.includes('campo_alumno')) {
