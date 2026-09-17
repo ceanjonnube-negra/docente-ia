@@ -2641,7 +2641,18 @@ ${instruccion}`
       // (construirPromptEdicion), no algo que el maestro escribió — jamás
       // debe interpretarse en /api/chat como una solicitud de archivo
       // (ver esEdicionDocumento en app/api/chat/route.ts).
-      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true)
+      // conversacionId (posición 12, ver auditoría "causa raíz —
+      // ajuste_sin_snapshot_valido=true / conversacion_no_autorizada"
+      // aprobada por separado) — this.conversacionActivaId YA está
+      // resuelto por enviarMensaje() antes de entrar al branch de
+      // documentoActivo que termina aquí, así que transportarlo no crea
+      // conversación nueva, no consulta DB ni agrega IA: solo conserva
+      // contexto ya disponible en memoria. mensajeUsuarioId (posición
+      // 13) se deja deliberadamente fuera — persistirMensajeAsegurandoConversacion
+      // es fire-and-forget y todavía existe una carrera real que haría
+      // insegura esa identidad en este punto (fuera de alcance de esta
+      // corrección).
+      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, this.conversacionActivaId)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }
