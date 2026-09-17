@@ -333,6 +333,21 @@ export class MotorTextoClaude implements MotorConversacional {
       // estándar solo llegaba a 90s con diagnóstico activo, o 35s sin
       // él — ambos insuficientes frente a los ~111.4s reales medidos.
       const esImagenNuevaDesdeTexto = !finalizarArchivo && !esVariasImagenes && !regenerarImagen && !adjunto && !adjuntos?.length && detectarHerramientaDocumento(texto) === 'imagen'
+      // CORRECCIÓN — "timeout cliente incompatible con ediciones
+      // documentales reales" (ver auditoría "descomponer los ~76s"
+      // aprobada por separado: evidencia real de esta sesión —
+      // 61258/66310/75911/76042/77138ms — para turnos de crear/ajustar
+      // una planeación activa, dominados por la propia generación de
+      // Sonnet, nunca por los artefactos Word/PDF/evaluación, que ya
+      // son perezosos y cuestan ~131ms). esEdicionDocumento=true
+      // expresa exactamente la categoría semántica relevante —
+      // "estamos editando un documento existente" — sin acoplarse a
+      // planeacion_generar (el cliente todavía no tiene la
+      // clasificación de Nivel0 en este punto) y sin importar el tipo
+      // de documento: cualquier edición de contenido puede ser larga.
+      // 130s es un TECHO de espera, no una demora artificial — si
+      // responde antes, termina antes; si nunca responde, sigue
+      // abortando igual que siempre.
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el timeout normal
       // (TIMEOUT_FETCH_MS) SOLO se amplía cuando diagnosticoActivo es
       // true (gate fail-closed ya calculado arriba); ausente/'0'/
@@ -340,7 +355,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // siempre, sin excepción — incluida Production.
       temporizadorFetch = setTimeout(
         () => this.controlador?.abort(),
-        finalizarArchivo || esVariasImagenes || regenerarImagen
+        finalizarArchivo || esVariasImagenes || regenerarImagen || esEdicionDocumento
           ? TIMEOUT_FETCH_DOCUMENTO_MS
           : esImagenNuevaDesdeTexto
             ? TIMEOUT_FETCH_IMAGEN_MS
