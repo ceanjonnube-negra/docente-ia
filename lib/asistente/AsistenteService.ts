@@ -210,6 +210,20 @@ type Listener = () => void
 let contadorId = 0
 const nuevoId = () => `msg-${Date.now()}-${contadorId++}`
 
+// Par de nuevoId() — extrae el timestamp embebido en un id con ese
+// formato exacto (ver "estabilizar identidad del mensaje asistente")
+// para poder reutilizarlo como creadoEn en vez de un segundo reloj
+// independiente (Date.now() en el momento en que llega el primer
+// chunk sería un instante DISTINTO al que el servidor deriva del
+// mismo id para su propio creado_en). null si el id no tiene ese
+// formato — nunca inventa una fecha.
+function timestampDeId(id: string): number | null {
+  const match = id.match(/^msg-(\d+)-\d+$/)
+  if (!match) return null
+  const ts = Number(match[1])
+  return Number.isFinite(ts) ? ts : null
+}
+
 // COPIAR TEXTO RECIENTE (ver "copiar texto reciente sin que
 // documentoActivo viejo secuestre la continuación" — caso real:
 // documentoActivo de una planeación vieja + "Dame link para copiar"
@@ -1308,9 +1322,19 @@ class AsistenteServiceImpl {
           // generar uno nuevo aquí — así el mismo id identifica la
           // burbuja en pantalla y la fila que el servidor pudo haber
           // persistido en mensajes_chat para este turno.
-          this.turnoAbierto = this.assistantMessageIdPendiente || nuevoId()
+          const idAsistentePendiente = this.assistantMessageIdPendiente
           this.assistantMessageIdPendiente = null
-          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: evento.texto, creadoEn: Date.now() }]
+          this.turnoAbierto = idAsistentePendiente || nuevoId()
+          // TIMESTAMP ÚNICO DEL MENSAJE (ver "estabilizar identidad del
+          // mensaje asistente") — reutiliza el timestamp YA embebido en
+          // idAsistentePendiente (el mismo momento que el servidor
+          // deriva de ese id para su propio creado_en) en vez de
+          // Date.now() aquí, que sería un instante distinto (más tarde,
+          // tras el roundtrip + streaming). Sin este id (turnos fuera
+          // de alcance: voz, imágenes...) se conserva Date.now(), igual
+          // que siempre.
+          const creadoEnTurno = (idAsistentePendiente && timestampDeId(idAsistentePendiente)) || Date.now()
+          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: evento.texto, creadoEn: creadoEnTurno }]
         }
         this.notificar()
         break

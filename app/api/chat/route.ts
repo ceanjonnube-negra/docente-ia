@@ -435,15 +435,29 @@ function derivarTextoMensajeAsistenteServer(textoRaw: string): string {
   return textoRaw.replace(/\[\[PROCESO:tipo=([^;]+);actual=(\d+);total=(\d+);estado=([^\]]+)\]\]/, '').trim()
 }
 
-// El id ya trae el timestamp embebido (nuevoId() en AsistenteService.ts:
-// `msg-${Date.now()}-${contador}`) — se reutiliza tal cual para
-// creado_en en vez de transportar un campo nuevo. null si el id no
-// viene con ese formato exacto (nunca inventa una fecha).
-function extraerTimestampDeAssistantMessageId(id: string): number | null {
-  const match = id.match(/^msg-(\d+)-\d+$/)
+// VALIDACIÓN REAL DE assistantMessageId (ver "estabilizar identidad del
+// mensaje asistente") — a diferencia de mensajeUsuarioIdSolicitado
+// (typeof/trim nada más), este id se usa como PK real de un upsert en
+// mensajes_chat, así que se exige el formato REAL que produce
+// nuevoId() en AsistenteService.ts (`msg-<epoch>-<contador>`) y que el
+// timestamp embebido sea un número finito que produzca una fecha
+// válida — nunca solo "es un string no vacío". El mismo timestamp
+// validado aquí es el que se reutiliza como creado_en más abajo (ver
+// TIMESTAMP ÚNICO DEL MENSAJE) — nunca una segunda extracción
+// separada. Fail-closed: un id que no cumple esto no se usa para
+// nada — el servidor NUNCA inventa ni corrige un id; ver el bloque de
+// persistencia más abajo, que en ese caso omite el upsert nuevo sin
+// afectar el snapshot de planeacion_activa ni el resto del turno.
+const ASSISTANT_MESSAGE_ID_REGEX = /^msg-(\d+)-\d+$/
+function validarAssistantMessageId(valor: unknown): { id: string; timestamp: number } | null {
+  if (typeof valor !== 'string') return null
+  const id = valor.trim()
+  const match = id.match(ASSISTANT_MESSAGE_ID_REGEX)
   if (!match) return null
-  const ts = Number(match[1])
-  return Number.isFinite(ts) ? ts : null
+  const timestamp = Number(match[1])
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return null
+  if (Number.isNaN(new Date(timestamp).getTime())) return null
+  return { id, timestamp }
 }
 
 export async function POST(req: NextRequest) {
@@ -476,14 +490,16 @@ export async function POST(req: NextRequest) {
   // usarlo para nada (ver bloque V2 después de obtenerConversacionIdAutorizada).
   const mensajeUsuarioIdSolicitado = typeof mensajeUsuarioId === 'string' && mensajeUsuarioId.trim() ? mensajeUsuarioId.trim() : null
   // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/ajuste de
-  // planeación, ver auditoría aprobada por separado) — mismo criterio
-  // exacto que mensajeUsuarioIdSolicitado arriba: solo se normaliza la
-  // FORMA aquí. Se usa exclusivamente más abajo, dentro del bloque ya
+  // planeación, ver auditoría aprobada por separado) — a diferencia de
+  // mensajeUsuarioIdSolicitado arriba, aquí SÍ se exige el formato real
+  // (ver validarAssistantMessageId) porque este id se usa como PK de un
+  // upsert. Se usa exclusivamente más abajo, dentro del bloque ya
   // existente de guardado de planeacion_activa (esTurnoDeBorradorPlaneacion
   // && (esCreacionNuevaDePlaneacion || planeacionActivaParaAjuste)) — un
-  // cliente antiguo que no lo mande simplemente no obtiene la escritura
-  // nueva, sin ningún otro efecto.
-  const assistantMessageIdSolicitado = typeof assistantMessageId === 'string' && assistantMessageId.trim() ? assistantMessageId.trim() : null
+  // cliente antiguo que no lo mande, o uno que mande un id malformado,
+  // simplemente no obtiene la escritura nueva, sin ningún otro efecto
+  // (fail-closed, ver ese bloque).
+  const assistantMessageIdValidado = validarAssistantMessageId(assistantMessageId)
   // FASE 2A (ver "contrato del router semántico unificado + transporte
   // de referentes contextuales") — SEGURIDAD (ver "auditoría 11"): el
   // cliente puede mandar CUALQUIER COSA en este campo, así que nunca
@@ -4084,43 +4100,70 @@ Grado: [grado] | Grupo: [grupo]
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
                 // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (Opción
-                // B, ver auditoría aprobada por separado) — NUNCA corre
-                // si el snapshot de arriba falló (resultadoGuardado.ok):
-                // sin snapshot confiable no hay nada nuevo que persistir
+                // B, ver auditoría aprobada por separado) — SERVER-
+                // PERSISTENCE SHADOW/TRANSITION: esta escritura corre EN
+                // SOMBRA junto a la persistencia client-side, que sigue
+                // siendo la responsable real del turno mientras esta
+                // fase no se valida E2E. Por eso, a propósito, un fallo
+                // aquí NUNCA convierte el request en error ni agrega
+                // reintentos — solo se registra snapshotGuardado=true /
+                // mensajeGuardado=true|false para poder distinguir
+                // ambos resultados en los logs. La confirmación final de
+                // durabilidad server-owned (momento en que el cliente
+                // deja de ser responsable) es una decisión de una
+                // microfase posterior, no de esta. NUNCA corre si el
+                // snapshot de arriba falló (resultadoGuardado.ok): sin
+                // snapshot confiable no hay nada nuevo que persistir
                 // como mensaje del asistente tampoco. userId! es seguro
                 // aquí: supabaseUser (ya verificado arriba) y userId
                 // salen del mismo `autenticacion?.ok` (líneas 715-716).
-                if (resultadoGuardado.ok && assistantMessageIdSolicitado) {
-                  try {
-                    const textoMensajeAsistente = derivarTextoMensajeAsistenteServer(textoBorradorAcumulado)
-                    const archivosParaMensajeAsistente = [archivoWordParaMensajeAsistente, archivoDocumentoParaMensajeAsistente, archivoEvaluacionParaMensajeAsistente]
-                      .filter((a): a is ArchivoGeneradoInfo => !!a)
-                    const timestampEmbebido = extraerTimestampDeAssistantMessageId(assistantMessageIdSolicitado)
-                    const filaMensajeAsistente = {
-                      id: assistantMessageIdSolicitado,
-                      conversacion_id: conversacionIdParaSnapshot,
-                      docente_id: userId!,
-                      rol: 'asistente' as const,
-                      texto: textoMensajeAsistente,
-                      contenido: archivosParaMensajeAsistente.length
-                        ? { archivo: archivosParaMensajeAsistente[0], archivos: archivosParaMensajeAsistente }
-                        : {},
-                      creado_en: new Date(timestampEmbebido ?? Date.now()).toISOString(),
+                if (resultadoGuardado.ok) {
+                  if (assistantMessageIdValidado) {
+                    try {
+                      const textoMensajeAsistente = derivarTextoMensajeAsistenteServer(textoBorradorAcumulado)
+                      const archivosParaMensajeAsistente = [archivoWordParaMensajeAsistente, archivoDocumentoParaMensajeAsistente, archivoEvaluacionParaMensajeAsistente]
+                        .filter((a): a is ArchivoGeneradoInfo => !!a)
+                      const filaMensajeAsistente = {
+                        id: assistantMessageIdValidado.id,
+                        conversacion_id: conversacionIdParaSnapshot,
+                        docente_id: userId!,
+                        rol: 'asistente' as const,
+                        texto: textoMensajeAsistente,
+                        contenido: archivosParaMensajeAsistente.length
+                          ? { archivo: archivosParaMensajeAsistente[0], archivos: archivosParaMensajeAsistente }
+                          : {},
+                        // TIMESTAMP ÚNICO DEL MENSAJE (ver "estabilizar
+                        // identidad del mensaje asistente") — reutiliza
+                        // EL MISMO timestamp ya validado arriba
+                        // (validarAssistantMessageId), nunca Date.now()
+                        // aquí: es el mismo instante que
+                        // AsistenteService.ts reutiliza client-side como
+                        // creadoEn de la burbuja — un solo reloj para
+                        // toda la entidad.
+                        creado_en: new Date(assistantMessageIdValidado.timestamp).toISOString(),
+                      }
+                      // upsert por id (no solo insert) — mismo criterio
+                      // exacto que guardarMensajeRemoto en
+                      // lib/asistente/persistencia.ts: si el cliente
+                      // también llega a persistir este mismo id mientras
+                      // conviven ambos caminos, la segunda escritura
+                      // actualiza la misma fila en vez de duplicarla.
+                      const { error: errorMensajeAsistente } = await supabaseUser
+                        .from('mensajes_chat')
+                        .upsert(filaMensajeAsistente, { onConflict: 'id' })
+                      // Whitelist explícita de campos seguros — nunca el
+                      // texto real, nunca ningún dato de alumnos/institución.
+                      console.log(`[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
+                    } catch {
+                      console.error('[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=false motivo=EXCEPCION_PERSISTENCIA')
                     }
-                    // upsert por id (no solo insert) — mismo criterio
-                    // exacto que guardarMensajeRemoto en
-                    // lib/asistente/persistencia.ts: si el cliente
-                    // también llega a persistir este mismo id mientras
-                    // conviven ambos caminos, la segunda escritura
-                    // actualiza la misma fila en vez de duplicarla.
-                    const { error: errorMensajeAsistente } = await supabaseUser
-                      .from('mensajes_chat')
-                      .upsert(filaMensajeAsistente, { onConflict: 'id' })
-                    // Whitelist explícita de campos seguros — nunca el
-                    // texto real, nunca ningún dato de alumnos/institución.
-                    console.log(`[PLANEACION_MENSAJE_SERVER] guardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
-                  } catch {
-                    console.error('[PLANEACION_MENSAJE_SERVER] guardado=false motivo=EXCEPCION_PERSISTENCIA')
+                  } else if (assistantMessageId) {
+                    // El cliente mandó algo en assistantMessageId pero no
+                    // superó validarAssistantMessageId (formato real
+                    // esperado) — fail-closed: se omite el upsert nuevo
+                    // sin tocar el snapshot ni el resto del turno, y
+                    // nunca se inventa/corrige un id en el servidor.
+                    console.log('[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=false motivo=assistantMessageId_invalido')
                   }
                 }
               } else {
