@@ -64,24 +64,43 @@ type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
 // siempre. obtenerPerfilYSesion() (auth de Supabase) rara vez tarda
 // más de 1-2s; 12s ya es generoso.
 const TIMEOUT_SESION_MS = 12_000
-// Fetch normal (conversación, sin generar archivo): el servidor nunca
-// deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver app/api/chat/
-// route.ts) antes de responder algo — 35s deja margen de sobra.
-const TIMEOUT_FETCH_MS = 35_000
-// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — timeout ampliado EXCLUSIVO de
-// Preview con el gate activo (ver "instrumentación temporal de tiempos
-// y consumo"), para dejar que una petición diagnóstica termine de
-// verdad y así medir dónde se va el tiempo real. NUNCA se usa fuera de
-// NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO==='1' — el timeout normal
-// (TIMEOUT_FETCH_MS, 35s) queda exactamente igual en cualquier otro
-// caso, incluida Production. Elegido con el techo real de la función
+// Fetch conversacional general (Nivel0/Nivel4 sin archivo/edición/
+// imagen/diagnóstico — ver las demás categorías abajo). CORRECCIÓN —
+// "proteger timeout de creación de planeaciones": el valor anterior
+// (35s) partía de un comentario desactualizado que citaba
+// TIMEOUT_ANTHROPIC_MS=25s como techo del servidor — el valor REAL hoy
+// (ver app/api/chat/route.ts) es 120s para la llamada normal a Claude
+// (client.messages.create(..., { timeout: TIMEOUT_ANTHROPIC_MS }),
+// etiqueta 'conversacion') — la MISMA llamada que atiende creación de
+// planeación y cualquier generación larga de Nivel4, sin que el
+// cliente pueda saber de antemano cuál de las dos es. Evidencia real
+// (E2E validada): una creación de planeación tardó 61844ms de
+// streaming, muy por encima de los 35s anteriores. Se reutiliza
+// deliberadamente el MISMO techo que TIMEOUT_FETCH_DOCUMENTO_MS (ver
+// su comentario) en vez de una constante nueva — mismo criterio real
+// ya validado ahí. Sigue siendo solo un TECHO de espera, nunca una
+// demora artificial: se libera en cuanto el servidor responde (ver más
+// abajo), una respuesta rápida sigue terminando en el tiempo que de
+// verdad tarda.
+const TIMEOUT_FETCH_MS = 130_000
+// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — pensado originalmente como
+// timeout AMPLIADO exclusivo de Preview con el gate activo (ver
+// "instrumentación temporal de tiempos y consumo"), para dejar que una
+// petición diagnóstica termine de verdad y así medir dónde se va el
+// tiempo real. CORRECCIÓN — "proteger timeout de creación de
+// planeaciones": Planeación ya NO depende de este gate para sobrevivir
+// (TIMEOUT_FETCH_MS por sí solo ya es 130s, mayor que este valor) — se
+// conserva únicamente como PISO vía Math.max() más abajo, nunca debe
+// dar MENOS tiempo que el timeout normal aunque hoy quede dominado
+// numéricamente por él. El resto del diagnóstico (roundtrip, trazas,
+// NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO) sigue exactamente igual, sin
+// tocar. Elegido originalmente con el techo real de la función
 // serverless como referencia (maxDuration=180s, ver app/api/chat/
 // route.ts): 90s deja margen suficiente para observar un ciclo
 // completo de clasificarNivel0 (hasta 12s, sin reintento) seguido de un
 // intento real de Nivel 4 (hasta 120s, con 1 reintento) sin acercarse
-// al límite duro del servidor, evitando esperar en vano una función que
-// Vercel ya habría terminado por su cuenta. Retirar junto con el resto
-// del diagnóstico.
+// al límite duro del servidor. Retirar junto con el resto del
+// diagnóstico.
 const TIMEOUT_FETCH_DIAGNOSTICO_MS = 90_000
 // Fetch de FINALIZAR ARCHIVO (finalizarArchivo presente): puede incluir
 // una redacción completa de Claude sin streaming de hasta 8000 tokens
@@ -96,8 +115,9 @@ const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
 // imagen para anunciar el regreso a clases..."). El cliente abortó a
 // los ~90.4s (TIMEOUT_FETCH_DIAGNOSTICO_MS, el único timeout que
 // aplicaba a una generación de imagen estándar con diagnóstico
-// activo; SIN diagnóstico habría sido TIMEOUT_FETCH_MS, 35s — peor
-// aún) pero el servidor terminó de generar y persistir la imagen real
+// activo; SIN diagnóstico habría sido el entonces vigente
+// TIMEOUT_FETCH_MS de 35s — peor aún; hoy TIMEOUT_FETCH_MS ya es 130s,
+// ver su comentario) pero el servidor terminó de generar y persistir la imagen real
 // en Supabase/Storage hasta los ~111.4s — el pipeline SÍ funcionó,
 // solo llegó tarde para el timeout que tenía asignado. La migración a
 // gpt-image-2 (con su paso de razonamiento antes de generar, según
@@ -348,18 +368,24 @@ export class MotorTextoClaude implements MotorConversacional {
       // 130s es un TECHO de espera, no una demora artificial — si
       // responde antes, termina antes; si nunca responde, sigue
       // abortando igual que siempre.
-      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el timeout normal
-      // (TIMEOUT_FETCH_MS) SOLO se amplía cuando diagnosticoActivo es
-      // true (gate fail-closed ya calculado arriba); ausente/'0'/
-      // cualquier otro valor conserva exactamente el timeout de
-      // siempre, sin excepción — incluida Production.
+      // CORRECCIÓN — "proteger timeout de creación de planeaciones":
+      // TIMEOUT_FETCH_MS (rama final de abajo) ya es 130s por sí solo,
+      // igual o mayor que TIMEOUT_FETCH_DIAGNOSTICO_MS (90s) — el gate
+      // de diagnóstico (NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO) YA NO
+      // decide si una planeación sobrevive o no; eso ahora lo garantiza
+      // el timeout base en cualquier entorno, incluida Production.
+      // Math.max() evita una inversión real: sin él, activar el
+      // diagnóstico daría MENOS tiempo (90s) que tenerlo apagado
+      // (130s) — el gate nunca debe reducir el margen respecto al
+      // timeout normal, solo puede igualarlo o (si en el futuro
+      // TIMEOUT_FETCH_MS bajara de 90s otra vez) ampliarlo.
       temporizadorFetch = setTimeout(
         () => this.controlador?.abort(),
         finalizarArchivo || esVariasImagenes || regenerarImagen || esEdicionDocumento
           ? TIMEOUT_FETCH_DOCUMENTO_MS
           : esImagenNuevaDesdeTexto
             ? TIMEOUT_FETCH_IMAGEN_MS
-            : (diagnosticoActivo ? TIMEOUT_FETCH_DIAGNOSTICO_MS : TIMEOUT_FETCH_MS)
+            : (diagnosticoActivo ? Math.max(TIMEOUT_FETCH_DIAGNOSTICO_MS, TIMEOUT_FETCH_MS) : TIMEOUT_FETCH_MS)
       )
 
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — msClienteAntesFetch
