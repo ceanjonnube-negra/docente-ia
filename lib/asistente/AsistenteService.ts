@@ -224,6 +224,33 @@ function timestampDeId(id: string): number | null {
   return Number.isFinite(ts) ? ts : null
 }
 
+// INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — "aislar el fallo client-side
+// previo a /api/chat en ejecutarEdicion()" (ver auditoría aprobada por
+// separado: evidencia real de un ajuste de planeación donde la UI
+// registró el envío pero /api/chat nunca recibió el request ni
+// Supabase mostró filas nuevas). Gate PROPIO, deliberadamente NUNCA
+// NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO — ese diagnóstico ya cumplió su
+// función para timeout/Planeación y mezclarlo aquí volvería a acoplar
+// dos investigaciones distintas. FAIL-CLOSED: solo activo si
+// NEXT_PUBLIC_DIAGNOSTICO_ENVIO_CLIENTE_ACTIVO==='1' exactamente
+// (ausente/undefined/'0'/cualquier otro valor = inactivo, incluida
+// Production sin excepción). Reutiliza el endpoint YA existente
+// /api/diagnostico-persistencia (gateado además, del lado servidor,
+// por VERCEL_ENV!=='production' — segunda capa independiente de esta
+// variable) — nunca texto del maestro, nunca texto de planeación,
+// nunca datos de alumnos: solo metadata técnica booleana/de
+// identificadores ya no sensibles (ids de mensaje/conversación).
+// Retirar junto con el resto de esta investigación cuando termine de
+// usarse.
+function reportarDiagnosticoEnvioCliente(fase: string, datos: Record<string, unknown> = {}) {
+  if (process.env.NEXT_PUBLIC_DIAGNOSTICO_ENVIO_CLIENTE_ACTIVO !== '1') return
+  fetch('/api/diagnostico-persistencia', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fase, ...datos }),
+  }).catch(() => {})
+}
+
 // COPIAR TEXTO RECIENTE (ver "copiar texto reciente sin que
 // documentoActivo viejo secuestre la continuación" — caso real:
 // documentoActivo de una planeación vieja + "Dame link para copiar"
@@ -1758,11 +1785,32 @@ class AsistenteServiceImpl {
 
   async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
     const limpio = texto.trim()
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — "aislar el fallo
+    // client-side previo a /api/chat en ejecutarEdicion()" — se reporta
+    // ANTES que cualquier guard, incondicionalmente, para poder ver
+    // este estado incluso cuando la función está a punto de retornar
+    // en la siguiente línea.
+    reportarDiagnosticoEnvioCliente('enviarMensaje_entrada', {
+      generando: this.generando,
+      motorPresente: !!this.motor,
+      documentoActivoPresente: !!this.documentoActivo,
+      conversacionId: this.conversacionActivaId,
+    })
     // Una imagen (o varias) sola, sin texto, ES un turno válido — ver
     // auditoría "imagen sin texto" + pruebas runtime (Anthropic acepta
     // content solo con bloque(s) image). Solo se bloquea cuando no hay
     // absolutamente nada que enviar: ni texto ni adjunto(s).
-    if (this.generando || (!limpio && !adjunto && (!adjuntos || adjuntos.length === 0))) return
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el guard original era una
+    // sola condición combinada; se separa aquí SOLO para poder
+    // distinguir con un evento propio el caso específico de interés
+    // (generando=true) del caso normal ("no hay nada que enviar") sin
+    // cambiar el comportamiento: el resultado (return) es idéntico en
+    // ambos casos, exactamente como antes.
+    if (this.generando) {
+      reportarDiagnosticoEnvioCliente('enviarMensaje_return_generando', { conversacionId: this.conversacionActivaId })
+      return
+    }
+    if (!limpio && !adjunto && (!adjuntos || adjuntos.length === 0)) return
 
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
     // roundtrip de comparación de CURP sin depender de vercel logs") —
@@ -1889,7 +1937,14 @@ class AsistenteServiceImpl {
         await this.ejecutarConversionFormato(tipoResuelto, limpio)
         return
       }
-      await this.enviarComoEdicion(this.documentoActivo.id, limpio, this.construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — se reporta ANTES de
+      // construirPromptEdicion (que se evalúa como argumento, sin
+      // try/catch propio en esta línea) para poder distinguir si la
+      // rama de edición se alcanzó en absoluto de si algo dentro de
+      // construirPromptEdicion/enviarComoEdicion se detuvo después.
+      reportarDiagnosticoEnvioCliente('enviarComoEdicion_inicio', { conversacionId: this.conversacionActivaId })
+      const promptEdicion = this.construirPromptEdicion(this.documentoActivo.texto, limpio)
+      await this.enviarComoEdicion(this.documentoActivo.id, limpio, promptEdicion, adjunto)
       return
     }
 
@@ -2734,6 +2789,9 @@ ${instruccion}`
 
   private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {
     await this.asegurarMotor()
+    // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — confirma si asegurarMotor()
+    // de verdad dejó this.motor fijado antes de seguir.
+    reportarDiagnosticoEnvioCliente('enviarComoEdicion_motor_asegurado', { motorPresente: !!this.motor })
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }
@@ -2783,7 +2841,20 @@ ${instruccion}`
       // nuevoId() — mismo criterio que enviarMensaje().
       const idMensajeAsistenteEdicion = nuevoId()
       this.assistantMessageIdPendiente = idMensajeAsistenteEdicion
-      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, this.conversacionActivaId, undefined, idMensajeAsistenteEdicion)
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — el encadenamiento
+      // opcional original (`(await this.motorDeContenido())?.enviarTexto(...)`)
+      // vuelve no-op silencioso este paso completo si motorDeContenido()
+      // resuelve null, sin lanzar ninguna excepción (el catch de abajo
+      // nunca se dispara en ese caso). Se separa aquí SOLO para poder
+      // reportarlo — el comportamiento es idéntico: con motor null,
+      // antes tampoco se llamaba a enviarTexto.
+      reportarDiagnosticoEnvioCliente('ejecutarEdicion_antes_motor', { motorPresente: !!this.motor })
+      const motorParaEdicion = await this.motorDeContenido()
+      if (!motorParaEdicion) {
+        reportarDiagnosticoEnvioCliente('ejecutarEdicion_motor_null')
+      } else {
+        await motorParaEdicion.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, this.conversacionActivaId, undefined, idMensajeAsistenteEdicion)
+      }
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }

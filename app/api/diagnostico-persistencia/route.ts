@@ -25,10 +25,17 @@
 // y sin siquiera leer el body — mismo criterio exacto que
 // diagnosticoCurpActivo (VERCEL_ENV!=='production') ya usa en
 // app/api/chat/route.ts, así que esto es estructuralmente imposible
-// que genere ruido para un docente real. El cliente que lo llama
-// (reportarDiagnosticoPersistencia) YA está gateado por su cuenta con
-// NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO — esta comprobación server-side
-// es una segunda capa, no la única.
+// que genere ruido para un docente real. Dos llamadores cliente
+// distintos, cada uno con su PROPIO gate independiente (nunca el mismo
+// entre sí, a propósito — ver "aislar el fallo client-side previo a
+// /api/chat en ejecutarEdicion()", que deliberadamente NO reutiliza el
+// gate del otro para no volver a acoplar dos investigaciones
+// distintas): reportarDiagnosticoPersistencia (lib/asistente/
+// persistencia.ts) usa NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO;
+// reportarDiagnosticoEnvioCliente (lib/asistente/AsistenteService.ts)
+// usa NEXT_PUBLIC_DIAGNOSTICO_ENVIO_CLIENTE_ACTIVO. Esta comprobación
+// server-side (VERCEL_ENV) es una segunda capa común a ambos, nunca la
+// única.
 //
 // Retirar este archivo junto con el resto de la instrumentación
 // diagnóstica temporal cuando termine de usarse.
@@ -55,6 +62,14 @@ export async function POST(req: NextRequest) {
       errorCode: typeof body?.errorCode === 'string' ? body.errorCode.slice(0, 60) : null,
       esDocumentoActivo: typeof body?.esDocumentoActivo === 'boolean' ? body.esDocumentoActivo : null,
       ms: typeof body?.ms === 'number' ? Math.round(body.ms) : null,
+      // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — "aislar el fallo
+      // client-side previo a /api/chat en ejecutarEdicion()" (ver
+      // auditoría aprobada por separado): 3 campos booleanos nuevos,
+      // reutilizando exactamente el mismo endpoint y el mismo criterio
+      // de whitelist — nunca contenido, solo metadata técnica mínima.
+      generando: typeof body?.generando === 'boolean' ? body.generando : null,
+      motorPresente: typeof body?.motorPresente === 'boolean' ? body.motorPresente : null,
+      documentoActivoPresente: typeof body?.documentoActivoPresente === 'boolean' ? body.documentoActivoPresente : null,
     }
     console.log(`[DIAG_PERSISTENCIA_CLIENTE] ${JSON.stringify(evento)}`)
   } catch {
