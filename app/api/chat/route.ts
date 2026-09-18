@@ -31,7 +31,7 @@ import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, gua
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
-import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA } from '@/lib/asistente/tipos'
+import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -419,6 +419,33 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
   }
 }
 
+// PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/ajuste de
+// planeación, ver auditoría aprobada por separado) — réplica mínima,
+// del lado servidor, de procesarMarcadorDeProceso (motorTextoClaude.ts,
+// mismo regex EXACTO) para que el texto que se persiste en
+// mensajes_chat sea idéntico al que ve el docente en pantalla.
+// [[DOCUMENTO_ARCHIVO:...]] nunca forma parte de textoBorradorAcumulado
+// (este propio archivo lo agrega aparte, como texto adicional del
+// stream — ver más abajo), y los demás marcadores (CONTENIDO/
+// NAVEGACION/CORRECCION_ALUMNO/PROPUESTA_LISTA_OFICIAL/
+// PERFIL_ACTUALIZADO/DIAGNOSTICO_CURP) pertenecen a ramas de Nivel0
+// mutuamente excluyentes con esTurnoDeBorradorPlaneacion — por eso
+// ninguno de esos se replica aquí.
+function derivarTextoMensajeAsistenteServer(textoRaw: string): string {
+  return textoRaw.replace(/\[\[PROCESO:tipo=([^;]+);actual=(\d+);total=(\d+);estado=([^\]]+)\]\]/, '').trim()
+}
+
+// El id ya trae el timestamp embebido (nuevoId() en AsistenteService.ts:
+// `msg-${Date.now()}-${contador}`) — se reutiliza tal cual para
+// creado_en en vez de transportar un campo nuevo. null si el id no
+// viene con ese formato exacto (nunca inventa una fecha).
+function extraerTimestampDeAssistantMessageId(id: string): number | null {
+  const match = id.match(/^msg-(\d+)-\d+$/)
+  if (!match) return null
+  const ts = Number(match[1])
+  return Number.isFinite(ts) ? ts : null
+}
+
 export async function POST(req: NextRequest) {
   // Telemetría segura del ciclo de vida de la petición ("Error al
   // conectar con la IA" después de mostrar parte de la planeación) —
@@ -428,7 +455,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId } = await req.json()
+  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId } = await req.json()
   // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
   // estructural top-level, NUNCA transportada dentro de `contexto`
   // (ese sigue siendo el string de construirInstrucciones, nunca un
@@ -448,6 +475,15 @@ export async function POST(req: NextRequest) {
   // mensaje se demuestra más abajo con supabaseUser + RLS antes de
   // usarlo para nada (ver bloque V2 después de obtenerConversacionIdAutorizada).
   const mensajeUsuarioIdSolicitado = typeof mensajeUsuarioId === 'string' && mensajeUsuarioId.trim() ? mensajeUsuarioId.trim() : null
+  // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/ajuste de
+  // planeación, ver auditoría aprobada por separado) — mismo criterio
+  // exacto que mensajeUsuarioIdSolicitado arriba: solo se normaliza la
+  // FORMA aquí. Se usa exclusivamente más abajo, dentro del bloque ya
+  // existente de guardado de planeacion_activa (esTurnoDeBorradorPlaneacion
+  // && (esCreacionNuevaDePlaneacion || planeacionActivaParaAjuste)) — un
+  // cliente antiguo que no lo mande simplemente no obtiene la escritura
+  // nueva, sin ningún otro efecto.
+  const assistantMessageIdSolicitado = typeof assistantMessageId === 'string' && assistantMessageId.trim() ? assistantMessageId.trim() : null
   // FASE 2A (ver "contrato del router semántico unificado + transporte
   // de referentes contextuales") — SEGURIDAD (ver "auditoría 11"): el
   // cliente puede mandar CUALQUIER COSA en este campo, así que nunca
@@ -3869,6 +3905,20 @@ Grado: [grado] | Grupo: [grupo]
         // de los dos pasa por un botón de conversión ni por el modelo:
         // ambos se generan aquí, directo desde el mismo texto completo
         // del borrador, en el mismo turno en que Claude lo redactó.
+        // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/
+        // ajuste de planeación, ver auditoría aprobada por separado) —
+        // capturan (sin duplicar su construcción) los mismos objetos
+        // archivoWord/archivoDocumento/archivo que los 2 bloques de
+        // abajo ya arman para sus marcadores [[DOCUMENTO_ARCHIVO:...]],
+        // para poder adjuntarlos también a la fila de mensajes_chat que
+        // se guarda más abajo (mismo shape `archivo`/`archivos` que ya
+        // usa mensajeAFilaRemota en lib/asistente/persistencia.ts).
+        // undefined cuando su bloque no corrió o falló — nunca se
+        // inventa un archivo que no se generó de verdad.
+        let archivoWordParaMensajeAsistente: ArchivoGeneradoInfo | undefined
+        let archivoDocumentoParaMensajeAsistente: ArchivoGeneradoInfo | undefined
+        let archivoEvaluacionParaMensajeAsistente: ArchivoGeneradoInfo | undefined
+
         if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
           try {
             const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
@@ -3912,6 +3962,7 @@ Grado: [grado] | Grupo: [grupo]
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
               }
+              archivoWordParaMensajeAsistente = archivoWord
               const marcadorWord = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcadorWord}`))
               cantidadAdjuntos++
@@ -3931,6 +3982,7 @@ Grado: [grado] | Grupo: [grupo]
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
               }
+              archivoDocumentoParaMensajeAsistente = archivoDocumento
               const marcadorDocumento = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoDocumento), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcadorDocumento}`))
               cantidadAdjuntos++
@@ -3987,6 +4039,7 @@ Grado: [grado] | Grupo: [grupo]
                 tipoDocumento: 'hoja_evaluacion' as const,
                 descripcion: `${sesion.alumnos_del_grupo_activo.length} alumno${sesion.alumnos_del_grupo_activo.length === 1 ? '' : 's'} · ${resumenBorrador.indicadores.length} indicador${resumenBorrador.indicadores.length === 1 ? '' : 'es'}`,
               }
+              archivoEvaluacionParaMensajeAsistente = archivo
               const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
               controller.enqueue(encoder.encode(`\n\n${marcador}`))
               cantidadAdjuntos++
@@ -4030,6 +4083,46 @@ Grado: [grado] | Grupo: [grupo]
                   : construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
+                // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (Opción
+                // B, ver auditoría aprobada por separado) — NUNCA corre
+                // si el snapshot de arriba falló (resultadoGuardado.ok):
+                // sin snapshot confiable no hay nada nuevo que persistir
+                // como mensaje del asistente tampoco. userId! es seguro
+                // aquí: supabaseUser (ya verificado arriba) y userId
+                // salen del mismo `autenticacion?.ok` (líneas 715-716).
+                if (resultadoGuardado.ok && assistantMessageIdSolicitado) {
+                  try {
+                    const textoMensajeAsistente = derivarTextoMensajeAsistenteServer(textoBorradorAcumulado)
+                    const archivosParaMensajeAsistente = [archivoWordParaMensajeAsistente, archivoDocumentoParaMensajeAsistente, archivoEvaluacionParaMensajeAsistente]
+                      .filter((a): a is ArchivoGeneradoInfo => !!a)
+                    const timestampEmbebido = extraerTimestampDeAssistantMessageId(assistantMessageIdSolicitado)
+                    const filaMensajeAsistente = {
+                      id: assistantMessageIdSolicitado,
+                      conversacion_id: conversacionIdParaSnapshot,
+                      docente_id: userId!,
+                      rol: 'asistente' as const,
+                      texto: textoMensajeAsistente,
+                      contenido: archivosParaMensajeAsistente.length
+                        ? { archivo: archivosParaMensajeAsistente[0], archivos: archivosParaMensajeAsistente }
+                        : {},
+                      creado_en: new Date(timestampEmbebido ?? Date.now()).toISOString(),
+                    }
+                    // upsert por id (no solo insert) — mismo criterio
+                    // exacto que guardarMensajeRemoto en
+                    // lib/asistente/persistencia.ts: si el cliente
+                    // también llega a persistir este mismo id mientras
+                    // conviven ambos caminos, la segunda escritura
+                    // actualiza la misma fila en vez de duplicarla.
+                    const { error: errorMensajeAsistente } = await supabaseUser
+                      .from('mensajes_chat')
+                      .upsert(filaMensajeAsistente, { onConflict: 'id' })
+                    // Whitelist explícita de campos seguros — nunca el
+                    // texto real, nunca ningún dato de alumnos/institución.
+                    console.log(`[PLANEACION_MENSAJE_SERVER] guardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
+                  } catch {
+                    console.error('[PLANEACION_MENSAJE_SERVER] guardado=false motivo=EXCEPCION_PERSISTENCIA')
+                  }
+                }
               } else {
                 console.log('[PLANEACION_ACTIVA] sin conversacionId autorizado — se omite el guardado')
               }

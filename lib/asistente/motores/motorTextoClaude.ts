@@ -204,7 +204,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -416,6 +416,15 @@ export class MotorTextoClaude implements MotorConversacional {
           // servidor demuestra ownership antes de usarlo — ver
           // obtenerConversacionIdAutorizada en app/api/chat/route.ts.
           conversacionId: conversacionId || null,
+          // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/
+          // ajuste de planeación, ver auditoría aprobada por separado)
+          // — mismo criterio exacto que mensajeUsuarioId: metadata
+          // estructural top-level, generada con el MISMO nuevoId() que
+          // ya usa AsistenteService para turnoAbierto (nunca un id
+          // nuevo/paralelo). El servidor solo la usa cuando el turno es
+          // de verdad una creación/ajuste de planeación — cualquier
+          // otro turno la recibe igual pero la ignora, sin efecto.
+          assistantMessageId: assistantMessageId || null,
           // V2 (adjuntos de imagen durables) — metadata estructural
           // top-level, igual criterio que conversacionId: nunca dentro
           // de `contexto`/prompt/historial/referentes, cero tokens

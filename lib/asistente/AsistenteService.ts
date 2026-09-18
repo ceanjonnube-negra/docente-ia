@@ -315,6 +315,18 @@ class AsistenteServiceImpl {
   // intervención del asistente nunca se parte en varias burbujas.
   private turnoAbierto: string | null = null
 
+  // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/ajuste de
+  // planeación, ver auditoría aprobada por separado) — id generado con
+  // nuevoId() ANTES de llamar a enviarTexto() en los turnos donde el
+  // servidor puede necesitarlo, para reutilizarlo como turnoAbierto en
+  // el primer chunk de 'respuesta-parcial' (ver más abajo) en vez de
+  // generar uno nuevo ahí — así el id que el servidor persiste y el id
+  // real de la burbuja en pantalla son SIEMPRE el mismo, sin
+  // coordinación adicional. null en cualquier turno que no lo genere
+  // (voz, múltiples imágenes, finalización...) — ahí 'respuesta-parcial'
+  // sigue generando su propio id, comportamiento sin cambio.
+  private assistantMessageIdPendiente: string | null = null
+
   // Último documento formal (planeación, rúbrica, resumen, etc.) que el
   // asistente generó — permite que "agrégale...", "corrige...",
   // "hazlo más corto..." modifiquen ESE documento en vez de crear uno
@@ -1291,7 +1303,13 @@ class AsistenteServiceImpl {
           ultimo.texto = evento.texto
           this.mensajes = [...this.mensajes.slice(0, -1), ultimo]
         } else {
-          this.turnoAbierto = nuevoId()
+          // Reutiliza el id ya generado en enviarMensaje()/ejecutarEdicion()
+          // (ver assistantMessageIdPendiente) cuando existe, en vez de
+          // generar uno nuevo aquí — así el mismo id identifica la
+          // burbuja en pantalla y la fila que el servidor pudo haber
+          // persistido en mensajes_chat para este turno.
+          this.turnoAbierto = this.assistantMessageIdPendiente || nuevoId()
+          this.assistantMessageIdPendiente = null
           this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: evento.texto, creadoEn: Date.now() }]
         }
         this.notificar()
@@ -1928,11 +1946,19 @@ class AsistenteServiceImpl {
       // el maestro. Esta fase NO ejecuta nada con esa decisión — solo
       // viaja y se clasifica, ver route.ts.
       const referentesContextuales = aMetadataReferentes(resolverReferentesDisponibles(this.mensajes, this.documentoActivo, this.materialVisualActivo))
+      // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE — generado
+      // SIEMPRE aquí (mismo criterio que mensajeUsuarioId: el servidor
+      // decide si de verdad lo necesita, el cliente solo lo transporta),
+      // con el MISMO nuevoId() de siempre. Se guarda en
+      // assistantMessageIdPendiente para que 'respuesta-parcial' lo
+      // reutilice como turnoAbierto en vez de generar uno nuevo.
+      const idMensajeAsistente = nuevoId()
+      this.assistantMessageIdPendiente = idMensajeAsistente
       // MotorConversacional.enviarTexto ya declara debugRequestId/
-      // referentesContextuales/conversacionId/mensajeUsuarioId como
-      // parámetros opcionales al final (ver tipos.ts) — ya no hace
-      // falta ningún cast para pasarlos.
-      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId, mensajeUsuarioIdConfirmado)
+      // referentesContextuales/conversacionId/mensajeUsuarioId/
+      // assistantMessageId como parámetros opcionales al final (ver
+      // tipos.ts) — ya no hace falta ningún cast para pasarlos.
+      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId, mensajeUsuarioIdConfirmado, idMensajeAsistente)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
@@ -2704,8 +2730,13 @@ ${instruccion}`
       // 13) se deja deliberadamente fuera — persistirMensajeAsegurandoConversacion
       // es fire-and-forget y todavía existe una carrera real que haría
       // insegura esa identidad en este punto (fuera de alcance de esta
-      // corrección).
-      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, this.conversacionActivaId)
+      // corrección). assistantMessageId (posición 14, PERSISTENCIA
+      // SERVER-OWNED DEL MENSAJE ASISTENTE) no tiene ese problema: no
+      // depende de ninguna escritura previa, se genera aquí mismo con
+      // nuevoId() — mismo criterio que enviarMensaje().
+      const idMensajeAsistenteEdicion = nuevoId()
+      this.assistantMessageIdPendiente = idMensajeAsistenteEdicion
+      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, this.conversacionActivaId, undefined, idMensajeAsistenteEdicion)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }
