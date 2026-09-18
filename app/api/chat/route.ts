@@ -4099,22 +4099,28 @@ Grado: [grado] | Grupo: [grupo]
                   : construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
-                // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (Opción
-                // B, ver auditoría aprobada por separado) — SERVER-
-                // PERSISTENCE SHADOW/TRANSITION: esta escritura corre EN
-                // SOMBRA junto a la persistencia client-side, que sigue
-                // siendo la responsable real del turno mientras esta
-                // fase no se valida E2E. Por eso, a propósito, un fallo
-                // aquí NUNCA convierte el request en error ni agrega
-                // reintentos — solo se registra snapshotGuardado=true /
-                // mensajeGuardado=true|false para poder distinguir
-                // ambos resultados en los logs. La confirmación final de
-                // durabilidad server-owned (momento en que el cliente
-                // deja de ser responsable) es una decisión de una
-                // microfase posterior, no de esta. NUNCA corre si el
-                // snapshot de arriba falló (resultadoGuardado.ok): sin
-                // snapshot confiable no hay nada nuevo que persistir
-                // como mensaje del asistente tampoco. userId! es seguro
+                // PERSISTENCIA DEFINITIVA DEL MENSAJE ASISTENTE DE
+                // PLANEACIÓN (Opción B, ver auditoría "convertir SHADOW
+                // en arquitectura definitiva" aprobada por separado —
+                // validado E2E dos veces, creación y ajuste, con
+                // NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO ausente): el
+                // servidor es el propietario real de esta escritura
+                // para creación/ajuste de planeación. El cliente ya NO
+                // reintenta cuando el servidor confirma (ver guard en
+                // AsistenteService.ts, case 'respuesta-final') — sigue
+                // persistiendo como fallback únicamente cuando NO llega
+                // esa confirmación (fallo real o turno fuera de
+                // alcance), para conversación normal, documentos no-
+                // planeación, imágenes y voz, que siguen siendo
+                // client-owned sin cambio. Un fallo aquí NUNCA convierte
+                // el request en error (el texto ya se mostró al
+                // docente — no hay forma de deshacer eso), pero
+                // snapshotGuardado=true / mensajeGuardado=true|false
+                // queda registrado sin ambigüedad para poder detectarlo
+                // operacionalmente. NUNCA corre si el snapshot de
+                // arriba falló (resultadoGuardado.ok): sin snapshot
+                // confiable no hay nada nuevo que persistir como
+                // mensaje del asistente tampoco. userId! es seguro
                 // aquí: supabaseUser (ya verificado arriba) y userId
                 // salen del mismo `autenticacion?.ok` (líneas 715-716).
                 if (resultadoGuardado.ok) {
@@ -4153,7 +4159,7 @@ Grado: [grado] | Grupo: [grupo]
                         .upsert(filaMensajeAsistente, { onConflict: 'id' })
                       // Whitelist explícita de campos seguros — nunca el
                       // texto real, nunca ningún dato de alumnos/institución.
-                      console.log(`[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
+                      console.log(`[PLANEACION_MENSAJE_SERVER] snapshotGuardado=true mensajeGuardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
                       // SEÑAL SERVER-SIDE (ver "evitar sobrescritura
                       // cliente tras persistencia server") — SOLO cuando
                       // el upsert de arriba terminó SIN error (nunca
@@ -4178,7 +4184,7 @@ Grado: [grado] | Grupo: [grupo]
                         controller.enqueue(encoder.encode(`\n\n${marcadorMensajePersistido}`))
                       }
                     } catch {
-                      console.error('[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=false motivo=EXCEPCION_PERSISTENCIA')
+                      console.error('[PLANEACION_MENSAJE_SERVER] snapshotGuardado=true mensajeGuardado=false motivo=EXCEPCION_PERSISTENCIA')
                     }
                   } else if (assistantMessageId) {
                     // El cliente mandó algo en assistantMessageId pero no
@@ -4186,7 +4192,7 @@ Grado: [grado] | Grupo: [grupo]
                     // esperado) — fail-closed: se omite el upsert nuevo
                     // sin tocar el snapshot ni el resto del turno, y
                     // nunca se inventa/corrige un id en el servidor.
-                    console.log('[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=false motivo=assistantMessageId_invalido')
+                    console.log('[PLANEACION_MENSAJE_SERVER] snapshotGuardado=true mensajeGuardado=false motivo=assistantMessageId_invalido')
                   }
                 }
               } else {
