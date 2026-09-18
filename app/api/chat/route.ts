@@ -4154,6 +4154,29 @@ Grado: [grado] | Grupo: [grupo]
                       // Whitelist explícita de campos seguros — nunca el
                       // texto real, nunca ningún dato de alumnos/institución.
                       console.log(`[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=${!errorMensajeAsistente} textoLongitud=${textoMensajeAsistente.length} cantidadArchivos=${archivosParaMensajeAsistente.length}${errorMensajeAsistente ? ` errorCode=${errorMensajeAsistente.code ?? 'desconocido'}` : ''}`)
+                      // SEÑAL SERVER-SIDE (ver "evitar sobrescritura
+                      // cliente tras persistencia server") — SOLO cuando
+                      // el upsert de arriba terminó SIN error (nunca
+                      // antes, nunca en el catch de abajo): mismo patrón
+                      // exacto que [[DIAGNOSTICO_CURP:...]]/
+                      // [[DOCUMENTO_ARCHIVO:...]] — un marcador técnico
+                      // embebido en el propio stream de texto, que el
+                      // docente NUNCA ve (el cliente lo extrae y lo
+                      // retira antes de mostrar/guardar el mensaje, ver
+                      // procesarMarcadorDeMensajeAsistentePersistido en
+                      // motorTextoClaude.ts). No consume tokens de IA
+                      // (Claude ya terminó de responder), no crea
+                      // burbuja, no entra al historial. Se enqueue ANTES
+                      // de que el stream cierre, así el cliente siempre
+                      // lo recibe completo (ver el bucle `while` del
+                      // reader en motorTextoClaude.ts, que solo procesa
+                      // 'respuesta-final' después de leer el stream
+                      // entero) antes de decidir si persiste su propia
+                      // copia del mismo mensaje.
+                      if (!errorMensajeAsistente) {
+                        const marcadorMensajePersistido = `[[MENSAJE_ASISTENTE_PERSISTIDO:${Buffer.from(JSON.stringify({ assistantMessageId: assistantMessageIdValidado.id }), 'utf-8').toString('base64')}]]`
+                        controller.enqueue(encoder.encode(`\n\n${marcadorMensajePersistido}`))
+                      }
                     } catch {
                       console.error('[PLANEACION_MENSAJE_SERVER] modo=SERVER_PERSISTENCE_SHADOW snapshotGuardado=true mensajeGuardado=false motivo=EXCEPCION_PERSISTENCIA')
                     }

@@ -1603,7 +1603,30 @@ class AsistenteServiceImpl {
         // voz de abajo también necesita este mismo mensajeFinal, para
         // no repetir el find.
         const mensajeFinal = this.turnoAbierto ? this.mensajes.find(m => m.id === this.turnoAbierto) : undefined
-        if (mensajeFinal) this.persistirMensajeAsegurandoConversacion(mensajeFinal)
+        if (mensajeFinal) {
+          // EVITAR SOBRESCRITURA CLIENTE TRAS PERSISTENCIA SERVER (ver
+          // auditoría aprobada por separado) — comparación por ID
+          // EXACTO, nunca un boolean global: evento.assistantMessageIdPersistidoServer
+          // solo llega cuando /api/chat ya confirmó (con su propio
+          // upsert ya resuelto sin error) que ESTA fila de
+          // mensajes_chat quedó guardada server-side, para creación/
+          // ajuste de planeación. Si no coincide con este mensaje
+          // exacto — turno fuera de alcance, servidor no participó,
+          // mensajeGuardado=false, o el stream se interrumpió antes de
+          // que llegara la confirmación — se conserva EXACTAMENTE el
+          // upsert de siempre (SERVER-PERSISTENCE SHADOW/TRANSITION:
+          // el cliente sigue siendo el responsable real hasta validar
+          // E2E en una fase posterior). No hace falta guardar ni
+          // limpiar ningún estado aparte: evento ya trae esta
+          // confirmación en el mismo ciclo síncrono en el que se
+          // decide, así que no hay nada que pueda contaminar un turno
+          // futuro.
+          if (evento.assistantMessageIdPersistidoServer === mensajeFinal.id) {
+            console.log(`[PERSISTENCIA_REMOTA] omitido_upsert_cliente=true motivo=confirmado_server_shadow id=${mensajeFinal.id}`)
+          } else {
+            this.persistirMensajeAsegurandoConversacion(mensajeFinal)
+          }
+        }
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
         // alta la respuesta real que acaba de llegar (ver
         // MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el

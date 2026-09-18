@@ -378,7 +378,7 @@ export type EventoMotor =
   // AsistenteService intercepta este caso ANTES de crear o persistir
   // cualquier burbuja de asistente. Ausente/false = comportamiento de
   // siempre (decisionOrquestador, si viene, es solo informativa).
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

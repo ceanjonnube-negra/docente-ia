@@ -522,11 +522,19 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
       const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionAlumno)
       const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinPropuestaListaOficial)
+      // SEÑAL SERVER-SIDE (ver "evitar sobrescritura cliente tras
+      // persistencia server") — mismo patrón exacto que los demás
+      // marcadores de arriba: el docente nunca ve esta línea ni queda
+      // persistida (se extrae antes de guardarEnHistorial). El servidor
+      // SOLO la agrega después de confirmar (con su propio upsert ya
+      // resuelto sin error) que la fila de mensajes_chat para este
+      // assistantMessageId quedó guardada — ver app/api/chat/route.ts.
+      const { texto: sinMensajeAsistentePersistido, assistantMessageIdPersistidoServer } = this.procesarMarcadorDeMensajeAsistentePersistido(sinPerfilActualizado)
       // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — se extrae y se retira del
       // texto ANTES de guardarEnHistorial, exactamente igual que los
       // demás marcadores de arriba — nunca llega a Supabase ni al texto
       // que ve el docente. Retirar junto con el resto del diagnóstico.
-      const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinPerfilActualizado)
+      const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinMensajeAsistentePersistido)
       if (!esShortCircuitOrquestador) this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       this.emitir({
         tipo: 'respuesta-final',
@@ -540,6 +548,7 @@ export class MotorTextoClaude implements MotorConversacional {
         perfilActualizado,
         decisionOrquestador: decisionOrquestador ?? undefined,
         shortCircuitOrquestador: esShortCircuitOrquestador || undefined,
+        assistantMessageIdPersistidoServer,
       })
       if (diagnosticoActivo && diagnosticoCurp) {
         this.emitir({
@@ -849,6 +858,28 @@ export class MotorTextoClaude implements MotorConversacional {
     const match = respuesta.match(/\[\[PERFIL_ACTUALIZADO\]\]/)
     if (!match) return { texto: respuesta, perfilActualizado: false }
     return { texto: respuesta.replace(match[0], '').trim(), perfilActualizado: true }
+  }
+
+  // SEÑAL SERVER-SIDE (ver "evitar sobrescritura cliente tras
+  // persistencia server") — mismo patrón exacto que los demás
+  // marcadores de arriba: el docente nunca ve esta línea ni queda
+  // persistida. Solo confirma, para el MISMO assistantMessageId que
+  // este cliente mandó en el body de /api/chat, que el servidor ya
+  // terminó (sin error) su propio upsert a mensajes_chat — nunca se
+  // asume nada si el marcador no llega (turno fuera de alcance,
+  // mensajeGuardado=false, o stream interrumpido antes de este punto).
+  private procesarMarcadorDeMensajeAsistentePersistido(respuesta: string): { texto: string; assistantMessageIdPersistidoServer?: string } {
+    const match = respuesta.match(/\[\[MENSAJE_ASISTENTE_PERSISTIDO:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const datos = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as { assistantMessageId?: string }
+      const assistantMessageIdPersistidoServer = typeof datos.assistantMessageId === 'string' && datos.assistantMessageId ? datos.assistantMessageId : undefined
+      return { texto: respuesta.replace(match[0], '').trim(), assistantMessageIdPersistidoServer }
+    } catch {
+      return { texto: respuesta.replace(match[0], '').trim() }
+    }
   }
 
   // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — ROUNDTRIP (ver "diagnóstico
