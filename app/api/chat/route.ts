@@ -469,7 +469,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId } = await req.json()
   // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
   // estructural top-level, NUNCA transportada dentro de `contexto`
   // (ese sigue siendo el string de construirInstrucciones, nunca un
@@ -1186,16 +1186,11 @@ export async function POST(req: NextRequest) {
     // respuesta de Claude en vez de dejarla pasar como texto normal.
   }
 
-  // RAG y "proceso activo" no dependen del Clasificador de Nivel 0 ni de
-  // su resultado — se disparan de inmediato en paralelo con él en vez de
-  // esperar a que termine para empezar recién ahí (eran ~2 llamadas de
-  // red seguidas antes de llegar siquiera a Claude).
-  // Sin texto (turno de imagen sola) no hay consulta semántica real que
-  // buscar — se evita la llamada a OpenAI embeddings (aceptaría input
-  // vacío en runtime, pero sería semánticamente inútil) y se resuelve
-  // directo al mismo resultado que ya usa la función cuando no hay
-  // contexto que aportar (ver buscarContextoRAG: `return ''`).
-  const contextoRAGPromise = mensaje.trim() ? buscarContextoRAG(mensaje, institucionId || null) : Promise.resolve('')
+  // "Proceso activo" no depende del Clasificador de Nivel 0 ni de la
+  // sesión — se dispara de inmediato en paralelo con el resto, sin
+  // cambios respecto a siempre. RAG (contextoRAGPromise) YA NO se
+  // dispara aquí — ver más abajo, justo después de resolver `sesion`
+  // (ver auditoría "seguridad de aislamiento institucional en RAG").
   const procesoActivoPromise = userId
     ? Promise.resolve(
         supabaseRAG
@@ -1290,16 +1285,42 @@ export async function POST(req: NextRequest) {
   // La sesión real (grupo activo + lista de alumnos con nombre e ID) se
   // obtiene SIEMPRE que haya un docente autenticado — no solo cuando el
   // mensaje parece pedir una acción concreta. Son 2 consultas indexadas
-  // y corren en paralelo con el resto (RAG, proceso activo), así que no
-  // agregan una vuelta de red extra. Esto es lo que le permite al Chat
-  // IA responder "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez
-  // de fingir que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
+  // y corren en paralelo con "proceso activo", así que no agregan una
+  // vuelta de red extra. Esto es lo que le permite al Chat IA responder
+  // "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez de fingir
+  // que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
   const sesion = (supabaseUser && userId)
     ? await conLimiteDeTiempo(obtenerSesionContexto(supabaseUser, userId, zonaHoraria, opcionesSesionMgB), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
         console.error('Error obteniendo sesión de contexto:', e)
         return null
       })
     : null
+
+  // SEGURIDAD DE AISLAMIENTO INSTITUCIONAL EN RAG (ver auditoría
+  // aprobada por separado) — CAUSA RAÍZ real confirmada: antes, esta
+  // llamada arrancaba ANTES de este punto usando `institucionId` leído
+  // crudo del body del cliente (nunca validado), hasta un cliente
+  // service_role (supabaseRAG, ver buscarContextoRAG) que bypasea RLS
+  // por completo — un cliente modificado podía así pedir contexto
+  // institucional de OTRA institución. CORRECCIÓN: se ignora por
+  // completo el valor del cliente para este propósito — la única
+  // fuente autorizada es `sesion?.institucion_id`, ya resuelto y
+  // revalidado server-side contra `grupos`+docente_id dentro de
+  // obtenerSesionContexto (lib/sesionContexto.ts) — nunca una
+  // aproximación: si no hay sesión o el grupo activo no pudo
+  // resolverse (incluido el modo fail-closed de MG-B2),
+  // `sesion?.institucion_id` es `null` y NO se ejecuta ninguna consulta
+  // institucional — contextoRAGPromise resuelve `''` sin más, igual
+  // que cuando RAG simplemente no encuentra nada; el resto del turno
+  // sigue funcionando igual (RAG es un extra, nunca condición para
+  // responder). Se mueve a este punto (después de `sesion`) a
+  // propósito: `institucion_id` no puede conocerse con certeza antes
+  // sin aproximar — el costo es que RAG ya no se solapa con las
+  // consultas de sesión (antes si), solo con lo que venga después.
+  // `mensaje.trim()` conserva exactamente el mismo atajo de siempre.
+  const contextoRAGPromise = mensaje.trim() && sesion?.institucion_id
+    ? buscarContextoRAG(mensaje, sesion.institucion_id)
+    : Promise.resolve('')
 
   // Indicadores seguros de diagnóstico — mismo criterio que el log
   // [AUTH][chat] de arriba, nunca datos sensibles (ver "DIAGNÓSTICO
