@@ -1,0 +1,11 @@
+# Exclusión local de este directorio — NO es el .gitignore raíz del
+# proyecto (que no se toca en esta microfase). Excluye exclusivamente
+# artefactos de ejecución de esta herramienta administrativa/offline:
+# entorno virtual de Python, bytecode compilado, y cualquier salida local
+# de prueba. El PDF oficial y el JSON de salida de la extracción NUNCA
+# viven dentro de este directorio — se manejan fuera del repositorio.
+.venv/
+__pycache__/
+*.pyc
+*.pdf
+*.json
