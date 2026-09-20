@@ -1,25 +1,31 @@
 // lib/programaAnalitico/generarPropuestaProgramaAnalitico.ts
 //
-// PA-3B — prepara una PropuestaProgramaAnalitico con exactamente 1
-// llamada IA (o 0 si falta información indispensable). NUNCA publica:
-// no llama publicarProgramaAnalitico(), no escribe programa_analitico*.
-// La salida es una propuesta validada en memoria — publicarla queda
-// para un paso explícito posterior, todavía no conectado.
+// PA-3B1 — optimización de PA-3B: separa la ESTRUCTURA CURRICULAR
+// OFICIAL (determinista, sin IA) de las DECISIONES PEDAGÓGICAS que
+// realmente requieren IA. La prueba real de PA-3B demostró que pedirle
+// al modelo el snapshot completo (84 items, 241 PDA) gastaba ~18,155
+// tokens de salida en ~374s para terminar reproduciendo, literal y
+// mecánicamente, IDs y valores null que el propio código ya conocía —
+// la única decisión genuina fue "cuáles conservar", no los datos en sí.
 //
-// Flujo (ver informe PA-3B):
-//   grupo real → resolverContextoCurricularGrupo() → catálogo
-//   curricular cerrado (candidatosCurriculares.ts) → contexto interno
-//   real (contextoInterno.ts) → contexto explícito del docente
-//   (parámetro opcional) → 1 llamada Anthropic → JSON → validación
-//   determinista (misma validarEstructuraPropuesta de PA-3A +
-//   validarReferenciasPropuesta compartida) → PropuestaProgramaAnalitico.
+// Arquitectura nueva:
+//   1. construirBaseProgramaAnalitico(catalogo) — TODOS los contenidos
+//      candidatos como sin_ajuste con sus PDA completos, sin IA.
+//   2. Si no hay contexto pedagógico real (ni contextoDocente ni
+//      necesidades de apoyo) → requiereContexto:true, 0 llamadas IA
+//      (Programa Sintético ≠ Programa Analítico: no se asume que la
+//      base oficial completa deba publicarse tal cual sin que exista
+//      contexto real que lo justifique como decisión — ver PA-3B1 §3).
+//   3. Si hay contexto → 1 llamada IA que devuelve solo DELTAS
+//      (excluir/contextualizar/nuevo) sobre esa base, nunca el
+//      snapshot completo.
+//   4. aplicarDeltasSobreBase(base, decisiones) combina server-side.
+//   5. Misma validación de siempre (validarEstructuraPropuesta +
+//      validarReferenciasPropuesta) sobre la propuesta final
+//      combinada — sin fuzzy matching, sin autocorrección.
 //
-// Mismo patrón real ya usado en el proyecto para generación JSON
-// aislada (ver lib/calendario/analisisCalendario.ts): el cliente
-// Anthropic se recibe como parámetro (nunca se instancia aquí, nunca
-// se duplica), sin streaming, JSON en texto + limpieza de markdown +
-// validación rigurosa post-parseo — nunca se confía en el JSON solo
-// porque parseó.
+// Sigue NUNCA publicando: no llama publicarProgramaAnalitico(), no
+// escribe programa_analitico*.
 
 import { randomUUID } from 'node:crypto'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -29,7 +35,7 @@ import { recuperarCatalogoCurricularCerrado, type CatalogoCurricularCerrado } fr
 import { recopilarContextoInternoGrupo, type ContextoInternoGrupo } from './contextoInterno'
 import { validarEstructuraPropuesta } from './publicarProgramaAnalitico'
 import { validarReferenciasPropuesta, type CatalogoContenido, type CatalogoPdaGrado, type CatalogoPeriodo } from './validacionReferencial'
-import type { ItemPropuestaProgramaAnalitico, PropuestaProgramaAnalitico, ResultadoGenerarPropuesta, TipoDecisionItem } from './tipos'
+import type { CategoriaContextoPedagogico, ItemPropuestaProgramaAnalitico, PropuestaProgramaAnalitico, ResultadoGenerarPropuesta } from './tipos'
 
 const MODELO = 'claude-sonnet-4-6'
 
@@ -40,6 +46,137 @@ function limpiarJson(texto: string): string {
 function escaparComillas(texto: string): string {
   return texto.replace(/"/g, "'")
 }
+
+// ============================================================
+// 1. Base curricular oficial determinista — sin IA (PA-3B1 §2).
+// ============================================================
+
+export function construirBaseProgramaAnalitico(catalogo: CatalogoCurricularCerrado): ItemPropuestaProgramaAnalitico[] {
+  const pdaPorContenido = new Map<string, string[]>()
+  for (const p of catalogo.pda) {
+    const lista = pdaPorContenido.get(p.contenidoId) ?? []
+    lista.push(p.curriculoPdaGradoId)
+    pdaPorContenido.set(p.contenidoId, lista)
+  }
+  return catalogo.contenidos.map((c, idx) => ({
+    claveLocal: `contenido:${c.id}`,
+    tipoDecision: 'sin_ajuste' as const,
+    curriculoContenidoId: c.id,
+    textoContextualizado: null,
+    textoLocal: null,
+    resultadoEsperadoLocal: null,
+    periodoEvaluacionId: null,
+    orden: idx + 1,
+    curriculoPdaGradoIds: pdaPorContenido.get(c.id) ?? [],
+  }))
+}
+
+// ============================================================
+// Regla exacta de requiereContexto (PA-3B1 §3/§4/§5): sin NINGÚN
+// contexto pedagógico real accionable (ni explícito del docente ni
+// necesidades de apoyo confirmadas), publicar la base oficial completa
+// tal cual sería una decisión no fundamentada tomada por código, no
+// codiseño real — se detiene ANTES de gastar ninguna llamada IA.
+// Calendario/periodos no cuentan: son datos operativos, no contexto
+// de codiseño pedagógico.
+// ============================================================
+
+const TODAS_LAS_CATEGORIAS: CategoriaContextoPedagogico[] = [
+  'CARACTERISTICAS_GRUPO',
+  'NECESIDADES_PRIORIDADES',
+  'PROBLEMATICA_COMUNIDAD',
+  'INTERESES',
+  'RECURSOS',
+  'PRIORIDADES_PEDAGOGICAS',
+]
+
+export function evaluarRequiereContexto(
+  contextoDocente: string | null | undefined,
+  interno: ContextoInternoGrupo
+): { requiereContexto: true; categorias: CategoriaContextoPedagogico[] } | { requiereContexto: false } {
+  const hayContextoDocente = !!contextoDocente && contextoDocente.trim() !== ''
+  const hayNecesidadesConfirmadas = interno.necesidadesApoyo.length > 0
+  if (hayContextoDocente || hayNecesidadesConfirmadas) return { requiereContexto: false }
+  return { requiereContexto: true, categorias: TODAS_LAS_CATEGORIAS }
+}
+
+// ============================================================
+// 2. Deltas IA — tipos + combinación server-side (PA-3B1 §6/§7).
+// ============================================================
+
+export type DecisionDeltaIa =
+  | { decision: 'excluir'; curriculoContenidoId: string }
+  | { decision: 'contextualizar'; curriculoContenidoId: string; textoContextualizado: string; curriculoPdaGradoIdsSeleccionados?: string[] }
+  | { decision: 'nuevo'; textoLocal: string; resultadoEsperadoLocal?: string | null }
+
+export type ErrorAplicarDeltas =
+  | { tipo: 'DELTA_CONTENIDO_DUPLICADO'; curriculoContenidoId: string }
+  | { tipo: 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE'; curriculoContenidoId: string }
+
+// Combina la base determinista con los deltas de la IA. Cada
+// curriculoContenidoId admite como máximo 1 decisión (excluir o
+// contextualizar) — nunca se duplica un contenido en la propuesta
+// final. Un contenido sin ninguna decisión conserva exactamente su
+// forma de la base (sin_ajuste, todos sus PDA oficiales). "nuevo" no
+// tiene contenido oficial asociado, así que nunca puede chocar con la
+// base ni con otro "nuevo". orden se renumera 1..N de forma
+// determinista sobre el resultado final (primero los contenidos de la
+// base en su orden original, salvo excluidos; luego los nuevos, en el
+// orden en que la IA los propuso).
+export function aplicarDeltasSobreBase(
+  base: ItemPropuestaProgramaAnalitico[],
+  decisiones: DecisionDeltaIa[]
+): { ok: true; items: ItemPropuestaProgramaAnalitico[] } | { ok: false; error: ErrorAplicarDeltas } {
+  const resultadoPorContenido = new Map(base.map((item) => [item.curriculoContenidoId as string, item]))
+  const contenidosProcesados = new Set<string>()
+  const nuevos: ItemPropuestaProgramaAnalitico[] = []
+
+  for (const d of decisiones) {
+    if (d.decision === 'nuevo') {
+      nuevos.push({
+        claveLocal: `nuevo:${nuevos.length}`,
+        tipoDecision: 'nuevo',
+        curriculoContenidoId: null,
+        textoContextualizado: null,
+        textoLocal: d.textoLocal,
+        resultadoEsperadoLocal: d.resultadoEsperadoLocal ?? null,
+        periodoEvaluacionId: null,
+        orden: 0,
+        curriculoPdaGradoIds: [],
+      })
+      continue
+    }
+
+    if (contenidosProcesados.has(d.curriculoContenidoId)) {
+      return { ok: false, error: { tipo: 'DELTA_CONTENIDO_DUPLICADO', curriculoContenidoId: d.curriculoContenidoId } }
+    }
+    contenidosProcesados.add(d.curriculoContenidoId)
+
+    const itemBase = resultadoPorContenido.get(d.curriculoContenidoId)
+    if (!itemBase) {
+      return { ok: false, error: { tipo: 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE', curriculoContenidoId: d.curriculoContenidoId } }
+    }
+
+    if (d.decision === 'excluir') {
+      resultadoPorContenido.delete(d.curriculoContenidoId)
+    } else {
+      const pdaSeleccionados = d.curriculoPdaGradoIdsSeleccionados
+      resultadoPorContenido.set(d.curriculoContenidoId, {
+        ...itemBase,
+        tipoDecision: 'contextualizado',
+        textoContextualizado: d.textoContextualizado,
+        curriculoPdaGradoIds: pdaSeleccionados && pdaSeleccionados.length > 0 ? pdaSeleccionados : itemBase.curriculoPdaGradoIds,
+      })
+    }
+  }
+
+  const itemsFinales = [...resultadoPorContenido.values(), ...nuevos].map((item, idx) => ({ ...item, orden: idx + 1 }))
+  return { ok: true, items: itemsFinales }
+}
+
+// ============================================================
+// Prompt compacto — solo pide deltas, nunca el snapshot completo.
+// ============================================================
 
 function construirBloqueCatalogo(catalogo: CatalogoCurricularCerrado): string {
   const lineasCampos = catalogo.campos.map((c) => `- id=${c.id} clave=${c.clave} nombre="${c.nombre}"`).join('\n')
@@ -54,7 +191,7 @@ function construirBloqueCatalogo(catalogo: CatalogoCurricularCerrado): string {
     'CAMPOS FORMATIVOS DISPONIBLES:',
     lineasCampos || '(ninguno)',
     '',
-    'CONTENIDOS OFICIALES DISPONIBLES (usa curriculoContenidoId EXACTAMENTE como aparece aquí, nunca inventes uno):',
+    'CONTENIDOS OFICIALES DISPONIBLES — TODOS ya están incluidos por defecto en la base con tipoDecision="sin_ajuste" y TODOS sus PDA oficiales (usa curriculoContenidoId EXACTAMENTE como aparece aquí, nunca inventes uno):',
     lineasContenidos || '(ninguno)',
     '',
     'PDA OFICIALES APLICABLES AL GRADO DE ESTE GRUPO (usa curriculoPdaGradoId EXACTAMENTE como aparece aquí; cada PDA solo es válido para el contenidoId que se indica junto a él, nunca lo uses con otro contenido):',
@@ -63,23 +200,17 @@ function construirBloqueCatalogo(catalogo: CatalogoCurricularCerrado): string {
 }
 
 function construirBloqueContextoInterno(interno: ContextoInternoGrupo): string {
-  const eventos =
-    interno.calendarioRelevante.length > 0
-      ? interno.calendarioRelevante.map((e) => `- ${e.fecha} (${e.tipo}): ${e.titulo}`).join('\n')
-      : '(sin eventos de calendario registrados)'
   const necesidades =
     interno.necesidadesApoyo.length > 0
       ? interno.necesidadesApoyo.map((n) => `- ${n.tipo}: ${n.descripcion}`).join('\n')
       : '(sin necesidades de apoyo registradas para este grupo)'
 
   return [
-    'CONTEXTO INTERNO CONFIRMADO (único contexto real disponible del sistema, nunca inventes nada adicional):',
+    'CONTEXTO INTERNO CONFIRMADO (nunca inventes nada adicional):',
     `- Nivel educativo: ${interno.nivelEducativo}`,
     `- Grado: ${interno.gradoGrupo}`,
     `- Institución: ${interno.institucionNombre ?? '(no registrada)'}`,
     `- Alumnos activos en el grupo: ${interno.totalAlumnosActivos}`,
-    '- Calendario:',
-    eventos,
     '- Necesidades de apoyo registradas:',
     necesidades,
   ].join('\n')
@@ -87,108 +218,111 @@ function construirBloqueContextoInterno(interno: ContextoInternoGrupo): string {
 
 function construirBloquePeriodos(periodos: CatalogoPeriodo[], nombresPorId: Map<string, string>): string {
   if (periodos.length === 0) {
-    return 'PERIODOS DE EVALUACIÓN DISPONIBLES: no hay ningún periodo de evaluación registrado para el ciclo escolar actual de este grupo — usa null en periodoEvaluacionId para TODOS los items. Nunca inventes un id de trimestre/periodo.'
+    return 'PERIODOS DE EVALUACIÓN DISPONIBLES: no hay ninguno registrado para el ciclo escolar actual de este grupo.'
   }
   const lineas = periodos.map((p) => `- id=${p.id} nombre="${nombresPorId.get(p.id) ?? ''}"`).join('\n')
-  return `PERIODOS DE EVALUACIÓN DISPONIBLES (usa periodoEvaluacionId EXACTAMENTE como aparece aquí, o null si no corresponde):\n${lineas}`
+  return `PERIODOS DE EVALUACIÓN DISPONIBLES:\n${lineas}`
 }
 
-const INSTRUCCIONES = `Eres un asistente pedagógico que ayuda a un docente mexicano de educación básica a construir la propuesta de un Programa Analítico (segundo nivel de concreción del currículo, Programa Sintético SEP 2022) para su grupo real.
+const INSTRUCCIONES_DELTAS = `Eres un asistente pedagógico que ayuda a un docente mexicano de educación básica a codiseñar el Programa Analítico (segundo nivel de concreción del currículo, Programa Sintético SEP 2022) de su grupo real.
 
-Se te entrega: 1) el catálogo CERRADO de campos formativos, contenidos oficiales y PDA aplicables al grado de este grupo — es la ÚNICA fuente permitida de contenido oficial; 2) contexto interno confirmado del grupo/institución; 3) contexto explícito que el docente proporcionó (si lo hay); 4) los periodos de evaluación reales disponibles.
+Ya existe una BASE determinista: TODOS los contenidos oficiales del catálogo entregado están incluidos por defecto con tipoDecision="sin_ajuste" y TODOS sus PDA oficiales aplicables. NO necesitas reproducir esa base — el sistema ya la construyó. Tu única tarea es proponer los AJUSTES (deltas) que el contexto real entregado (interno + explícito del docente) realmente justifique.
+
+Tipos de decisión posibles, SOLO sobre contenidos que de verdad quieras ajustar:
+- "excluir": un contenido oficial no debe incluirse para este grupo/momento, con justificación real en el contexto entregado (nunca arbitrario). Solo curriculoContenidoId.
+- "contextualizar": un contenido oficial debe redactarse distinto para adaptarlo al contexto real. curriculoContenidoId (el mismo del catálogo) y textoContextualizado (tu redacción adaptada, obligatoria, no vacía) son obligatorios. curriculoPdaGradoIdsSeleccionados es OPCIONAL — solo inclúyelo si decides enfocar el contenido en un subconjunto de sus PDA oficiales; si lo omites, se usan todos los PDA oficiales de ese contenido.
+- "nuevo": SOLO cuando el contexto real justifique claramente un contenido local/regional que NO está en el catálogo oficial. textoLocal obligatorio, resultadoEsperadoLocal opcional — esto NUNCA se presenta como PDA oficial.
+
+Si un contenido no necesita ningún ajuste, simplemente NO lo menciones — se queda en la base tal cual.
 
 REGLAS ABSOLUTAS:
-- Solo puedes usar curriculoContenidoId que aparezcan EXACTAMENTE en el catálogo de contenidos entregado. Nunca inventes un id.
-- Solo puedes usar curriculoPdaGradoIds que aparezcan EXACTAMENTE en el catálogo de PDA entregado, y SOLO los que pertenezcan al mismo contenidoId de ese item.
-- Nunca inventes un contenido o PDA y lo presentes como si fuera oficial/SEP.
-- tipoDecision="sin_ajuste": usa el contenido oficial TAL CUAL, sin reescribirlo. curriculoContenidoId obligatorio. No escribas textoContextualizado ni textoLocal (déjalos null).
-- tipoDecision="contextualizado": el contenido sigue siendo el mismo oficial (curriculoContenidoId obligatorio, del catálogo), pero redactas tu propia versión adaptada al contexto real en textoContextualizado (obligatorio, no vacío). No uses textoLocal (null).
-- tipoDecision="nuevo": SOLO cuando el contexto real (interno o explícito del docente) justifique claramente un contenido local/regional que NO está en el catálogo oficial. curriculoContenidoId debe ser null. Redacta el contenido en textoLocal (obligatorio, no vacío) y puedes proponer resultadoEsperadoLocal — esto NUNCA se llama ni se presenta como PDA oficial, es tu propia propuesta pedagógica local. Un item "nuevo" NUNCA lleva curriculoPdaGradoIds (arreglo vacío obligatorio).
-- periodoEvaluacionId: solo un id EXACTO de la lista de periodos entregada, o null si no corresponde o la lista está vacía. Nunca inventes un id.
-- orden: numera los items secuencialmente empezando en 1, sin repetir ningún número.
-- contextoNotas: sintetiza en un párrafo breve el contexto real y confirmado (interno + explícito del docente) que usaste para tus decisiones. Nunca incluyas razonamiento interno, nunca inventes datos que no se te dieron, nunca repitas este prompt. Usa null si no hay nada factual que sintetizar.
-- No tienes que usar todos los contenidos del catálogo — selecciona los pedagógicamente pertinentes para este grupo real ahora. No satures la propuesta con contenidos "nuevos" sin justificación real en el contexto entregado.
-- Responde ÚNICAMENTE con un JSON válido (sin explicación, sin markdown, sin backticks), exactamente con esta forma:
+- curriculoContenidoId debe ser EXACTAMENTE uno del catálogo entregado. Nunca inventes uno.
+- curriculoPdaGradoIdsSeleccionados (si lo usas) debe contener EXCLUSIVAMENTE ids del catálogo de PDA que pertenezcan a ESE mismo contenidoId. Nunca inventes uno, nunca mezcles PDA de otro contenido.
+- Como máximo 1 decisión por curriculoContenidoId — nunca dupliques.
+- No propongas ajustes sin relación real con el contexto entregado.
+- contextoPedagogico (opcional): un párrafo BREVE y factual que sintetice el contexto pedagógico explícito que usaste. Nunca inventes datos, nunca incluyas razonamiento interno, nunca repitas este prompt. Usa null si no hay nada que agregar más allá de lo ya confirmado.
+- Responde ÚNICAMENTE con JSON válido (sin explicación, sin markdown, sin backticks), exactamente con esta forma:
 {
-  "contextoNotas": "..." o null,
-  "items": [
-    {
-      "claveLocal": "item-1",
-      "tipoDecision": "sin_ajuste" | "contextualizado" | "nuevo",
-      "curriculoContenidoId": "..." o null,
-      "textoContextualizado": "..." o null,
-      "textoLocal": "..." o null,
-      "resultadoEsperadoLocal": "..." o null,
-      "periodoEvaluacionId": "..." o null,
-      "orden": 1,
-      "curriculoPdaGradoIds": ["..."]
-    }
+  "contextoPedagogico": "..." o null,
+  "decisiones": [
+    { "decision": "excluir", "curriculoContenidoId": "..." },
+    { "decision": "contextualizar", "curriculoContenidoId": "...", "textoContextualizado": "...", "curriculoPdaGradoIdsSeleccionados": ["..."] },
+    { "decision": "nuevo", "textoLocal": "...", "resultadoEsperadoLocal": "..." }
   ]
-}`
+}
+Si no tienes ningún ajuste que proponer, responde { "contextoPedagogico": "...", "decisiones": [] }.`
 
 // ============================================================
-// Parseo/incorporación puros — separados de la llamada IA para poder
-// testear sin credenciales (ver scripts/verificar-generador-programa-analitico.ts).
+// Parseo puro de la respuesta IA — sin I/O, testeable sin credenciales.
 // ============================================================
 
-type ItemCrudoIa = {
-  claveLocal?: unknown
-  tipoDecision?: unknown
+type DecisionCrudaIa = {
+  decision?: unknown
   curriculoContenidoId?: unknown
   textoContextualizado?: unknown
+  curriculoPdaGradoIdsSeleccionados?: unknown
   textoLocal?: unknown
   resultadoEsperadoLocal?: unknown
-  periodoEvaluacionId?: unknown
-  orden?: unknown
-  curriculoPdaGradoIds?: unknown
 }
 
-const TIPOS_DECISION_VALIDOS: TipoDecisionItem[] = ['sin_ajuste', 'contextualizado', 'nuevo']
-
-// Extrae ÚNICAMENTE las claves esperadas del JSON de la IA — cualquier
-// otra clave que el modelo pudiera alucinar (p.ej. grupoId,
-// curriculoVersionId) nunca se lee, nunca se propaga (mismo principio
-// que public.importar_alumnos_a_grupo, ver PA-3A).
-export function incorporarPropuestaIa(
-  grupoId: string,
+// Extrae ÚNICAMENTE las claves esperadas — cualquier otra clave que la
+// IA pudiera alucinar (p.ej. grupoId, curriculoVersionId) nunca se lee
+// (mismo principio que public.importar_alumnos_a_grupo, ver PA-3A).
+export function incorporarDeltasIa(
   jsonCrudo: unknown
-): { ok: true; items: ItemPropuestaProgramaAnalitico[]; contextoNotas: string | null } | { ok: false } {
+): { ok: true; decisiones: DecisionDeltaIa[]; contextoPedagogico: string | null } | { ok: false } {
   if (typeof jsonCrudo !== 'object' || jsonCrudo === null) return { ok: false }
   const obj = jsonCrudo as Record<string, unknown>
-  if (!Array.isArray(obj.items)) return { ok: false }
+  if (!Array.isArray(obj.decisiones)) return { ok: false }
 
-  const contextoNotas = typeof obj.contextoNotas === 'string' ? obj.contextoNotas : null
+  const contextoPedagogico = typeof obj.contextoPedagogico === 'string' ? obj.contextoPedagogico : null
 
-  const items: ItemPropuestaProgramaAnalitico[] = []
-  for (const crudo of obj.items as ItemCrudoIa[]) {
+  const decisiones: DecisionDeltaIa[] = []
+  for (const crudo of obj.decisiones as DecisionCrudaIa[]) {
     if (typeof crudo !== 'object' || crudo === null) return { ok: false }
-    const tipoDecision = crudo.tipoDecision
-    if (typeof tipoDecision !== 'string' || !TIPOS_DECISION_VALIDOS.includes(tipoDecision as TipoDecisionItem)) return { ok: false }
-    if (typeof crudo.claveLocal !== 'string' || !Array.isArray(crudo.curriculoPdaGradoIds)) return { ok: false }
-    if (!crudo.curriculoPdaGradoIds.every((v) => typeof v === 'string')) return { ok: false }
-    if (typeof crudo.orden !== 'number') return { ok: false }
-
-    items.push({
-      claveLocal: crudo.claveLocal,
-      tipoDecision: tipoDecision as TipoDecisionItem,
-      curriculoContenidoId: typeof crudo.curriculoContenidoId === 'string' ? crudo.curriculoContenidoId : null,
-      textoContextualizado: typeof crudo.textoContextualizado === 'string' ? crudo.textoContextualizado : null,
-      textoLocal: typeof crudo.textoLocal === 'string' ? crudo.textoLocal : null,
-      resultadoEsperadoLocal: typeof crudo.resultadoEsperadoLocal === 'string' ? crudo.resultadoEsperadoLocal : null,
-      periodoEvaluacionId: typeof crudo.periodoEvaluacionId === 'string' ? crudo.periodoEvaluacionId : null,
-      orden: crudo.orden,
-      curriculoPdaGradoIds: crudo.curriculoPdaGradoIds as string[],
-    })
+    if (crudo.decision === 'excluir') {
+      if (typeof crudo.curriculoContenidoId !== 'string') return { ok: false }
+      decisiones.push({ decision: 'excluir', curriculoContenidoId: crudo.curriculoContenidoId })
+    } else if (crudo.decision === 'contextualizar') {
+      if (typeof crudo.curriculoContenidoId !== 'string' || typeof crudo.textoContextualizado !== 'string') return { ok: false }
+      const seleccion = crudo.curriculoPdaGradoIdsSeleccionados
+      if (seleccion !== undefined && (!Array.isArray(seleccion) || !seleccion.every((v) => typeof v === 'string'))) return { ok: false }
+      decisiones.push({
+        decision: 'contextualizar',
+        curriculoContenidoId: crudo.curriculoContenidoId,
+        textoContextualizado: crudo.textoContextualizado,
+        curriculoPdaGradoIdsSeleccionados: Array.isArray(seleccion) ? (seleccion as string[]) : undefined,
+      })
+    } else if (crudo.decision === 'nuevo') {
+      if (typeof crudo.textoLocal !== 'string') return { ok: false }
+      decisiones.push({
+        decision: 'nuevo',
+        textoLocal: crudo.textoLocal,
+        resultadoEsperadoLocal: typeof crudo.resultadoEsperadoLocal === 'string' ? crudo.resultadoEsperadoLocal : null,
+      })
+    } else {
+      return { ok: false }
+    }
   }
 
-  return { ok: true, items, contextoNotas }
+  return { ok: true, decisiones, contextoPedagogico }
+}
+
+function construirContextoNotasBase(interno: ContextoInternoGrupo, contextoDocente: string | null | undefined): string {
+  const partes = [
+    `Grupo de ${interno.gradoGrupo}.° grado de ${interno.nivelEducativo} en ${interno.institucionNombre ?? 'la institución registrada'}, con ${interno.totalAlumnosActivos} alumnos activos.`,
+  ]
+  if (contextoDocente && contextoDocente.trim() !== '') {
+    partes.push(`Contexto proporcionado por el docente: "${contextoDocente.trim()}"`)
+  }
+  return partes.join(' ')
 }
 
 export type GenerarPropuestaInput = {
   grupoId: string
   // Texto libre proporcionado explícitamente por el docente — nunca
-  // obligatorio (ver informe PA-3B §6/§7). Este mismo contrato se
-  // reutilizará desde el Chat en una fase futura, todavía no conectada.
+  // obligatorio. Este mismo contrato se reutilizará desde el Chat en
+  // una fase futura, todavía no conectada.
   contextoDocente?: string | null
 }
 
@@ -213,6 +347,13 @@ export async function generarPropuestaProgramaAnalitico(
 
   const interno = await recopilarContextoInternoGrupo(sb, input.grupoId, contexto)
 
+  const evaluacionContexto = evaluarRequiereContexto(input.contextoDocente, interno)
+  if (evaluacionContexto.requiereContexto) {
+    return { ok: false, requiereContexto: true, categorias: evaluacionContexto.categorias }
+  }
+
+  const base = construirBaseProgramaAnalitico(catalogo)
+
   const periodosCatalogo: CatalogoPeriodo[] = interno.periodosDisponibles.map((p) => ({ id: p.id, cicloEscolarId: contexto.cicloEscolarId }))
   const nombresPeriodoPorId = new Map(interno.periodosDisponibles.map((p) => [p.id, p.nombre]))
 
@@ -225,32 +366,25 @@ export async function generarPropuestaProgramaAnalitico(
     '',
     input.contextoDocente && input.contextoDocente.trim() !== ''
       ? `CONTEXTO EXPLÍCITO PROPORCIONADO POR EL DOCENTE:\n"${escaparComillas(input.contextoDocente.trim())}"`
-      : 'CONTEXTO EXPLÍCITO PROPORCIONADO POR EL DOCENTE: (el docente no proporcionó contexto adicional para esta versión)',
+      : 'CONTEXTO EXPLÍCITO PROPORCIONADO POR EL DOCENTE: (ninguno; hay necesidades de apoyo confirmadas que sí justifican evaluar ajustes)',
     '',
-    INSTRUCCIONES,
+    INSTRUCCIONES_DELTAS,
   ].join('\n')
 
   let respuesta: Anthropic.Messages.Message
   try {
-    // Una llamada sin streaming con max_tokens alto y un prompt grande
-    // (currículo completo de un grado) supera el timeout del SDK
-    // incluso ampliándolo explícitamente — confirmado empíricamente
-    // ("Request timed out.") en dos intentos reales de PA-3B contra el
-    // grupo 4°B real. Se usa el helper de streaming del SDK para
-    // transportar la respuesta (recomendación oficial de Anthropic
-    // para generaciones largas) pero se espera el mensaje completo
-    // antes de continuar — sigue siendo 1 sola llamada IA, el
-    // contrato de esta función (devolver el resultado completo, nunca
-    // eventos parciales) no cambia.
+    // Streaming interno por robustez (mismo hallazgo de PA-3B: una
+    // llamada sin streaming con prompt grande puede exceder el
+    // timeout del SDK) — el contrato externo sigue siendo 1 resultado
+    // completo, nunca eventos parciales expuestos al llamador.
     respuesta = await anthropic.messages
       .stream({
         model: MODELO,
-        // 16000 resultó insuficiente en la prueba real de PA-3B: con
-        // el currículo completo de 4° (85 contenidos candidatos) el
-        // modelo generó una propuesta extensa (decidió usar casi todos
-        // los contenidos) y la respuesta se cortó a medias
-        // (stop_reason="max_tokens", confirmado empíricamente).
-        max_tokens: 32000,
+        // La salida ahora son solo deltas (excluir/contextualizar/
+        // nuevo), nunca el snapshot completo — 8000 es holgado para
+        // decenas de decisiones con texto, muy por debajo de los
+        // 32000 que PA-3B necesitaba para reproducir 84 items enteros.
+        max_tokens: 8000,
         messages: [{ role: 'user', content: mensajeContexto }],
       })
       .finalMessage()
@@ -258,12 +392,8 @@ export async function generarPropuestaProgramaAnalitico(
     return { ok: false, error: { tipo: 'ERROR_GENERACION', mensaje: e instanceof Error ? e.message : 'Error desconocido al generar la propuesta.' } }
   }
 
-  // Diagnóstico explícito en vez de dejar que un JSON incompleto caiga
-  // en el genérico "JSON_INVALIDO" — confirmado empíricamente en la
-  // prueba real de PA-3B (stop_reason="max_tokens" con 85 contenidos
-  // candidatos) que esto sí puede ocurrir en la práctica.
   if (respuesta.stop_reason === 'max_tokens') {
-    return { ok: false, error: { tipo: 'ERROR_GENERACION', mensaje: 'La respuesta se truncó por límite de max_tokens antes de completar el JSON.' } }
+    return { ok: false, error: { tipo: 'ERROR_GENERACION', mensaje: 'La respuesta se truncó por límite de max_tokens antes de completar el JSON de deltas.' } }
   }
 
   const bloqueTexto = respuesta.content.find((b) => b.type === 'text')
@@ -276,20 +406,27 @@ export async function generarPropuestaProgramaAnalitico(
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: { tipo: 'JSON_INVALIDO' } } }
   }
 
-  const incorporado = incorporarPropuestaIa(input.grupoId, parseado)
+  const incorporado = incorporarDeltasIa(parseado)
   if (!incorporado.ok) {
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: { tipo: 'FORMA_INESPERADA' } } }
   }
 
+  const combinado = aplicarDeltasSobreBase(base, incorporado.decisiones)
+  if (!combinado.ok) {
+    return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: combinado.error } }
+  }
+
+  const contextoNotas = [construirContextoNotasBase(interno, input.contextoDocente), incorporado.contextoPedagogico]
+    .filter((p): p is string => !!p && p.trim() !== '')
+    .join(' ')
+
   // grupoId se incorpora AQUÍ, server-side — el JSON de la IA nunca lo
-  // trae porque nunca se le pidió (ver INSTRUCCIONES: el formato
-  // esperado no incluye grupoId/curriculoVersionId/fase/grado/docente/
-  // institución en ningún punto).
+  // trae porque nunca se le pidió.
   const propuesta: PropuestaProgramaAnalitico = {
     grupoId: input.grupoId,
     idempotencyKey: requestId,
-    contextoNotas: incorporado.contextoNotas,
-    items: incorporado.items,
+    contextoNotas,
+    items: combinado.items,
   }
 
   const erroresEstructura = validarEstructuraPropuesta(propuesta)

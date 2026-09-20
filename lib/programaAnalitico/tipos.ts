@@ -91,6 +91,21 @@ export type DiagnosticoPropuestaIaInvalida =
   | ErrorValidacionPropuesta
   | { tipo: 'JSON_INVALIDO' }
   | { tipo: 'FORMA_INESPERADA' }
+  | { tipo: 'DELTA_CONTENIDO_DUPLICADO'; curriculoContenidoId: string }
+  | { tipo: 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE'; curriculoContenidoId: string }
+
+// PA-3B1 — categorías concretas de contexto pedagógico que, de existir,
+// permitirían codiseño real (contextualizar/agregar contenido nuevo)
+// en vez de publicar la base oficial tal cual. Reportadas TODAS juntas
+// cuando se dispara requiereContexto (no hay forma de distinguir cuál
+// en particular falta cuando ninguna está presente).
+export type CategoriaContextoPedagogico =
+  | 'CARACTERISTICAS_GRUPO'
+  | 'NECESIDADES_PRIORIDADES'
+  | 'PROBLEMATICA_COMUNIDAD'
+  | 'INTERESES'
+  | 'RECURSOS'
+  | 'PRIORIDADES_PEDAGOGICAS'
 
 export type ObservabilidadGeneracion = {
   requestId: string
@@ -107,6 +122,7 @@ export type ObservabilidadGeneracion = {
 
 export type ResultadoGenerarPropuesta =
   | { ok: true; propuesta: PropuestaProgramaAnalitico; observabilidad: ObservabilidadGeneracion }
+  | { ok: false; requiereContexto: true; categorias: CategoriaContextoPedagogico[] }
   | { ok: false; requiereInformacion: true; faltantes: FaltanteInformacionGeneracion[] }
   | { ok: false; error: { tipo: 'CONTEXTO_CURRICULAR_NO_RESUELTO'; detalle: string } }
   | { ok: false; error: { tipo: 'PROPUESTA_IA_INVALIDA'; diagnostico: DiagnosticoPropuestaIaInvalida } }
