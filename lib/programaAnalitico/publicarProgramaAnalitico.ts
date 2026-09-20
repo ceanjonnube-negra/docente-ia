@@ -30,6 +30,7 @@ import type {
   PropuestaProgramaAnalitico,
   ResultadoPublicarProgramaAnalitico,
 } from './tipos'
+import { validarReferenciasPropuesta, type CatalogoContenido, type CatalogoPdaGrado, type CatalogoPeriodo } from './validacionReferencial'
 
 // ============================================================
 // Validación pura de estructura — sin I/O, testeable con propuestas
@@ -118,78 +119,49 @@ export async function publicarProgramaAnalitico(
   const contexto = resultadoContexto.contexto
   const camposCubiertosIds = new Set(contexto.camposConCobertura.map((c) => c.id))
 
-  // --- Validar contenidos oficiales referenciados (sin_ajuste/contextualizado) ---
   const idsContenido = [...new Set(propuesta.items.map((i) => i.curriculoContenidoId).filter((id): id is string => !!id))]
-  const contenidoPorId = new Map<string, { id: string; campo_formativo_id: string; curriculo_version_id: string }>()
+  const contenidoPorId = new Map<string, CatalogoContenido>()
   if (idsContenido.length > 0) {
     const { data: contenidos } = await sb
       .from('curriculo_contenido')
       .select('id, campo_formativo_id, curriculo_version_id')
       .in('id', idsContenido)
     for (const c of contenidos ?? []) {
-      contenidoPorId.set(c.id as string, c as { id: string; campo_formativo_id: string; curriculo_version_id: string })
+      contenidoPorId.set(c.id as string, { id: c.id as string, campoFormativoId: c.campo_formativo_id as string, curriculoVersionId: c.curriculo_version_id as string })
     }
   }
 
-  for (const item of propuesta.items) {
-    if (!item.curriculoContenidoId) continue
-    const contenido = contenidoPorId.get(item.curriculoContenidoId)
-    if (!contenido || contenido.curriculo_version_id !== contexto.curriculoVersionId) {
-      return { ok: false, error: { tipo: 'CONTENIDO_NO_PERTENECE_AL_CONTEXTO', claveLocal: item.claveLocal } }
-    }
-    // Revalidación puntual del campo concreto — resolverContextoCurricularGrupo
-    // ya exigió cobertura completa (todos los campos de la versión),
-    // pero se revalida aquí explícitamente por si un futuro cambio de
-    // esa función relajara esa garantía global.
-    if (!camposCubiertosIds.has(contenido.campo_formativo_id)) {
-      return { ok: false, error: { tipo: 'CONTENIDO_SIN_COBERTURA', claveLocal: item.claveLocal } }
-    }
-  }
-
-  // --- Validar PDA ---
   const idsPdaGrado = [...new Set(propuesta.items.flatMap((i) => i.curriculoPdaGradoIds))]
-  const pdaGradoPorId = new Map<string, { id: string; contenido_id: string; curriculo_grado_id: string; curriculo_version_id: string }>()
+  const pdaGradoPorId = new Map<string, CatalogoPdaGrado>()
   if (idsPdaGrado.length > 0) {
     const { data: pdaGrados } = await sb
       .from('curriculo_pda_grado')
       .select('id, contenido_id, curriculo_grado_id, curriculo_version_id')
       .in('id', idsPdaGrado)
     for (const p of pdaGrados ?? []) {
-      pdaGradoPorId.set(p.id as string, p as { id: string; contenido_id: string; curriculo_grado_id: string; curriculo_version_id: string })
+      pdaGradoPorId.set(p.id as string, { id: p.id as string, contenidoId: p.contenido_id as string, curriculoGradoId: p.curriculo_grado_id as string, curriculoVersionId: p.curriculo_version_id as string })
     }
   }
 
-  for (const item of propuesta.items) {
-    for (const pdaGradoId of item.curriculoPdaGradoIds) {
-      const pdaGrado = pdaGradoPorId.get(pdaGradoId)
-      if (!pdaGrado) return { ok: false, error: { tipo: 'PDA_NO_ENCONTRADO', claveLocal: item.claveLocal, curriculoPdaGradoId: pdaGradoId } }
-      const perteneceAlItem =
-        pdaGrado.contenido_id === item.curriculoContenidoId &&
-        pdaGrado.curriculo_grado_id === contexto.curriculoGradoId &&
-        pdaGrado.curriculo_version_id === contexto.curriculoVersionId
-      if (!perteneceAlItem) {
-        return { ok: false, error: { tipo: 'PDA_NO_PERTENECE_AL_ITEM', claveLocal: item.claveLocal, curriculoPdaGradoId: pdaGradoId } }
-      }
-    }
-  }
-
-  // --- Validar periodo (mismo ciclo del grupo; "mismo docente" ya lo
-  //     garantiza RLS de periodos_evaluacion sobre esta misma query). ---
+  // "mismo docente" del periodo ya lo garantiza RLS de periodos_evaluacion
+  // sobre esta misma query.
   const idsPeriodo = [...new Set(propuesta.items.map((i) => i.periodoEvaluacionId).filter((id): id is string => !!id))]
-  const periodoPorId = new Map<string, { id: string; ciclo_escolar_id: string }>()
+  const periodoPorId = new Map<string, CatalogoPeriodo>()
   if (idsPeriodo.length > 0) {
     const { data: periodos } = await sb.from('periodos_evaluacion').select('id, ciclo_escolar_id').in('id', idsPeriodo)
-    for (const p of periodos ?? []) periodoPorId.set(p.id as string, p as { id: string; ciclo_escolar_id: string })
+    for (const p of periodos ?? []) periodoPorId.set(p.id as string, { id: p.id as string, cicloEscolarId: p.ciclo_escolar_id as string })
   }
 
-  for (const item of propuesta.items) {
-    if (!item.periodoEvaluacionId) continue
-    const periodo = periodoPorId.get(item.periodoEvaluacionId)
-    if (!periodo) return { ok: false, error: { tipo: 'PERIODO_NO_ENCONTRADO', claveLocal: item.claveLocal, periodoEvaluacionId: item.periodoEvaluacionId } }
-    if (periodo.ciclo_escolar_id !== contexto.cicloEscolarId) {
-      return { ok: false, error: { tipo: 'PERIODO_DE_OTRO_CICLO', claveLocal: item.claveLocal, periodoEvaluacionId: item.periodoEvaluacionId } }
-    }
-  }
+  const errorReferencial = validarReferenciasPropuesta(propuesta.items, {
+    curriculoVersionId: contexto.curriculoVersionId,
+    curriculoGradoId: contexto.curriculoGradoId,
+    cicloEscolarId: contexto.cicloEscolarId,
+    camposCubiertosIds,
+    contenidoPorId,
+    pdaGradoPorId,
+    periodoPorId,
+  })
+  if (errorReferencial) return { ok: false, error: errorReferencial }
 
   // --- Todo válido: publicación atómica real vía RPC. ---
   const { data, error } = await sb.rpc('programa_analitico_publicar', {

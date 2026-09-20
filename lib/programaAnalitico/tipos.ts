@@ -75,3 +75,39 @@ export type ResultadoPublicacion = {
 export type ResultadoPublicarProgramaAnalitico =
   | { ok: true; resultado: ResultadoPublicacion }
   | { ok: false; error: ErrorValidacionPropuesta | { tipo: 'CONTEXTO_CURRICULAR_NO_RESUELTO'; detalle: string } | { tipo: 'ERROR_PUBLICACION'; mensaje: string } }
+
+// ============================================================
+// PA-3B — generador de propuesta (no publica).
+// ============================================================
+
+// Único caso real hoy: el catálogo curricular cerrado quedó vacío
+// (no debería ocurrir si resolverContextoCurricularGrupo ya validó
+// cobertura, pero se cubre por si acaso). Deliberadamente NO incluye
+// nada relacionado a diagnóstico/contexto comunitario — esos son
+// siempre opcionales, nunca bloquean la generación (ver informe PA-3B §7).
+export type FaltanteInformacionGeneracion = 'CATALOGO_CURRICULAR_VACIO'
+
+export type DiagnosticoPropuestaIaInvalida =
+  | ErrorValidacionPropuesta
+  | { tipo: 'JSON_INVALIDO' }
+  | { tipo: 'FORMA_INESPERADA' }
+
+export type ObservabilidadGeneracion = {
+  requestId: string
+  grupoId: string
+  modelo: string
+  cantidadCandidatosContenido: number
+  cantidadCandidatosPda: number
+  cantidadItemsPropuestos: number
+  duracionMs: number
+  tokensEntrada?: number
+  tokensSalida?: number
+  exito: boolean
+}
+
+export type ResultadoGenerarPropuesta =
+  | { ok: true; propuesta: PropuestaProgramaAnalitico; observabilidad: ObservabilidadGeneracion }
+  | { ok: false; requiereInformacion: true; faltantes: FaltanteInformacionGeneracion[] }
+  | { ok: false; error: { tipo: 'CONTEXTO_CURRICULAR_NO_RESUELTO'; detalle: string } }
+  | { ok: false; error: { tipo: 'PROPUESTA_IA_INVALIDA'; diagnostico: DiagnosticoPropuestaIaInvalida } }
+  | { ok: false; error: { tipo: 'ERROR_GENERACION'; mensaje: string } }
