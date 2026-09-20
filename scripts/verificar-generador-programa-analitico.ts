@@ -11,12 +11,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { recuperarCatalogoCurricularCerrado } from '../lib/programaAnalitico/candidatosCurriculares'
 import {
-  aplicarDeltasSobreBase,
   construirBaseProgramaAnalitico,
   evaluarRequiereContexto,
   incorporarDeltasIa,
-  type DecisionDeltaIa,
 } from '../lib/programaAnalitico/generarPropuestaProgramaAnalitico'
+import { aplicarDeltasSobreBase, type DeltaBorrador } from '../lib/programaAnalitico/borradorProgramaAnalitico'
 import { validarEstructuraPropuesta } from '../lib/programaAnalitico/publicarProgramaAnalitico'
 import { validarReferenciasPropuesta, type CatalogoContenido, type CatalogoPdaGrado, type CatalogoPeriodo } from '../lib/programaAnalitico/validacionReferencial'
 import type { ContextoCurricularGrupo } from '../lib/curriculo/resolverContextoCurricularGrupo'
@@ -157,7 +156,7 @@ async function main() {
 
   // --- 3. delta contextualizado válido ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'Adaptado al contexto real.' }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'Adaptado al contexto real.' }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     verificar(r.ok === true, '3. delta contextualizado válido se aplica')
     if (r.ok) {
@@ -169,14 +168,14 @@ async function main() {
 
   // --- 4. delta con contenido inventado → rechazo ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'contextualizar', curriculoContenidoId: 'contenido-inventado', textoContextualizado: 'x' }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'contextualizar', curriculoContenidoId: 'contenido-inventado', textoContextualizado: 'x' }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     verificar(!r.ok && r.error.tipo === 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE', '4. contenido inventado por la IA → DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE')
   }
 
   // --- 5. delta con PDA incompatible → rechazo (validación referencial final) ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'x', curriculoPdaGradoIdsSeleccionados: ['pdagrado-de-otro-contenido'] }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'x', curriculoPdaGradoIdsSeleccionados: ['pdagrado-de-otro-contenido'] }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     verificar(r.ok === true, '5. aplicarDeltasSobreBase no valida pertenencia (responsabilidad de validarReferenciasPropuesta)')
     if (r.ok) {
@@ -199,7 +198,7 @@ async function main() {
 
   // --- 6. delta nuevo válido ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'nuevo', textoLocal: 'Contenido local de la región.', resultadoEsperadoLocal: 'Logra X.' }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'nuevo', claveLocal: 'clave-nuevo-test6', textoLocal: 'Contenido local de la región.', resultadoEsperadoLocal: 'Logra X.' }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     verificar(r.ok === true, '6. delta nuevo válido se aplica')
     if (r.ok) {
@@ -220,10 +219,10 @@ async function main() {
 
   // --- 8. combinación base+deltas → propuesta PA-3A válida completa ---
   {
-    const decisiones: DecisionDeltaIa[] = [
+    const decisiones: DeltaBorrador[] = [
       { decision: 'excluir', curriculoContenidoId: CONTENIDO_B },
       { decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'Adaptado.' },
-      { decision: 'nuevo', textoLocal: 'Local.', resultadoEsperadoLocal: null },
+      { decision: 'nuevo', claveLocal: 'clave-nuevo-test8', textoLocal: 'Local.', resultadoEsperadoLocal: null },
     ]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     verificar(r.ok === true, '8. combinación se aplica sin error')
@@ -237,7 +236,7 @@ async function main() {
 
   // --- 9. contenido no modificado conserva sin_ajuste ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'x' }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'x' }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     if (r.ok) {
       const itemB = r.items.find((i) => i.curriculoContenidoId === CONTENIDO_B)!
@@ -247,7 +246,7 @@ async function main() {
 
   // --- 10. no duplicar items (dos decisiones sobre el mismo contenido → rechazo) ---
   {
-    const decisiones: DecisionDeltaIa[] = [
+    const decisiones: DeltaBorrador[] = [
       { decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'x' },
       { decision: 'excluir', curriculoContenidoId: CONTENIDO_A },
     ]
@@ -257,7 +256,7 @@ async function main() {
 
   // --- 11. orden final determinista ---
   {
-    const decisiones: DecisionDeltaIa[] = [{ decision: 'nuevo', textoLocal: 'a', resultadoEsperadoLocal: null }, { decision: 'nuevo', textoLocal: 'b', resultadoEsperadoLocal: null }]
+    const decisiones: DeltaBorrador[] = [{ decision: 'nuevo', claveLocal: 'clave-a', textoLocal: 'a', resultadoEsperadoLocal: null }, { decision: 'nuevo', claveLocal: 'clave-b', textoLocal: 'b', resultadoEsperadoLocal: null }]
     const r = aplicarDeltasSobreBase(base2, decisiones)
     if (r.ok) {
       const ordenes = r.items.map((i) => i.orden).sort((a, b) => a - b)

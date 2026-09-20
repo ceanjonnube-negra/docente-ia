@@ -35,6 +35,7 @@ import { recuperarCatalogoCurricularCerrado, type CatalogoCurricularCerrado } fr
 import { recopilarContextoInternoGrupo, type ContextoInternoGrupo } from './contextoInterno'
 import { validarEstructuraPropuesta } from './publicarProgramaAnalitico'
 import { validarReferenciasPropuesta, type CatalogoContenido, type CatalogoPdaGrado, type CatalogoPeriodo } from './validacionReferencial'
+import { aplicarDeltasSobreBase, contextoDocenteEsSuficiente, normalizarDecisionesIa, type DecisionDeltaIa } from './borradorProgramaAnalitico'
 import type { CategoriaContextoPedagogico, ItemPropuestaProgramaAnalitico, PropuestaProgramaAnalitico, ResultadoGenerarPropuesta } from './tipos'
 
 const MODELO = 'claude-sonnet-4-6'
@@ -72,13 +73,19 @@ export function construirBaseProgramaAnalitico(catalogo: CatalogoCurricularCerra
 }
 
 // ============================================================
-// Regla exacta de requiereContexto (PA-3B1 §3/§4/§5): sin NINGÚN
-// contexto pedagógico real accionable (ni explícito del docente ni
-// necesidades de apoyo confirmadas), publicar la base oficial completa
-// tal cual sería una decisión no fundamentada tomada por código, no
-// codiseño real — se detiene ANTES de gastar ninguna llamada IA.
-// Calendario/periodos no cuentan: son datos operativos, no contexto
-// de codiseño pedagógico.
+// Regla exacta de requiereContexto (PA-3B1 §3/§4/§5, refinada en
+// PA-4B §2/§3): sin NINGÚN contexto pedagógico real accionable (ni
+// explícito del docente ni necesidades de apoyo confirmadas), publicar
+// la base oficial completa tal cual sería una decisión no fundamentada
+// tomada por código, no codiseño real — se detiene ANTES de gastar
+// ninguna llamada IA. Calendario/periodos no cuentan: son datos
+// operativos, no contexto de codiseño pedagógico. "Suficiente" ya no
+// es solo "no vacío" — reutiliza contextoDocenteEsSuficiente
+// (borradorProgramaAnalitico.ts) para filtrar respuestas triviales
+// ("ok", "hazlo", "4°B") sin necesitar otra llamada IA; una decisión
+// explícita larga del docente de "no ajustar nada" sigue contando
+// como contexto suficiente — nunca se infiere esa decisión por su
+// ausencia.
 // ============================================================
 
 const TODAS_LAS_CATEGORIAS: CategoriaContextoPedagogico[] = [
@@ -94,84 +101,10 @@ export function evaluarRequiereContexto(
   contextoDocente: string | null | undefined,
   interno: ContextoInternoGrupo
 ): { requiereContexto: true; categorias: CategoriaContextoPedagogico[] } | { requiereContexto: false } {
-  const hayContextoDocente = !!contextoDocente && contextoDocente.trim() !== ''
+  const hayContextoDocente = contextoDocenteEsSuficiente(contextoDocente)
   const hayNecesidadesConfirmadas = interno.necesidadesApoyo.length > 0
   if (hayContextoDocente || hayNecesidadesConfirmadas) return { requiereContexto: false }
   return { requiereContexto: true, categorias: TODAS_LAS_CATEGORIAS }
-}
-
-// ============================================================
-// 2. Deltas IA — tipos + combinación server-side (PA-3B1 §6/§7).
-// ============================================================
-
-export type DecisionDeltaIa =
-  | { decision: 'excluir'; curriculoContenidoId: string }
-  | { decision: 'contextualizar'; curriculoContenidoId: string; textoContextualizado: string; curriculoPdaGradoIdsSeleccionados?: string[] }
-  | { decision: 'nuevo'; textoLocal: string; resultadoEsperadoLocal?: string | null }
-
-export type ErrorAplicarDeltas =
-  | { tipo: 'DELTA_CONTENIDO_DUPLICADO'; curriculoContenidoId: string }
-  | { tipo: 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE'; curriculoContenidoId: string }
-
-// Combina la base determinista con los deltas de la IA. Cada
-// curriculoContenidoId admite como máximo 1 decisión (excluir o
-// contextualizar) — nunca se duplica un contenido en la propuesta
-// final. Un contenido sin ninguna decisión conserva exactamente su
-// forma de la base (sin_ajuste, todos sus PDA oficiales). "nuevo" no
-// tiene contenido oficial asociado, así que nunca puede chocar con la
-// base ni con otro "nuevo". orden se renumera 1..N de forma
-// determinista sobre el resultado final (primero los contenidos de la
-// base en su orden original, salvo excluidos; luego los nuevos, en el
-// orden en que la IA los propuso).
-export function aplicarDeltasSobreBase(
-  base: ItemPropuestaProgramaAnalitico[],
-  decisiones: DecisionDeltaIa[]
-): { ok: true; items: ItemPropuestaProgramaAnalitico[] } | { ok: false; error: ErrorAplicarDeltas } {
-  const resultadoPorContenido = new Map(base.map((item) => [item.curriculoContenidoId as string, item]))
-  const contenidosProcesados = new Set<string>()
-  const nuevos: ItemPropuestaProgramaAnalitico[] = []
-
-  for (const d of decisiones) {
-    if (d.decision === 'nuevo') {
-      nuevos.push({
-        claveLocal: `nuevo:${nuevos.length}`,
-        tipoDecision: 'nuevo',
-        curriculoContenidoId: null,
-        textoContextualizado: null,
-        textoLocal: d.textoLocal,
-        resultadoEsperadoLocal: d.resultadoEsperadoLocal ?? null,
-        periodoEvaluacionId: null,
-        orden: 0,
-        curriculoPdaGradoIds: [],
-      })
-      continue
-    }
-
-    if (contenidosProcesados.has(d.curriculoContenidoId)) {
-      return { ok: false, error: { tipo: 'DELTA_CONTENIDO_DUPLICADO', curriculoContenidoId: d.curriculoContenidoId } }
-    }
-    contenidosProcesados.add(d.curriculoContenidoId)
-
-    const itemBase = resultadoPorContenido.get(d.curriculoContenidoId)
-    if (!itemBase) {
-      return { ok: false, error: { tipo: 'DELTA_CONTENIDO_NO_ENCONTRADO_EN_BASE', curriculoContenidoId: d.curriculoContenidoId } }
-    }
-
-    if (d.decision === 'excluir') {
-      resultadoPorContenido.delete(d.curriculoContenidoId)
-    } else {
-      const pdaSeleccionados = d.curriculoPdaGradoIdsSeleccionados
-      resultadoPorContenido.set(d.curriculoContenidoId, {
-        ...itemBase,
-        tipoDecision: 'contextualizado',
-        textoContextualizado: d.textoContextualizado,
-        curriculoPdaGradoIds: pdaSeleccionados && pdaSeleccionados.length > 0 ? pdaSeleccionados : itemBase.curriculoPdaGradoIds,
-      })
-    }
-  }
-
-  const itemsFinales = [...resultadoPorContenido.values(), ...nuevos].map((item, idx) => ({ ...item, orden: idx + 1 }))
-  return { ok: true, items: itemsFinales }
 }
 
 // ============================================================
@@ -411,7 +344,9 @@ export async function generarPropuestaProgramaAnalitico(
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: { tipo: 'FORMA_INESPERADA' } } }
   }
 
-  const combinado = aplicarDeltasSobreBase(base, incorporado.decisiones)
+  // claveLocal de cada "nuevo" se asigna AQUÍ, server-side, nunca
+  // depende de la posición ni proviene de la IA (PA-4B §8).
+  const combinado = aplicarDeltasSobreBase(base, normalizarDecisionesIa(incorporado.decisiones))
   if (!combinado.ok) {
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: combinado.error } }
   }
