@@ -35,8 +35,31 @@ import { recuperarCatalogoCurricularCerrado, type CatalogoCurricularCerrado } fr
 import { recopilarContextoInternoGrupo, type ContextoInternoGrupo } from './contextoInterno'
 import { validarEstructuraPropuesta } from './publicarProgramaAnalitico'
 import { validarReferenciasPropuesta, type CatalogoContenido, type CatalogoPdaGrado, type CatalogoPeriodo } from './validacionReferencial'
-import { aplicarDeltasSobreBase, contextoDocenteEsSuficiente, normalizarDecisionesIa, type DecisionDeltaIa } from './borradorProgramaAnalitico'
+import {
+  aplicarDeltasSobreBase,
+  contextoDocenteEsSuficiente,
+  normalizarDecisionesIa,
+  type DecisionDeltaIa,
+  type DeltaBorrador,
+  type IdentidadCurricularFijada,
+} from './borradorProgramaAnalitico'
 import type { CategoriaContextoPedagogico, ItemPropuestaProgramaAnalitico, PropuestaProgramaAnalitico, ResultadoGenerarPropuesta } from './tipos'
+
+// PA-4C — superset de ResultadoGenerarPropuesta: en la rama ok:true
+// expone también lo que un orquestador de borrador necesita para
+// persistir sin repetir ninguna consulta ya hecha aquí (identidad
+// curricular fijada, deltas ya normalizados con claveLocal estable, y
+// el catálogo ya recuperado — solo para construir el resumen
+// server-side, nunca se expone tal cual a un futuro cliente). El resto
+// de las ramas (requiereContexto/requiereInformacion/error) quedan
+// exactamente iguales.
+export type ResultadoGenerarPropuestaDetallado =
+  | (Extract<ResultadoGenerarPropuesta, { ok: true }> & {
+      identidadCurricular: IdentidadCurricularFijada
+      deltas: DeltaBorrador[]
+      catalogo: CatalogoCurricularCerrado
+    })
+  | Exclude<ResultadoGenerarPropuesta, { ok: true }>
 
 const MODELO = 'claude-sonnet-4-6'
 
@@ -263,7 +286,7 @@ export async function generarPropuestaProgramaAnalitico(
   sb: SupabaseClient,
   anthropic: Anthropic,
   input: GenerarPropuestaInput
-): Promise<ResultadoGenerarPropuesta> {
+): Promise<ResultadoGenerarPropuestaDetallado> {
   const requestId = randomUUID()
   const inicio = Date.now()
 
@@ -346,7 +369,8 @@ export async function generarPropuestaProgramaAnalitico(
 
   // claveLocal de cada "nuevo" se asigna AQUÍ, server-side, nunca
   // depende de la posición ni proviene de la IA (PA-4B §8).
-  const combinado = aplicarDeltasSobreBase(base, normalizarDecisionesIa(incorporado.decisiones))
+  const deltasNormalizados = normalizarDecisionesIa(incorporado.decisiones)
+  const combinado = aplicarDeltasSobreBase(base, deltasNormalizados)
   if (!combinado.ok) {
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: combinado.error } }
   }
@@ -397,6 +421,9 @@ export async function generarPropuestaProgramaAnalitico(
   return {
     ok: true,
     propuesta,
+    identidadCurricular: { curriculoVersionId: contexto.curriculoVersionId, curriculoFaseId: contexto.curriculoFaseId, curriculoGradoId: contexto.curriculoGradoId },
+    deltas: deltasNormalizados,
+    catalogo,
     observabilidad: {
       requestId,
       grupoId: input.grupoId,

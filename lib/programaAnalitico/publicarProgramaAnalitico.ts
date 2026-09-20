@@ -107,7 +107,13 @@ export function validarEstructuraPropuesta(propuesta: PropuestaProgramaAnalitico
 
 export async function publicarProgramaAnalitico(
   sb: SupabaseClient,
-  propuesta: PropuestaProgramaAnalitico
+  propuesta: PropuestaProgramaAnalitico,
+  // borradorId (PA-4C): si viene, la RPC cierra ese borrador
+  // (estado='publicado' + programa_analitico_version_id) en la MISMA
+  // transacción que la publicación real — nunca un segundo UPDATE
+  // independiente desde aquí, que dejaría una ventana de
+  // inconsistencia si fallara después del commit de la RPC.
+  opciones?: { borradorId?: string }
 ): Promise<ResultadoPublicarProgramaAnalitico> {
   const erroresEstructura = validarEstructuraPropuesta(propuesta)
   if (erroresEstructura.length > 0) return { ok: false, error: erroresEstructura[0] }
@@ -181,6 +187,7 @@ export async function publicarProgramaAnalitico(
       periodoEvaluacionId: item.periodoEvaluacionId ?? null,
       curriculoPdaGradoIds: item.curriculoPdaGradoIds,
     })),
+    p_borrador_id: opciones?.borradorId ?? null,
   })
 
   if (error) return { ok: false, error: { tipo: 'ERROR_PUBLICACION', mensaje: error.message } }
