@@ -41,6 +41,7 @@ export type ClasificacionNivel0 = {
     | 'actualizar_perfil_docente'
     | 'registrar_incidencia'
     | 'actualizar_lista_oficial'
+    | 'programa_analitico'
     | 'conversacion_general'
     | 'intencion_no_reconocida';
   nivel_ejecucion: 1 | 2 | 3 | 4;
@@ -181,6 +182,20 @@ export type ClasificacionNivel0 = {
   // partir de este campo, nunca el modelo grande — un falso 'aprobar'
   // dispararía una escritura real no pedida.
   accion_planeacion_generar: 'crear' | 'ajustar' | 'aprobar' | null;
+  // PA-4D — Solo para programa_analitico. "confirmar" SOLO cuando el
+  // turno inmediato anterior del asistente presentó un resumen de
+  // propuesta del Programa Analítico y cerró preguntando si se
+  // confirma, Y el mensaje actual responde afirmativamente a ESA
+  // pregunta de forma inequívoca — mismo criterio exacto que
+  // accion_planeacion_generar="aprobar" (nunca "por si acaso": el
+  // servidor SIEMPRE revalida contra el estado real en DB antes de
+  // publicar nada, pero un falso "confirmar" nunca debe ser la única
+  // señal). "consultar" para preguntas de solo lectura sobre el
+  // Programa Analítico ya existente. "gestionar" para iniciar, aportar
+  // contexto pedagógico, o pedir un ajuste — el código determinista
+  // decide el resto según el estado real (si hay borrador pendiente o
+  // no), nunca este clasificador.
+  accion_programa_analitico: 'gestionar' | 'confirmar' | 'consultar' | null;
   datos_faltantes: string[];
   nivel_confianza: number;
   requiere_confirmacion: boolean;
@@ -260,6 +275,7 @@ type ClasificacionModeloNivel0 = {
   duracion_semanas_planeacion?: number;
   momento_relativo_planeacion?: string;
   accion_planeacion_generar?: NonNullable<ClasificacionNivel0['accion_planeacion_generar']>;
+  accion_programa_analitico?: NonNullable<ClasificacionNivel0['accion_programa_analitico']>;
   // Ausente = false. Solo el modelo la incluye (con true) cuando
   // corresponde — ver regla 18 dentro del prompt.
   requiere_consulta_oficial?: boolean;
@@ -316,6 +332,7 @@ const NIVEL_EJECUCION_POR_INTENCION: Record<ClasificacionNivel0['intencion_princ
   actualizar_perfil_docente: 1,
   registrar_incidencia: 1,
   actualizar_lista_oficial: 1,
+  programa_analitico: 4,
   conversacion_general: 3,
   intencion_no_reconocida: 3,
 };
@@ -356,6 +373,7 @@ const FALLBACK: ClasificacionNivel0 = {
   duracion_semanas_planeacion: null,
   momento_relativo_planeacion: null,
   accion_planeacion_generar: null,
+  accion_programa_analitico: null,
   datos_faltantes: [],
   nivel_confianza: 0,
   requiere_confirmacion: false,
@@ -461,7 +479,7 @@ después, sin explicaciones, sin marcadores de código.
 
 Formato exacto de salida — estas 4 claves son OBLIGATORIAS siempre, en cualquier clasificación, sin excepción:
 {
-  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "corregir_dato_alumno" | "revisar_datos_alumnos" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "actualizar_lista_oficial" | "conversacion_general" | "intencion_no_reconocida",
+  "intencion_principal": "consultar_asistencia" | "registrar_asistencia" | "marcar_asistencia_individual" | "consultar_asistencia_grupo" | "consultar_apoyo" | "consultar_documentos" | "consultar_calendario" | "ficha_descriptiva" | "planeacion_generar" | "planeacion_consultar" | "consultar_alumno_lista" | "navegar_alumno_lista" | "consultar_incidencias_alumno" | "consultar_dato_alumno" | "corregir_dato_alumno" | "revisar_datos_alumnos" | "navegar_lista_filtrada" | "actualizar_perfil_docente" | "registrar_incidencia" | "actualizar_lista_oficial" | "programa_analitico" | "conversacion_general" | "intencion_no_reconocida",
   "entidades_resueltas": {
     "alumno_id": string | null,
     "alumno_nombre_detectado": string | null,
@@ -498,6 +516,7 @@ Además de esas 4 claves siempre presentes, incluye ÚNICAMENTE las claves opcio
 "duracion_semanas_planeacion": number — solo en planeacion_generar, y solo si dijo "semanas".
 "momento_relativo_planeacion": string — solo en planeacion_generar, y solo para una referencia relativa no convertible a fecha.
 "accion_planeacion_generar": "crear" | "ajustar" | "aprobar" — solo en planeacion_generar.
+"accion_programa_analitico": "gestionar" | "confirmar" | "consultar" — solo en programa_analitico, ver regla 26.
 "requiere_consulta_oficial": boolean — inclúyela SOLO cuando sea true (ver regla 18); si es false, omítela por completo.
 "alumno_resuelto_por_fonetica": boolean — inclúyela SOLO con valor true, y SOLO en marcar_asistencia_individual, cuando el alumno se resolvió por semejanza FONÉTICA y no por coincidencia de texto (ver regla 9, segunda viñeta); en cualquier otro caso, omítela por completo.
 "capacidad_contextual": "transformar_texto" | "generar_imagen" | "editar_imagen" | "convertir_documento" | "reutilizar_imagen_subida" — ver regla 24 y regla 25. SOLO cuando intencion_principal="conversacion_general" (regla 24) o intencion_principal="actualizar_lista_oficial" (regla 25, únicamente con "reutilizar_imagen_subida") Y encontraste un referente real en REFERENTES CONTEXTUALES DISPONIBLES; en cualquier otro caso, omítela por completo.
@@ -575,7 +594,13 @@ DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docent
    PRECEDENCIA: si el mensaje combina la actualización de la lista con cualquier otra petición en el mismo turno (ej. "Actualiza la lista oficial y dime quién faltó hoy", "Actualiza esta lista y genera una lista de asistencia"), actualizar_lista_oficial GANA como única intencion_principal — nunca intentes resolver ambas peticiones en el mismo turno; el maestro puede repetir la petición secundaria en un turno posterior.
    FUENTE DE LA FOTO — dos casos, nunca un tercero inventado:
    (i) el mensaje actual trae una imagen adjunta → esta regla se activa sin necesitar ningún referente contextual (la resolución de la imagen actual la hace el código, no el clasificador).
-   (ii) el mensaje actual NO trae imagen, pero se refiere claramente a una fotografía de lista ya subida antes en esta conversación (ej. "Con la foto que te mandé antes, actualiza la lista oficial.") → intencion_principal="actualizar_lista_oficial" Y ADEMÁS capacidad_contextual="reutilizar_imagen_subida" (reutiliza EXACTAMENTE esa capacidad existente, nunca crees una nueva) con referente_elegido_tipo/referente_elegido_id copiados EXACTAMENTE de REFERENTES CONTEXTUALES DISPONIBLES (mismo criterio exacto de la regla 24) y confianza_contextual="alta" únicamente si el referente es inequívoco. Si el mensaje no trae imagen actual Y no hay un referente histórico claro e inequívoco de una foto de lista, NO inventes ni aproximes ningún referente — omite capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual por completo; la aplicación le pedirá la foto al maestro. NUNCA elijas "la última imagen" de la conversación como aproximación silenciosa cuando el mensaje no da evidencia clara de a cuál foto se refiere.`;
+   (ii) el mensaje actual NO trae imagen, pero se refiere claramente a una fotografía de lista ya subida antes en esta conversación (ej. "Con la foto que te mandé antes, actualiza la lista oficial.") → intencion_principal="actualizar_lista_oficial" Y ADEMÁS capacidad_contextual="reutilizar_imagen_subida" (reutiliza EXACTAMENTE esa capacidad existente, nunca crees una nueva) con referente_elegido_tipo/referente_elegido_id copiados EXACTAMENTE de REFERENTES CONTEXTUALES DISPONIBLES (mismo criterio exacto de la regla 24) y confianza_contextual="alta" únicamente si el referente es inequívoco. Si el mensaje no trae imagen actual Y no hay un referente histórico claro e inequívoco de una foto de lista, NO inventes ni aproximes ningún referente — omite capacidad_contextual/referente_elegido_tipo/referente_elegido_id/confianza_contextual por completo; la aplicación le pedirá la foto al maestro. NUNCA elijas "la última imagen" de la conversación como aproximación silenciosa cuando el mensaje no da evidencia clara de a cuál foto se refiere.
+26. PROGRAMA ANALÍTICO — si el mensaje se refiere al Programa Analítico del grupo (el documento de dosificación/contextualización curricular anual del grupo, construido a partir del Programa Sintético oficial — NUNCA lo confundas con "planeacion_generar", que es una secuencia didáctica concreta de días/semanas sobre un tema puntual) → intencion_principal="programa_analitico". Ejemplos: "ayúdame a hacer mi Programa Analítico", "quiero armar el Programa Analítico de mi grupo", "necesito contextualizar el currículo de mi grupo", "quita ese contenido nuevo que agregaste", "no excluyas el de lectura", "agrega que tenemos poco acceso a internet", "sí, confírmalo", "así déjalo", "¿qué contenidos de Lenguajes tenemos en el Programa Analítico?", "¿qué PDA corresponden a leyendas en nuestro Programa Analítico?", "¿qué tenemos en nuestro Programa Analítico?". DISTINGUE esto de planeacion_generar (regla 4): "planea dos semanas sobre leyendas" o "hazme una planeación de fracciones" es SIEMPRE planeacion_generar, nunca esta regla, aunque el Programa Analítico ya exista — son documentos distintos con propósitos distintos.
+   Resuelve accion_programa_analitico así:
+   - "confirmar": el mensaje es una respuesta breve de aprobación final ("sí", "está bien", "así déjalo", "confírmalo", "guárdalo", "ya quedó", "perfecto", "ok") Y el turno inmediato anterior del asistente presentó un resumen de propuesta del Programa Analítico y cerró preguntando si se confirma/publica — mismo criterio exacto que accion_planeacion_generar="aprobar" (regla 4): nunca la uses "por si acaso"; si hay cualquier duda o el turno anterior no es inequívocamente ese cierre, usa "gestionar" en su lugar, nunca "confirmar" por defecto, porque dispara una publicación real.
+   - "consultar": el mensaje es una pregunta de SOLO LECTURA sobre el Programa Analítico ya existente, sin pedir ningún cambio.
+   - "gestionar": cualquier otro caso — iniciar, aportar contexto pedagógico (características/necesidades/situaciones del grupo o comunidad), o pedir un ajuste (excluir, restaurar, contextualizar, agregar/quitar un contenido local). El código determinista del servidor decide qué de esto corresponde según el estado real guardado en base de datos (si ya existe una propuesta pendiente o no) — nunca lo decidas tú ni asumas que existe o no existe una propuesta pendiente.
+   CONTINUACIÓN (mismo criterio que la regla 4 y regla 20): si el mensaje actual no menciona explícitamente "Programa Analítico" pero el turno inmediato anterior del asistente preguntó por contexto pedagógico para el Programa Analítico, presentó un resumen de propuesta, o mostró contenidos del Programa Analítico, y el mensaje actual responde/continúa naturalmente esa conversación, sigue siendo intencion_principal="programa_analitico" con la accion_programa_analitico que corresponda. Si el turno anterior del asistente no tiene relación clara con el Programa Analítico, NUNCA fuerces esta intención solo porque el mensaje sea corto o ambiguo — usa "conversacion_general".`;
 
 // Contexto de sesión + últimos turnos — la parte que sí cambia en
 // cada request (grupo, alumnos, señal de imagen, historial
@@ -726,6 +751,7 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
     duracion_semanas_planeacion: modelo.duracion_semanas_planeacion ?? null,
     momento_relativo_planeacion: modelo.momento_relativo_planeacion ?? null,
     accion_planeacion_generar: modelo.accion_planeacion_generar ?? null,
+    accion_programa_analitico: modelo.accion_programa_analitico ?? null,
     datos_faltantes: modelo.datos_faltantes,
     nivel_confianza: modelo.nivel_confianza,
     requiere_confirmacion: requiereConfirmacion,

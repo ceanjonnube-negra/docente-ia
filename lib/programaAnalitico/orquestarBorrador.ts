@@ -77,6 +77,17 @@ async function cargarFilaBorrador(sb: SupabaseClient, borradorId: string): Promi
   return (data as FilaBorrador | null) ?? null
 }
 
+// PA-4D — "el estado manda, no la IA" (ver informe PA-4D §4): dado un
+// grupo, resuelve DETERMINÍSTICAMENTE si existe un borrador pendiente,
+// sin depender de que el clasificador de Nivel 0 lo recuerde. RLS ya
+// filtra a los propios; solo devuelve id/estado, nunca el JSONB
+// completo (el llamador usa obtenerBorradorProgramaAnalitico si
+// necesita el resumen real).
+export async function buscarBorradorPendientePorGrupo(sb: SupabaseClient, grupoId: string): Promise<{ id: string } | null> {
+  const { data } = await sb.from('programa_analitico_borrador').select('id').eq('grupo_id', grupoId).eq('estado', 'pendiente').maybeSingle()
+  return (data as { id: string } | null) ?? null
+}
+
 // Nunca se asume que el JSONB leído de DB es válido solo porque vino
 // de ahí (PA-4C §20) — se revalida la forma completa de cada delta,
 // igual de estricto que al incorporar la respuesta cruda de la IA.
@@ -170,12 +181,7 @@ export async function prepararBorradorProgramaAnalitico(
   // — el UNIQUE índice parcial de DB es la garantía REAL contra una
   // carrera; esto solo da un error claro en el caso normal (no
   // concurrente) de "ya hay uno pendiente".
-  const { data: pendienteExistente } = await sb
-    .from('programa_analitico_borrador')
-    .select('id')
-    .eq('grupo_id', input.grupoId)
-    .eq('estado', 'pendiente')
-    .maybeSingle()
+  const pendienteExistente = await buscarBorradorPendientePorGrupo(sb, input.grupoId)
   if (pendienteExistente) return { ok: false, error: { tipo: 'YA_HAY_BORRADOR_PENDIENTE', borradorId: pendienteExistente.id } }
 
   // Una sola resolución lógica: reutiliza TODO el pipeline existente

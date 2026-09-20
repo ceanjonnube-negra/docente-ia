@@ -8,6 +8,7 @@ import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConver
 import { validarDecisionOrquestador, esCandidataAShortCircuitCliente, HEADER_DECISION_ORQUESTADOR, HEADER_DECISION_ORQUESTADOR_MODO, type DecisionOrquestador } from '@/lib/asistente/decisionOrquestador'
 import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
+import { manejarTurnoProgramaAnalitico } from '@/lib/programaAnalitico/manejarTurnoChat'
 import {
   actualizarPerfilDocente,
   calendarioCicloCompleto,
@@ -2140,6 +2141,30 @@ export async function POST(req: NextRequest) {
         } catch (e) {
           console.error('[NIVEL0] planeacion_generar — excepción aprobando el borrador:', e)
           return respuestaTexto('No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.')
+        }
+      }
+
+      // programa_analitico (PA-4D) — capacidad conversacional única:
+      // "el turno actual se refiere al Programa Analítico". El
+      // sub-estado real (sin propuesta / propuesta pendiente por
+      // ajustar o confirmar / PA vigente por consultar) lo resuelve
+      // manejarTurnoProgramaAnalitico consultando
+      // programa_analitico_borrador por grupo_id — nunca la
+      // clasificación de Nivel 0 ("el estado manda, no la IA", ver
+      // informe PA-4D §4). Igual que planeacion_generar/aprobar arriba,
+      // este short-circuit NUNCA llega a Sonnet en este turno; las
+      // únicas llamadas IA posibles (generación inicial de la
+      // propuesta, o interpretación de un ajuste con redacción) viven
+      // dentro de ese módulo, acotadas y contadas en requestId de logs.
+      if (clasificacion.intencion_principal === 'programa_analitico') {
+        const requestIdPa = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        try {
+          const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, clasificacion.accion_programa_analitico, mensaje)
+          console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${clasificacion.accion_programa_analitico} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
+          return respuestaTexto(resultado.texto)
+        } catch (e) {
+          console.error(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} excepción:`, e)
+          return respuestaTexto('No fue posible procesar tu Programa Analítico en este momento. Intenta de nuevo en unos segundos.')
         }
       }
 

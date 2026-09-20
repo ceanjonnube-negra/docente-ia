@@ -62,6 +62,34 @@ const REGEX_IDENTIFICADOR_GRUPO = /^(?:[1-6]|primero|segundo|tercero|cuarto|quin
 // explícita en vez de depender de un número mágico.
 const LONGITUD_MINIMA_INFORMATIVA = 12
 
+// Hallazgo real (prueba controlada PA-4D): "Ayúdame a hacer mi
+// Programa Analítico." es larga (>12 caracteres), no está en la lista
+// de triviales, y no es un identificador de grupo — pasaba como
+// "suficiente" y disparaba una generación real sin ningún contexto
+// pedagógico genuino. Curada y explícita (mismo criterio que el resto
+// del proyecto, nunca un NLU genérico): si el mensaje menciona
+// "programa analítico/sintético" y, quitando las palabras esperadas de
+// una solicitud de inicio (verbo de petición + el nombre del programa
+// + posesivos/"grupo"), no queda prácticamente ninguna palabra
+// adicional, es una solicitud pura — nunca contexto pedagógico, sin
+// importar su longitud. Un mensaje que además trae contenido real
+// ("...porque en mi grupo hay dificultades de lectura") dejará
+// palabras sobrantes reales y seguirá contando como suficiente.
+const PALABRAS_SOLICITUD_INICIO = new Set([
+  'ayudame', 'ayuda', 'quiero', 'necesito', 'vamos', 'hazme', 'arma', 'armame',
+  'crea', 'creame', 'genera', 'generame', 'prepara', 'preparame', 'haz', 'empecemos', 'empieza',
+  'a', 'con', 'hacer', 'armar', 'crear', 'generar', 'preparar', 'empezar',
+  'mi', 'el', 'la', 'los', 'nuestro', 'nuestra', 'de', 'para', 'grupo', 'porfa', 'favor', 'por',
+  'programa', 'analitico', 'sintetico',
+])
+
+function esSolamenteSolicitudDeIniciarPrograma(normalizado: string): boolean {
+  if (!/\bprograma (analitico|sintetico)\b/.test(normalizado)) return false
+  const palabras = normalizado.replace(/[.,!¿?]/g, '').split(/\s+/).filter(Boolean)
+  const sobrantes = palabras.filter((p) => !PALABRAS_SOLICITUD_INICIO.has(p))
+  return sobrantes.length <= 1
+}
+
 function normalizar(texto: string): string {
   return texto
     .trim()
@@ -85,6 +113,7 @@ export function contextoDocenteEsSuficiente(texto: string | null | undefined): b
   if (normalizado.length === 0) return false
   if (RESPUESTAS_TRIVIALES.has(normalizado)) return false
   if (REGEX_IDENTIFICADOR_GRUPO.test(normalizado)) return false
+  if (esSolamenteSolicitudDeIniciarPrograma(normalizado)) return false
   if (normalizado.length < LONGITUD_MINIMA_INFORMATIVA) return false
   return true
 }

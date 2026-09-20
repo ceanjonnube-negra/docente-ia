@@ -241,6 +241,7 @@ function clasificacion(overrides: Partial<ClasificacionNivel0> = {}): Clasificac
     duracion_semanas_planeacion: null,
     momento_relativo_planeacion: null,
     accion_planeacion_generar: null,
+    accion_programa_analitico: null,
     datos_faltantes: [],
     nivel_confianza: 0.9,
     requiere_confirmacion: false,

@@ -80,6 +80,18 @@ function main() {
   verificar(contextoDocenteEsSuficiente('En la comunidad tenemos problemas de escasez de agua.') === true, '5b. otro contexto real → suficiente')
   verificar(contextoDocenteEsSuficiente('Tenemos poco acceso a internet.') === true, '5c. otro contexto real corto pero informativo → suficiente')
 
+  // --- refuerzo real (hallazgo de la prueba controlada PA-4D): una
+  //     solicitud PURA de iniciar el Programa Analítico, sin ningún
+  //     contenido pedagógico adicional, NUNCA cuenta como contexto
+  //     suficiente aunque sea larga — evita disparar una generación
+  //     real con contexto vacío. ---
+  verificar(contextoDocenteEsSuficiente('Ayúdame a hacer mi Programa Analítico.') === false, '5d. solicitud pura de iniciar el PA (larga mas sin contenido) → insuficiente')
+  verificar(contextoDocenteEsSuficiente('Quiero armar el Programa Analítico de mi grupo.') === false, '5e. otra variante de solicitud pura → insuficiente')
+  verificar(
+    contextoDocenteEsSuficiente('Ayúdame a hacer mi Programa Analítico, en mi grupo hay dificultades de comprensión lectora.') === true,
+    '5f. la MISMA solicitud pero con contenido real agregado en el mismo turno → sí es suficiente'
+  )
+
   // --- 6. decisión explícita de usar currículo tal cual → suficiente ---
   verificar(contextoDocenteEsSuficiente('No tengo nada que agregar; usa el currículo oficial tal cual.') === true, '6. decisión explícita de no ajustar nada → suficiente')
 
