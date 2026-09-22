@@ -198,7 +198,11 @@ Ya existe una BASE determinista: TODOS los contenidos oficiales del catálogo en
 Tipos de decisión posibles, SOLO sobre contenidos que de verdad quieras ajustar:
 - "excluir": un contenido oficial no debe incluirse para este grupo/momento, con justificación real en el contexto entregado (nunca arbitrario). Solo curriculoContenidoId.
 - "contextualizar": un contenido oficial debe redactarse distinto para adaptarlo al contexto real. curriculoContenidoId (el mismo del catálogo) y textoContextualizado (tu redacción adaptada, obligatoria, no vacía) son obligatorios. curriculoPdaGradoIdsSeleccionados es OPCIONAL — solo inclúyelo si decides enfocar el contenido en un subconjunto de sus PDA oficiales; si lo omites, se usan todos los PDA oficiales de ese contenido.
-- "nuevo": SOLO cuando el contexto real justifique claramente un contenido local/regional que NO está en el catálogo oficial. textoLocal obligatorio, resultadoEsperadoLocal opcional — esto NUNCA se presenta como PDA oficial.
+- "nuevo": contenido local/regional que NO está en el catálogo oficial.
+
+PRINCIPIO OBLIGATORIO — OFICIAL PRIMERO: antes de proponer "nuevo", revisa si algún contenido oficial del catálogo (con o sin selección de PDA) ya cubre razonablemente la necesidad mediante "contextualizar". Si existe cobertura oficial suficiente, o si la cobertura es parcial pero puede resolverse razonablemente contextualizando, DEBES usar "contextualizar" en vez de "nuevo" — "nuevo" se reserva EXCLUSIVAMENTE para una necesidad contextual relevante que el catálogo oficial entregado no pueda representar de forma razonable.
+
+Si decides usar "nuevo" de todas formas: textoLocal es obligatorio, resultadoEsperadoLocal es opcional (esto NUNCA se presenta como PDA oficial), y justificacionContenidoNuevo es OBLIGATORIO y NO puede estar vacío — debes explicar ahí, brevemente, qué contenidos/PDA oficiales del catálogo entregado consideraste y por qué ninguno cubre razonablemente esta necesidad. Una decisión "nuevo" sin justificacionContenidoNuevo real será rechazada por el servidor.
 
 Si un contenido no necesita ningún ajuste, simplemente NO lo menciones — se queda en la base tal cual.
 
@@ -214,7 +218,7 @@ REGLAS ABSOLUTAS:
   "decisiones": [
     { "decision": "excluir", "curriculoContenidoId": "..." },
     { "decision": "contextualizar", "curriculoContenidoId": "...", "textoContextualizado": "...", "curriculoPdaGradoIdsSeleccionados": ["..."] },
-    { "decision": "nuevo", "textoLocal": "...", "resultadoEsperadoLocal": "..." }
+    { "decision": "nuevo", "textoLocal": "...", "resultadoEsperadoLocal": "...", "justificacionContenidoNuevo": "..." }
   ]
 }
 Si no tienes ningún ajuste que proponer, responde { "contextoPedagogico": "...", "decisiones": [] }.`
@@ -230,6 +234,7 @@ type DecisionCrudaIa = {
   curriculoPdaGradoIdsSeleccionados?: unknown
   textoLocal?: unknown
   resultadoEsperadoLocal?: unknown
+  justificacionContenidoNuevo?: unknown
 }
 
 // Extrae ÚNICAMENTE las claves esperadas — cualquier otra clave que la
@@ -262,6 +267,16 @@ export function incorporarDeltasIa(
       })
     } else if (crudo.decision === 'nuevo') {
       if (typeof crudo.textoLocal !== 'string') return { ok: false }
+      // PA-5J — "OFICIAL PRIMERO": nunca se confía en que el prompt por
+      // sí solo evite un contenido local redundante — un "nuevo" sin
+      // justificación real (no solo presente, con contenido real tras
+      // trim) se rechaza aquí, fail-closed, igual que cualquier otro
+      // campo obligatorio ausente de excluir/contextualizar arriba.
+      // Deliberadamente NO se valida el CONTENIDO semántico de la
+      // justificación (eso requeriría otra llamada IA o un motor
+      // semántico — fuera de alcance, ver informe PA-5J §7): solo que
+      // exista y no sea trivial/vacía.
+      if (typeof crudo.justificacionContenidoNuevo !== 'string' || crudo.justificacionContenidoNuevo.trim().length < 10) return { ok: false }
       decisiones.push({
         decision: 'nuevo',
         textoLocal: crudo.textoLocal,

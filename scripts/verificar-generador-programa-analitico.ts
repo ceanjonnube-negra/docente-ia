@@ -268,7 +268,7 @@ async function main() {
   {
     const jsonIa = {
       grupoId: 'grupo-inventado-por-ia', curriculoVersionId: 'version-inventada',
-      contextoPedagogico: 'Notas.', decisiones: [{ decision: 'nuevo', textoLocal: 'x' }],
+      contextoPedagogico: 'Notas.', decisiones: [{ decision: 'nuevo', textoLocal: 'x', justificacionContenidoNuevo: 'Ningún contenido oficial del catálogo cubre esta necesidad específica.' }],
     }
     const incorporado = incorporarDeltasIa(jsonIa)
     verificar(incorporado.ok === true, '12. JSON con forma válida se incorpora')
