@@ -41,6 +41,17 @@ export type ResumenBorrador = {
   recursos: string[]
   evidencias: string[]
   indicadores: string[]
+  // PLN-1C — ids de programa_analitico_item que Claude propuso en la
+  // línea PROGRAMA_ANALITICO_ITEMS, CRUDOS tal como los escribió —
+  // NUNCA validados todavía en este punto (el parser es determinista
+  // pero ciego al contenido real del Programa Analítico). La
+  // validación server-side real (UUID, pertenencia a la versión
+  // vigente, membresía en el conjunto que de verdad se ofreció) vive
+  // en lib/planeacion/validarSeleccionCurricularPlaneacion.ts y corre
+  // DESPUÉS de este parseo — ver route.ts. [] cuando el campo viene
+  // vacío o ausente (snapshots v1/v2/v3 previos a PLN-1C, o turnos sin
+  // contexto curricular canónico disponible).
+  programaAnaliticoItemIdsPropuestos: string[]
 }
 
 const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
@@ -125,6 +136,7 @@ export function extraerResumenBorrador(historial: { role: string; content: strin
     recursos: extraerLista(bloque, 'Recursos'),
     evidencias: extraerLista(bloque, 'Evidencias'),
     indicadores: extraerLista(bloque, 'Indicadores de evaluación'),
+    programaAnaliticoItemIdsPropuestos: extraerLista(bloque, 'PROGRAMA_ANALITICO_ITEMS'),
   }
 }
 

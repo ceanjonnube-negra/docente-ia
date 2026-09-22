@@ -1,9 +1,13 @@
 // lib/planeacion/resolverCurricularPlaneacion.ts
 //
-// PLN-1B — resolución curricular determinista para Planeación. Capa
-// reutilizable, aislada: NO se integra todavía con
-// prepararContextoGeneracionPlaneacion (esa es PLN-1C, fuera de
-// alcance aquí).
+// PLN-1B — resolución curricular determinista para Planeación (§1-5).
+// PLN-1C (§6) añade prepararContextoCurricularPlaneacion, el punto de
+// entrada real que sí integra esto con
+// lib/planeacion/generarBorrador.ts — MODO A (candidatos cerrados ya
+// resueltos) / MODO B (catálogo compacto para que Claude elija dentro
+// de un conjunto cerrado, en la MISMA llamada de generación, 0 IA
+// adicional). La validación de lo que Claude selecciona vive aparte,
+// en lib/planeacion/validarSeleccionCurricularPlaneacion.ts.
 //
 // Objetivo: dado un grupo y una solicitud del docente (tema libre y/o
 // referencias explícitas de campo/contenido/PDA), resolver
@@ -441,10 +445,115 @@ export async function cargarCandidatosProgramaAnaliticoVigente(sb: SupabaseClien
   return { ok: true, programaAnaliticoId, programaAnaliticoVersionId, candidatos }
 }
 
-// Orquestador completo — I/O + algoritmo puro. Punto de entrada real
-// para un futuro llamador (PLN-1C, todavía no conectado a nada).
+// Orquestador completo — I/O + algoritmo puro. Reutilizado por
+// prepararContextoCurricularPlaneacion (§6, PLN-1C) como primer paso.
 export async function resolverCurricularPlaneacion(sb: SupabaseClient, grupoId: string, solicitud: SolicitudResolucionCurricular): Promise<ResultadoResolverCurricularPlaneacion> {
   const cargado = await cargarCandidatosProgramaAnaliticoVigente(sb, grupoId)
   if (!cargado.ok) return cargado
   return { ok: true, resultado: resolverCandidatosCurricularesPuro(cargado.candidatos, solicitud) }
+}
+
+// ============================================================
+// 6. PLN-1C — construcción del contexto curricular que SÍ se envía al
+//    prompt (MODO A/B, ver informe PLN-1C §D/§E). Deliberadamente un
+//    tipo DISTINTO del array completo de candidatos: nunca incluye
+//    `candidatosDisponibles` — eso viviría 86 objetos con PDA en el
+//    prompt incluso en MODO A, exactamente lo que PLN-1C §11 prohíbe.
+//    La validación posterior a la respuesta de Claude vuelve a cargar
+//    los candidatos reales (cargarCandidatosProgramaAnaliticoVigente)
+//    server-side — nunca reutiliza lo que se mandó al modelo como si
+//    fuera confiable por haber salido de ahí.
+// ============================================================
+
+// Catálogo MODO B — compacto a propósito (PLN-1C §11): ni PDA
+// completos ni resultado_esperado_local ni metadata que no sirva para
+// elegir. `textoEfectivo` es SIEMPRE el texto que un docente
+// reconocería como "el contenido" — contextualizado si existe, oficial
+// en otro caso, local si es local — con el prefijo "[LOCAL] " cuando
+// procedencia==='local' para que quede inequívoco incluso leyendo solo
+// ese campo, nunca solo confiando en que el modelo mire "procedencia".
+export type ItemCatalogoCompactoPlaneacion = {
+  id: string
+  procedencia: ProcedenciaCandidatoPlaneacion
+  campoFormativo: string | null
+  textoEfectivo: string
+}
+
+function construirTextoEfectivo(c: CandidatoCurricularPlaneacion): string {
+  if (c.procedencia === 'local') return `[LOCAL] ${c.textoLocal ?? ''}`
+  if (c.procedencia === 'contextualizado') return c.textoContextualizado ?? c.contenidoOficial ?? ''
+  return c.contenidoOficial ?? ''
+}
+
+export function construirCatalogoCompactoPlaneacion(candidatos: CandidatoCurricularPlaneacion[]): ItemCatalogoCompactoPlaneacion[] {
+  return candidatos.map((c) => ({
+    id: c.programaAnaliticoItemId,
+    procedencia: c.procedencia,
+    campoFormativo: c.campoFormativo?.nombre ?? null,
+    textoEfectivo: construirTextoEfectivo(c),
+  }))
+}
+
+// Forma que SÍ viaja dentro de contextoEnriquecido (JSON.stringify del
+// resultado de prepararContextoGeneracionPlaneacion, ver
+// lib/planeacion/generarBorrador.ts) — nunca candidatosDisponibles.
+export type ContextoCurricularParaPrompt =
+  | { modo: 'A'; candidatosCerrados: CandidatoCurricularPlaneacion[] }
+  | { modo: 'B'; catalogoCompacto: ItemCatalogoCompactoPlaneacion[] }
+
+export type ResultadoContextoCurricularPlaneacion =
+  | { disponible: false }
+  | { disponible: true; contexto: ContextoCurricularParaPrompt; idsOfrecidos: string[]; resolucion: ResultadoResolucionCurricular }
+
+// Deriva el mismo `idsOfrecidos` a partir de SOLO lo que viajó al
+// prompt (contextoCurricularPlaneacion, ya serializado y de vuelta en
+// route.ts tras prepararContextoGeneracionPlaneacion) — evita que
+// route.ts necesite ramificar por `modo` dos veces (una al generar,
+// otra al validar la respuesta) y garantiza que ambos lados usan
+// EXACTAMENTE la misma noción de "lo que se ofreció".
+export function idsOfrecidosDesdeContexto(contexto: ContextoCurricularParaPrompt | null): string[] {
+  if (!contexto) return []
+  if (contexto.modo === 'A') return contexto.candidatosCerrados.map((c) => c.programaAnaliticoItemId)
+  return contexto.catalogoCompacto.map((c) => c.id)
+}
+
+// MODO A cuando la resolución determinista (PLN-1B) ya entregó un
+// conjunto cerrado no vacío (resuelto, o requiere_seleccion con
+// candidatos) — MODO B en cualquier otro caso (sin_correspondencia, o
+// defensivamente si requiere_seleccion viniera con candidatos vacíos,
+// lo cual PLN-1B nunca produce hoy pero no se asume aquí).
+export function decidirModo(resolucion: ResultadoResolucionCurricular): 'A' | 'B' {
+  if ((resolucion.estado === 'resuelto' || resolucion.estado === 'requiere_seleccion') && resolucion.candidatos.length > 0) return 'A'
+  return 'B'
+}
+
+// Punto de entrada real usado por prepararContextoGeneracionPlaneacion
+// (PLN-1C §3). Grupos SIN Programa Analítico publicado todavía
+// (disponible:false) dejan el comportamiento actual sin cambios: el
+// llamador simplemente no inyecta contextoCurricularPlaneacion, y
+// Claude sigue con MARCO_CURRICULAR_VIGENTE + su criterio, exactamente
+// como antes de PLN-1C.
+export async function prepararContextoCurricularPlaneacion(sb: SupabaseClient, grupoId: string, solicitud: SolicitudResolucionCurricular): Promise<ResultadoContextoCurricularPlaneacion> {
+  const cargado = await cargarCandidatosProgramaAnaliticoVigente(sb, grupoId)
+  if (!cargado.ok) return { disponible: false }
+
+  const resolucion = resolverCandidatosCurricularesPuro(cargado.candidatos, solicitud)
+  const modo = decidirModo(resolucion)
+
+  if (modo === 'A') {
+    return {
+      disponible: true,
+      contexto: { modo: 'A', candidatosCerrados: resolucion.candidatos },
+      idsOfrecidos: resolucion.candidatos.map((c) => c.programaAnaliticoItemId),
+      resolucion,
+    }
+  }
+
+  const catalogoCompacto = construirCatalogoCompactoPlaneacion(cargado.candidatos)
+  return {
+    disponible: true,
+    contexto: { modo: 'B', catalogoCompacto },
+    idsOfrecidos: cargado.candidatos.map((c) => c.programaAnaliticoItemId),
+    resolucion,
+  }
 }

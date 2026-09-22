@@ -31,6 +31,8 @@ import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesP
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
+import { idsOfrecidosDesdeContexto, cargarCandidatosProgramaAnaliticoVigente } from '@/lib/planeacion/resolverCurricularPlaneacion'
+import { validarSeleccionItemsProgramaAnalitico } from '@/lib/planeacion/validarSeleccionCurricularPlaneacion'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
 import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, type PlaneacionActivaV3 } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
@@ -1500,6 +1502,15 @@ export async function POST(req: NextRequest) {
   // rama donde se leyó. null en cualquier turno que no sea un ajuste
   // válido — 'crear' nunca lo toca.
   let planeacionActivaParaAjuste: PlaneacionActivaV3 | null = null
+  // PLN-1C — ids de programa_analitico_item que SÍ se le ofrecieron a
+  // Claude este turno (MODO A: el conjunto cerrado pequeño; MODO B:
+  // todo el catálogo compacto) — mismo criterio de declaración
+  // temprana que las variables de arriba. null cuando el grupo no
+  // tiene Programa Analítico publicado (comportamiento sin cambios).
+  // Usado más abajo, junto con extraerResumenBorrador(), para validar
+  // server-side lo que Claude propuso en PROGRAMA_ANALITICO_ITEMS —
+  // nunca para inyectarlo de nuevo al prompt.
+  let idsCandidatosProgramaAnaliticoOfrecidos: string[] | null = null
   // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
   // — mismo criterio que las dos variables de arriba: declarada antes
   // del try del clasificador para que el Response final (mucho más
@@ -2545,6 +2556,7 @@ export async function POST(req: NextRequest) {
               duracionSemanas: clasificacion.duracion_semanas_planeacion,
               momentoRelativo: clasificacion.momento_relativo_planeacion,
             }, snapshotValidoParaAjuste)
+            idsCandidatosProgramaAnaliticoOfrecidos = idsOfrecidosDesdeContexto(resultadoGeneracionAjuste.contextoCurricularPlaneacion)
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracionAjuste)}`
             // Instrucción mínima y ESPECÍFICA de este turno (no un
             // cambio a instruccionesPlaneacionGenerar.ts, que sigue
@@ -2573,6 +2585,7 @@ export async function POST(req: NextRequest) {
               duracionSemanas: clasificacion.duracion_semanas_planeacion,
               momentoRelativo: clasificacion.momento_relativo_planeacion,
             })
+            idsCandidatosProgramaAnaliticoOfrecidos = idsOfrecidosDesdeContexto(resultadoGeneracion.contextoCurricularPlaneacion)
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
             esTurnoDeBorradorPlaneacion = true
@@ -4300,6 +4313,35 @@ Grado: [grado] | Grupo: [grupo]
           try {
             const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
             if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok && textoCompletoParaSnapshot) {
+              // PLN-1C §8 — validación server-side OBLIGATORIA de la
+              // identidad curricular que Claude propuso en
+              // PROGRAMA_ANALITICO_ITEMS, ANTES de tratarla como real.
+              // Nunca reutiliza lo que se mandó al prompt como si fuera
+              // confiable por haber salido de ahí: recarga los
+              // candidatos reales de la versión vigente (mismo patrón
+              // de solo-lectura ya usado en toda la serie PA) y filtra
+              // a EXACTAMENTE los que se ofrecieron este turno
+              // (idsCandidatosProgramaAnaliticoOfrecidos, fijado arriba
+              // en el bloque de generación) — un id real del PA pero
+              // fuera de ese conjunto se rechaza igual que uno
+              // inventado (CASO I, PLN-1C §13). Solo observabilidad en
+              // esta microfase (log, nunca bloquea el guardado del
+              // borrador): la persistencia definitiva de la selección
+              // validada en planeacion_proyectos queda para PLN-1D/1E.
+              if (resumenParaSnapshot.programaAnaliticoItemIdsPropuestos.length > 0 && idsCandidatosProgramaAnaliticoOfrecidos && idsCandidatosProgramaAnaliticoOfrecidos.length > 0 && sesion.grupo_activo_id && supabaseUser) {
+                try {
+                  const cargadoParaValidar = await cargarCandidatosProgramaAnaliticoVigente(supabaseUser, sesion.grupo_activo_id)
+                  if (cargadoParaValidar.ok) {
+                    const idsOfrecidosEsteTurno = new Set(idsCandidatosProgramaAnaliticoOfrecidos)
+                    const candidatosOfrecidosEsteTurno = cargadoParaValidar.candidatos.filter((c) => idsOfrecidosEsteTurno.has(c.programaAnaliticoItemId))
+                    const validado = validarSeleccionItemsProgramaAnalitico(candidatosOfrecidosEsteTurno, resumenParaSnapshot.programaAnaliticoItemIdsPropuestos)
+                    // Nunca loguea texto libre (contenido oficial/contextualizado/local) — solo ids técnicos y conteos.
+                    console.log(`[PLANEACION_GENERAR][PA] seleccion_validada aceptados=${validado.aceptados.length} rechazados=${validado.rechazados.length}${validado.rechazados.length > 0 ? ` motivos=${JSON.stringify(validado.rechazados.map((r) => r.motivo))}` : ''}`)
+                  }
+                } catch (e) {
+                  console.error('[PLANEACION_GENERAR][PA] excepción validando selección curricular (no bloquea el guardado del borrador):', e)
+                }
+              }
               const conversacionIdParaSnapshot = await obtenerConversacionIdAutorizada()
               if (conversacionIdParaSnapshot && supabaseUser) {
                 const snapshot = planeacionActivaParaAjuste

@@ -27,6 +27,7 @@ import { calcularFechasPlaneacion, type DiaNoLaborable, type ResultadoCalculoFec
 import type { SesionContexto } from '../sesionContexto'
 import type { ResumenBorrador } from './extraerBorrador'
 import type { PlaneacionActivaV3 } from './planeacionActiva'
+import { prepararContextoCurricularPlaneacion, type ContextoCurricularParaPrompt } from './resolverCurricularPlaneacion'
 
 export type SolicitudGeneracionPlaneacion = {
   tema: string | null
@@ -53,6 +54,15 @@ export type ResultadoContextoGeneracion = {
   // GUARDAR" — para que la generación pueda modificar únicamente lo
   // solicitado y conservar el resto.
   planeacionVigente: { borrador: ResumenBorrador; contenidoCompleto: string } | null
+  // PLN-1C — null cuando el grupo todavía no tiene Programa Analítico
+  // publicado (comportamiento actual sin cambios: Claude sigue usando
+  // MARCO_CURRICULAR_VIGENTE + su criterio). Cuando existe, es la
+  // ÚNICA fuente de identidad curricular para este turno — ver
+  // lib/asistente/instruccionesPlaneacionGenerar.ts. Nunca incluye el
+  // array completo de candidatos con PDA (eso se recarga server-side
+  // después de la respuesta, para validar — ver route.ts y
+  // lib/planeacion/validarSeleccionCurricularPlaneacion.ts).
+  contextoCurricularPlaneacion: ContextoCurricularParaPrompt | null
 }
 
 // Solo eventos OFICIALES SEP cancelan clases automáticamente — una
@@ -151,11 +161,15 @@ export async function prepararContextoGeneracionPlaneacion(
   const inicioCiclo = `${inicioAnioCiclo}-08-01`
   const finCiclo = `${inicioAnioCiclo + 1}-07-31`
 
-  const [ctxGrupo, eventosCiclo, periodos, planeacionesPrevias] = await Promise.all([
+  const [ctxGrupo, eventosCiclo, periodos, planeacionesPrevias, resultadoCurricular] = await Promise.all([
     contextoGrupo(sb, grupoId),
     calendarioCicloCompleto(sb, sesion.docente_id, inicioCiclo, finCiclo),
     sesion.ciclo_escolar_id ? periodosEvaluacionDelCiclo(sb, sesion.ciclo_escolar_id) : Promise.resolve<PeriodoEvaluacion[]>([]),
     listarPlaneaciones({ supabase: sb }, { grupo_id: grupoId }),
+    // PLN-1C — 0 IA: solo SELECTs. Grupos sin Programa Analítico
+    // publicado reciben disponible:false y el comportamiento queda
+    // idéntico al anterior a PLN-1C (ver ResultadoContextoCurricularPlaneacion).
+    prepararContextoCurricularPlaneacion(sb, grupoId, { tema: solicitud.tema }),
   ])
 
   const diasNoLaborables = mapearEventosADiasNoLaborables(eventosCiclo)
@@ -292,5 +306,6 @@ export async function prepararContextoGeneracionPlaneacion(
     planeacionVigente: snapshotHeredado
       ? { borrador: snapshotHeredado.borrador, contenidoCompleto: snapshotHeredado.contenidoCompleto }
       : null,
+    contextoCurricularPlaneacion: resultadoCurricular.disponible ? resultadoCurricular.contexto : null,
   }
 }
