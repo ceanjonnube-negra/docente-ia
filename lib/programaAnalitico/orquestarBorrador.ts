@@ -34,7 +34,7 @@ import {
 } from './borradorProgramaAnalitico'
 import { construirBaseProgramaAnalitico, generarPropuestaProgramaAnalitico, type GenerarPropuestaInput } from './generarPropuestaProgramaAnalitico'
 import { publicarProgramaAnalitico } from './publicarProgramaAnalitico'
-import type { CategoriaContextoPedagogico, DiagnosticoPropuestaIaInvalida, FaltanteInformacionGeneracion, ResultadoPublicacion } from './tipos'
+import type { CategoriaContextoPedagogico, DiagnosticoPropuestaIaInvalida, FaltanteInformacionGeneracion, ObservabilidadGeneracion, ResultadoPublicacion } from './tipos'
 
 export type EstadoBorrador = 'pendiente' | 'publicado' | 'descartado'
 
@@ -163,7 +163,12 @@ async function resolverIdentidadCatalogoYBase(
 // ============================================================
 
 export type ResultadoPrepararBorrador =
-  | { ok: true; borradorId: string; estado: 'pendiente'; resumen: ResumenPropuesta }
+  // observabilidad/cantidadDeltas — PA-5B §14: superset aditivo, mismo
+  // criterio ya usado en ResultadoGenerarPropuestaDetallado (PA-4C):
+  // reexpone lo que generarPropuestaProgramaAnalitico ya calculó, sin
+  // repetir ninguna llamada, para que el llamador (Chat) pueda loguear
+  // costo/rendimiento sin volver a tocar la capa de generación.
+  | { ok: true; borradorId: string; estado: 'pendiente'; resumen: ResumenPropuesta; observabilidad: ObservabilidadGeneracion; cantidadDeltas: number }
   | { ok: false; requiereContexto: true; categorias: CategoriaContextoPedagogico[] }
   | { ok: false; requiereInformacion: true; faltantes: FaltanteInformacionGeneracion[] }
   | { ok: false; error: ErrorOrquestacionBorrador | { tipo: 'PROPUESTA_IA_INVALIDA'; diagnostico: DiagnosticoPropuestaIaInvalida } | { tipo: 'ERROR_GENERACION'; mensaje: string } }
@@ -228,7 +233,7 @@ export async function prepararBorradorProgramaAnalitico(
   }
   const resumen = construirResumenPropuesta(resultado.catalogo, borrador, resultado.propuesta)
 
-  return { ok: true, borradorId: fila.id as string, estado: 'pendiente', resumen }
+  return { ok: true, borradorId: fila.id as string, estado: 'pendiente', resumen, observabilidad: resultado.observabilidad, cantidadDeltas: resultado.deltas.length }
 }
 
 // ============================================================

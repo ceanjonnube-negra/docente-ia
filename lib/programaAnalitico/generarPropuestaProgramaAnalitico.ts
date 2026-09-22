@@ -44,6 +44,7 @@ import {
   type IdentidadCurricularFijada,
 } from './borradorProgramaAnalitico'
 import type { CategoriaContextoPedagogico, ItemPropuestaProgramaAnalitico, PropuestaProgramaAnalitico, ResultadoGenerarPropuesta } from './tipos'
+import type { ContextoPedagogicoAdjunto } from './contextoAdjuntoProgramaAnalitico'
 
 // PA-4C — superset de ResultadoGenerarPropuesta: en la rama ok:true
 // expone también lo que un orquestador de borrador necesita para
@@ -120,13 +121,23 @@ const TODAS_LAS_CATEGORIAS: CategoriaContextoPedagogico[] = [
   'PRIORIDADES_PEDAGOGICAS',
 ]
 
+// PA-5B §D/§E: un adjunto (imagen hoy, documento en el futuro) es una
+// TERCERA fuente de contexto pedagógico, independiente del texto
+// explícito — el docente puede aportar contexto suficiente solo con un
+// adjunto (ver informe §9, "el adjunto actual constituye evidencia
+// suficiente del referente en ese mismo turno"). Solo cuenta si el
+// extractor ya lo marcó hayContextoPedagogico=true CON observaciones
+// reales (fail-closed ya aplicado en validarContextoPedagogicoAdjunto
+// — nunca lecturas dudosas sueltas).
 export function evaluarRequiereContexto(
   contextoDocente: string | null | undefined,
-  interno: ContextoInternoGrupo
+  interno: ContextoInternoGrupo,
+  contextoAdjunto?: ContextoPedagogicoAdjunto | null
 ): { requiereContexto: true; categorias: CategoriaContextoPedagogico[] } | { requiereContexto: false } {
   const hayContextoDocente = contextoDocenteEsSuficiente(contextoDocente)
   const hayNecesidadesConfirmadas = interno.necesidadesApoyo.length > 0
-  if (hayContextoDocente || hayNecesidadesConfirmadas) return { requiereContexto: false }
+  const hayContextoAdjunto = Boolean(contextoAdjunto?.hayContextoPedagogico && contextoAdjunto.observaciones.length > 0)
+  if (hayContextoDocente || hayNecesidadesConfirmadas || hayContextoAdjunto) return { requiereContexto: false }
   return { requiereContexto: true, categorias: TODAS_LAS_CATEGORIAS }
 }
 
@@ -264,12 +275,23 @@ export function incorporarDeltasIa(
   return { ok: true, decisiones, contextoPedagogico }
 }
 
-function construirContextoNotasBase(interno: ContextoInternoGrupo, contextoDocente: string | null | undefined): string {
+// PA-5B §E: contextoDocente (fuente A, texto explícito) y
+// contextoAdjunto (fuente B, derivado de un adjunto) se etiquetan por
+// SEPARADO aquí — nunca se concatenan de forma que después sea
+// imposible distinguir su procedencia. El texto resultante puede
+// terminar en programa_analitico_borrador.contexto_notas, pero la
+// etiqueta "mediante un adjunto del docente" deja claro que NO es
+// currículo oficial SEP (fuente C, siempre aparte, ver
+// construirBloqueCatalogo).
+function construirContextoNotasBase(interno: ContextoInternoGrupo, contextoDocente: string | null | undefined, contextoAdjunto?: ContextoPedagogicoAdjunto | null): string {
   const partes = [
     `Grupo de ${interno.gradoGrupo}.° grado de ${interno.nivelEducativo} en ${interno.institucionNombre ?? 'la institución registrada'}, con ${interno.totalAlumnosActivos} alumnos activos.`,
   ]
   if (contextoDocente && contextoDocente.trim() !== '') {
     partes.push(`Contexto proporcionado por el docente: "${contextoDocente.trim()}"`)
+  }
+  if (contextoAdjunto?.hayContextoPedagogico && contextoAdjunto.observaciones.length > 0) {
+    partes.push(`Contexto pedagógico proporcionado mediante un adjunto del docente (no es información oficial SEP): ${contextoAdjunto.observaciones.join('; ')}.`)
   }
   return partes.join(' ')
 }
@@ -280,6 +302,12 @@ export type GenerarPropuestaInput = {
   // obligatorio. Este mismo contrato se reutilizará desde el Chat en
   // una fase futura, todavía no conectada.
   contextoDocente?: string | null
+  // PA-5B — contexto pedagógico YA extraído (0 o 1 llamada IA previa,
+  // fuera de este módulo, ver contextoAdjuntoProgramaAnalitico.ts) de
+  // un adjunto (imagen) que el docente aportó en el mismo turno. Nunca
+  // se recibe aquí una imagen cruda — este módulo nunca hace vision,
+  // solo consume la extracción ya estructurada y validada.
+  contextoAdjunto?: ContextoPedagogicoAdjunto | null
 }
 
 export async function generarPropuestaProgramaAnalitico(
@@ -303,7 +331,7 @@ export async function generarPropuestaProgramaAnalitico(
 
   const interno = await recopilarContextoInternoGrupo(sb, input.grupoId, contexto)
 
-  const evaluacionContexto = evaluarRequiereContexto(input.contextoDocente, interno)
+  const evaluacionContexto = evaluarRequiereContexto(input.contextoDocente, interno, input.contextoAdjunto)
   if (evaluacionContexto.requiereContexto) {
     return { ok: false, requiereContexto: true, categorias: evaluacionContexto.categorias }
   }
@@ -323,6 +351,23 @@ export async function generarPropuestaProgramaAnalitico(
     input.contextoDocente && input.contextoDocente.trim() !== ''
       ? `CONTEXTO EXPLÍCITO PROPORCIONADO POR EL DOCENTE:\n"${escaparComillas(input.contextoDocente.trim())}"`
       : 'CONTEXTO EXPLÍCITO PROPORCIONADO POR EL DOCENTE: (ninguno; hay necesidades de apoyo confirmadas que sí justifican evaluar ajustes)',
+    '',
+    // PA-5B §5/§7 — fuente SEPARADA del texto explícito de arriba: ya
+    // viene extraída y validada (0/1 llamada IA previa, nunca una
+    // imagen cruda aquí). Etiquetada explícitamente como NO oficial
+    // SEP y las lecturas dudosas se marcan como tal — nunca se
+    // presentan como hechos.
+    input.contextoAdjunto?.hayContextoPedagogico && input.contextoAdjunto.observaciones.length > 0
+      ? [
+          'CONTEXTO PEDAGÓGICO DERIVADO DE UN ADJUNTO DEL DOCENTE (aportado por el docente mediante una imagen/adjunto; NO es currículo oficial SEP; trátalo con el mismo criterio que el contexto explícito de arriba, nunca como dato curricular oficial):',
+          ...input.contextoAdjunto.observaciones.map((o) => `- ${escaparComillas(o)}`),
+          input.contextoAdjunto.lecturasDudosas.length > 0
+            ? `Lecturas dudosas del adjunto (NO son hechos confirmados — ignóralas salvo que el resto del contexto ya sea suficiente sin ellas): ${input.contextoAdjunto.lecturasDudosas.map(escaparComillas).join('; ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
     '',
     INSTRUCCIONES_DELTAS,
   ].join('\n')
@@ -375,7 +420,7 @@ export async function generarPropuestaProgramaAnalitico(
     return { ok: false, error: { tipo: 'PROPUESTA_IA_INVALIDA', diagnostico: combinado.error } }
   }
 
-  const contextoNotas = [construirContextoNotasBase(interno, input.contextoDocente), incorporado.contextoPedagogico]
+  const contextoNotas = [construirContextoNotasBase(interno, input.contextoDocente, input.contextoAdjunto), incorporado.contextoPedagogico]
     .filter((p): p is string => !!p && p.trim() !== '')
     .join(' ')
 

@@ -9,6 +9,7 @@ import { validarDecisionOrquestador, esCandidataAShortCircuitCliente, HEADER_DEC
 import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { manejarTurnoProgramaAnalitico } from '@/lib/programaAnalitico/manejarTurnoChat'
+import type { AdjuntoProgramaAnalitico, MediaTypeImagenAdjuntoPA } from '@/lib/programaAnalitico/contextoAdjuntoProgramaAnalitico'
 import {
   actualizarPerfilDocente,
   calendarioCicloCompleto,
@@ -2159,7 +2160,23 @@ export async function POST(req: NextRequest) {
       if (clasificacion.intencion_principal === 'programa_analitico') {
         const requestIdPa = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         try {
-          const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, clasificacion.accion_programa_analitico, mensaje)
+          // PA-5B — reutiliza EXACTAMENTE la misma normalización ya
+          // validada del pipeline de imágenes del Chat (ver
+          // imagenesActualesCrudas más abajo, patrón idéntico ya
+          // probado en actualizar_lista_oficial): nunca se duplica
+          // upload/Storage/validación, solo se lee lo que /api/chat ya
+          // recibió y validó como imagen real de este turno.
+          const imagenesActualesParaPa: { base64: string; tipo: string }[] =
+            imagenesValidas.length > 0
+              ? imagenesValidas
+              : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/')
+                ? [{ base64: imagenBase64, tipo: imagenTipo }]
+                : []
+          const adjuntoProgramaAnalitico: AdjuntoProgramaAnalitico | null =
+            imagenesActualesParaPa.length > 0
+              ? { origen: 'imagen', imagenes: imagenesActualesParaPa.map((img) => ({ base64: img.base64, mediaType: img.tipo as MediaTypeImagenAdjuntoPA })) }
+              : null
+          const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, clasificacion.accion_programa_analitico, mensaje, adjuntoProgramaAnalitico, requestIdPa)
           console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${clasificacion.accion_programa_analitico} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
           return respuestaTexto(resultado.texto)
         } catch (e) {

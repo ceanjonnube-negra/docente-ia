@@ -9,9 +9,18 @@
 import type { ResumenPropuesta } from './borradorProgramaAnalitico'
 import type { ItemVigente } from './consultarProgramaAnaliticoVigente'
 
-export function textoPreguntaContexto(gradoGrupo: string | null, nivelEducativo: string | null): string {
+// PA-5B §4 — notaAdjuntoDudoso: cuando el docente adjuntó una imagen
+// pero el extractor solo encontró lecturas dudosas (nunca hechos
+// confirmados) y el texto tampoco alcanza por sí solo, la respuesta
+// debe pedir una aclaración breve en vez de la pregunta genérica —
+// nunca se completa la lectura dudosa por inferencia.
+export function textoPreguntaContexto(gradoGrupo: string | null, nivelEducativo: string | null, notaAdjuntoDudoso?: boolean): string {
   const referenciaGrupo = gradoGrupo && nivelEducativo ? ` tu grupo de ${gradoGrupo}.° de ${nivelEducativo}` : ' tu grupo'
-  return `Ya tengo identificado${referenciaGrupo} y el currículo correspondiente. Para contextualizar tu Programa Analítico, cuéntame brevemente qué características, necesidades o situaciones de tu grupo o comunidad quieres que tome en cuenta. Si no hay nada particular por ahora, también puedes decirme que continúe con el currículo oficial tal cual.`
+  const base = `Ya tengo identificado${referenciaGrupo} y el currículo correspondiente. Para contextualizar tu Programa Analítico, cuéntame brevemente qué características, necesidades o situaciones de tu grupo o comunidad quieres que tome en cuenta. Si no hay nada particular por ahora, también puedes decirme que continúe con el currículo oficial tal cual.`
+  if (notaAdjuntoDudoso) {
+    return `${base}\n\nPor cierto, no pude leer con claridad suficiente la imagen que adjuntaste — si contiene información relevante para tu grupo, cuéntamela brevemente con tus palabras.`
+  }
+  return base
 }
 
 export function textoResumenPropuestaGenerada(resumen: ResumenPropuesta): string {
@@ -69,6 +78,10 @@ export function textoAjusteNoReconocido(): string {
 
 export function textoNoHayPaVigente(): string {
   return 'Todavía no hay un Programa Analítico publicado para tu grupo. ¿Quieres que empecemos a armarlo?'
+}
+
+export function textoDemasiadasImagenesAdjuntoPa(maximo: number): string {
+  return `Recibí demasiadas imágenes para interpretar de una vez (máximo ${maximo}). Envíame hasta ${maximo} imágenes claras y vuelve a pedírmelo.`
 }
 
 export function textoIdentidadCurricularCambio(): string {

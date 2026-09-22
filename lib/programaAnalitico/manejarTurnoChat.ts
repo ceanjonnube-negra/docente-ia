@@ -28,12 +28,14 @@ import {
 } from './orquestarBorrador'
 import { consultarProgramaAnaliticoVigente, detectarCampoFormativoEnTexto, filtrarItemsPorCampo } from './consultarProgramaAnaliticoVigente'
 import { interpretarAjusteBorrador } from './interpretarAjusteBorrador'
+import { extraerContextoPedagogicoAdjunto, MAXIMO_IMAGENES_CONTEXTO_PA, type AdjuntoProgramaAnalitico, type ContextoPedagogicoAdjunto } from './contextoAdjuntoProgramaAnalitico'
 import {
   textoAjusteAmbiguo,
   textoAjusteAplicado,
   textoAjusteNoReconocido,
   textoConfirmacionPublicada,
   textoConsultaPaVigente,
+  textoDemasiadasImagenesAdjuntoPa,
   textoIdentidadCurricularCambio,
   textoNoHayNadaQueConfirmar,
   textoNoHayPaVigente,
@@ -49,6 +51,16 @@ export type SesionMinimaProgramaAnalitico = {
 }
 
 export type ResultadoTurnoProgramaAnalitico = { texto: string; llamadasIa: number }
+
+// PA-5B §14 — observabilidad mínima del pipeline PA: nunca base64,
+// imagen, prompt completo ni contenido sensible — solo conteos/tiempos.
+function logFasePA(requestId: string, fase: 'visual' | 'generacion' | 'ajuste', datos: Record<string, string | number | boolean | undefined>) {
+  const partes = Object.entries(datos)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ')
+  console.log(`[PROGRAMA_ANALITICO_IA] requestId=${requestId} fase=${fase} ${partes}`)
+}
 
 function textoErrorOrquestacion(error: ErrorOrquestacionBorrador): string {
   switch (error.tipo) {
@@ -81,7 +93,9 @@ export async function manejarTurnoProgramaAnalitico(
   anthropic: Anthropic,
   sesion: SesionMinimaProgramaAnalitico,
   accion: 'gestionar' | 'confirmar' | 'consultar' | null,
-  mensaje: string
+  mensaje: string,
+  adjunto: AdjuntoProgramaAnalitico | null,
+  requestId: string
 ): Promise<ResultadoTurnoProgramaAnalitico> {
   const grupoId = sesion.grupo_activo_id
   if (!grupoId) return { texto: 'No tengo identificado un grupo activo todavía — configura tu grupo primero en la sección Lista.', llamadasIa: 0 }
@@ -115,18 +129,72 @@ export async function manejarTurnoProgramaAnalitico(
 
   // --- GESTIONAR: sin pendiente -> iniciar/aportar contexto (misma
   //     ruta: el mensaje actual ES el contextoDocente candidato;
-  //     evaluarRequiereContexto ya decide internamente si alcanza). ---
+  //     evaluarRequiereContexto ya decide internamente si alcanza).
+  //     PA-5B — si el turno trae un adjunto (imagen), se interpreta
+  //     ANTES de generar: 1 llamada visual acotada (nunca la imagen
+  //     cruda ni el catálogo completo en la misma llamada, §7), y el
+  //     resultado entra como una fuente MÁS, separada del texto
+  //     explícito (§5/§9) — nunca sustituye a mensaje, se combinan. ---
   if (!pendiente) {
-    const resultado = await prepararBorradorProgramaAnalitico(sb, anthropic, { grupoId, contextoDocente: mensaje })
-    if (!resultado.ok) {
-      if ('requiereContexto' in resultado) return { texto: textoPreguntaContexto(sesion.grado_grupo, sesion.nivel_educativo_grupo), llamadasIa: 0 }
-      if ('requiereInformacion' in resultado) {
-        return { texto: 'No pude preparar tu Programa Analítico porque falta información del currículo oficial de tu grupo.', llamadasIa: 0 }
-      }
-      if (resultado.error.tipo === 'YA_HAY_BORRADOR_PENDIENTE') return { texto: textoErrorOrquestacion(resultado.error), llamadasIa: 0 }
-      return { texto: 'No pude generar tu propuesta de Programa Analítico en este momento. Intenta de nuevo.', llamadasIa: 1 }
+    if (adjunto && adjunto.origen === 'imagen' && adjunto.imagenes.length > MAXIMO_IMAGENES_CONTEXTO_PA) {
+      return { texto: textoDemasiadasImagenesAdjuntoPa(MAXIMO_IMAGENES_CONTEXTO_PA), llamadasIa: 0 }
     }
-    return { texto: textoResumenPropuestaGenerada(resultado.resumen), llamadasIa: 1 }
+
+    let contextoAdjunto: ContextoPedagogicoAdjunto | null = null
+    let llamadasIaVisual = 0
+    // Solo true cuando el extractor NO encontró contexto pedagógico
+    // utilizable y lo único que había eran lecturas dudosas — nunca se
+    // convierten en hecho silenciosamente (§4/§9).
+    let soloLecturasDudosas = false
+    if (adjunto && adjunto.origen === 'imagen' && adjunto.imagenes.length > 0) {
+      const extraido = await extraerContextoPedagogicoAdjunto(anthropic, adjunto)
+      if (extraido.llamadaIa) llamadasIaVisual = 1
+      if (extraido.ok) {
+        contextoAdjunto = extraido.contexto
+        soloLecturasDudosas = !extraido.contexto.hayContextoPedagogico && extraido.contexto.lecturasDudosas.length > 0
+        logFasePA(requestId, 'visual', {
+          llamadaIa: true,
+          inputTokens: extraido.observabilidad.tokensEntrada,
+          outputTokens: extraido.observabilidad.tokensSalida,
+          duracionMs: extraido.observabilidad.duracionMs,
+          hayContextoVisual: extraido.contexto.hayContextoPedagogico,
+          lecturasDudosasCount: extraido.contexto.lecturasDudosas.length,
+        })
+      } else if ('observabilidad' in extraido) {
+        // Falla real de IA/JSON al interpretar la imagen — se
+        // registra, pero el turno NUNCA se bloquea por esto: fail-
+        // closed sobre el CONTENIDO (nunca se inventa contexto), no
+        // sobre el flujo (el docente puede seguir con solo texto).
+        logFasePA(requestId, 'visual', {
+          llamadaIa: true,
+          inputTokens: extraido.observabilidad.tokensEntrada,
+          outputTokens: extraido.observabilidad.tokensSalida,
+          duracionMs: extraido.observabilidad.duracionMs,
+          hayContextoVisual: false,
+          lecturasDudosasCount: 0,
+        })
+      }
+    }
+
+    const resultado = await prepararBorradorProgramaAnalitico(sb, anthropic, { grupoId, contextoDocente: mensaje, contextoAdjunto })
+    if (!resultado.ok) {
+      if ('requiereContexto' in resultado) {
+        return { texto: textoPreguntaContexto(sesion.grado_grupo, sesion.nivel_educativo_grupo, soloLecturasDudosas), llamadasIa: llamadasIaVisual }
+      }
+      if ('requiereInformacion' in resultado) {
+        return { texto: 'No pude preparar tu Programa Analítico porque falta información del currículo oficial de tu grupo.', llamadasIa: llamadasIaVisual }
+      }
+      if (resultado.error.tipo === 'YA_HAY_BORRADOR_PENDIENTE') return { texto: textoErrorOrquestacion(resultado.error), llamadasIa: llamadasIaVisual }
+      return { texto: 'No pude generar tu propuesta de Programa Analítico en este momento. Intenta de nuevo.', llamadasIa: llamadasIaVisual + 1 }
+    }
+    logFasePA(requestId, 'generacion', {
+      llamadaIa: true,
+      inputTokens: resultado.observabilidad.tokensEntrada,
+      outputTokens: resultado.observabilidad.tokensSalida,
+      duracionMs: resultado.observabilidad.duracionMs,
+      cantidadDeltas: resultado.cantidadDeltas,
+    })
+    return { texto: textoResumenPropuestaGenerada(resultado.resumen), llamadasIa: llamadasIaVisual + 1 }
   }
 
   // --- GESTIONAR: con pendiente -> interpretar como AJUSTE. ---
@@ -138,8 +206,16 @@ export async function manejarTurnoProgramaAnalitico(
   const catalogo = await recuperarCatalogoCurricularCerrado(sb, contexto.contexto)
   const candidatos = catalogo.contenidos.map((c) => ({ id: c.id, titulo: c.titulo }))
 
+  const inicioAjuste = Date.now()
   const interpretado = await interpretarAjusteBorrador(anthropic, mensaje, borradorActual.resumen, candidatos)
   const llamadasIaAjuste = interpretado.llamadaIa ? 1 : 0
+  if (interpretado.llamadaIa) {
+    // interpretarAjusteBorrador no expone tokens (no se modifica ese
+    // módulo en PA-5B, solo se mide la duración desde aquí) —
+    // duracionMs siempre disponible, inputTokens/outputTokens se
+    // omiten cuando no hay dato (§14: "cuando el SDK lo entregue").
+    logFasePA(requestId, 'ajuste', { llamadaIa: true, duracionMs: Date.now() - inicioAjuste })
+  }
   if (!interpretado.ok) {
     if ('ambiguo' in interpretado) return { texto: textoAjusteAmbiguo(interpretado.opciones), llamadasIa: llamadasIaAjuste }
     if ('noReconocido' in interpretado) return { texto: textoAjusteNoReconocido(), llamadasIa: llamadasIaAjuste }

@@ -131,6 +131,35 @@ function anthropicControlado(jsonRespuesta: object): { anthropic: Anthropic; pro
   return { anthropic, promptRecibido }
 }
 
+// Anthropic secuencial — PA-5B: una llamada visual + una de generación
+// pueden ocurrir en el MISMO turno con formas de respuesta distintas
+// (una espera {hayContextoPedagogico,...}, la otra {contextoPedagogico,
+// decisiones}) — devuelve cada JSON de `jsonsRespuesta` en orden de
+// llamada y registra el `content` completo recibido en cada una
+// (string o array de bloques, según venga) para poder inspeccionar si
+// una llamada trajo bloques type:'image' (casos 4/5/6/7).
+function anthropicSecuencial(jsonsRespuesta: object[]): { anthropic: Anthropic; llamadasRecibidas: { content: unknown }[] } {
+  const llamadasRecibidas: { content: unknown }[] = []
+  let indice = 0
+  const anthropic = {
+    messages: {
+      stream: (params: { messages: { content: unknown }[] }) => {
+        llamadasRecibidas.push({ content: params.messages[0].content })
+        const jsonRespuesta = jsonsRespuesta[Math.min(indice, jsonsRespuesta.length - 1)]
+        indice++
+        return {
+          finalMessage: async () => ({
+            content: [{ type: 'text', text: JSON.stringify(jsonRespuesta) }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 10, output_tokens: 10 },
+          }),
+        }
+      },
+    },
+  } as unknown as Anthropic
+  return { anthropic, llamadasRecibidas }
+}
+
 const GRADO_ID = 'grado-4-real'
 const VERSION_ID = 'version-1'
 const CAMPO_ID = 'campo-lenguajes'
@@ -181,7 +210,7 @@ async function main() {
   // --- 2. sin contexto → pregunta contextual, 0 generación ---
   {
     const { sb } = clienteFalso(fixtureCurricular())
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'ok')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'ok', null, 'req-test')
     verificar(r.llamadasIa === 0, '2. sin contexto suficiente → 0 llamadas IA')
     verificar(r.texto.includes('Ya tengo identificado') || r.texto.toLowerCase().includes('cuéntame'), '2b. respuesta es la pregunta de contexto')
   }
@@ -189,7 +218,7 @@ async function main() {
   // --- 4. respuesta trivial "ok" mientras espera contexto → NO genera ---
   {
     const { sb, interno } = clienteFalso(fixtureCurricular())
-    await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'ok')
+    await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'ok', null, 'req-test')
     verificar(interno._tabla('programa_analitico_borrador').length === 0, '4. "ok" no crea ningún borrador (no se generó nada)')
   }
 
@@ -197,7 +226,7 @@ async function main() {
   {
     const { anthropic } = anthropicControlado({ contextoPedagogico: null, decisiones: [] })
     const { sb, interno } = clienteFalso(fixtureCurricular())
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'No tengo nada particular que agregar, usa el currículo oficial tal cual por ahora.')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'No tengo nada particular que agregar, usa el currículo oficial tal cual por ahora.', null, 'req-test')
     verificar(r.llamadasIa === 1, '5. decisión explícita de "tal cual" es contexto suficiente → SÍ genera (1 IA)')
     verificar(interno._tabla('programa_analitico_borrador').length === 1, '5b. se creó el borrador')
   }
@@ -206,7 +235,7 @@ async function main() {
   {
     const { anthropic } = anthropicControlado({ contextoPedagogico: 'Síntesis.', decisiones: [] })
     const { sb, interno } = clienteFalso(fixtureCurricular())
-    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos y quiero reforzar lectura.')
+    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos y quiero reforzar lectura.', null, 'req-test')
     // Nota: 'estado' no se comprueba aquí porque el INSERT real confía
     // en el DEFAULT 'pendiente' de la columna en Postgres (nunca lo
     // fija explícitamente en el código) — ver prueba real de PA-4C
@@ -220,7 +249,7 @@ async function main() {
   {
     const { anthropic } = anthropicControlado({ contextoPedagogico: null, decisiones: [{ decision: 'excluir', curriculoContenidoId: CONTENIDO_B }] })
     const { sb } = clienteFalso(fixtureCurricular())
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.', null, 'req-test')
     verificar(!r.texto.includes(CONTENIDO_A) && !r.texto.includes(CONTENIDO_B), '7. la respuesta nunca imprime IDs de contenido crudos')
     verificar(r.texto.length < 2000, '7b. la respuesta es un resumen breve, no un volcado completo')
   }
@@ -228,20 +257,20 @@ async function main() {
   // --- 8. "sí" sin borrador → NO publica ---
   {
     const { sb, interno } = clienteFalso(fixtureCurricular())
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'confirmar', 'sí')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'confirmar', 'sí', null, 'req-test')
     verificar(interno._tabla('programa_analitico').length === 0, '8. "sí" sin borrador pendiente → no publica nada')
     verificar(r.texto.toLowerCase().includes('no tengo ninguna propuesta'), '8b. respuesta indica que no hay nada pendiente')
   }
 
   // --- 10. confirmar usa borradorId, nunca propuesta cliente (estructural) ---
-  verificar(manejarTurnoProgramaAnalitico.length === 5, '10. manejarTurnoProgramaAnalitico no acepta una propuesta del cliente como parámetro')
+  verificar(manejarTurnoProgramaAnalitico.length === 7, '10. manejarTurnoProgramaAnalitico no acepta una propuesta del cliente como parámetro (sb, anthropic, sesion, accion, mensaje, adjunto, requestId — nunca una propuesta)')
 
   // --- 12. ajuste determinista inequívoco → 0 IA ---
   {
     const { sb, interno } = clienteFalso(
       fixtureCurricular({ programa_analitico_borrador: [filaBorrador({ deltas: [{ decision: 'excluir', curriculoContenidoId: CONTENIDO_B }] })] })
     )
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'no excluyas ese contenido')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'no excluyas ese contenido', null, 'req-test')
     verificar(r.llamadasIa === 0, '12. "no excluyas ese" con 1 solo excluido → 0 llamadas IA (ruta determinista)')
     const fila = interno._tabla('programa_analitico_borrador')[0]
     verificar(Array.isArray(fila.deltas) && (fila.deltas as unknown[]).length === 0, '12b. el ajuste se aplicó (restaurado) sin usar IA')
@@ -261,7 +290,7 @@ async function main() {
         ],
       })
     )
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'no excluyas ese contenido')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', 'no excluyas ese contenido', null, 'req-test')
     verificar(r.llamadasIa === 0, '13. 2 excluidos candidatos → ambiguo, sigue 0 IA (ruta determinista detecta la ambigüedad sin gastar IA)')
     const fila = interno._tabla('programa_analitico_borrador')[0]
     verificar((fila.deltas as unknown[]).length === 2, '13b. no se modificó el borrador — sigue con los 2 deltas originales')
@@ -272,7 +301,7 @@ async function main() {
   {
     const { anthropic } = anthropicControlado({ tipo: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'Adaptado al agua.' })
     const { sb, interno } = clienteFalso(fixtureCurricular({ programa_analitico_borrador: [filaBorrador()] }))
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'relaciona el contenido de narración con el cuidado del agua')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'relaciona el contenido de narración con el cuidado del agua', null, 'req-test')
     verificar(r.llamadasIa === 1, '14. ajuste con redacción → exactamente 1 llamada IA')
     const fila = interno._tabla('programa_analitico_borrador')[0]
     verificar((fila.deltas as { decision: string }[])[0]?.decision === 'contextualizar', '14b. el delta se persistió como contextualizar')
@@ -282,7 +311,7 @@ async function main() {
   {
     const { anthropic, promptRecibido } = anthropicControlado({ tipo: 'no_reconocido' })
     const { sb } = clienteFalso(fixtureCurricular({ programa_analitico_borrador: [filaBorrador()] }))
-    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'quiero cambiar algo pero no sé qué')
+    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'quiero cambiar algo pero no sé qué', null, 'req-test')
     verificar(promptRecibido.valor.length < 5000, '15. el prompt de interpretación de ajuste es acotado (no incluye PDA/textos oficiales largos)')
     verificar(!promptRecibido.valor.includes('Reconoce estilos narrativos'), '15b. el prompt de ajuste NO incluye el texto de PDA oficiales')
   }
@@ -291,7 +320,7 @@ async function main() {
   {
     const { anthropic } = anthropicControlado({ tipo: 'excluir', curriculoContenidoId: 'contenido-inexistente-inventado' })
     const { sb, interno } = clienteFalso(fixtureCurricular({ programa_analitico_borrador: [filaBorrador()] }))
-    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'excluye ese contenido raro')
+    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'excluye ese contenido raro', null, 'req-test')
     const fila = interno._tabla('programa_analitico_borrador')[0]
     verificar((fila.deltas as unknown[]).length === 0, '16. un id inventado por la IA (fuera del catálogo real) nunca se persiste')
   }
@@ -306,7 +335,7 @@ async function main() {
         programa_analitico_item_pda: [{ programa_analitico_item_id: 'item-1', curriculo_pda_grado_id: 'pdagrado-1' }],
       })
     )
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'consultar', '¿qué tenemos en el Programa Analítico?')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'consultar', '¿qué tenemos en el Programa Analítico?', null, 'req-test')
     verificar(r.llamadasIa === 0, '17. consulta del PA vigente → 0 llamadas IA')
     verificar(r.texto.includes('Narración de sucesos'), '17b. usa el título oficial real del contenido (dato canónico, no inventado)')
     verificar(r.texto.includes('versión 1'), '18. la respuesta referencia la versión vigente real')
@@ -325,7 +354,7 @@ async function main() {
       })
     )
     const { anthropic } = anthropicControlado({ contextoPedagogico: null, decisiones: [] })
-    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.')
+    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.', null, 'req-test')
     const items = interno._tabla('programa_analitico_borrador') // el borrador no lo revela, pero confirmamos indirectamente vía candidatos del catálogo usado por el generador (ya probado en PA-3B1/PA-4B) — aquí solo confirmamos que el flujo corrió sin mezclar (sin excepción ni error).
     verificar(items.length === 1, '19. la generación con PDA de otro grado en la tabla no revienta ni mezcla — el catálogo ya filtra por grado (ver PA-3B1)')
   }
@@ -341,7 +370,17 @@ async function main() {
     const codigoRoute = readFileSync(new URL('../app/api/chat/route.ts', import.meta.url), 'utf-8')
     const idxLlamada = codigoRoute.indexOf('manejarTurnoProgramaAnalitico(supabaseUser')
     const idxGuard = codigoRoute.indexOf("clasificacion.intencion_principal === 'programa_analitico'")
-    verificar(idxLlamada > -1 && idxGuard > -1 && idxGuard < idxLlamada && idxLlamada - idxGuard < 800, '25. manejarTurnoProgramaAnalitico solo se invoca dentro del guard de intencion_principal==="programa_analitico" — ningún otro turno lo dispara ni carga currículo')
+    // PA-5B amplió el bloque entre el guard y la llamada (normalización
+    // del adjunto ya validado, ver route.ts) — el tope sube de 800 a
+    // 2000 para dar cabida a ese código legítimo, pero la prueba real
+    // (que ningún currículo se cargue en un turno normal) ahora se
+    // verifica de forma directa: el bloque intermedio nunca debe
+    // mencionar la recuperación del catálogo curricular completo.
+    const bloqueIntermedio = idxGuard > -1 && idxLlamada > idxGuard ? codigoRoute.slice(idxGuard, idxLlamada) : ''
+    verificar(
+      idxLlamada > -1 && idxGuard > -1 && idxGuard < idxLlamada && idxLlamada - idxGuard < 2000 && !bloqueIntermedio.includes('recuperarCatalogoCurricularCerrado'),
+      '25. manejarTurnoProgramaAnalitico solo se invoca dentro del guard de intencion_principal==="programa_analitico", y el bloque intermedio (normalización de imagen ya validada) nunca carga el catálogo curricular — ningún otro turno lo dispara ni carga currículo'
+    )
   }
 
   // --- 26. no segunda IA para resumen (construirResumenPropuesta es síncrona/pura) ---
@@ -360,7 +399,7 @@ async function main() {
   // --- 28. recarga/continuación puede recuperar borrador desde DB ---
   {
     const { sb } = clienteFalso(fixtureCurricular({ programa_analitico_borrador: [filaBorrador()] }))
-    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'consultar', '¿cómo va mi Programa Analítico?')
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'consultar', '¿cómo va mi Programa Analítico?', null, 'req-test')
     verificar(r.llamadasIa === 0 && r.texto.toLowerCase().includes('pendiente'), '28. una consulta nueva (conversación reiniciada) recupera el borrador pendiente desde DB, no de memoria')
   }
 
@@ -376,6 +415,105 @@ async function main() {
     const codigo = readFileSync(new URL('../lib/programaAnalitico/manejarTurnoChat.ts', import.meta.url), 'utf-8')
     const primeraLineaUtil = codigo.indexOf('const pendiente = await buscarBorradorPendientePorGrupo')
     verificar(primeraLineaUtil > -1 && primeraLineaUtil < codigo.indexOf('if (accion ==='), '30. el estado pendiente se resuelve desde DB ANTES de cualquier rama de decisión — nunca se asume desde fuera')
+  }
+
+  // ============================================================
+  // PA-5B — contexto multimodal del Programa Analítico.
+  // ============================================================
+
+  const IMAGEN_FALSA = { base64: 'BASE64FAKE_DATA_XYZ_NUNCA_DEBE_PERSISTIRSE', mediaType: 'image/jpeg' as const }
+  const adjuntoConImagen = { origen: 'imagen' as const, imagenes: [IMAGEN_FALSA] }
+
+  // --- PA5B-1. PA sin imagen (adjunto=null) → comportamiento actual intacto ---
+  {
+    const { anthropic } = anthropicControlado({ contextoPedagogico: null, decisiones: [] })
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.', null, 'req-test')
+    verificar(r.llamadasIa === 1, 'PA5B-1. sin adjunto → exactamente 1 llamada IA (generación), igual que antes de PA-5B')
+    verificar(interno._tabla('programa_analitico_borrador').length === 1, 'PA5B-1b. se creó el borrador normalmente sin adjunto')
+  }
+
+  // --- PA5B-4. imagen + "Hay que fortalecer siempre esos puntos" → extracción visual utilizada como contexto ---
+  let llamadasRecibidasCaso4: { content: unknown }[] = []
+  {
+    const { anthropic, llamadasRecibidas } = anthropicSecuencial([
+      { hayContextoPedagogico: true, observaciones: ['Dificultad de comprensión lectora observada en el diagnóstico.'], lecturasDudosas: [] },
+      { contextoPedagogico: 'Se usó el diagnóstico aportado.', decisiones: [] },
+    ])
+    llamadasRecibidasCaso4 = llamadasRecibidas
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Hay que fortalecer siempre esos puntos', adjuntoConImagen, 'req-test')
+    verificar(r.llamadasIa === 2, 'PA5B-4. imagen + texto → exactamente 2 llamadas IA (1 visual acotada + 1 generación), nunca más')
+    verificar(llamadasRecibidas.length === 2, 'PA5B-4b. se hicieron exactamente 2 llamadas reales a anthropic.messages.stream')
+    const contenidoLlamadaVisual = llamadasRecibidas[0]?.content
+    verificar(
+      Array.isArray(contenidoLlamadaVisual) && contenidoLlamadaVisual.some((b: { type?: string }) => b?.type === 'image'),
+      'PA5B-4c. la primera llamada (visual) SÍ recibió un bloque type=image — la imagen real llegó al extractor'
+    )
+    const contenidoLlamadaGeneracion = llamadasRecibidas[1]?.content
+    verificar(
+      typeof contenidoLlamadaGeneracion === 'string' && contenidoLlamadaGeneracion.includes('Dificultad de comprensión lectora observada en el diagnóstico.'),
+      'PA5B-4d. la observación extraída de la imagen SÍ llegó al prompt de generación — ya no se pierde (causa raíz del diagnóstico real corregida)'
+    )
+    verificar(interno._tabla('programa_analitico_borrador').length === 1, 'PA5B-4e. se creó el borrador usando el contexto combinado (texto + imagen)')
+  }
+
+  // --- PA5B-5. imagen irrelevante (sin contexto pedagógico) + texto trivial → NO inventa contexto, no genera ---
+  {
+    const { anthropic, llamadasRecibidas } = anthropicSecuencial([{ hayContextoPedagogico: false, observaciones: [], lecturasDudosas: [] }])
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'ok', adjuntoConImagen, 'req-test')
+    verificar(r.llamadasIa === 1, 'PA5B-5. imagen irrelevante + texto trivial → solo 1 llamada (visual, que no encontró nada) — NUNCA llega a generación')
+    verificar(llamadasRecibidas.length === 1, 'PA5B-5b. la generación NUNCA se llamó (no hay 2ª llamada)')
+    verificar(interno._tabla('programa_analitico_borrador').length === 0, 'PA5B-5c. no se creó ningún borrador — nunca se inventó contexto de una imagen sin contenido pedagógico')
+    verificar(r.texto.toLowerCase().includes('cuéntame') || r.texto.toLowerCase().includes('características'), 'PA5B-5d. la respuesta sigue siendo la pregunta de contexto normal')
+  }
+
+  // --- PA5B-6/PA5B-15. imagen con SOLO lecturas dudosas → nunca se convierte en hecho, pide aclaración ---
+  {
+    const { anthropic } = anthropicSecuencial([{ hayContextoPedagogico: false, observaciones: [], lecturasDudosas: ['un texto manuscrito parcialmente ilegible'] }])
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'ok', adjuntoConImagen, 'req-test')
+    verificar(r.llamadasIa === 1, 'PA5B-6. imagen con solo lecturas dudosas → 1 llamada (visual), nunca genera con eso como hecho')
+    verificar(interno._tabla('programa_analitico_borrador').length === 0, 'PA5B-15. ninguna lectura dudosa se convirtió en hecho — no se creó ningún borrador a partir de ella')
+    verificar(r.texto.includes('no pude leer con claridad'), 'PA5B-6b. la respuesta pide una aclaración breve específica sobre la imagen, en vez de la pregunta genérica sola')
+  }
+
+  // --- PA5B-7. contexto visual nunca etiquetado como SEP ---
+  {
+    const contenidoLlamadaGeneracion = llamadasRecibidasCaso4[1]?.content
+    verificar(
+      typeof contenidoLlamadaGeneracion === 'string' &&
+        contenidoLlamadaGeneracion.includes('NO es currículo oficial SEP') &&
+        contenidoLlamadaGeneracion.includes('ADJUNTO DEL DOCENTE'),
+      'PA5B-7. el bloque de contexto derivado de la imagen queda etiquetado explícitamente como NO oficial SEP, aportado por el docente'
+    )
+  }
+
+  // --- PA5B-13/14. nunca se persiste el base64 de la imagen ni el catálogo completo en el borrador ---
+  {
+    const { anthropic } = anthropicSecuencial([
+      { hayContextoPedagogico: true, observaciones: ['Necesidad de refuerzo en lectura.'], lecturasDudosas: [] },
+      { contextoPedagogico: null, decisiones: [] },
+    ])
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Hay que reforzar esos puntos', adjuntoConImagen, 'req-test')
+    const filaCreada = interno._tabla('programa_analitico_borrador')[0]
+    const filaComoTexto = JSON.stringify(filaCreada)
+    verificar(!filaComoTexto.includes(IMAGEN_FALSA.base64), 'PA5B-13. el base64 de la imagen NUNCA se persiste en programa_analitico_borrador')
+    verificar(!filaComoTexto.includes(CONTENIDO_A) && !filaComoTexto.includes(CONTENIDO_B), 'PA5B-14. el catálogo curricular completo (ids de contenidos) nunca se persiste en el borrador — solo deltas/contexto')
+  }
+
+  // --- PA5B-9/10. no-regresión estructural: el bloque nuevo de route.ts está aislado dentro del guard de programa_analitico, nunca toca planeación ni lista oficial ---
+  {
+    const codigoRoute = readFileSync(new URL('../app/api/chat/route.ts', import.meta.url), 'utf-8')
+    const idxGuard = codigoRoute.indexOf("clasificacion.intencion_principal === 'programa_analitico'")
+    const idxLlamada = codigoRoute.indexOf('manejarTurnoProgramaAnalitico(supabaseUser')
+    const bloqueIntermedio = idxGuard > -1 && idxLlamada > idxGuard ? codigoRoute.slice(idxGuard, idxLlamada) : ''
+    verificar(
+      !bloqueIntermedio.includes('analizarImagenesListaOficial') && !bloqueIntermedio.includes('aprobarBorradorPlaneacion') && !bloqueIntermedio.includes('generarBorradorPlaneacion'),
+      'PA5B-9/10. el bloque nuevo de normalización de adjunto no toca planeacion_generar ni actualizar_lista_oficial — ambos short-circuits siguen construyendo sus propias imágenes de forma independiente, sin regresión'
+    )
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)
