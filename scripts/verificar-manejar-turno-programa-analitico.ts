@@ -377,15 +377,25 @@ async function main() {
     const idxLlamada = codigoRoute.indexOf('manejarTurnoProgramaAnalitico(supabaseUser')
     const idxGuard = codigoRoute.indexOf("clasificacion.intencion_principal === 'programa_analitico'")
     // PA-5B amplió el bloque entre el guard y la llamada (normalización
-    // del adjunto ya validado, ver route.ts) — el tope sube de 800 a
-    // 2000 para dar cabida a ese código legítimo, pero la prueba real
-    // (que ningún currículo se cargue en un turno normal) ahora se
-    // verifica de forma directa: el bloque intermedio nunca debe
-    // mencionar la recuperación del catálogo curricular completo.
+    // del adjunto ya validado) y PA-5F lo amplió de nuevo (enrutamiento
+    // durable + after() completo, ver route.ts) — el tope sube de 2000
+    // a 10000 para dar cabida a ese código legítimo, pero la prueba
+    // real (que ningún currículo se cargue SINCRÓNICAMENTE en este
+    // turno, ni se reclasifique con Nivel0) se sigue verificando de
+    // forma directa sobre el texto del bloque intermedio: nunca debe
+    // mencionar la recuperación del catálogo curricular completo ni
+    // una segunda llamada a clasificarNivel0 (ver también
+    // verificar-trabajo-durable-programa-analitico.ts, que ya prueba
+    // esto mismo con más detalle sobre el bloque after()).
     const bloqueIntermedio = idxGuard > -1 && idxLlamada > idxGuard ? codigoRoute.slice(idxGuard, idxLlamada) : ''
     verificar(
-      idxLlamada > -1 && idxGuard > -1 && idxGuard < idxLlamada && idxLlamada - idxGuard < 2000 && !bloqueIntermedio.includes('recuperarCatalogoCurricularCerrado'),
-      '25. manejarTurnoProgramaAnalitico solo se invoca dentro del guard de intencion_principal==="programa_analitico", y el bloque intermedio (normalización de imagen ya validada) nunca carga el catálogo curricular — ningún otro turno lo dispara ni carga currículo'
+      idxLlamada > -1 &&
+        idxGuard > -1 &&
+        idxGuard < idxLlamada &&
+        idxLlamada - idxGuard < 10000 &&
+        !bloqueIntermedio.includes('recuperarCatalogoCurricularCerrado') &&
+        !bloqueIntermedio.includes('clasificarNivel0('),
+      '25. manejarTurnoProgramaAnalitico solo se invoca dentro del guard de intencion_principal==="programa_analitico", y el bloque intermedio (normalización de imagen + enrutamiento durable) nunca carga el catálogo curricular ni reclasifica con Nivel0 — ningún otro turno lo dispara'
     )
   }
 
@@ -610,6 +620,57 @@ async function main() {
   {
     const codigo = readFileSync(new URL('../lib/programaAnalitico/sanitizarContextoIndividual.ts', import.meta.url), 'utf-8')
     verificar(!codigo.includes('console.log') && !codigo.includes('console.error'), 'PA5D-extra. sanitizarContextoIndividual.ts no tiene ningún console.log/console.error — nunca puede filtrar un nombre encontrado a los logs')
+  }
+
+  // ============================================================
+  // PA-5F §4/§9 — "Continua" con borrador pendiente: resumen
+  // determinista, 0 IA. Nunca interceptar un ajuste real.
+  // ============================================================
+
+  // --- CASO G. borrador pendiente + continuación trivial → resumen determinista, 0 IA ---
+  for (const mensajeTrivial of ['Continua', 'continúa', 'sigue', 'seguir', 'ok', 'de acuerdo']) {
+    const { sb, interno } = clienteFalso(fixtureCurricular({ programa_analitico_borrador: [filaBorrador({ deltas: [{ decision: 'excluir', curriculoContenidoId: CONTENIDO_A }] })] }))
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropicNuncaLlamado, sesion, 'gestionar', mensajeTrivial, null, 'req-test')
+    verificar(r.llamadasIa === 0, `CASO-G. "${mensajeTrivial}" con borrador pendiente → 0 llamadas IA, nunca gasta IA adivinando contenidos (ver geometría ofrecida en el caso real de PA-5E)`)
+    verificar(r.texto.toLowerCase().includes('pendiente'), `CASO-G2. "${mensajeTrivial}" devuelve el resumen determinista del borrador pendiente (textoYaHayBorradorPendiente)`)
+    const fila = interno._tabla('programa_analitico_borrador')[0]
+    verificar((fila.deltas as unknown[]).length === 1, `CASO-G3. "${mensajeTrivial}" no modifica el borrador — sigue con su único delta original`)
+  }
+
+  // --- CASO H. borrador pendiente + continuación CON instrucción real → ajuste real, NUNCA interceptado por la guarda trivial ---
+  // Mensaje literal del ejemplo de la tarea ("continúa pero quita el
+  // contenido de..."), y deliberadamente SIN "nuevo/local/agregaste"
+  // cerca de "quita" — así tampoco activa la ruta determinista 0-IA de
+  // interpretarAjusteBorrador (ver intentarRutaDeterminista), y prueba
+  // de verdad que llega hasta la Ruta B (1 llamada IA real).
+  {
+    const { anthropic, llamadasRecibidas } = anthropicSecuencial([{ tipo: 'excluir', curriculoContenidoId: CONTENIDO_A }])
+    const { sb, interno } = clienteFalso(
+      fixtureCurricular({ programa_analitico_borrador: [filaBorrador({ deltas: [{ decision: 'contextualizar', curriculoContenidoId: CONTENIDO_A, textoContextualizado: 'Texto contextualizado de prueba.' }] })] })
+    )
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'continúa pero quita el contenido de narración', null, 'req-test')
+    verificar(llamadasRecibidas.length === 1, 'CASO-H. "continúa pero quita el contenido de..." SÍ llega a interpretarAjusteBorrador (1 llamada real) — la guarda trivial nunca la intercepta')
+    verificar(r.llamadasIa === 1, 'CASO-H2. exactamente 1 llamada IA — el ajuste real se procesa con normalidad')
+    const fila = interno._tabla('programa_analitico_borrador')[0]
+    const deltasFinales = fila.deltas as { decision: string; curriculoContenidoId?: string }[]
+    verificar(
+      deltasFinales.length === 1 && deltasFinales[0].decision === 'excluir' && deltasFinales[0].curriculoContenidoId === CONTENIDO_A,
+      'CASO-H3. el ajuste real SÍ se aplicó (contextualizar → excluir para el contenido real) — prueba que no fue interceptado como continuación vacía'
+    )
+  }
+  {
+    // Variantes adicionales del ejemplo dado explícitamente en la tarea — todas deben evitar la guarda (mensaje NO trivial tras normalizar).
+    for (const mensajeConInstruccion of ['sigue y agrega un contenido sobre fracciones', 'ok, cambia el texto del segundo contenido', 'de acuerdo, pero modifica la redacción']) {
+      const codigo = readFileSync(new URL('../lib/programaAnalitico/borradorProgramaAnalitico.ts', import.meta.url), 'utf-8')
+      const inicioSet = codigo.indexOf('const RESPUESTAS_TRIVIALES = new Set([')
+      const finSet = codigo.indexOf('])', inicioSet)
+      const cuerpoSet = codigo.slice(inicioSet, finSet)
+      const normalizado = mensajeConInstruccion
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+      verificar(!cuerpoSet.includes(`'${normalizado}'`), `CASO-H4. "${mensajeConInstruccion}" normalizado no coincide con ninguna entrada literal de RESPUESTAS_TRIVIALES (coincidencia EXACTA requerida, nunca substring) — seguirá el flujo real de ajuste`)
+    }
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)

@@ -19,6 +19,12 @@ import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import type { ArchivoGeneradoInfo, ContextoAplicacion } from './tipos'
 
 const CLAVE_TRABAJO_ACTIVO = 'docente-ia:trabajo-documento-activo'
+// PA-5F — clave SEPARADA para el trabajo durable de Programa Analítico
+// (ver AsistenteService.ts) — nunca comparte slot con un trabajo de
+// documento: un docente podría en teoría tener ambos "en vuelo" a la
+// vez (poco probable, pero el aislamiento es gratis y evita que uno
+// pise el puntero del otro en localStorage).
+export const CLAVE_TRABAJO_PA_ACTIVO = 'docente-ia:trabajo-programa-analitico-activo'
 
 export type TrabajoDocumentoActivoGuardado = {
   trabajoId: string
@@ -34,19 +40,23 @@ export type EstadoTrabajoConsultado = {
   actualizadoEn: string
 }
 
-export function guardarTrabajoActivo(valor: TrabajoDocumentoActivoGuardado) {
+// clave opcional (default: la constante de siempre) — PA-5F reutiliza
+// esta misma función con CLAVE_TRABAJO_PA_ACTIVO en vez de duplicarla;
+// cualquier llamador existente que no la pase se comporta EXACTAMENTE
+// igual que antes.
+export function guardarTrabajoActivo(valor: TrabajoDocumentoActivoGuardado, clave: string = CLAVE_TRABAJO_ACTIVO) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(CLAVE_TRABAJO_ACTIVO, JSON.stringify(valor))
+    window.localStorage.setItem(clave, JSON.stringify(valor))
   } catch {
     // cuota llena u otro fallo de almacenamiento — nunca debe romper el envío
   }
 }
 
-export function leerTrabajoActivo(): TrabajoDocumentoActivoGuardado | null {
+export function leerTrabajoActivo(clave: string = CLAVE_TRABAJO_ACTIVO): TrabajoDocumentoActivoGuardado | null {
   if (typeof window === 'undefined') return null
   try {
-    const crudo = window.localStorage.getItem(CLAVE_TRABAJO_ACTIVO)
+    const crudo = window.localStorage.getItem(clave)
     if (!crudo) return null
     return JSON.parse(crudo) as TrabajoDocumentoActivoGuardado
   } catch {
@@ -54,10 +64,10 @@ export function leerTrabajoActivo(): TrabajoDocumentoActivoGuardado | null {
   }
 }
 
-export function limpiarTrabajoActivo() {
+export function limpiarTrabajoActivo(clave: string = CLAVE_TRABAJO_ACTIVO) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.removeItem(CLAVE_TRABAJO_ACTIVO)
+    window.localStorage.removeItem(clave)
   } catch {
     // no crítico
   }

@@ -17,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolverContextoCurricularGrupo } from '../curriculo/resolverContextoCurricularGrupo'
 import { recuperarCatalogoCurricularCerrado } from './candidatosCurriculares'
+import { esContinuacionTrivial } from './borradorProgramaAnalitico'
 import {
   ajustarBorradorProgramaAnalitico,
   buscarBorradorPendientePorGrupo,
@@ -216,6 +217,19 @@ export async function manejarTurnoProgramaAnalitico(
   // --- GESTIONAR: con pendiente -> interpretar como AJUSTE. ---
   const borradorActual = await obtenerBorradorProgramaAnalitico(sb, pendiente.id)
   if (!borradorActual.ok) return { texto: textoErrorOrquestacion(borradorActual.error), llamadasIa: 0 }
+
+  // PA-5F §4 — "continua"/"sigue"/"ok"/"de acuerdo"... con un borrador
+  // ya pendiente NUNCA debe gastar IA tratando de adivinar a qué
+  // contenido se refiere (ver el caso real auditado en PA-5E: terminó
+  // ofreciendo geometría sin relación). esContinuacionTrivial exige
+  // coincidencia EXACTA tras normalizar (mismo RESPUESTAS_TRIVIALES ya
+  // usado por contextoDocenteEsSuficiente) — nunca substring, así que
+  // "continúa pero quita el contenido de narración" NUNCA cae aquí
+  // (normaliza a una cadena larga distinta, no está en el set) y sigue
+  // el flujo real de ajuste más abajo.
+  if (esContinuacionTrivial(mensaje)) {
+    return { texto: textoYaHayBorradorPendiente(borradorActual.resumen), llamadasIa: 0 }
+  }
 
   const contexto = await resolverContextoCurricularGrupo(sb, grupoId)
   if (!contexto.ok) return { texto: 'No pude verificar el currículo de tu grupo en este momento. Intenta de nuevo.', llamadasIa: 0 }

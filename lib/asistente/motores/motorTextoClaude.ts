@@ -12,6 +12,7 @@ import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { detectarHerramientaDocumento } from '../documentos'
 import type { ReferenteContextualMetadata } from '../contextoConversacional'
 import { validarDecisionOrquestador, HEADER_DECISION_ORQUESTADOR, HEADER_DECISION_ORQUESTADOR_MODO, type DecisionOrquestador } from '../decisionOrquestador'
+import { HEADER_TRABAJO_DURABLE_ID } from '@/lib/trabajosDocumento'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -528,6 +529,16 @@ export class MotorTextoClaude implements MotorConversacional {
       // la da el pipeline que AsistenteService dispare, no el chat.
       const esShortCircuitOrquestador = res.headers.get(HEADER_DECISION_ORQUESTADOR_MODO) === 'ejecutar_cliente' && decisionOrquestador !== null
 
+      // PA-5F — mismo criterio EXACTO que esShortCircuitOrquestador de
+      // arriba: cuando /api/chat delegó este turno a un trabajo durable
+      // (ver HEADER_TRABAJO_DURABLE_ID en lib/trabajosDocumento.ts), el
+      // body viene vacío a propósito — nunca se emite respuesta-parcial
+      // ni se persiste nada aquí; AsistenteService intercepta el
+      // trabajoProgramaAnaliticoId del evento final y arranca el
+      // polling real (mismo patrón que ya usa para trabajos_documento).
+      const trabajoProgramaAnaliticoId = res.headers.get(HEADER_TRABAJO_DURABLE_ID) || undefined
+      const esTurnoDelegadoAOtroPipeline = esShortCircuitOrquestador || Boolean(trabajoProgramaAnaliticoId)
+
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let respuesta = ''
@@ -537,7 +548,7 @@ export class MotorTextoClaude implements MotorConversacional {
           const { done, value } = await reader.read()
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
-          if (!esShortCircuitOrquestador) this.emitir({ tipo: 'respuesta-parcial', texto: respuesta })
+          if (!esTurnoDelegadoAOtroPipeline) this.emitir({ tipo: 'respuesta-parcial', texto: respuesta })
         }
       }
 
@@ -561,7 +572,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // demás marcadores de arriba — nunca llega a Supabase ni al texto
       // que ve el docente. Retirar junto con el resto del diagnóstico.
       const { texto: respuestaLimpia, diagnosticoCurp } = this.procesarMarcadorDeDiagnosticoCurp(sinMensajeAsistentePersistido)
-      if (!esShortCircuitOrquestador) this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
+      if (!esTurnoDelegadoAOtroPipeline) this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       this.emitir({
         tipo: 'respuesta-final',
         texto: respuestaLimpia,
@@ -575,6 +586,7 @@ export class MotorTextoClaude implements MotorConversacional {
         decisionOrquestador: decisionOrquestador ?? undefined,
         shortCircuitOrquestador: esShortCircuitOrquestador || undefined,
         assistantMessageIdPersistidoServer,
+        trabajoProgramaAnaliticoId,
       })
       if (diagnosticoActivo && diagnosticoCurp) {
         this.emitir({
@@ -594,7 +606,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // (respuestaLimpia siempre '' en ese caso); guardarEnHistorial es
       // un mecanismo no relacionado (documentos_generados) que no tiene
       // nada real que registrar aquí.
-      if (user && !esShortCircuitOrquestador) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
+      if (user && !esTurnoDelegadoAOtroPipeline) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio

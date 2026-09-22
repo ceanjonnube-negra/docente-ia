@@ -24,6 +24,19 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+// PA-5F — trabajos_documento pasó de ser exclusivo de documentos a
+// infraestructura general para operaciones largas (ver Programa
+// Analítico: extracción visual + generación, ~83s medidos en PA-5C,
+// el mismo problema de fondo que ya resolvía este módulo). Se
+// mantiene el nombre actual a propósito (cambio mínimo, sin
+// renombrado/migración grande) — la tabla y estas funciones ya son
+// agnósticas al tipo de trabajo (docente_id, conversacion_id,
+// request_id, estado, resultado, error). HEADER_TRABAJO_DURABLE_ID es
+// el header (mismo patrón que HEADER_DECISION_ORQUESTADOR en
+// decisionOrquestador.ts) con el que /api/chat señala que un turno se
+// delegó a un trabajo en vez de responder de forma síncrona.
+export const HEADER_TRABAJO_DURABLE_ID = 'X-Docente-IA-Trabajo-Id'
+
 export type EstadoTrabajoDocumento = 'queued' | 'generando' | 'completado' | 'fallido'
 
 export type ResultadoTrabajoDocumento = {

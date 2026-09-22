@@ -24,6 +24,7 @@ import {
   guardarTrabajoActivo,
   leerTrabajoActivo,
   limpiarTrabajoActivo,
+  CLAVE_TRABAJO_PA_ACTIVO,
   type EstadoTrabajoConsultado,
 } from './trabajoDocumentoCliente'
 import {
@@ -379,6 +380,12 @@ class AsistenteServiceImpl {
 
   private trabajoDocumentoActivoId: string | null = null
   private pollingTrabajoTimer: ReturnType<typeof setTimeout> | null = null
+  // PA-5F — estado PARALELO y AISLADO del de arriba (nunca comparte
+  // trabajoDocumentoActivoId/pollingTrabajoTimer): un trabajo de
+  // Programa Analítico y uno de documento son independientes, cada uno
+  // con su propio puntero/localStorage (ver CLAVE_TRABAJO_PA_ACTIVO).
+  private trabajoProgramaAnaliticoActivoId: string | null = null
+  private pollingTrabajoPaTimer: ReturnType<typeof setTimeout> | null = null
   // Mientras no sea null, las respuestas del motor actualizan ESE mensaje
   // en vez de abrir uno nuevo — es como se implementa "editar el
   // documento existente" sin que el motor conversacional sepa nada de
@@ -890,6 +897,8 @@ class AsistenteServiceImpl {
     // sesión anterior (la app se cerró por completo mientras
     // generaba), se retoma justo al abrirla.
     this.reanudarTrabajoDocumentoPendienteSiExiste()
+    // PA-5F — mismo criterio, trabajo separado.
+    this.reanudarTrabajoProgramaAnaliticoPendienteSiExiste()
   }
 
   // Reconstrucción CONSERVADORA de materialVisualActivo (ver
@@ -1340,6 +1349,15 @@ class AsistenteServiceImpl {
         break
       }
       case 'respuesta-final': {
+        // PA-5F — intercepta ANTES que cualquier otra cosa de esta
+        // rama, mismo criterio exacto que shortCircuitOrquestador
+        // abajo: /api/chat ya delegó este turno a un trabajo durable
+        // (texto siempre '' en ese caso) — nunca se crea/persiste una
+        // burbuja aquí, solo se arranca el seguimiento real del trabajo.
+        if (evento.trabajoProgramaAnaliticoId) {
+          this.iniciarSeguimientoTrabajoProgramaAnalitico(evento.trabajoProgramaAnaliticoId)
+          break
+        }
         // FASE 2B2A (ver "short-circuit + ejecución de capacidades de
         // recurso") — intercepta ANTES de cualquier otra lógica de esta
         // rama (incluida la limpieza de burbuja vacía más abajo, ver
@@ -2736,6 +2754,130 @@ ${instruccion}`
     this.iniciarPollingTrabajoDocumento(guardado.trabajoId, 500)
   }
 
+  // ============================================================
+  // PA-5F — trabajo durable del Programa Analítico. Mismo mecanismo
+  // real que trabajos_documento (misma tabla, mismo endpoint GET de
+  // estado, mismo localStorage+polling+eventos de reconexión) — solo
+  // con su PROPIO puntero/estado (trabajoProgramaAnaliticoActivoId/
+  // CLAVE_TRABAJO_PA_ACTIVO), nunca comparte slot con un trabajo de
+  // documento. /api/chat es quien decide crear el trabajo (ver
+  // HEADER_TRABAJO_DURABLE_ID) — este servicio nunca lo inicia por su
+  // cuenta, solo lo retoma cuando el evento 'respuesta-final' lo trae
+  // o cuando la app vuelve a primer plano con uno pendiente guardado.
+  // ============================================================
+
+  private iniciarSeguimientoTrabajoProgramaAnalitico(trabajoId: string) {
+    this.trabajoProgramaAnaliticoActivoId = trabajoId
+    this.generando = true
+    guardarTrabajoActivo({ trabajoId, requestId: trabajoId, conversacionId: this.conversacionActivaId }, CLAVE_TRABAJO_PA_ACTIVO)
+    this.notificar()
+    this.iniciarPollingTrabajoPa(trabajoId)
+  }
+
+  // Polling ligero — mismo intervalo/criterio exacto que
+  // iniciarPollingTrabajoDocumento (nunca agresivo, nunca gasta IA):
+  // cada tick solo consulta GET /api/chat/trabajo-documento/[id]
+  // (0 IA, reutilizado tal cual, agnóstico al tipo de trabajo).
+  private iniciarPollingTrabajoPa(trabajoId: string, intervaloMs = 3000) {
+    if (this.pollingTrabajoPaTimer) clearTimeout(this.pollingTrabajoPaTimer)
+    const tick = async () => {
+      if (this.trabajoProgramaAnaliticoActivoId !== trabajoId) return
+      try {
+        const { session } = await obtenerPerfilYSesion()
+        if (!session?.access_token) throw new Error('Sesión no encontrada.')
+        const trabajo = await consultarTrabajo(trabajoId, session.access_token)
+        if (this.trabajoProgramaAnaliticoActivoId !== trabajoId) return
+        if (trabajo.estado === 'completado') { this.hidratarTrabajoProgramaAnaliticoCompletado(trabajo); return }
+        if (trabajo.estado === 'fallido') { this.manejarTrabajoProgramaAnaliticoFallido(trabajo); return }
+      } catch {
+        // Fallo de RED consultando el estado — nunca se marca fallido
+        // solo por esto (mismo criterio que trabajos_documento): el
+        // trabajo real sigue vivo en el servidor sin importar cuántos
+        // ticks fallen aquí, se reintenta en el próximo.
+      }
+      if (this.trabajoProgramaAnaliticoActivoId === trabajoId) {
+        this.pollingTrabajoPaTimer = setTimeout(tick, intervaloMs)
+      }
+    }
+    this.pollingTrabajoPaTimer = setTimeout(tick, intervaloMs)
+  }
+
+  // Hidrata el resultado EXACTAMENTE una vez. Idempotencia del MENSAJE
+  // (Fase 5): si el servidor ya confirmó su propio upsert en
+  // mensajes_chat para este assistantMessageId (mismo marcador
+  // [[MENSAJE_ASISTENTE_PERSISTIDO:...]] que ya usa el camino síncrono
+  // de planeación, ver route.ts/motorTextoClaude.ts —
+  // intencionalmente duplicado aquí en 6 líneas en vez de exportar el
+  // privado de MotorTextoClaude: este código nunca pasa por ese motor,
+  // llega directo del polling), este método NUNCA vuelve a llamar
+  // persistirMensajeAsegurandoConversacion — evita el doble guardado
+  // que pide Fase 5 ante dos focus/pageshow consecutivos: el segundo
+  // tick siempre encuentra trabajoProgramaAnaliticoActivoId ya en null
+  // (guard de la primera línea) y no hace nada.
+  private hidratarTrabajoProgramaAnaliticoCompletado(trabajo: EstadoTrabajoConsultado) {
+    if (this.trabajoProgramaAnaliticoActivoId !== trabajo.id) return
+    this.trabajoProgramaAnaliticoActivoId = null
+    this.generando = false
+    limpiarTrabajoActivo(CLAVE_TRABAJO_PA_ACTIVO)
+    const textoCrudo = trabajo.resultado?.mensaje?.trim() || 'No fue posible generar tu Programa Analítico. Intenta de nuevo.'
+    const match = textoCrudo.match(/\[\[MENSAJE_ASISTENTE_PERSISTIDO:([^\]]+)\]\]/)
+    let texto = textoCrudo
+    let assistantMessageIdPersistidoServer: string | undefined
+    if (match) {
+      texto = textoCrudo.replace(match[0], '').trim()
+      try {
+        const datos = JSON.parse(atob(match[1])) as { assistantMessageId?: string }
+        assistantMessageIdPersistidoServer = typeof datos.assistantMessageId === 'string' && datos.assistantMessageId ? datos.assistantMessageId : undefined
+      } catch {
+        // marcador corrupto — se ignora; fail-closed hacia SÍ persistir
+        // client-side más abajo, nunca hacia perder el mensaje.
+      }
+    }
+    // Reutiliza el id/timestamp YA generado en enviarMensaje() (mismo
+    // criterio que el camino síncrono normal, ver 'respuesta-final'
+    // arriba) — así la burbuja en pantalla coincide con la fila que el
+    // servidor pudo haber persistido para este mismo assistantMessageId.
+    const idPendiente = this.assistantMessageIdPendiente
+    this.assistantMessageIdPendiente = null
+    const idFinal = idPendiente || nuevoId()
+    const creadoEnFinal = (idPendiente && timestampDeId(idPendiente)) || Date.now()
+    const mensajeAsistente: MensajeConversacion = { id: idFinal, rol: 'asistente', texto, creadoEn: creadoEnFinal }
+    this.mensajes = [...this.mensajes, mensajeAsistente]
+    this.notificar()
+    if (assistantMessageIdPersistidoServer && assistantMessageIdPersistidoServer === idFinal) return
+    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
+  }
+
+  // Falla REAL del backend (estado=fallido, con error técnico ya
+  // guardado por manejarTurnoProgramaAnalitico) — nunca por una simple
+  // desconexión del cliente, que ni siquiera llega hasta aquí (mismo
+  // criterio que manejarTrabajoDocumentoFallido).
+  private manejarTrabajoProgramaAnaliticoFallido(trabajo: EstadoTrabajoConsultado) {
+    if (this.trabajoProgramaAnaliticoActivoId !== trabajo.id) return
+    this.trabajoProgramaAnaliticoActivoId = null
+    this.generando = false
+    limpiarTrabajoActivo(CLAVE_TRABAJO_PA_ACTIVO)
+    this.manejarEventoMotor({ tipo: 'error', mensaje: trabajo.error || 'No fue posible generar tu Programa Analítico. Intenta de nuevo.' })
+  }
+
+  // Recuperación automática al volver (visibilitychange/pageshow/
+  // focus/online, ver los listeners al final de este archivo, y
+  // abrirConversacion) — mismo criterio exacto que
+  // reanudarTrabajoDocumentoPendienteSiExiste: nunca crea una burbuja
+  // nueva ni reenvía el prompt, solo retoma el polling del trabajo que
+  // YA existe. Esto es lo que evita que "Continua"/un mensaje nuevo
+  // lleguen a Nivel0 mientras el trabajo real sigue vivo — la app
+  // simplemente vuelve a mostrar "generando..." y espera el resultado.
+  reanudarTrabajoProgramaAnaliticoPendienteSiExiste() {
+    if (this.trabajoProgramaAnaliticoActivoId) return
+    const guardado = leerTrabajoActivo(CLAVE_TRABAJO_PA_ACTIVO)
+    if (!guardado || guardado.conversacionId !== this.conversacionActivaId) return
+    this.trabajoProgramaAnaliticoActivoId = guardado.trabajoId
+    this.generando = true
+    this.notificar()
+    this.iniciarPollingTrabajoPa(guardado.trabajoId, 500)
+  }
+
   private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
@@ -2938,17 +3080,28 @@ if (typeof document !== 'undefined') {
       // pendiente, se retoma solo, sin que el docente tenga que
       // escribir nada.
       AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste()
+      // PA-5F — mismo criterio, trabajo durable del Programa Analítico.
+      AsistenteService.reanudarTrabajoProgramaAnaliticoPendienteSiExiste()
     }
   })
   // pageshow cubre "recargar la página"/volver desde la caché de
   // retroceso de Safari (bfcache) — visibilitychange no siempre se
   // dispara igual en ese camino específico de iOS.
-  window.addEventListener('pageshow', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
-  window.addEventListener('focus', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
+  window.addEventListener('pageshow', () => {
+    AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste()
+    AsistenteService.reanudarTrabajoProgramaAnaliticoPendienteSiExiste()
+  })
+  window.addEventListener('focus', () => {
+    AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste()
+    AsistenteService.reanudarTrabajoProgramaAnaliticoPendienteSiExiste()
+  })
   // Pérdida temporal de conexión — al recuperar red, si había un
   // trabajo pendiente cuyo polling venía fallando en silencio, esto da
   // un chequeo inmediato en vez de esperar al siguiente intervalo.
-  window.addEventListener('online', () => AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste())
+  window.addEventListener('online', () => {
+    AsistenteService.reanudarTrabajoDocumentoPendienteSiExiste()
+    AsistenteService.reanudarTrabajoProgramaAnaliticoPendienteSiExiste()
+  })
 }
 
 // Un dispositivo compartido entre dos docentes (equipo de la escuela)

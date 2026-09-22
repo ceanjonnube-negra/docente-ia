@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
@@ -10,6 +10,8 @@ import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesion
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { manejarTurnoProgramaAnalitico } from '@/lib/programaAnalitico/manejarTurnoChat'
 import type { AdjuntoProgramaAnalitico, MediaTypeImagenAdjuntoPA } from '@/lib/programaAnalitico/contextoAdjuntoProgramaAnalitico'
+import { buscarBorradorPendientePorGrupo } from '@/lib/programaAnalitico/orquestarBorrador'
+import { crearOTrabajoRecuperarPorRequestId, marcarGenerando, marcarCompletado, marcarFallido, HEADER_TRABAJO_DURABLE_ID } from '@/lib/trabajosDocumento'
 import {
   actualizarPerfilDocente,
   calendarioCicloCompleto,
@@ -2176,6 +2178,112 @@ export async function POST(req: NextRequest) {
             imagenesActualesParaPa.length > 0
               ? { origen: 'imagen', imagenes: imagenesActualesParaPa.map((img) => ({ base64: img.base64, mediaType: img.tipo as MediaTypeImagenAdjuntoPA })) }
               : null
+
+          // PA-5F — punto MÍNIMO de enrutamiento durable (ver auditoría
+          // PA-5E: Safari/iPhone en segundo plano corta la conexión
+          // antes de que termine el par de llamadas IA ~83s de la
+          // generación inicial). Nunca duplica Nivel0 ni gasta otra
+          // llamada IA — la clasificación ya corrió UNA vez arriba;
+          // esto solo reacciona a su resultado. Condición EXACTA, nunca
+          // "hay imagen" de forma genérica: gestionar (nunca confirmar/
+          // consultar, que son rápidos y 0/pocas IA) + un adjunto REAL
+          // en este turno (la única combinación con el patrón lento de
+          // 2 llamadas secuenciales) + ningún borrador pendiente aún
+          // (1 SELECT barato, 0 IA — el mismo primer chequeo que
+          // manejarTurnoProgramaAnalitico ya hace; si ya hay pendiente,
+          // el turno real es un ajuste/confirmación, ya rápido, sigue
+          // síncrono como siempre).
+          if (clasificacion.accion_programa_analitico === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId) {
+            const pendienteExistente = await buscarBorradorPendientePorGrupo(supabaseUser, sesion.grupo_activo_id)
+            if (!pendienteExistente) {
+              const conversacionIdParaTrabajoPa = await obtenerConversacionIdAutorizada()
+              // request_id — reutiliza EXACTAMENTE mensajeUsuarioIdSolicitado
+              // (señal determinista YA disponible, generada SIEMPRE por
+              // AsistenteService antes de enviar, ver enviarMensaje()) en
+              // vez de inventar un identificador nuevo del lado cliente —
+              // así un reenvío real del mismo POST (doble tap, reconexión)
+              // nunca crea un segundo trabajo ni repite la generación.
+              const requestIdTrabajoPa = mensajeUsuarioIdSolicitado || requestIdPa
+              const { trabajo: trabajoPa, yaExistia: trabajoPaYaExistia } = await crearOTrabajoRecuperarPorRequestId(
+                supabaseUser,
+                userId,
+                conversacionIdParaTrabajoPa,
+                requestIdTrabajoPa
+              )
+              if (!trabajoPaYaExistia) {
+                const sesionParaTrabajoPa = sesion
+                const accionParaTrabajoPa = clasificacion.accion_programa_analitico
+                const mensajeParaTrabajoPa = mensaje
+                const adjuntoParaTrabajoPa = adjuntoProgramaAnalitico
+                const assistantMessageIdParaTrabajoPa = assistantMessageIdValidado
+                const userIdParaTrabajoPa = userId
+                const trabajoPaId = trabajoPa.id
+                // El trabajo real corre DESPUÉS de que esta respuesta ya
+                // se mandó — sobrevive a que el docente cierre Safari o
+                // pierda la conexión (ver Next.js after()). LLAMADA
+                // DIRECTA en el mismo proceso (nunca un fetch interno a
+                // /api/chat): reutiliza supabaseUser/sesion/clasificación
+                // YA resueltos en este mismo request — jamás reclasifica
+                // con Nivel0 ni gasta una segunda llamada IA por esto.
+                after(async () => {
+                  try {
+                    await marcarGenerando(supabaseUser, trabajoPaId)
+                    const resultadoPa = await manejarTurnoProgramaAnalitico(
+                      supabaseUser,
+                      client,
+                      sesionParaTrabajoPa,
+                      accionParaTrabajoPa,
+                      mensajeParaTrabajoPa,
+                      adjuntoParaTrabajoPa,
+                      requestIdPa
+                    )
+                    let textoFinalPa = resultadoPa.texto
+                    // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE —
+                    // mismo patrón EXACTO ya aprobado para planeación
+                    // (ver assistantMessageIdValidado más arriba en este
+                    // archivo): si el cliente mandó un id de mensaje
+                    // válido, el servidor escribe la fila real ANTES de
+                    // que el cliente pueda hidratarla por su cuenta, y
+                    // embebe el mismo marcador [[MENSAJE_ASISTENTE_PERSISTIDO:...]]
+                    // para que motorTextoClaude.ts/AsistenteService.ts
+                    // (que ya saben leerlo) nunca la vuelvan a escribir.
+                    if (assistantMessageIdParaTrabajoPa) {
+                      const filaMensajeAsistentePa = {
+                        id: assistantMessageIdParaTrabajoPa.id,
+                        conversacion_id: conversacionIdParaTrabajoPa,
+                        docente_id: userIdParaTrabajoPa,
+                        rol: 'asistente' as const,
+                        texto: textoFinalPa,
+                        contenido: {},
+                        creado_en: new Date(assistantMessageIdParaTrabajoPa.timestamp).toISOString(),
+                      }
+                      const { error: errorMensajeAsistentePa } = await supabaseUser.from('mensajes_chat').upsert(filaMensajeAsistentePa, { onConflict: 'id' })
+                      if (!errorMensajeAsistentePa) {
+                        const marcadorMensajePersistidoPa = `[[MENSAJE_ASISTENTE_PERSISTIDO:${Buffer.from(JSON.stringify({ assistantMessageId: assistantMessageIdParaTrabajoPa.id }), 'utf-8').toString('base64')}]]`
+                        textoFinalPa = `${textoFinalPa}\n\n${marcadorMensajePersistidoPa}`
+                      }
+                    }
+                    await marcarCompletado(supabaseUser, trabajoPaId, { archivos: [], mensaje: textoFinalPa })
+                    console.log(`[PROGRAMA_ANALITICO_TRABAJO] trabajoId=${trabajoPaId} requestId=${requestIdPa} grupoId=${sesionParaTrabajoPa.grupo_activo_id} estado=completado llamadaIa=${resultadoPa.llamadasIa > 0}`)
+                  } catch (errTrabajoPa) {
+                    const mensajeErrorPa = errTrabajoPa instanceof Error ? errTrabajoPa.message : 'Error desconocido generando el Programa Analítico.'
+                    console.error(`[PROGRAMA_ANALITICO_TRABAJO] trabajoId=${trabajoPaId} requestId=${requestIdPa} fallo:`, errTrabajoPa)
+                    await marcarFallido(supabaseUser, trabajoPaId, mensajeErrorPa)
+                  }
+                })
+              }
+              console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=gestionar modo=trabajo_durable trabajoId=${trabajoPa.id} yaExistia=${trabajoPaYaExistia}`)
+              return new Response(
+                new ReadableStream({
+                  start(controller) {
+                    controller.close()
+                  },
+                }),
+                { headers: { 'Content-Type': 'text/plain; charset=utf-8', [HEADER_TRABAJO_DURABLE_ID]: trabajoPa.id } }
+              )
+            }
+          }
+
           const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, clasificacion.accion_programa_analitico, mensaje, adjuntoProgramaAnalitico, requestIdPa)
           console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${clasificacion.accion_programa_analitico} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
           return respuestaTexto(resultado.texto)

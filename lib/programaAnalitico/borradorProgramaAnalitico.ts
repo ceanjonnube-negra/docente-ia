@@ -47,7 +47,7 @@ const RESPUESTAS_TRIVIALES = new Set([
   '', 'si', 'ok', 'okay', 'dale', 'hazlo', 'normal', 'bien', 'claro', 'va', 'vale',
   'como tu quieras', 'como usted quiera', 'como quieras', 'tu decides', 'usted decide',
   'no se', 'cualquiera', 'lo que sea', 'esta bien', 'de acuerdo', 'adelante',
-  'sigue', 'continua', 'segui', 'ninguna', 'ninguno', 'nada',
+  'sigue', 'continua', 'segui', 'seguir', 'ninguna', 'ninguno', 'nada',
 ])
 
 // Grado hablado + letra opcional ("4b", "4°b", "4to b", "cuarto b") —
@@ -116,6 +116,20 @@ export function contextoDocenteEsSuficiente(texto: string | null | undefined): b
   if (esSolamenteSolicitudDeIniciarPrograma(normalizado)) return false
   if (normalizado.length < LONGITUD_MINIMA_INFORMATIVA) return false
   return true
+}
+
+// PA-5F §4 — "continua"/"sigue"/"ok"/"de acuerdo"... con un borrador ya
+// pendiente NUNCA debe interpretarse como una instrucción de ajuste
+// (ver caso real auditado en PA-5E: terminó ofreciendo contenidos de
+// geometría sin relación). Reutiliza EXACTAMENTE el mismo conjunto y
+// criterio ya usado por contextoDocenteEsSuficiente — coincidencia
+// EXACTA tras normalizar, nunca substring: "continúa pero quita el
+// contenido de narración" normaliza a una cadena larga distinta, NO
+// está en RESPUESTAS_TRIVIALES, y por lo tanto nunca activa esta
+// guarda — sigue el flujo real de interpretación de ajuste.
+export function esContinuacionTrivial(texto: string | null | undefined): boolean {
+  if (!texto) return false
+  return RESPUESTAS_TRIVIALES.has(normalizar(texto))
 }
 
 // ============================================================
