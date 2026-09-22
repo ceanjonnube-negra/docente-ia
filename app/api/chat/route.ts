@@ -9,6 +9,7 @@ import { validarDecisionOrquestador, esCandidataAShortCircuitCliente, HEADER_DEC
 import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { manejarTurnoProgramaAnalitico } from '@/lib/programaAnalitico/manejarTurnoChat'
+import { esContinuacionTrivial } from '@/lib/programaAnalitico/borradorProgramaAnalitico'
 import type { AdjuntoProgramaAnalitico, MediaTypeImagenAdjuntoPA } from '@/lib/programaAnalitico/contextoAdjuntoProgramaAnalitico'
 import { buscarBorradorPendientePorGrupo } from '@/lib/programaAnalitico/orquestarBorrador'
 import { crearOTrabajoRecuperarPorRequestId, marcarGenerando, marcarCompletado, marcarFallido, HEADER_TRABAJO_DURABLE_ID } from '@/lib/trabajosDocumento'
@@ -2159,7 +2160,43 @@ export async function POST(req: NextRequest) {
       // únicas llamadas IA posibles (generación inicial de la
       // propuesta, o interpretación de un ajuste con redacción) viven
       // dentro de ese módulo, acotadas y contadas en requestId de logs.
-      if (clasificacion.intencion_principal === 'programa_analitico') {
+      //
+      // PA-5G — red de seguridad determinista por ESTADO CANÓNICO (ver
+      // auditoría PA-5G): Nivel 0 clasifica por texto/historial
+      // reciente, sin visibilidad del estado real de
+      // programa_analitico_borrador — un historial ambiguo (ej. el
+      // turno anterior del asistente no se leyó como "Programa
+      // Analítico" con claridad) puede hacer que una continuación
+      // trivial ("continua"/"sigue"/"ok"/"de acuerdo"...) con un
+      // borrador REAL pendiente caiga en conversacion_general y gaste
+      // una llamada Sonnet completa para nada (caso real reproducido).
+      // Se activa ÚNICAMENTE con coincidencia EXACTA de
+      // esContinuacionTrivial (mismo criterio ya usado dentro del
+      // bloque PA — nunca includes/startsWith/regex abierto/IA): un
+      // mensaje con cualquier instrucción real, incluida una
+      // instrucción SOBRE el propio borrador ("continúa pero quita el
+      // contenido de..."), nunca coincide de forma exacta y por lo
+      // tanto nunca activa esto — sigue su flujo normal (Nivel 0, u
+      // otra tarea explícita). 0 IA: como máximo 1 SELECT barato, y
+      // solo cuando el mensaje YA es trivial — un turno normal no
+      // trivial nunca ejecuta buscarBorradorPendientePorGrupo por esto.
+      let intencionProgramaAnaliticoEfectiva = clasificacion.intencion_principal === 'programa_analitico'
+      let accionProgramaAnaliticoRedSeguridad: 'gestionar' | null = null
+      if (!intencionProgramaAnaliticoEfectiva && sesion.grupo_activo_id && esContinuacionTrivial(mensaje)) {
+        const pendienteRedSeguridadPa = await buscarBorradorPendientePorGrupo(supabaseUser, sesion.grupo_activo_id)
+        if (pendienteRedSeguridadPa) {
+          intencionProgramaAnaliticoEfectiva = true
+          accionProgramaAnaliticoRedSeguridad = 'gestionar'
+          console.log(`[PROGRAMA_ANALITICO] redSeguridadEstado=true grupoId=${sesion.grupo_activo_id} motivo=continuacion_trivial_con_pendiente`)
+        }
+      }
+      if (intencionProgramaAnaliticoEfectiva) {
+        // Real (Nivel 0 ya clasificó) conserva su acción tal cual; la
+        // red de seguridad SOLO puede producir 'gestionar' — nunca
+        // confirmar/consultar por su cuenta (ambigüedad real: no hay
+        // forma segura de distinguir esas intenciones de un texto
+        // trivial sin adivinar).
+        const accionProgramaAnaliticoEfectiva = accionProgramaAnaliticoRedSeguridad ?? clasificacion.accion_programa_analitico
         const requestIdPa = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         try {
           // PA-5B — reutiliza EXACTAMENTE la misma normalización ya
@@ -2193,7 +2230,7 @@ export async function POST(req: NextRequest) {
           // manejarTurnoProgramaAnalitico ya hace; si ya hay pendiente,
           // el turno real es un ajuste/confirmación, ya rápido, sigue
           // síncrono como siempre).
-          if (clasificacion.accion_programa_analitico === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId) {
+          if (accionProgramaAnaliticoEfectiva === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId) {
             const pendienteExistente = await buscarBorradorPendientePorGrupo(supabaseUser, sesion.grupo_activo_id)
             if (!pendienteExistente) {
               const conversacionIdParaTrabajoPa = await obtenerConversacionIdAutorizada()
@@ -2212,7 +2249,7 @@ export async function POST(req: NextRequest) {
               )
               if (!trabajoPaYaExistia) {
                 const sesionParaTrabajoPa = sesion
-                const accionParaTrabajoPa = clasificacion.accion_programa_analitico
+                const accionParaTrabajoPa = accionProgramaAnaliticoEfectiva
                 const mensajeParaTrabajoPa = mensaje
                 const adjuntoParaTrabajoPa = adjuntoProgramaAnalitico
                 const assistantMessageIdParaTrabajoPa = assistantMessageIdValidado
@@ -2284,8 +2321,8 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, clasificacion.accion_programa_analitico, mensaje, adjuntoProgramaAnalitico, requestIdPa)
-          console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${clasificacion.accion_programa_analitico} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
+          const resultado = await manejarTurnoProgramaAnalitico(supabaseUser, client, sesion, accionProgramaAnaliticoEfectiva, mensaje, adjuntoProgramaAnalitico, requestIdPa)
+          console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${accionProgramaAnaliticoEfectiva} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
           return respuestaTexto(resultado.texto)
         } catch (e) {
           console.error(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} excepción:`, e)

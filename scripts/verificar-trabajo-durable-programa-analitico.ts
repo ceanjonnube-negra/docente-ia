@@ -49,12 +49,18 @@ async function main() {
   // genérica) y exige gestionar + adjunto real + sin pendiente.
   // ============================================================
   {
+    // PA-5G — la condición usa accionProgramaAnaliticoEfectiva (Nivel 0
+    // real, o 'gestionar' cuando la red de seguridad por estado
+    // canónico lo activó) en vez del campo crudo de Nivel 0 — mismo
+    // comportamiento exacto para el camino que Nivel 0 ya clasificaba
+    // bien (ver verificar-red-seguridad-estado-programa-analitico.ts,
+    // CASO-H2), nunca "hay imagen" de forma genérica.
     const idxGuardPa = cuerpoChatRoute.indexOf("clasificacion.intencion_principal === 'programa_analitico'")
-    const idxRuteo = cuerpoChatRoute.indexOf("clasificacion.accion_programa_analitico === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId")
-    verificar(idxGuardPa > -1 && idxRuteo > idxGuardPa && idxRuteo - idxGuardPa < 2500, 'I. la condición de enrutamiento durable vive DENTRO del guard de intencion_principal===programa_analitico — ningún otro intent puede activarla')
+    const idxRuteo = cuerpoChatRoute.indexOf("accionProgramaAnaliticoEfectiva === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId")
+    verificar(idxGuardPa > -1 && idxRuteo > idxGuardPa && idxRuteo - idxGuardPa < 4000, 'I. la condición de enrutamiento durable vive DENTRO del guard de programa_analitico — ningún otro intent puede activarla')
     verificar(
-      cuerpoChatRoute.includes("if (clasificacion.accion_programa_analitico === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId) {"),
-      'I2. exige accion=gestionar (nunca confirmar/consultar) + adjunto REAL de este turno + grupo activo + usuario autenticado — nunca "imagen" de forma genérica'
+      cuerpoChatRoute.includes("if (accionProgramaAnaliticoEfectiva === 'gestionar' && adjuntoProgramaAnalitico && sesion.grupo_activo_id && userId) {"),
+      'I2. exige accion efectiva=gestionar (nunca confirmar/consultar) + adjunto REAL de este turno + grupo activo + usuario autenticado — nunca "imagen" de forma genérica'
     )
   }
 
