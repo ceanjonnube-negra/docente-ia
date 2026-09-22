@@ -29,6 +29,7 @@ import {
 import { consultarProgramaAnaliticoVigente, detectarCampoFormativoEnTexto, filtrarItemsPorCampo } from './consultarProgramaAnaliticoVigente'
 import { interpretarAjusteBorrador } from './interpretarAjusteBorrador'
 import { extraerContextoPedagogicoAdjunto, MAXIMO_IMAGENES_CONTEXTO_PA, type AdjuntoProgramaAnalitico, type ContextoPedagogicoAdjunto } from './contextoAdjuntoProgramaAnalitico'
+import { sanitizarContextoPedagogicoAdjunto } from './sanitizarContextoIndividual'
 import {
   textoAjusteAmbiguo,
   textoAjusteAplicado,
@@ -48,6 +49,11 @@ export type SesionMinimaProgramaAnalitico = {
   grupo_activo_id: string | null
   grado_grupo: string | null
   nivel_educativo_grupo: string | null
+  // PA-5D — roster real del grupo (ya resuelto con RLS por
+  // obtenerSesionContexto, ver lib/sesionContexto.ts) — fuente
+  // canónica única para la sanitización determinista de nombres de
+  // alumnos, nunca una consulta nueva.
+  alumnos_del_grupo_activo: { nombre_completo: string }[]
 }
 
 export type ResultadoTurnoProgramaAnalitico = { texto: string; llamadasIa: number }
@@ -150,15 +156,25 @@ export async function manejarTurnoProgramaAnalitico(
       const extraido = await extraerContextoPedagogicoAdjunto(anthropic, adjunto)
       if (extraido.llamadaIa) llamadasIaVisual = 1
       if (extraido.ok) {
-        contextoAdjunto = extraido.contexto
-        soloLecturasDudosas = !extraido.contexto.hayContextoPedagogico && extraido.contexto.lecturasDudosas.length > 0
+        // PA-5D — sanitización determinista (0 IA), UNA SOLA VEZ, AQUÍ
+        // MISMO antes de que el contexto se use para nada más: ni la
+        // llamada de generación (que podría repetir un nombre en su
+        // propia síntesis, como ocurrió en el turno real auditado en
+        // PA-5C §J) ni la persistencia lo ven sin sanitizar. Roster
+        // real del grupo ya resuelto por RLS en sesion — sin consulta
+        // nueva. Nunca se loguea el nombre encontrado.
+        contextoAdjunto = sanitizarContextoPedagogicoAdjunto(
+          extraido.contexto,
+          sesion.alumnos_del_grupo_activo.map((a) => ({ nombreCompleto: a.nombre_completo }))
+        )
+        soloLecturasDudosas = !contextoAdjunto.hayContextoPedagogico && contextoAdjunto.lecturasDudosas.length > 0
         logFasePA(requestId, 'visual', {
           llamadaIa: true,
           inputTokens: extraido.observabilidad.tokensEntrada,
           outputTokens: extraido.observabilidad.tokensSalida,
           duracionMs: extraido.observabilidad.duracionMs,
-          hayContextoVisual: extraido.contexto.hayContextoPedagogico,
-          lecturasDudosasCount: extraido.contexto.lecturasDudosas.length,
+          hayContextoVisual: contextoAdjunto.hayContextoPedagogico,
+          lecturasDudosasCount: contextoAdjunto.lecturasDudosas.length,
         })
       } else if ('observabilidad' in extraido) {
         // Falla real de IA/JSON al interpretar la imagen — se

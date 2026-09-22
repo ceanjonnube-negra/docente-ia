@@ -204,7 +204,13 @@ function filaBorrador(overrides: Partial<Fila> = {}): Fila {
   }
 }
 
-const sesion = { grupo_activo_id: GRUPO_ID, grado_grupo: '4', nivel_educativo_grupo: 'primaria' }
+const NOMBRE_ALUMNO_ROSTER = 'Halit Eduardo Trejo Álvarez'
+const sesion = {
+  grupo_activo_id: GRUPO_ID,
+  grado_grupo: '4',
+  nivel_educativo_grupo: 'primaria',
+  alumnos_del_grupo_activo: [{ nombre_completo: NOMBRE_ALUMNO_ROSTER }, { nombre_completo: 'Ana Sofía Ramírez Cortés' }],
+}
 
 async function main() {
   // --- 2. sin contexto → pregunta contextual, 0 generación ---
@@ -514,6 +520,96 @@ async function main() {
       !bloqueIntermedio.includes('analizarImagenesListaOficial') && !bloqueIntermedio.includes('aprobarBorradorPlaneacion') && !bloqueIntermedio.includes('generarBorradorPlaneacion'),
       'PA5B-9/10. el bloque nuevo de normalización de adjunto no toca planeacion_generar ni actualizar_lista_oficial — ambos short-circuits siguen construyendo sus propias imágenes de forma independiente, sin regresión'
     )
+  }
+
+  // ============================================================
+  // PA-5D — sanitización de contexto pedagógico individual (integración
+  // end-to-end dentro de manejarTurnoProgramaAnalitico, con persistencia
+  // real en el borrador falso). La lógica pura de sanitizarContextoIndividual.ts
+  // se prueba aparte en verificar-sanitizar-contexto-individual.ts (H1-H7).
+  // ============================================================
+  {
+    const { anthropic, llamadasRecibidas } = anthropicSecuencial([
+      {
+        hayContextoPedagogico: true,
+        observaciones: [
+          `${NOMBRE_ALUMNO_ROSTER} presenta niveles 2 en comprensión lectora, indicando que requiere orientación.`,
+          'El resto del grupo muestra niveles 3 y 4 en la mayoría de las áreas evaluadas.',
+        ],
+        lecturasDudosas: [`No queda claro si ${NOMBRE_ALUMNO_ROSTER} alcanzó el nivel 3 en escritura.`],
+      },
+      // Realista: si la sanitización de la fase visual funciona, la
+      // llamada de generación NUNCA ve el nombre crudo en su prompt de
+      // entrada — por lo tanto un modelo real jamás podría reproducirlo
+      // en su propia síntesis. Esta 2ª respuesta simula exactamente eso
+      // (nunca menciona el nombre), a diferencia del turno real
+      // auditado en PA-5C §J (antes de esta corrección), donde SÍ lo
+      // repetía porque el nombre crudo llegaba sin sanitizar.
+      { contextoPedagogico: 'Se atendieron las necesidades observadas en comprensión lectora identificadas en el diagnóstico.', decisiones: [] },
+    ])
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const mensajeDocente = 'Hay que fortalecer esos indicadores'
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', mensajeDocente, adjuntoConImagen, 'req-test')
+
+    // --- PA5D-11/13. 0 llamadas IA adicionales por la sanitización — sigue siendo exactamente 2 (visual + generación) ---
+    verificar(r.llamadasIa === 2, 'PA5D-11/13. la sanitización no agrega ninguna llamada IA — sigue siendo exactamente 2 (1 visual + 1 generación) aun con un nombre real presente')
+    verificar(llamadasRecibidas.length === 2, 'PA5D-11b. exactamente 2 llamadas reales a anthropic.messages.stream, ninguna adicional para anonimizar')
+
+    const filaCreada = interno._tabla('programa_analitico_borrador')[0] as { contexto_docente?: string; contexto_notas?: string }
+
+    // --- PA5D-8. contexto_docente explícito del maestro no se confunde con currículo oficial (y no lo toca la sanitización de B) ---
+    verificar(filaCreada?.contexto_docente === mensajeDocente, 'PA5D-8. contexto_docente persiste exactamente el texto A del docente, sin alterar ni mezclar con el contexto sanitizado del adjunto')
+
+    // --- PA5D-10. ningún nombre del roster termina en contexto_notas persistido ---
+    const notas = filaCreada?.contexto_notas ?? ''
+    verificar(!notas.includes(NOMBRE_ALUMNO_ROSTER), 'PA5D-10. el nombre completo del alumno del roster NUNCA queda en contexto_notas, el campo que se volvería permanente al publicar')
+    verificar(!notas.includes('Halit') && !notas.includes('Álvarez') && !notas.includes('Alvarez'), 'PA5D-10b. tampoco quedan fragmentos reconocibles del nombre (nombre o apellido sueltos) en contexto_notas')
+
+    // --- PA5D-9. el contexto visual (ya sanitizado) sigue etiquetado explícitamente como NO oficial SEP ---
+    verificar(
+      notas.includes('no es información oficial SEP') && notas.includes('mediante un adjunto del docente'),
+      'PA5D-9. la sanitización no borra la etiqueta "no es información oficial SEP" — la fuente B sigue distinguida de C en contexto_notas'
+    )
+
+    // --- PA5D-6 (integración). la información pedagógica alrededor del nombre sobrevive en el contexto real persistido ---
+    verificar(notas.includes('niveles 2 en comprensión lectora') || notas.includes('requiere orientación'), 'PA5D-6b. el contenido pedagógico real (niveles/necesidad) sobrevive la sanitización en el flujo completo, no solo en la prueba unitaria')
+
+    // --- PA5D-7 (integración). lecturasDudosas también se sanitizó antes de llegar a cualquier lado (no se puede inspeccionar directo, pero al menos confirmamos que ninguna mención del nombre en dudosas contaminó el resto del flujo) ---
+    verificar(!JSON.stringify(filaCreada).includes(NOMBRE_ALUMNO_ROSTER), 'PA5D-7b. ninguna referencia al alumno sobrevive en ninguna columna de la fila persistida, incluida la proveniente de lecturasDudosas')
+  }
+
+  // --- PA5D-12. flujo SIN imagen no cambia — la sanitización nunca se ejecuta si no hubo extracción visual ---
+  {
+    const { anthropic } = anthropicControlado({ contextoPedagogico: null, decisiones: [] })
+    const { sb, interno } = clienteFalso(fixtureCurricular())
+    const r = await manejarTurnoProgramaAnalitico(sb, anthropic, sesion, 'gestionar', 'Al grupo le cuesta comprender textos largos.', null, 'req-test')
+    verificar(r.llamadasIa === 1, 'PA5D-12. sin adjunto, el turno sigue costando exactamente 1 llamada IA (generación) — idéntico a antes de PA-5D')
+    verificar(interno._tabla('programa_analitico_borrador').length === 1, 'PA5D-12b. el flujo sin imagen sigue creando el borrador con normalidad')
+  }
+  {
+    const codigo = readFileSync(new URL('../lib/programaAnalitico/manejarTurnoChat.ts', import.meta.url), 'utf-8')
+    const idxIf = codigo.indexOf("adjunto && adjunto.origen === 'imagen' && adjunto.imagenes.length > 0")
+    const idxSanitizar = codigo.indexOf('sanitizarContextoPedagogicoAdjunto(')
+    // La llamada a sanitizarContextoPedagogicoAdjunto vive DENTRO del
+    // mismo bloque condicional que exige un adjunto real — nunca se
+    // ejecuta cuando adjunto es null.
+    verificar(idxIf > -1 && idxSanitizar > idxIf && idxSanitizar - idxIf < 1200, 'PA5D-12c. la llamada a sanitizarContextoPedagogicoAdjunto está anidada dentro del guard "hay adjunto real" — nunca corre en un turno sin imagen')
+  }
+
+  // --- PA5D-14. currículo/PDA no cambian por esta corrección — los módulos que resuelven el catálogo oficial no fueron tocados por PA-5D ---
+  {
+    const candidatos = readFileSync(new URL('../lib/programaAnalitico/candidatosCurriculares.ts', import.meta.url), 'utf-8')
+    const resolver = readFileSync(new URL('../lib/curriculo/resolverContextoCurricularGrupo.ts', import.meta.url), 'utf-8')
+    verificar(
+      !candidatos.includes('sanitizarContextoIndividual') && !resolver.includes('sanitizarContextoIndividual'),
+      'PA5D-14. los módulos que resuelven currículo/PDA oficiales (candidatosCurriculares.ts, resolverContextoCurricularGrupo.ts) no importan ni fueron modificados por la sanitización — el catálogo canónico queda intacto'
+    )
+  }
+
+  // --- extra. nunca se loguea el nombre del alumno (§B "no loguees el nombre encontrado") ---
+  {
+    const codigo = readFileSync(new URL('../lib/programaAnalitico/sanitizarContextoIndividual.ts', import.meta.url), 'utf-8')
+    verificar(!codigo.includes('console.log') && !codigo.includes('console.error'), 'PA5D-extra. sanitizarContextoIndividual.ts no tiene ningún console.log/console.error — nunca puede filtrar un nombre encontrado a los logs')
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)

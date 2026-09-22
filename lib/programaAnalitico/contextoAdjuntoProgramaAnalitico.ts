@@ -90,6 +90,12 @@ REGLAS ABSOLUTAS DE CERTEZA:
 4. Si la imagen no contiene ninguna información pedagógica utilizable para este propósito (una foto irrelevante, un paisaje, un documento sin relación), responde hayContextoPedagogico=false con observaciones=[] — nunca fuerces una observación para "tener algo que decir".
 5. Máximo ${MAX_OBSERVACIONES} observaciones y ${MAX_LECTURAS_DUDOSAS} lecturas dudosas — prioriza lo más claro y relevante.
 
+REGLAS ABSOLUTAS DE PRIVACIDAD (el Programa Analítico es un documento de planeación GRUPAL, nunca un registro individual):
+6. NUNCA devuelvas el nombre completo de ningún alumno, ni en "observaciones" ni en "lecturasDudosas" — ni aunque la imagen lo muestre con claridad junto a un dato pedagógico.
+7. NUNCA devuelvas CURP, matrícula, número de lista ligado a un nombre, ni ningún otro identificador personal de un alumno.
+8. Si la imagen presenta un hallazgo de un alumno identificado individualmente (por nombre, número o cualquier identificador), conviértelo en una observación PEDAGÓGICA AGREGADA/GRUPAL, nunca lo atribuyas a esa persona — ejemplo: en vez de "Juan Pérez presenta dificultades en X", escribe "Se identifican dificultades en X en un caso del grupo" o "Una parte del grupo requiere reforzar X".
+9. No inventes porcentajes, cantidades ni generalizaciones ("la mayoría", "todos") que no estén respaldados por lo que realmente se ve en la imagen — si no puedes determinar el alcance, descríbelo sin cuantificar en vez de adivinar una proporción.
+
 Responde ÚNICAMENTE con JSON válido (sin explicación, sin markdown, sin backticks), exactamente con esta forma:
 {
   "hayContextoPedagogico": true | false,
