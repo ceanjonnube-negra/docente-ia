@@ -86,20 +86,35 @@ export async function crearPlaneacion(ctx: ContextoPlaneacion, datos: DatosCrear
     return fallo('CAMPOS_FALTANTES', 'Faltan el grupo o el nombre de la planeación.')
   }
 
+  // PLN-1E-C-FIX — institucion_id AMPLÍA la MISMA consulta que ya
+  // traía docente_id/ciclo_escolar_id (nunca un SELECT nuevo, nunca
+  // metadata del cliente): planeaciones.institucion_id es NOT NULL y
+  // el INSERT de abajo lo omitía por completo, causando el fallo real
+  // detectado en el primer E2E de aprobación (PLN-1E-C, "null value in
+  // column institucion_id"). grupos.institucion_id es la fuente
+  // contextual correcta — la misma institución del grupo real ya
+  // validado, nunca perfiles_docentes como segunda fuente.
   const { data: grupo, error: errorGrupo } = await ctx.supabase
     .from('grupos')
-    .select('id, docente_id, ciclo_escolar_id')
+    .select('id, docente_id, ciclo_escolar_id, institucion_id')
     .eq('id', datos.grupo_id)
     .maybeSingle()
   if (errorGrupo) return fallo('ERROR_SUPABASE', 'No se pudo verificar el grupo.')
   if (!grupo) return fallo('GRUPO_NO_ENCONTRADO', 'Grupo no encontrado.')
   if (grupo.docente_id !== docenteId) return fallo('GRUPO_AJENO', 'No tienes acceso a este grupo.')
+  // Fail-closed: nunca insertar con una institución ausente/aproximada
+  // — si por cualquier razón el grupo real no trajera institucion_id,
+  // se rechaza aquí con un error explícito en vez de dejar que la
+  // violación del constraint NOT NULL de la DB lo reporte de forma
+  // más críptica más abajo.
+  if (!grupo.institucion_id) return fallo('ERROR_SUPABASE', 'El grupo no tiene una institución asociada.')
 
   const { data: planeacion, error: errorInsert } = await ctx.supabase
     .from('planeaciones')
     .insert({
       docente_id: docenteId,
       grupo_id: datos.grupo_id,
+      institucion_id: grupo.institucion_id,
       ciclo_escolar_id: grupo.ciclo_escolar_id,
       periodo_evaluacion_id: datos.periodo_evaluacion_id ?? null,
       nombre: datos.nombre.trim(),

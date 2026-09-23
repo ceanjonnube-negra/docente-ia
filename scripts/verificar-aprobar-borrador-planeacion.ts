@@ -225,8 +225,8 @@ const DOCENTE_2 = { id: 'docente-2' }
 function datosBase(): Record<string, Fila[]> {
   return {
     grupos: [
-      { id: 'grupo-1', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1' },
-      { id: 'grupo-2', docente_id: 'docente-2', ciclo_escolar_id: 'ciclo-2' },
+      { id: 'grupo-1', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' },
+      { id: 'grupo-2', docente_id: 'docente-2', ciclo_escolar_id: 'ciclo-2', institucion_id: 'institucion-2' },
     ],
     planeaciones: [],
     planeacion_proyectos: [],
