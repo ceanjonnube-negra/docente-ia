@@ -97,6 +97,7 @@ class ConsultaFalsa {
       return { data: coincidentes, error: null }
     }
 
+    this.cliente._registrarConsulta(this.tabla)
     let resultado = filas.filter(f =>
       this.filtros.every(([c, v]) => f[c] === v) &&
       this.rangos.every(([, c, v]) => Number(f[c]) > Number(v))
@@ -138,11 +139,20 @@ class ConsultaFalsa {
 class ClienteSupabaseFalso {
   private tablas = new Map<string, Fila[]>()
   private errorForzadoTabla: string | null = null
+  private conteoConsultas = new Map<string, number>()
 
   constructor(private usuario: { id: string } | null, datosIniciales: Record<string, Fila[]> = {}) {
     for (const [tabla, filas] of Object.entries(datosIniciales)) {
       this.tablas.set(tabla, filas.map(f => ({ ...f })))
     }
+  }
+
+  _registrarConsulta(tabla: string) {
+    this.conteoConsultas.set(tabla, (this.conteoConsultas.get(tabla) ?? 0) + 1)
+  }
+
+  _consultasA(tabla: string): number {
+    return this.conteoConsultas.get(tabla) ?? 0
   }
 
   auth = {
@@ -182,8 +192,8 @@ const DOCENTE_2 = { id: 'docente-2' }
 function datosBase(): Record<string, Fila[]> {
   return {
     grupos: [
-      { id: 'grupo-1', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1' },
-      { id: 'grupo-2', docente_id: 'docente-2', ciclo_escolar_id: 'ciclo-2' },
+      { id: 'grupo-1', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' },
+      { id: 'grupo-2', docente_id: 'docente-2', ciclo_escolar_id: 'ciclo-2', institucion_id: 'institucion-2' },
     ],
     planeaciones: [
       {
@@ -219,6 +229,7 @@ async function main() {
       verificar(r.datos.estado === 'borrador', '1. Estado por defecto es "borrador"')
       verificar(r.datos.docente_id === 'docente-1', '1. docente_id se resuelve de la sesión')
       verificar(!!r.datos.id, '1. Se genera un id')
+      verificar((r.datos as unknown as Fila).institucion_id === 'institucion-1', '1. (PLN-1E-C-FIX) institucion_id se recupera del grupo real')
     }
   }
 
@@ -315,6 +326,72 @@ async function main() {
     const contenido = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'persistencia.ts'), 'utf-8')
     verificar(!contenido.includes('SERVICE_ROLE'), '12. persistencia.ts no referencia ninguna clave SERVICE_ROLE')
     verificar(!contenido.includes('createClient('), '12. persistencia.ts nunca crea su propio cliente de Supabase')
+  }
+
+  // --- PLN-1E-C-FIX: CASOS A-G (institucion_id en crearPlaneacion) ---
+
+  // CASO A. institucion_id se recupera de grupos (misma consulta ya existente)
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso A' })
+    verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-1', 'CASO A. institucion_id recuperado de grupos.institucion_id')
+  }
+
+  // CASO B. El INSERT contiene EXACTAMENTE el institucion_id del grupo (grupo-2 -> institucion-2)
+  {
+    const supabase = clienteFalso(DOCENTE_2, datosBase())
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-2', grupo_id: 'grupo-2', nombre: 'Caso B' })
+    verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-2', 'CASO B. El valor insertado coincide exactamente con el del grupo (no un valor fijo/adivinado)')
+  }
+
+  // CASO C. Nunca se toma un institucion_id inyectado por el cliente
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const datosConInstitucionAjena = { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso C', institucion_id: 'institucion-hackeada' } as unknown as Parameters<typeof crearPlaneacion>[1]
+    const r = await crearPlaneacion({ supabase }, datosConInstitucionAjena)
+    verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-1', 'CASO C. Un institucion_id enviado por el cliente en datos es ignorado; se usa el del grupo real')
+  }
+
+  // CASO D. docente_id/grupo_id/ciclo_escolar_id se siguen validando igual que antes
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const rAjeno = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-2', nombre: 'Caso D ajeno' })
+    verificar(rAjeno.ok === false && rAjeno.error.codigo === 'GRUPO_AJENO', 'CASO D. Grupo ajeno sigue produciendo GRUPO_AJENO (sin cambios)')
+    const rValido = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso D válido' })
+    verificar(rValido.ok === true && rValido.datos.ciclo_escolar_id === 'ciclo-1', 'CASO D. ciclo_escolar_id se sigue recuperando del grupo, sin cambios')
+  }
+
+  // CASO E. No se agrega ninguna consulta adicional: sigue siendo exactamente 1 SELECT a "grupos" por llamada
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const interno = supabase as unknown as ClienteSupabaseFalso
+    await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso E' })
+    verificar(interno._consultasA('grupos') === 1, 'CASO E. Exactamente 1 SELECT a grupos por creación (ningún SELECT adicional)')
+  }
+
+  // CASO F. No se agrega ninguna llamada a IA (confirmación estática)
+  {
+    const contenido = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'persistencia.ts'), 'utf-8')
+    verificar(!/anthropic/i.test(contenido), 'CASO F. persistencia.ts no referencia Anthropic/IA en ninguna forma')
+    verificar(!contenido.includes('messages.create'), 'CASO F. persistencia.ts no realiza llamadas al modelo')
+  }
+
+  // CASO G. El resto del comportamiento de persistencia no cambia (regresión directa)
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const rCampos = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: '   ' })
+    verificar(rCampos.ok === false && rCampos.error.codigo === 'CAMPOS_FALTANTES', 'CASO G. Nombre vacío sigue produciendo CAMPOS_FALTANTES (sin cambios)')
+    const rLista = await listarPlaneaciones({ supabase }, { grupo_id: 'grupo-1' })
+    verificar(rLista.ok === true && rLista.datos.length === 2, 'CASO G. listarPlaneaciones no se ve afectado')
+  }
+
+  // CASO H (defensivo, fail-closed). Un grupo real sin institucion_id nunca produce un INSERT parcial
+  {
+    const datos = datosBase()
+    datos.grupos = [{ id: 'grupo-sin-institucion', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1' }]
+    const supabase = clienteFalso(DOCENTE_1, datos)
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-sin-institucion', nombre: 'Caso H' })
+    verificar(r.ok === false && r.error.codigo === 'ERROR_SUPABASE', 'CASO H. Grupo sin institucion_id se rechaza de forma explícita (fail-closed), sin insertar')
   }
 
   console.log('')

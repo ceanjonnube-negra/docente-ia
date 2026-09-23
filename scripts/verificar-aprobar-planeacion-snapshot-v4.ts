@@ -135,7 +135,7 @@ function clienteFalso(usuario: { id: string } | null, datos: Record<string, Fila
 
 function datosBase(): Record<string, Fila[]> {
   return {
-    grupos: [{ id: '11111111-1111-4111-8111-111111111111', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1' }],
+    grupos: [{ id: '11111111-1111-4111-8111-111111111111', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' }],
     planeaciones: [],
     planeacion_proyectos: [],
     periodos_evaluacion: [],
