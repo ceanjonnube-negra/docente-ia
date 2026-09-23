@@ -54,7 +54,11 @@ export type ResumenBorrador = {
   programaAnaliticoItemIdsPropuestos: string[]
 }
 
-const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
+// Exportada (PLN-1D1) para que lib/planeacion/identidadCurricularVisibleBorrador.ts
+// pueda insertar contenido determinista ANTES de este marcador sin
+// duplicar el literal — un desajuste entre dos copias del mismo string
+// sería exactamente el tipo de fragilidad que PLN-1D1 evita a propósito.
+export const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
 const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/
 
 function extraerCampo(texto: string, etiqueta: string): string | null {

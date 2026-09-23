@@ -33,6 +33,7 @@ import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { idsOfrecidosDesdeContexto, cargarCandidatosProgramaAnaliticoVigente } from '@/lib/planeacion/resolverCurricularPlaneacion'
 import { validarSeleccionItemsProgramaAnalitico } from '@/lib/planeacion/validarSeleccionCurricularPlaneacion'
+import { construirIdentidadCurricularVisible, insertarIdentidadCurricularVisibleEnBorrador } from '@/lib/planeacion/identidadCurricularVisibleBorrador'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
 import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, construirTrazabilidadCurricular, type PlaneacionActivaAjustable, type TrazabilidadCurricularPlaneacion } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
@@ -1511,6 +1512,13 @@ export async function POST(req: NextRequest) {
   // server-side lo que Claude propuso en PROGRAMA_ANALITICO_ITEMS —
   // nunca para inyectarlo de nuevo al prompt.
   let idsCandidatosProgramaAnaliticoOfrecidos: string[] | null = null
+  // PLN-1D1 — calculada UNA sola vez, tan pronto termina el streaming
+  // (ver bloque justo después de streamFinalizado=true, antes de
+  // Word/PDF/mensaje de chat) para que la identidad curricular visible
+  // pueda insertarse en textoBorradorAcumulado ANTES de que cualquier
+  // consumidor (Word, PDF, mensaje de chat, snapshot) lo lea — nunca
+  // se recalcula más abajo, evita una segunda carga de candidatos.
+  let trazabilidadCurricularParaSnapshot: TrazabilidadCurricularPlaneacion | null = null
   // FASE 2B1 (ver "transporte interno de la decisión del orquestador")
   // — mismo criterio que las dos variables de arriba: declarada antes
   // del try del clasificador para que el Response final (mucho más
@@ -4117,6 +4125,48 @@ Grado: [grado] | Grupo: [grupo]
         }
         marcarTelemetria('claude:response_finished')
         console.log(`[STREAM][chat] streamFinalizado=true duracionStreamMs=${Date.now() - inicioRequestMs}`)
+
+        // PLN-1D1 — valida la selección curricular y construye/inserta
+        // la identidad curricular VISIBLE en textoBorradorAcumulado
+        // ANTES de que Word/PDF/mensaje de chat/snapshot lo lean (todos
+        // los bloques de más abajo reutilizan esta MISMA variable ya
+        // mutada, nunca una copia independiente). Corre exactamente una
+        // vez por turno, tan pronto el streaming termina — mismo
+        // momento en que PLN-1D calculaba trazabilidadCurricular, solo
+        // que ahora también se usa para insertar el bloque visible
+        // antes de generar los documentos, en vez de solo antes de
+        // guardar el snapshot.
+        //
+        // Nunca bloquea ni degrada el turno si falla: un error aquí dejaría
+        // trazabilidadCurricularParaSnapshot en null (idéntico a "grupo
+        // sin Programa Analítico", PLN-1D §7 fail-closed) y
+        // textoBorradorAcumulado sin mutar — el docente sigue recibiendo
+        // su borrador completo, solo sin la sección de identidad
+        // curricular validada.
+        if (esTurnoDeBorradorPlaneacion && idsCandidatosProgramaAnaliticoOfrecidos && idsCandidatosProgramaAnaliticoOfrecidos.length > 0 && sesion?.grupo_activo_id && supabaseUser) {
+          try {
+            const resumenParaIdentidad = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
+            if (resumenParaIdentidad) {
+              const cargadoParaValidar = await cargarCandidatosProgramaAnaliticoVigente(supabaseUser, sesion.grupo_activo_id)
+              if (cargadoParaValidar.ok) {
+                const idsOfrecidosEsteTurno = new Set(idsCandidatosProgramaAnaliticoOfrecidos)
+                const candidatosOfrecidosEsteTurno = cargadoParaValidar.candidatos.filter((c) => idsOfrecidosEsteTurno.has(c.programaAnaliticoItemId))
+                const validado = validarSeleccionItemsProgramaAnalitico(candidatosOfrecidosEsteTurno, resumenParaIdentidad.programaAnaliticoItemIdsPropuestos)
+                // Nunca loguea texto libre (contenido oficial/contextualizado/local) — solo ids técnicos y conteos.
+                console.log(`[PLANEACION_GENERAR][PA] seleccion_validada aceptados=${validado.aceptados.length} rechazados=${validado.rechazados.length}${validado.rechazados.length > 0 ? ` motivos=${JSON.stringify(validado.rechazados.map((r) => r.motivo))}` : ''}`)
+                trazabilidadCurricularParaSnapshot = construirTrazabilidadCurricular(cargadoParaValidar.programaAnaliticoId, cargadoParaValidar.programaAnaliticoVersionId, validado.aceptados)
+
+                const identidadVisible = construirIdentidadCurricularVisible(validado.aceptados)
+                const textoConIdentidad = insertarIdentidadCurricularVisibleEnBorrador(textoBorradorAcumulado, identidadVisible)
+                console.log(`[PLANEACION_GENERAR][PA] identidad_visible_insertada=${textoConIdentidad !== textoBorradorAcumulado}`)
+                textoBorradorAcumulado = textoConIdentidad
+              }
+            }
+          } catch (e) {
+            console.error('[PLANEACION_GENERAR][PA] excepción validando selección curricular (trazabilidadCurricular queda null, no bloquea el turno):', e)
+          }
+        }
+
         // Telemetría segura — cuenta cuántos adjuntos quedaron
         // realmente construidos en este turno (0, 1 o 2), nunca su
         // contenido.
@@ -4319,46 +4369,14 @@ Grado: [grado] | Grupo: [grupo]
           try {
             const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
             if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok && textoCompletoParaSnapshot) {
-              // PLN-1D — construye la ÚNICA identidad curricular que el
-              // snapshot V4 considera confiable. La propuesta cruda de
-              // Claude (programaAnaliticoItemIdsPropuestos) SOLO sirve
-              // como input de esta validación — nunca se persiste tal
-              // cual como identidad curricular (ver más abajo, se vacía
-              // antes de construir el snapshot, informe PLN-1D §8
-              // opción B). Recarga los candidatos reales de la versión
-              // vigente (mismo patrón de solo-lectura ya usado en toda
-              // la serie PA) y filtra a EXACTAMENTE los que se
-              // ofrecieron este turno (idsCandidatosProgramaAnaliticoOfrecidos,
-              // fijado arriba en el bloque de generación) — un id real
-              // del PA pero fuera de ese conjunto se rechaza igual que
-              // uno inventado (CASO D, PLN-1D §13). null cuando el
-              // grupo no tenía Programa Analítico publicado este turno
-              // (fail-closed, nunca se inventa una identidad); no-null
-              // con items=[] cuando SÍ había Programa Analítico pero
-              // ningún id propuesto sobrevivió la validación —
-              // "disponible pero nada seleccionado" es un estado real,
-              // no un error. programaAnaliticoId/programaAnaliticoVersionId
-              // vienen SIEMPRE del mismo contexto server-side recién
-              // cargado (PLN-1D §5) — nunca de nada que Claude haya
-              // escrito, y son EXACTAMENTE la versión contra la que se
-              // validó esta selección (una futura versión 2 del PA
-              // nunca reescribe retroactivamente esta trazabilidad).
-              let trazabilidadCurricularParaSnapshot: TrazabilidadCurricularPlaneacion | null = null
-              if (idsCandidatosProgramaAnaliticoOfrecidos && idsCandidatosProgramaAnaliticoOfrecidos.length > 0 && sesion.grupo_activo_id && supabaseUser) {
-                try {
-                  const cargadoParaValidar = await cargarCandidatosProgramaAnaliticoVigente(supabaseUser, sesion.grupo_activo_id)
-                  if (cargadoParaValidar.ok) {
-                    const idsOfrecidosEsteTurno = new Set(idsCandidatosProgramaAnaliticoOfrecidos)
-                    const candidatosOfrecidosEsteTurno = cargadoParaValidar.candidatos.filter((c) => idsOfrecidosEsteTurno.has(c.programaAnaliticoItemId))
-                    const validado = validarSeleccionItemsProgramaAnalitico(candidatosOfrecidosEsteTurno, resumenParaSnapshot.programaAnaliticoItemIdsPropuestos)
-                    // Nunca loguea texto libre (contenido oficial/contextualizado/local) — solo ids técnicos y conteos.
-                    console.log(`[PLANEACION_GENERAR][PA] seleccion_validada aceptados=${validado.aceptados.length} rechazados=${validado.rechazados.length}${validado.rechazados.length > 0 ? ` motivos=${JSON.stringify(validado.rechazados.map((r) => r.motivo))}` : ''}`)
-                    trazabilidadCurricularParaSnapshot = construirTrazabilidadCurricular(cargadoParaValidar.programaAnaliticoId, cargadoParaValidar.programaAnaliticoVersionId, validado.aceptados)
-                  }
-                } catch (e) {
-                  console.error('[PLANEACION_GENERAR][PA] excepción validando selección curricular (trazabilidadCurricular queda null, no bloquea el guardado del borrador):', e)
-                }
-              }
+              // PLN-1D — trazabilidadCurricularParaSnapshot ya se
+              // calculó UNA sola vez, justo después de streamFinalizado
+              // (PLN-1D1, ver arriba) — nunca se recalcula aquí (evita
+              // una segunda carga de candidatos y garantiza que la
+              // identidad persistida en el snapshot sea EXACTAMENTE la
+              // misma que ya se usó para construir la sección visible
+              // del documento).
+              //
               // PLN-1D §8 (opción B) — la propuesta cruda de Claude
               // NUNCA se persiste en el snapshot final: solo sirvió
               // como input de la validación de arriba. Lo único que
