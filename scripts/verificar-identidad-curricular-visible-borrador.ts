@@ -203,8 +203,13 @@ async function main() {
   {
     const bloque = renderizarBloqueIdentidadCurricularVisible({ contenidos: ['C1', 'C2'], pda: ['P1'] })
     verificar(bloque.startsWith('📌 IDENTIDAD CURRICULAR OFICIAL VALIDADA'), 'extra. el bloque renderizado empieza con el encabezado inequívoco')
-    verificar(bloque.includes('Contenidos: C1 · C2'), 'extra. Contenidos usa el mismo formato de lista que el resto del documento')
-    verificar(bloque.includes('PDA: P1'), 'extra. PDA usa el mismo formato de lista que el resto del documento')
+    // PLN-1D2 renombró estas etiquetas a "Contenidos oficiales:"/"PDA
+    // oficiales:" a propósito (evita colisión con las etiquetas EXACTAS
+    // "Contenidos:"/"PDA:" del bloque de resumen — ver
+    // sustituirContenidosYPdaEnBloqueResumen y
+    // scripts/verificar-identidad-curricular-unica.ts).
+    verificar(bloque.includes('Contenidos oficiales: C1 · C2'), 'extra. Contenidos usa el mismo formato de lista que el resto del documento')
+    verificar(bloque.includes('PDA oficiales: P1'), 'extra. PDA usa el mismo formato de lista que el resto del documento')
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)

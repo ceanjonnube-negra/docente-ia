@@ -33,7 +33,7 @@ import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
 import { idsOfrecidosDesdeContexto, cargarCandidatosProgramaAnaliticoVigente } from '@/lib/planeacion/resolverCurricularPlaneacion'
 import { validarSeleccionItemsProgramaAnalitico } from '@/lib/planeacion/validarSeleccionCurricularPlaneacion'
-import { construirIdentidadCurricularVisible, insertarIdentidadCurricularVisibleEnBorrador } from '@/lib/planeacion/identidadCurricularVisibleBorrador'
+import { construirIdentidadCurricularVisible, insertarIdentidadCurricularVisibleEnBorrador, sustituirContenidosYPdaEnBloqueResumen } from '@/lib/planeacion/identidadCurricularVisibleBorrador'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
 import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, construirTrazabilidadCurricular, type PlaneacionActivaAjustable, type TrazabilidadCurricularPlaneacion } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
@@ -4157,8 +4157,17 @@ Grado: [grado] | Grupo: [grupo]
                 trazabilidadCurricularParaSnapshot = construirTrazabilidadCurricular(cargadoParaValidar.programaAnaliticoId, cargadoParaValidar.programaAnaliticoVersionId, validado.aceptados)
 
                 const identidadVisible = construirIdentidadCurricularVisible(validado.aceptados)
-                const textoConIdentidad = insertarIdentidadCurricularVisibleEnBorrador(textoBorradorAcumulado, identidadVisible)
-                console.log(`[PLANEACION_GENERAR][PA] identidad_visible_insertada=${textoConIdentidad !== textoBorradorAcumulado}`)
+                // PLN-1D1: inserta la sección "Contenidos oficiales:"/
+                // "PDA oficiales:" antes del marcador de resumen (cubre
+                // el cuerpo del documento → chat/Word/PDF). PLN-1D2:
+                // además sustituye las líneas "Contenidos:"/"PDA:" DEL
+                // PROPIO bloque de resumen (que sigue siendo visible en
+                // el chat) por el mismo texto canónico — nunca dos
+                // representaciones distintas bajo la identidad de
+                // "PDA"/"Contenidos" en el mismo turno.
+                const textoConIdentidadInsertada = insertarIdentidadCurricularVisibleEnBorrador(textoBorradorAcumulado, identidadVisible)
+                const textoConIdentidad = sustituirContenidosYPdaEnBloqueResumen(textoConIdentidadInsertada, identidadVisible)
+                console.log(`[PLANEACION_GENERAR][PA] identidad_visible_insertada=${textoConIdentidadInsertada !== textoBorradorAcumulado} resumen_sustituido=${textoConIdentidad !== textoConIdentidadInsertada}`)
                 textoBorradorAcumulado = textoConIdentidad
               }
             }

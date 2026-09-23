@@ -9,12 +9,11 @@
 //
 // Decisión de arquitectura (auditoría previa a implementar, ver
 // informe PLN-1D1 §A/§B): NO se reescribe la sección narrativa libre
-// que Claude ya redacta en el cuerpo del documento ("📚 PROCESOS DE
-// DESARROLLO DE APRENDIZAJE (PDA)") — localizar y sustituir esa
-// prosa de forma determinista sería frágil (esa sección no tiene
-// ningún formato garantizado, a diferencia del bloque "📎 RESUMEN PARA
-// GUARDAR", que SÍ lo tiene desde su diseño original). En vez de
-// "sustituir", esta fase "construye" (PLN-1D1 §2 lo permite
+// que Claude ya redacta en el cuerpo del documento — localizar y
+// sustituir esa prosa de forma determinista sería frágil (esa sección
+// no tiene ningún formato garantizado, a diferencia del bloque "📎
+// RESUMEN PARA GUARDAR", que SÍ lo tiene desde su diseño original). En
+// vez de "sustituir" ahí, se "construye" (PLN-1D1 §2 lo permite
 // explícitamente) una sección NUEVA, inequívocamente rotulada como la
 // identidad curricular oficial validada, insertada en un punto 100%
 // determinista: justo antes de ETIQUETA_INICIO_BLOQUE (el mismo
@@ -22,13 +21,31 @@
 // usan de forma confiable en producción) — nunca dentro de la prosa
 // libre de Claude, nunca adivinando límites de sección.
 //
-// Consecuencia deliberada: la sección narrativa de Claude ("PDA:" en
-// prosa) sigue existiendo tal cual, como explicación pedagógica — el
-// objetivo de PLN-1D1 nunca fue prohibir esa narrativa (ver
-// "explicaciones pedagógicas" en la lista de libertades permitidas),
-// sino garantizar que exista, de forma inequívoca, la identidad
-// curricular REAL en el mismo documento. Ver informe PLN-1D1 §N para
-// el riesgo residual explícito de esta decisión.
+// PLN-1D2 — cierra la brecha residual que PLN-1D1 dejó explícita
+// (informe PLN-1D1 §N): PLN-1D1 insertaba esta sección nueva SIN
+// impedir que Claude, además, siguiera escribiendo su propia sección
+// narrativa "PROCESOS DE DESARROLLO DE APRENDIZAJE (PDA)" — dos
+// representaciones visibles bajo la misma identidad de "PDA". PLN-1D2
+// resuelve esto en el prompt (lib/asistente/instruccionesPlaneacionGenerar.ts):
+// cuando existe contexto curricular canónico, se le instruye a Claude
+// NO escribir esa sección narrativa en absoluto — la ÚNICA sección
+// "Contenidos"/"PDA" que puede existir en el cuerpo del documento es
+// la que esta función inserta. Los encabezados de línea de esta
+// sección se renombraron a "Contenidos oficiales:"/"PDA oficiales:"
+// (antes "Contenidos:"/"PDA:") a propósito: el bloque "📎 RESUMEN PARA
+// GUARDAR" usa exactamente las etiquetas "Contenidos:"/"PDA:" con
+// significado propio (extraerLista) — reutilizar el mismo literal aquí
+// haría que sustituirContenidosYPdaEnBloqueResumen (más abajo) pudiera
+// coincidir por error con ESTA sección en vez de con el resumen real,
+// si algún día se buscara sin acotar al índice del marcador.
+//
+// Consecuencia deliberada y ya aceptada: si Claude, pese a la
+// instrucción, redactara de todos modos alguna prosa que MENCIONE
+// contenidos/PDA de forma narrativa (sin usar el encabezado "PDA"),
+// esa prosa seguiría existiendo como explicación pedagógica — el
+// objetivo nunca fue prohibir toda mención pedagógica, solo impedir
+// que algo se presente BAJO LA IDENTIDAD de "PDA"/"Contenidos" sin ser
+// canónico. Ver informe PLN-1D2 §O para el riesgo residual explícito.
 
 import type { CandidatoCurricularPlaneacion } from './resolverCurricularPlaneacion'
 import { ETIQUETA_INICIO_BLOQUE } from './extraerBorrador'
@@ -100,8 +117,12 @@ const ENCABEZADO_IDENTIDAD_VISIBLE = '📌 IDENTIDAD CURRICULAR OFICIAL VALIDADA
 // reconozca.
 export function renderizarBloqueIdentidadCurricularVisible(identidad: IdentidadCurricularVisible): string {
   const lineas = [ENCABEZADO_IDENTIDAD_VISIBLE]
-  if (identidad.contenidos.length > 0) lineas.push(`Contenidos: ${identidad.contenidos.join(' · ')}`)
-  if (identidad.pda.length > 0) lineas.push(`PDA: ${identidad.pda.join(' · ')}`)
+  // "Contenidos oficiales:"/"PDA oficiales:" — deliberadamente
+  // DISTINTAS de las etiquetas exactas "Contenidos:"/"PDA:" que usa el
+  // bloque "📎 RESUMEN PARA GUARDAR" (ver cabecera del archivo) — nunca
+  // deben coincidir por accidente con esas.
+  if (identidad.contenidos.length > 0) lineas.push(`Contenidos oficiales: ${identidad.contenidos.join(' · ')}`)
+  if (identidad.pda.length > 0) lineas.push(`PDA oficiales: ${identidad.pda.join(' · ')}`)
   return lineas.join('\n')
 }
 
@@ -120,4 +141,43 @@ export function insertarIdentidadCurricularVisibleEnBorrador(textoBorrador: stri
 
   const bloque = renderizarBloqueIdentidadCurricularVisible(identidad)
   return `${textoBorrador.slice(0, indice).trimEnd()}\n\n${bloque}\n\n${textoBorrador.slice(indice)}`
+}
+
+// PLN-1D2 §G — el bloque "📎 RESUMEN PARA GUARDAR" sigue siendo texto
+// VISIBLE completo para el docente en el chat (extraerBorrador.ts,
+// cabecera: "el docente lo ve como parte del borrador") y además
+// alimenta ResumenBorrador.contenidos/.pda (parseados por
+// extraerResumenBorrador vía extraerLista). Sin esta función, ese
+// bloque seguiría mostrando — y persistiendo — la paráfrasis de Claude
+// como una SEGUNDA representación de "Contenidos"/"PDA", distinta de
+// la insertada arriba: exactamente la ambigüedad que PLN-1D2 elimina.
+//
+// Sustituye EXCLUSIVAMENTE el valor de las líneas "Contenidos:"/"PDA:"
+// — mismas etiquetas EXACTAS que ya usa extraerLista, mismo separador
+// ";" — dentro del bloque de resumen (nunca antes del marcador, nunca
+// en la sección insertada por insertarIdentidadCurricularVisibleEnBorrador,
+// que usa etiquetas distintas a propósito). Determinista: opera con
+// una expresión regular ANCLADA a inicio de línea sobre la porción de
+// texto que empieza EXACTAMENTE en ETIQUETA_INICIO_BLOQUE — nunca
+// sobre el documento completo, para que sea imposible que coincida con
+// cualquier otra ocurrencia. Reemplaza como máximo 1 línea por
+// etiqueta (el propio formato ya exige que solo exista una). Si la
+// etiqueta no aparece ahí (borrador no conforme al formato esperado),
+// no cambia nada — nunca inserta una línea que Claude no escribió.
+export function sustituirContenidosYPdaEnBloqueResumen(textoBorrador: string, identidad: IdentidadCurricularVisible | null): string {
+  if (!identidad) return textoBorrador
+  const indice = textoBorrador.indexOf(ETIQUETA_INICIO_BLOQUE)
+  if (indice === -1) return textoBorrador
+
+  const antes = textoBorrador.slice(0, indice)
+  let bloqueResumen = textoBorrador.slice(indice)
+
+  if (identidad.contenidos.length > 0) {
+    bloqueResumen = bloqueResumen.replace(/^Contenidos:.*$/m, `Contenidos: ${identidad.contenidos.join('; ')}`)
+  }
+  if (identidad.pda.length > 0) {
+    bloqueResumen = bloqueResumen.replace(/^PDA:.*$/m, `PDA: ${identidad.pda.join('; ')}`)
+  }
+
+  return antes + bloqueResumen
 }

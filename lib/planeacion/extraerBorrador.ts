@@ -26,6 +26,22 @@ export type ResumenBorrador = {
   duracionDias: number | null
   proposito: string | null
   camposFormativos: string[]
+  // PLN-1D2 §G — CONTRATO: cuando el turno tuvo contexto curricular
+  // canónico validado (trazabilidadCurricular no-null con items), estos
+  // dos campos NUNCA contienen la paráfrasis cruda de Claude — route.ts
+  // sustituye la línea "Contenidos:"/"PDA:" del bloque de resumen por
+  // el texto canónico ANTES de que este parser corra (ver
+  // sustituirContenidosYPdaEnBloqueResumen en
+  // lib/planeacion/identidadCurricularVisibleBorrador.ts), así que lo
+  // que termina aquí ya es canónico. Cuando NO hubo contexto curricular
+  // canónico ese turno (grupo sin Programa Analítico, o 0 items
+  // validados), estos campos siguen siendo texto libre de Claude — útil
+  // como resumen pedagógico legible, pero NUNCA la fuente de verdad
+  // curricular: esa es SIEMPRE trazabilidadCurricular (snapshot V4).
+  // Un futuro consumidor (p.ej. planeacion_proyectos en PLN-1E) debe
+  // preferir trazabilidadCurricular cuando exista, y tratar estos dos
+  // campos como metadata secundaria en cualquier caso — nunca como
+  // identidad curricular autoritativa por sí solos.
   contenidos: string[]
   pda: string[]
   ejesArticuladores: string[]
