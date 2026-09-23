@@ -2130,7 +2130,15 @@ export async function POST(req: NextRequest) {
       // nunca confía ciegamente en la clasificación.
       if (clasificacion.intencion_principal === 'planeacion_generar' && clasificacion.accion_planeacion_generar === 'aprobar') {
         try {
-          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes)
+          // PLN-1E-B — conversación AUTORIZADA (ya demostrada contra
+          // RLS por obtenerConversacionIdAutorizada, cacheada por
+          // request) — nunca un conversationId que el cliente pudiera
+          // mandar directamente. aprobarBorradorPlaneacion la usa
+          // ÚNICAMENTE para leer, con el mismo supabaseUser RLS-scoped
+          // de siempre, el snapshot V4 de ESTA conversación — nunca
+          // para autorizar nada adicional.
+          const conversacionIdParaAprobar = await obtenerConversacionIdAutorizada()
+          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, conversacionIdParaAprobar)
           if (!resultado.ok) {
             console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)
             return respuestaTexto(resultado.mensaje)

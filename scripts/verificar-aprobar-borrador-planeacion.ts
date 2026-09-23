@@ -360,7 +360,7 @@ async function main() {
   // 1/2/3. Guardado con un borrador activo válido y completo
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r.ok === true, '1/2/3. Con un borrador activo válido y completo, la aprobación guarda con éxito')
     if (r.ok) {
       verificar(r.planeacion.nombre === 'Leyendas de mi comunidad', '1b. La planeación guardada tiene el nombre correcto')
@@ -392,14 +392,14 @@ async function main() {
   // 14. Estado final compatible con el esquema/interfaz real
   {
     const { sb } = clienteFalso(DOCENTE_1, datosBase())
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r.ok === true && r.planeacion.estado === 'publicada', '14. El estado final es uno de los valores reales del esquema (\'publicada\'), nunca uno inventado')
   }
 
   // 4. "Ok" sin borrador activo
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'user', content: 'ok' }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'user', content: 'ok' }], null)
     verificar(!r.ok && r.codigo === 'SIN_BORRADOR', '4. "Ok" sin un borrador activo produce SIN_BORRADOR, sin guardar nada')
     verificar(interno.escrituras.length === 0, '4b. Ninguna escritura se ejecuta cuando no hay borrador')
   }
@@ -407,7 +407,7 @@ async function main() {
   // 5/7. Bloque incompleto
   {
     const { sb } = clienteFalso(DOCENTE_1, datosBase())
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_INCOMPLETO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_INCOMPLETO }], null)
     verificar(!r.ok && r.codigo === 'BORRADOR_INCOMPLETO', '5/7. Bloque incompleto produce BORRADOR_INCOMPLETO')
   }
 
@@ -416,7 +416,7 @@ async function main() {
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
     const bloqueSinPda = construirBloque(['PDA'])
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: bloqueSinPda }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: bloqueSinPda }], null)
     verificar(!r.ok && r.codigo === 'BORRADOR_INCOMPLETO', 'Un borrador sin PDA es rechazado también a nivel de orquestación completa')
     verificar(interno.escrituras.length === 0, 'Ninguna escritura se ejecuta si el contenido estructurado está incompleto')
   }
@@ -427,7 +427,7 @@ async function main() {
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
     interno.forzarErrorEn('planeacion_proyectos', 'insert')
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r.ok === false && r.codigo === 'ERROR_GUARDADO', '1. Si falla planeacion_proyectos, la aprobación completa se reporta como fallo controlado')
     verificar(interno._tabla('planeaciones').length === 1, '1b. La fila de planeaciones sí quedó creada (fase 1 del commit en dos fases)')
     verificar((interno._tabla('planeaciones')[0] as { version: number }).version === 0, '1c. Pero permanece en version=0 — nunca se promovió, nunca es válida')
@@ -438,7 +438,7 @@ async function main() {
 
     // 4. Reintento después de fallo parcial — recupera el proceso, no duplica
     interno.quitarErrorForzado('planeacion_proyectos', 'insert')
-    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r2.ok === true, '4. El reintento después del fallo parcial ahora sí completa el guardado')
     verificar(interno._tabla('planeaciones').length === 1, '4b. Sigue existiendo exactamente 1 fila de planeaciones — el reintento reutilizó la misma, no creó otra')
     verificar(interno._tabla('planeacion_proyectos').length === 1, '4c. Sigue existiendo exactamente 1 proyecto vinculado')
@@ -451,8 +451,8 @@ async function main() {
   // 19. Duplicado detectado por huella estable (docente + grupo + nombre + fechas)
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
-    const r1 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
-    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r1 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
+    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r1.ok === true, '5. El primer intento de guardado tiene éxito')
     verificar(!r2.ok && r2.codigo === 'YA_GUARDADA', '5b/19. Una segunda aprobación consecutiva del mismo borrador detecta la huella estable y no duplica')
     verificar(interno._tabla('planeaciones').length === 1, '5c. Dos aprobaciones consecutivas producen un único resultado lógico — solo 1 planeación')
@@ -462,7 +462,7 @@ async function main() {
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
     interno.forzarErrorEn('planeaciones', 'insert')
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(!r.ok && r.codigo === 'ERROR_GUARDADO', 'Error al crear la fila temporal de planeaciones se reporta como fallo controlado, sin excepción')
     verificar(interno._tabla('planeacion_proyectos').length === 0, 'Si falla la fase 1, nunca se intenta la fase 2 (crear el proyecto)')
   }
@@ -471,7 +471,7 @@ async function main() {
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
     interno.forzarErrorEn('planeaciones', 'update')
-    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(!r.ok && r.codigo === 'ERROR_GUARDADO', 'Error al confirmar (promover version 0→1) se reporta como fallo controlado, nunca como éxito')
     verificar((interno._tabla('planeaciones')[0] as { version: number }).version === 0, 'Sin confirmación exitosa, la fila permanece en version=0 (invisible)')
   }
@@ -479,14 +479,14 @@ async function main() {
   // 16/17/18. Protección de docente_id y grupo_id (reutiliza crearPlaneacion del Paso 2)
   {
     const { sb } = clienteFalso(DOCENTE_1, datosBase())
-    const r = await aprobarBorradorPlaneacion(sb, sesion({ grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion({ grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r.ok === false, '16/17. No se puede guardar en un grupo que no pertenece al docente autenticado')
   }
   {
     const { sb: sb1 } = clienteFalso(DOCENTE_1, datosBase())
     const { sb: sb2 } = clienteFalso(DOCENTE_2, datosBase())
-    const r1 = await aprobarBorradorPlaneacion(sb1, sesion({ docente_id: 'docente-1', grupo_activo_id: 'grupo-1' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
-    const r2 = await aprobarBorradorPlaneacion(sb2, sesion({ docente_id: 'docente-2', grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r1 = await aprobarBorradorPlaneacion(sb1, sesion({ docente_id: 'docente-1', grupo_activo_id: 'grupo-1' }), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
+    const r2 = await aprobarBorradorPlaneacion(sb2, sesion({ docente_id: 'docente-2', grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     verificar(r1.ok === true && r2.ok === true, '18. Cada docente guarda correctamente en su propio grupo, sin mezclar datos')
     if (r1.ok && r2.ok) verificar(r1.planeacion.docente_id !== r2.planeacion.docente_id, '18b. Las planeaciones quedan asociadas a docentes distintos')
   }
@@ -505,7 +505,7 @@ async function main() {
     verificar(!contenidoGenerarHoja.includes('createClient(') && !contenidoGenerarHoja.includes('SERVICE_ROLE'), 'generarYGuardarHoja.ts (reutilizado en la aprobación) tampoco usa SERVICE_ROLE ni crea cliente propio')
 
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
-    await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], null)
     const tablasEscritas = new Set(interno.escrituras.map((e) => e.tabla))
     verificar(interno.escrituras.every((e) => e.tipo === 'insert' || e.tipo === 'update'), '23. Solo se ejecutan operaciones insert/update (nunca delete) durante una aprobación exitosa')
     verificar(

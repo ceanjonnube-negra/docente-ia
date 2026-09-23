@@ -42,6 +42,7 @@ import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } fr
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
+import { esPlaneacionActivaValida, type TrazabilidadCurricularPlaneacion } from './planeacionActiva'
 import type { Planeacion } from './tipos'
 
 export type CodigoErrorAprobacion =
@@ -178,13 +179,63 @@ async function buscarProyectoSeguimientoPorHuella(sb: SupabaseClient, sesion: Se
   return (data as FilaProyectoSeguimiento | null) ?? null
 }
 
+// PLN-1E-B — deep-equal determinista y explicable: comparación de
+// texto JSON, no una librería de diff — suficiente porque ambos lados
+// siempre provienen de la MISMA estructura (construirTrazabilidadCurricular,
+// lib/planeacion/planeacionActiva.ts), nunca de fuentes con orden de
+// claves potencialmente distinto.
+function trazabilidadesIguales(a: TrazabilidadCurricularPlaneacion, b: TrazabilidadCurricularPlaneacion): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+// PLN-1E-B — conversacionId: la MISMA que route.ts ya resuelve vía
+// obtenerConversacionIdAutorizada() (ownership demostrado contra RLS
+// antes de llegar aquí) — nunca un id que el cliente pueda inventar.
+// null solo en los pocos caminos donde una conversación autorizada no
+// existe (mismo criterio que el resto del proyecto) — en ese caso esta
+// función simplemente no intenta leer ningún snapshot V4 y usa el
+// comportamiento histórico completo, sin ningún cambio.
 export async function aprobarBorradorPlaneacion(
   sb: SupabaseClient,
   sesion: SesionContexto,
-  historial: TurnoHistorial[]
+  historial: TurnoHistorial[],
+  conversacionId: string | null
 ): Promise<ResultadoAprobacion> {
   if (!sesion.grupo_activo_id) {
     return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: 'No tengo un grupo activo configurado para guardar la planeación.' }
+  }
+
+  // PLN-1E-B — fuente server-side de identidad curricular Y de
+  // contenido completo definitivo cuando existe un snapshot V4 válido
+  // para ESTA conversación y ESTE grupo. Como máximo 1 SELECT
+  // adicional (RLS existente, mismo supabaseUser de siempre — nunca
+  // service_role). NUNCA vuelve a resolver curricularmente: no importa
+  // resolverCurricularPlaneacion.ts ni ninguna función de resolución —
+  // solo LEE y valida la forma de lo que ya se validó y persistió
+  // durante generación/ajuste (PLN-1D/PLN-1D1/PLN-1D2).
+  //
+  // Condiciones para confiar en el snapshot (todas obligatorias):
+  // schemaVersion===4, estado==='borrador' (un snapshot 'implementada'
+  // no aplica aquí — ver más abajo, PLN-1E-B nunca los usa ni los
+  // crea), y contexto.grupoId === sesion.grupo_activo_id (invariante
+  // multigrupo, mismo criterio ya usado en el resto del proyecto). Si
+  // CUALQUIERA falla: NUNCA se reconstruye, NUNCA se busca otra
+  // conversación — trazabilidadCurricularDeEsteTurno/contenidoCompletoDefinitivo
+  // quedan null y el resto de la función sigue exactamente el
+  // comportamiento histórico (fallback a historial/ResumenBorrador,
+  // V1/V2/V3 incluidos).
+  let trazabilidadCurricularDeEsteTurno: TrazabilidadCurricularPlaneacion | null = null
+  let contenidoCompletoDefinitivo: string | null = null
+  if (conversacionId) {
+    const { data: filaConversacion } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
+    const candidato = filaConversacion?.planeacion_activa
+    if (candidato != null && esPlaneacionActivaValida(candidato) && candidato.schemaVersion === 4 && candidato.estado === 'borrador' && candidato.contexto.grupoId === sesion.grupo_activo_id) {
+      trazabilidadCurricularDeEsteTurno = candidato.trazabilidadCurricular
+      contenidoCompletoDefinitivo = candidato.contenidoCompleto
+      console.log(`[PLANEACION_GENERAR][aprobar] snapshot_v4_usado=true trazabilidad_presente=${!!candidato.trazabilidadCurricular} items=${candidato.trazabilidadCurricular?.items.length ?? 0}`)
+    } else {
+      console.log(`[PLANEACION_GENERAR][aprobar] snapshot_v4_usado=false candidato_presente=${candidato != null}`)
+    }
   }
 
   const resumen = extraerResumenBorrador(historial)
@@ -351,13 +402,21 @@ export async function aprobarBorradorPlaneacion(
     // url_ver — TarjetaDescarga simplemente sigue mostrando el botón
     // único de siempre para esos casos, sin romper nada.
     type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string }
-    const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado } } | null)?.evaluacion
+    const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado; trazabilidad_curricular?: TrazabilidadCurricularPlaneacion } } | null)?.evaluacion
     let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
     let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
     if (!documentoWord || !documentoPdf) {
       try {
+        // PLN-1E-B — prioridad al snapshot V4 (contenidoCompletoDefinitivo):
+        // elimina la divergencia cliente/servidor detectada en
+        // PLN-1E-A (el `historial` que manda el cliente refleja el
+        // texto tal como se STREAMEÓ, ANTES de la sustitución
+        // server-side de PLN-1D1/PLN-1D2 — el snapshot persistido, en
+        // cambio, YA es el texto corregido). El historial sigue siendo
+        // el único fallback cuando no hay V4 válido para este turno —
+        // nunca al revés.
         const ultimoTurno = historial[historial.length - 1]
-        const textoCompleto = ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : ''
+        const textoCompleto = contenidoCompletoDefinitivo ?? (ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : '')
         if (textoCompleto) {
           if (!documentoWord) {
             const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
@@ -375,9 +434,35 @@ export async function aprobarBorradorPlaneacion(
       }
     }
 
+    // PLN-1E-B — trazabilidad_curricular: metadata curricular
+    // persistida TEMPORALMENTE dentro del JSONB `evaluacion` existente
+    // por compatibilidad de esquema (0 migraciones) — NUNCA se trata
+    // conceptualmente como información de evaluación, es la copia
+    // exacta de snapshot.trazabilidadCurricular, nunca reconstruida
+    // desde strings. Protección contra conflicto (retry/reintento):
+    // si planeacion_proyectos YA tiene una trazabilidad persistida de
+    // un intento anterior y la de este turno es DISTINTA, la existente
+    // GANA — nunca se sobrescribe silenciosamente con una selección
+    // curricular diferente (fail-closed ante conflicto de identidad).
+    // Si la existente coincide exactamente (mismo retry real) o no
+    // había ninguna todavía, se usa/conserva sin cambios.
+    const trazabilidadCurricularExistente = evaluacionPrevia?.trazabilidad_curricular ?? null
+    let trazabilidadCurricularFinal = trazabilidadCurricularExistente
+    if (trazabilidadCurricularDeEsteTurno) {
+      if (!trazabilidadCurricularExistente) {
+        trazabilidadCurricularFinal = trazabilidadCurricularDeEsteTurno
+      } else if (!trazabilidadesIguales(trazabilidadCurricularExistente, trazabilidadCurricularDeEsteTurno)) {
+        console.warn('[PLANEACION_GENERAR][aprobar] conflicto de trazabilidad_curricular detectado (huella repetida con selección curricular distinta) — se conserva la ya persistida, nunca se sobrescribe silenciosamente')
+      }
+    }
+
     // Fase 5: vincular la hoja real y el documento real (si se logró
     // generar) dentro de planeacion_proyectos — único lugar del
-    // vínculo, sin relación improvisada nueva.
+    // vínculo, sin relación improvisada nueva. Objeto `evaluacion`
+    // reconstruido EXPLÍCITAMENTE (mismo patrón ya existente para
+    // documento_word/documento_pdf, nunca un PATCH jsonb parcial) para
+    // que ninguna clave ya persistida (hoja_id, documento_word,
+    // documento_pdf, trazabilidad_curricular) se pierda por accidente.
     const { error: errorVinculo } = await sb
       .from('planeacion_proyectos')
       .update({
@@ -391,6 +476,7 @@ export async function aprobarBorradorPlaneacion(
           hoja_identificador_visible: resultadoHoja.identificadorVisible,
           ...(documentoWord ? { documento_word: documentoWord } : {}),
           ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
+          ...(trazabilidadCurricularFinal ? { trazabilidad_curricular: trazabilidadCurricularFinal } : {}),
         },
         actualizado_en: new Date().toISOString(),
       })
