@@ -223,20 +223,21 @@ async function main() {
   // 1. Creación válida
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Nueva planeación' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: 'Nueva planeación' })
     verificar(r.ok === true, '1. Creación válida devuelve ok:true')
     if (r.ok) {
       verificar(r.datos.estado === 'borrador', '1. Estado por defecto es "borrador"')
       verificar(r.datos.docente_id === 'docente-1', '1. docente_id se resuelve de la sesión')
       verificar(!!r.datos.id, '1. Se genera un id')
       verificar((r.datos as unknown as Fila).institucion_id === 'institucion-1', '1. (PLN-1E-C-FIX) institucion_id se recupera del grupo real')
+      verificar((r.datos as unknown as Fila).campo_formativo === 'Lenguajes', '1. (PLN-1E-F-FIX) campo_formativo llega exactamente al INSERT')
     }
   }
 
   // 2. Campos faltantes
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: '   ' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: '   ' })
     verificar(r.ok === false && r.error.codigo === 'CAMPOS_FALTANTES', '2. Nombre vacío produce CAMPOS_FALTANTES')
   }
 
@@ -296,7 +297,7 @@ async function main() {
   // 9. Protección de grupo_id (no se puede crear en un grupo ajeno)
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-2', nombre: 'Intento en grupo ajeno' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-2', campo_formativo: 'Lenguajes', nombre: 'Intento en grupo ajeno' })
     verificar(r.ok === false && r.error.codigo === 'GRUPO_AJENO', '9. Crear en un grupo ajeno produce GRUPO_AJENO')
   }
 
@@ -333,21 +334,21 @@ async function main() {
   // CASO A. institucion_id se recupera de grupos (misma consulta ya existente)
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso A' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: 'Caso A' })
     verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-1', 'CASO A. institucion_id recuperado de grupos.institucion_id')
   }
 
   // CASO B. El INSERT contiene EXACTAMENTE el institucion_id del grupo (grupo-2 -> institucion-2)
   {
     const supabase = clienteFalso(DOCENTE_2, datosBase())
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-2', grupo_id: 'grupo-2', nombre: 'Caso B' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-2', grupo_id: 'grupo-2', campo_formativo: 'Lenguajes', nombre: 'Caso B' })
     verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-2', 'CASO B. El valor insertado coincide exactamente con el del grupo (no un valor fijo/adivinado)')
   }
 
   // CASO C. Nunca se toma un institucion_id inyectado por el cliente
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const datosConInstitucionAjena = { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso C', institucion_id: 'institucion-hackeada' } as unknown as Parameters<typeof crearPlaneacion>[1]
+    const datosConInstitucionAjena = { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: 'Caso C', institucion_id: 'institucion-hackeada' } as unknown as Parameters<typeof crearPlaneacion>[1]
     const r = await crearPlaneacion({ supabase }, datosConInstitucionAjena)
     verificar(r.ok === true && (r.datos as unknown as Fila).institucion_id === 'institucion-1', 'CASO C. Un institucion_id enviado por el cliente en datos es ignorado; se usa el del grupo real')
   }
@@ -355,9 +356,9 @@ async function main() {
   // CASO D. docente_id/grupo_id/ciclo_escolar_id se siguen validando igual que antes
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const rAjeno = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-2', nombre: 'Caso D ajeno' })
+    const rAjeno = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-2', campo_formativo: 'Lenguajes', nombre: 'Caso D ajeno' })
     verificar(rAjeno.ok === false && rAjeno.error.codigo === 'GRUPO_AJENO', 'CASO D. Grupo ajeno sigue produciendo GRUPO_AJENO (sin cambios)')
-    const rValido = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso D válido' })
+    const rValido = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: 'Caso D válido' })
     verificar(rValido.ok === true && rValido.datos.ciclo_escolar_id === 'ciclo-1', 'CASO D. ciclo_escolar_id se sigue recuperando del grupo, sin cambios')
   }
 
@@ -365,7 +366,7 @@ async function main() {
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
     const interno = supabase as unknown as ClienteSupabaseFalso
-    await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Caso E' })
+    await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: 'Caso E' })
     verificar(interno._consultasA('grupos') === 1, 'CASO E. Exactamente 1 SELECT a grupos por creación (ningún SELECT adicional)')
   }
 
@@ -379,7 +380,7 @@ async function main() {
   // CASO G. El resto del comportamiento de persistencia no cambia (regresión directa)
   {
     const supabase = clienteFalso(DOCENTE_1, datosBase())
-    const rCampos = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: '   ' })
+    const rCampos = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: 'Lenguajes', nombre: '   ' })
     verificar(rCampos.ok === false && rCampos.error.codigo === 'CAMPOS_FALTANTES', 'CASO G. Nombre vacío sigue produciendo CAMPOS_FALTANTES (sin cambios)')
     const rLista = await listarPlaneaciones({ supabase }, { grupo_id: 'grupo-1' })
     verificar(rLista.ok === true && rLista.datos.length === 2, 'CASO G. listarPlaneaciones no se ve afectado')
@@ -390,8 +391,27 @@ async function main() {
     const datos = datosBase()
     datos.grupos = [{ id: 'grupo-sin-institucion', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1' }]
     const supabase = clienteFalso(DOCENTE_1, datos)
-    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-sin-institucion', nombre: 'Caso H' })
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-sin-institucion', campo_formativo: 'Lenguajes', nombre: 'Caso H' })
     verificar(r.ok === false && r.error.codigo === 'ERROR_SUPABASE', 'CASO H. Grupo sin institucion_id se rechaza de forma explícita (fail-closed), sin insertar')
+  }
+
+  // --- PLN-1E-F-FIX: campo_formativo fail-closed en crearPlaneacion ---
+
+  // CASO I. campo_formativo vacío ('') se rechaza ANTES del INSERT (fail-closed, nunca inventa un valor).
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const interno = supabase as unknown as ClienteSupabaseFalso
+    const filasAntes = interno._tabla('planeaciones').length
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: '', nombre: 'Caso I' })
+    verificar(r.ok === false && r.error.codigo === 'CAMPOS_FALTANTES', 'CASO I. campo_formativo vacío produce CAMPOS_FALTANTES')
+    verificar(interno._tabla('planeaciones').length === filasAntes, 'CASO I. no se insertó ninguna fila nueva en planeaciones')
+  }
+
+  // CASO J. campo_formativo solo espacios en blanco también se rechaza.
+  {
+    const supabase = clienteFalso(DOCENTE_1, datosBase())
+    const r = await crearPlaneacion({ supabase }, { docente_id: 'docente-1', grupo_id: 'grupo-1', campo_formativo: '   ', nombre: 'Caso J' })
+    verificar(r.ok === false && r.error.codigo === 'CAMPOS_FALTANTES', 'CASO J. campo_formativo solo espacios produce CAMPOS_FALTANTES')
   }
 
   console.log('')
