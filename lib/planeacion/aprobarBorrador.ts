@@ -224,21 +224,44 @@ export async function aprobarBorradorPlaneacion(
   // quedan null y el resto de la función sigue exactamente el
   // comportamiento histórico (fallback a historial/ResumenBorrador,
   // V1/V2/V3 incluidos).
+  // PLN-1E-E — resumenDesdeSnapshotV4: el MISMO candidato ya leído y
+  // validado arriba también trae, desde schemaVersion=1,
+  // `borrador: ResumenBorrador` completo (ver CamposComunesPlaneacionActiva
+  // en planeacionActiva.ts) — ya pasó por validarContenidoBorrador como
+  // precondición de esPlaneacionActivaValida. Con un V4 válido para
+  // esta conversación/grupo, ESTE es el ResumenBorrador definitivo:
+  // extraerResumenBorrador(historial) deja de ser necesario y, sobre
+  // todo, deja de ser CONFIABLE — el historial que manda el cliente
+  // puede terminar en cualquier turno posterior (p.ej. el mensaje de
+  // error de un intento de aprobación anterior, ver informe forense
+  // PLN-1E-D), y extraerResumenBorrador solo mira el ÚLTIMO turno
+  // assistant, sin recorrer hacia atrás. NUNCA se reconstruye ni se
+  // vuelve a parsear nada aquí — es una lectura directa del mismo
+  // objeto ya validado.
   let trazabilidadCurricularDeEsteTurno: TrazabilidadCurricularPlaneacion | null = null
   let contenidoCompletoDefinitivo: string | null = null
+  let resumenDesdeSnapshotV4: ResumenBorrador | null = null
   if (conversacionId) {
     const { data: filaConversacion } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
     const candidato = filaConversacion?.planeacion_activa
     if (candidato != null && esPlaneacionActivaValida(candidato) && candidato.schemaVersion === 4 && candidato.estado === 'borrador' && candidato.contexto.grupoId === sesion.grupo_activo_id) {
       trazabilidadCurricularDeEsteTurno = candidato.trazabilidadCurricular
       contenidoCompletoDefinitivo = candidato.contenidoCompleto
+      resumenDesdeSnapshotV4 = candidato.borrador
       console.log(`[PLANEACION_GENERAR][aprobar] snapshot_v4_usado=true trazabilidad_presente=${!!candidato.trazabilidadCurricular} items=${candidato.trazabilidadCurricular?.items.length ?? 0}`)
     } else {
       console.log(`[PLANEACION_GENERAR][aprobar] snapshot_v4_usado=false candidato_presente=${candidato != null}`)
     }
   }
 
-  const resumen = extraerResumenBorrador(historial)
+  // PLN-1E-E — precedencia: un V4 válido para esta conversación/grupo
+  // SIEMPRE gana sobre el historial, sin importar qué haya en el
+  // último turno assistant (ni tieneBloqueResumen se consulta en ese
+  // caso). El fallback a extraerResumenBorrador(historial)/tieneBloqueResumen
+  // — comportamiento histórico completo, sin ningún cambio — solo
+  // corre cuando NO hay V4 válido (V1/V2/V3, sin snapshot, o snapshot
+  // inválido/de otro grupo).
+  const resumen = resumenDesdeSnapshotV4 ?? extraerResumenBorrador(historial)
   if (!resumen) {
     if (tieneBloqueResumen(historial)) {
       return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }

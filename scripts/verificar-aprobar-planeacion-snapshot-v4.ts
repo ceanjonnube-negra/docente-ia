@@ -68,6 +68,7 @@ class ConsultaFalsa {
       coincidentes.forEach((f) => Object.assign(f, this.payload))
       return { data: coincidentes, error: null }
     }
+    this.cliente._registrarConsulta(this.tabla)
     const resultado = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v))
     return { data: resultado, error: null }
   }
@@ -95,10 +96,14 @@ class ClienteSupabaseFalso {
   private tablas = new Map<string, Fila[]>()
   private archivosStorage = new Map<string, Buffer>()
   private fallasForzadas: Array<{ tabla: string; operacion: 'insert' | 'update' | 'select' }> = []
+  private conteoConsultas = new Map<string, number>()
 
   constructor(private usuario: { id: string } | null, datosIniciales: Record<string, Fila[]> = {}) {
     for (const [tabla, filas] of Object.entries(datosIniciales)) this.tablas.set(tabla, filas.map((f) => ({ ...f })))
   }
+
+  _registrarConsulta(tabla: string) { this.conteoConsultas.set(tabla, (this.conteoConsultas.get(tabla) ?? 0) + 1) }
+  _consultasA(tabla: string): number { return this.conteoConsultas.get(tabla) ?? 0 }
 
   auth = {
     getUser: async () => {
@@ -463,6 +468,201 @@ async function main() {
     // propósito, que NO lo importa — esa frase no debe contar como una
     // señal falsa positiva de que sí lo hace).
     verificar(!/from ['"].*resolverCurricularPlaneacion['"]/.test(contenido) && !contenido.includes('resolverCandidatosCurricularesPuro('), 'CASO K. nunca importa ni vuelve a ejecutar la resolución curricular al aprobar — solo LEE el snapshot ya validado')
+  }
+
+  // ============================================================
+  // PLN-1E-E — aprobación determinista desde snapshot V4: con un V4
+  // válido, resumenDesdeSnapshotV4 (= candidato.borrador) reemplaza a
+  // extraerResumenBorrador(historial) — el historial deja de ser
+  // requisito para encontrar/reconstruir el borrador. Fixtures nuevas
+  // deliberadamente DISTINTAS de resumenFixture()/CAMPOS_BLOQUE en
+  // varios campos, para poder demostrar sin ambigüedad cuál fuente
+  // ganó en cada caso.
+  // ============================================================
+
+  const MENSAJE_ERROR_PRIMER_INTENTO = 'No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.'
+
+  const HISTORIAL_CON_ERROR_INTERMEDIO = [
+    { role: 'assistant', content: BLOQUE_VALIDO },
+    { role: 'user', content: 'Apruébala.' },
+    { role: 'assistant', content: MENSAJE_ERROR_PRIMER_INTENTO },
+  ]
+
+  const HISTORIAL_SIN_RESUMEN = [
+    { role: 'user', content: 'hola' },
+    { role: 'assistant', content: '¿en qué te ayudo hoy?' },
+  ]
+
+  const HISTORIAL_VACIO: { role: string; content: string }[] = []
+
+  // Bloque de historial con nombre/fechas/contenidos/PDA/indicadores
+  // TOTALMENTE distintos de resumenFixture() — mismo formato real que
+  // produce Claude, pero deliberadamente divergente para CASO E.
+  const CAMPOS_BLOQUE_DIFERENTE: [string, string][] = [
+    ['Nombre', 'Proyecto del historial (NO debe usarse)'],
+    ['Grupo', 'activo'],
+    ['Periodo de evaluación', 'Segundo trimestre'],
+    ['Fecha de inicio', '2099-01-01'],
+    ['Fecha de fin', '2099-01-10'],
+    ['Duración', '5 días efectivos'],
+    ['Propósito', 'propósito del historial, no debe persistirse'],
+    ['Campos formativos', 'Ética, Naturaleza y Sociedades'],
+    ['Contenidos', 'contenido-del-historial-nunca-debe-persistirse'],
+    ['PDA', 'pda-del-historial-nunca-debe-persistirse'],
+    ['Ejes articuladores', 'Vida Saludable'],
+    ['Metodología', 'metodología del historial'],
+    ['Producto final', 'producto del historial'],
+    ['Secuencia didáctica', 'Día 1: actividad del historial'],
+    ['Recursos', 'recurso-del-historial'],
+    ['Evidencias', 'evidencia-del-historial'],
+    ['Indicadores de evaluación', 'indicador-historial-1; indicador-historial-2; indicador-historial-3; indicador-historial-4; indicador-historial-5'],
+  ]
+  function construirBloqueDiferente(): string {
+    const lineas = CAMPOS_BLOQUE_DIFERENTE.map(([etiqueta, valor]) => `${etiqueta}: ${valor}`)
+    return `Otro borrador distinto.\n\n📎 RESUMEN PARA GUARDAR\n${lineas.join('\n')}\n\n¿Deseas corregir algo o aprobarla para guardarla?`
+  }
+  const HISTORIAL_DIFERENTE = [{ role: 'assistant', content: construirBloqueDiferente() }]
+
+  // PLN-1E-E CASO A — V4 válido + historial original con RESUMEN → usa candidato.borrador.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-a', planeacion_activa: snapshot })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-e2e-a')
+    verificar(r.ok === true, 'PLN-1E-E CASO A. aprobación exitosa con V4 válido + historial original')
+    const proyecto = interno._tabla('planeacion_proyectos')[0] as { contenidos?: string[]; pda?: string[] }
+    verificar(JSON.stringify(proyecto?.contenidos) === JSON.stringify(resumenFixture().contenidos), 'PLN-1E-E CASO A. contenidos persistidos = candidato.borrador.contenidos (no los del historial)')
+    verificar(JSON.stringify(proyecto?.pda) === JSON.stringify(resumenFixture().pda), 'PLN-1E-E CASO A. pda persistido = candidato.borrador.pda (no el del historial)')
+  }
+
+  // PLN-1E-E CASO B — V4 válido + último assistant del historial es el error del primer intento → aprueba igual (caso exacto del E2E real / informe PLN-1E-D).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-b', planeacion_activa: snapshot })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_CON_ERROR_INTERMEDIO, 'conv-e2e-b')
+    verificar(r.ok === true, 'PLN-1E-E CASO B. aprobación exitosa aunque el último turno assistant sea el mensaje de error del primer intento (regresión del E2E real)')
+    if (r.ok) {
+      verificar(r.planeacion.nombre === resumenFixture().nombre, 'PLN-1E-E CASO B. el nombre persistido viene del snapshot V4')
+    }
+  }
+
+  // PLN-1E-E CASO C — V4 válido + historial sin ningún RESUMEN → aprueba igual.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-c', planeacion_activa: snapshot })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_SIN_RESUMEN, 'conv-e2e-c')
+    verificar(r.ok === true, 'PLN-1E-E CASO C. aprobación exitosa con historial que nunca tuvo bloque RESUMEN')
+  }
+
+  // PLN-1E-E CASO D — V4 válido + historial vacío → el V4 sigue siendo suficiente (la firma acepta historial: []).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-d', planeacion_activa: snapshot })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VACIO, 'conv-e2e-d')
+    verificar(r.ok === true, 'PLN-1E-E CASO D. aprobación exitosa con historial vacío — el snapshot V4 basta por sí solo')
+  }
+
+  // PLN-1E-E CASO E — V4 válido + historial con un borrador DIFERENTE → gana SIEMPRE candidato.borrador (nombre/fechas/contenidos/PDA/indicadores).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-e', planeacion_activa: snapshot })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_DIFERENTE, 'conv-e2e-e')
+    verificar(r.ok === true, 'PLN-1E-E CASO E precondición: aprobación exitosa')
+    const fila = interno._tabla('planeaciones')[0] as { nombre?: string; fecha_inicio?: string; fecha_fin?: string }
+    verificar(fila?.nombre === resumenFixture().nombre && fila?.nombre !== 'Proyecto del historial (NO debe usarse)', 'PLN-1E-E CASO E. nombre persistido = snapshot V4, nunca el del historial')
+    verificar(fila?.fecha_inicio === resumenFixture().fechaInicio && fila?.fecha_fin === resumenFixture().fechaFin, 'PLN-1E-E CASO E. fechas persistidas = snapshot V4, nunca las del historial (2099-01-01/10)')
+    const proyecto = interno._tabla('planeacion_proyectos')[0] as { contenidos?: string[]; pda?: string[]; evaluacion?: { indicadores?: string[] } }
+    verificar(JSON.stringify(proyecto?.contenidos) === JSON.stringify(resumenFixture().contenidos), 'PLN-1E-E CASO E. contenidos = snapshot V4, nunca "contenido-del-historial-nunca-debe-persistirse"')
+    verificar(JSON.stringify(proyecto?.pda) === JSON.stringify(resumenFixture().pda), 'PLN-1E-E CASO E. pda = snapshot V4, nunca "pda-del-historial-nunca-debe-persistirse"')
+    verificar(JSON.stringify(proyecto?.evaluacion?.indicadores) === JSON.stringify(resumenFixture().indicadores), 'PLN-1E-E CASO E. indicadores = snapshot V4, nunca los "indicador-historial-*"')
+  }
+
+  // PLN-1E-E CASO F — V3 (histórico) + historial correcto → SIGUE usando extraerResumenBorrador(historial), nunca snapshot.borrador (el atajo es exclusivo de V4).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshotV3 = {
+      schemaVersion: 3, version: 1, estado: 'borrador', implementadaEn: null,
+      contexto: { grupoId: '11111111-1111-4111-8111-111111111111' },
+      borrador: resumenFixture(), // distinto a propósito del historial
+      contenidoCompleto: 'texto histórico v3',
+      origenMensajeId: null, actualizadoEn: new Date().toISOString(),
+    }
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-f', planeacion_activa: snapshotV3 })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-e2e-f')
+    verificar(r.ok === true, 'PLN-1E-E CASO F precondición: V3 histórico sigue siendo aprobable')
+    const proyecto = interno._tabla('planeacion_proyectos')[0] as { contenidos?: string[] }
+    verificar(JSON.stringify(proyecto?.contenidos) === JSON.stringify(['tradición oral', 'tipos de narración']), 'PLN-1E-E CASO F. para V3 los contenidos vienen del HISTORIAL (comportamiento histórico intacto), no de snapshotV3.borrador')
+  }
+
+  // PLN-1E-E CASO G — sin snapshot (conversacionId=null) + historial correcto → comportamiento histórico intacto.
+  {
+    const { sb } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, null)
+    verificar(r.ok === true, 'PLN-1E-E CASO G. sin conversacionId, el fallback histórico (historial) sigue funcionando')
+  }
+
+  // PLN-1E-E CASO H — sin V4 + historial sin RESUMEN → sigue devolviendo SIN_BORRADOR.
+  {
+    const { sb } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_SIN_RESUMEN, null)
+    verificar(r.ok === false && r.codigo === 'SIN_BORRADOR', 'PLN-1E-E CASO H. sin V4 y sin bloque RESUMEN en el historial, sigue devolviendo SIN_BORRADOR exactamente como antes')
+  }
+
+  // PLN-1E-E CASO I — V4 inválido/corrupto/de otro grupo → nunca se confía en él, fallback histórico (usa el historial, no un borrador inventado).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-i', planeacion_activa: { schemaVersion: 4, estado: 'borrador' /* corrupto: faltan campos */ } })
+
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-e2e-i')
+    verificar(r.ok === true, 'PLN-1E-E CASO I precondición: aprobación exitosa vía fallback')
+    const proyecto = interno._tabla('planeacion_proyectos')[0] as { contenidos?: string[] }
+    verificar(JSON.stringify(proyecto?.contenidos) === JSON.stringify(['tradición oral', 'tipos de narración']), 'PLN-1E-E CASO I. con V4 corrupto, los contenidos vienen del HISTORIAL — nunca se confía en un snapshot inválido')
+  }
+
+  // PLN-1E-E CASO J — 0 llamadas IA adicionales (estático, ya cubierto por CASO K pero repetido explícitamente para esta microfase).
+  {
+    const contenido = readFileSyncModulo('lib/planeacion/aprobarBorrador.ts')
+    verificar(!/anthropic\.messages|\.stream\(\)|new Anthropic/i.test(contenido), 'PLN-1E-E CASO J. aprobarBorrador.ts sigue sin ninguna llamada a Anthropic tras el cambio')
+  }
+
+  // PLN-1E-E CASO K — 0 SELECT adicionales respecto a PLN-1E-B: exactamente 1 SELECT a conversaciones_chat por llamada (resumenDesdeSnapshotV4 se lee del MISMO candidato ya obtenido).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-k', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_CON_ERROR_INTERMEDIO, 'conv-e2e-k')
+    verificar(interno._consultasA('conversaciones_chat') === 1, 'PLN-1E-E CASO K. exactamente 1 SELECT a conversaciones_chat por aprobación (sin SELECT adicional para leer candidato.borrador)')
+  }
+
+  // PLN-1E-E CASO L — trazabilidad_curricular persistida sigue siendo EXACTAMENTE la del snapshot V4 (el cambio de fuente de `resumen` no afecta la trazabilidad).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL, ITEM_CONTEXTUALIZADO])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-l', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_CON_ERROR_INTERMEDIO, 'conv-e2e-l')
+    const proyecto = interno._tabla('planeacion_proyectos')[0] as { evaluacion?: { trazabilidad_curricular?: unknown } }
+    verificar(JSON.stringify(proyecto?.evaluacion?.trazabilidad_curricular) === JSON.stringify(snapshot.trazabilidadCurricular), 'PLN-1E-E CASO L. trazabilidad_curricular = snapshot.trazabilidadCurricular exacto, incluso con historial terminado en un error intermedio')
+  }
+
+  // PLN-1E-E CASO M — Word/PDF definitivo sigue usando candidato.contenidoCompleto y no el historial cuando existe V4 (aunque el último turno assistant sea el mensaje de error).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4([ITEM_OFICIAL], '11111111-1111-4111-8111-111111111111', 'MARCADORSNAPSHOTV4UNICO')
+    interno._tabla('conversaciones_chat').push({ id: 'conv-e2e-m', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_CON_ERROR_INTERMEDIO, 'conv-e2e-m')
+    const rutas = interno._rutasStorage()
+    verificar(rutas.some((r) => r.includes('MARCADORSNAPSHOTV4UNICO')), 'PLN-1E-E CASO M. el documento definitivo se generó a partir del texto del snapshot V4 (marcador único presente en la ruta de Storage)')
+    verificar(!rutas.some((r) => /no_fue_posible|fue_posible_guardar/i.test(r)), 'PLN-1E-E CASO M. el documento definitivo NO se generó a partir del mensaje de error del historial')
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)
