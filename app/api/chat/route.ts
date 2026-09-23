@@ -34,7 +34,7 @@ import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/plan
 import { idsOfrecidosDesdeContexto, cargarCandidatosProgramaAnaliticoVigente } from '@/lib/planeacion/resolverCurricularPlaneacion'
 import { validarSeleccionItemsProgramaAnalitico } from '@/lib/planeacion/validarSeleccionCurricularPlaneacion'
 import { validarContenidoBorrador } from '@/lib/planeacion/validarContenidoBorrador'
-import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, type PlaneacionActivaV3 } from '@/lib/planeacion/planeacionActiva'
+import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, guardarPlaneacionActivaCreada, esPlaneacionActivaValida, construirTrazabilidadCurricular, type PlaneacionActivaAjustable, type TrazabilidadCurricularPlaneacion } from '@/lib/planeacion/planeacionActiva'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -1501,7 +1501,7 @@ export async function POST(req: NextRequest) {
   // construirPlaneacionActivaCreada(), sin depender del scope de la
   // rama donde se leyó. null en cualquier turno que no sea un ajuste
   // válido — 'crear' nunca lo toca.
-  let planeacionActivaParaAjuste: PlaneacionActivaV3 | null = null
+  let planeacionActivaParaAjuste: PlaneacionActivaAjustable | null = null
   // PLN-1C — ids de programa_analitico_item que SÍ se le ofrecieron a
   // Claude este turno (MODO A: el conjunto cerrado pequeño; MODO B:
   // todo el catálogo compacto) — mismo criterio de declaración
@@ -2496,7 +2496,7 @@ export async function POST(req: NextRequest) {
             console.log(`[PLANEACION_ACTIVA_DEBUG] fase=entrada accion=ajustar mensajeUsuarioId=${mensajeUsuarioIdSolicitado ?? 'ninguno'} conversacionIdRecibido=${!!conversacionId} grupoActivoIdPresente=${!!sesion.grupo_activo_id}`)
             const conversacionIdParaAjuste = await obtenerConversacionIdAutorizada()
             console.log(`[PLANEACION_ACTIVA_DEBUG] fase=autorizacion conversacion_autorizada=${!!conversacionIdParaAjuste} conversacionId=${conversacionIdParaAjuste ?? 'ninguna'}`)
-            let snapshotValidoParaAjuste: PlaneacionActivaV3 | null = null
+            let snapshotValidoParaAjuste: PlaneacionActivaAjustable | null = null
             // Razón por defecto: si el bloque de abajo nunca corre, es
             // porque la conversación no se autorizó — única categoría
             // que puede quedar sin sobreescribir.
@@ -2518,7 +2518,13 @@ export async function POST(req: NextRequest) {
               // que MG-B ya ancla de forma estable a esta conversación
               // (ver diseño aprobado) — nunca se "corrige" ni se busca
               // otro grupo si no coincide.
-              const snapshotValido = snapshotPresente && esPlaneacionActivaValida(candidato) && candidato.schemaVersion === 3
+              // PLN-1D — acepta V3 (histórico, sin trazabilidadCurricular)
+              // Y V4 (con trazabilidadCurricular) como base válida para
+              // ajustar: construirPlaneacionActivaAjustada ahora acepta
+              // ambos (PlaneacionActivaAjustable) y SIEMPRE produce V4.
+              // Sin este OR, toda planeación creada después de PLN-1D
+              // (que ya nace V4) se volvería "inajustable" de inmediato.
+              const snapshotValido = snapshotPresente && esPlaneacionActivaValida(candidato) && (candidato.schemaVersion === 3 || candidato.schemaVersion === 4)
               const grupoCoincide = snapshotValido && candidato.contexto.grupoId === sesion.grupo_activo_id
 
               console.log(
@@ -4313,22 +4319,32 @@ Grado: [grado] | Grupo: [grupo]
           try {
             const resumenParaSnapshot = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
             if (resumenParaSnapshot && validarContenidoBorrador(resumenParaSnapshot).ok && textoCompletoParaSnapshot) {
-              // PLN-1C §8 — validación server-side OBLIGATORIA de la
-              // identidad curricular que Claude propuso en
-              // PROGRAMA_ANALITICO_ITEMS, ANTES de tratarla como real.
-              // Nunca reutiliza lo que se mandó al prompt como si fuera
-              // confiable por haber salido de ahí: recarga los
-              // candidatos reales de la versión vigente (mismo patrón
-              // de solo-lectura ya usado en toda la serie PA) y filtra
-              // a EXACTAMENTE los que se ofrecieron este turno
-              // (idsCandidatosProgramaAnaliticoOfrecidos, fijado arriba
-              // en el bloque de generación) — un id real del PA pero
-              // fuera de ese conjunto se rechaza igual que uno
-              // inventado (CASO I, PLN-1C §13). Solo observabilidad en
-              // esta microfase (log, nunca bloquea el guardado del
-              // borrador): la persistencia definitiva de la selección
-              // validada en planeacion_proyectos queda para PLN-1D/1E.
-              if (resumenParaSnapshot.programaAnaliticoItemIdsPropuestos.length > 0 && idsCandidatosProgramaAnaliticoOfrecidos && idsCandidatosProgramaAnaliticoOfrecidos.length > 0 && sesion.grupo_activo_id && supabaseUser) {
+              // PLN-1D — construye la ÚNICA identidad curricular que el
+              // snapshot V4 considera confiable. La propuesta cruda de
+              // Claude (programaAnaliticoItemIdsPropuestos) SOLO sirve
+              // como input de esta validación — nunca se persiste tal
+              // cual como identidad curricular (ver más abajo, se vacía
+              // antes de construir el snapshot, informe PLN-1D §8
+              // opción B). Recarga los candidatos reales de la versión
+              // vigente (mismo patrón de solo-lectura ya usado en toda
+              // la serie PA) y filtra a EXACTAMENTE los que se
+              // ofrecieron este turno (idsCandidatosProgramaAnaliticoOfrecidos,
+              // fijado arriba en el bloque de generación) — un id real
+              // del PA pero fuera de ese conjunto se rechaza igual que
+              // uno inventado (CASO D, PLN-1D §13). null cuando el
+              // grupo no tenía Programa Analítico publicado este turno
+              // (fail-closed, nunca se inventa una identidad); no-null
+              // con items=[] cuando SÍ había Programa Analítico pero
+              // ningún id propuesto sobrevivió la validación —
+              // "disponible pero nada seleccionado" es un estado real,
+              // no un error. programaAnaliticoId/programaAnaliticoVersionId
+              // vienen SIEMPRE del mismo contexto server-side recién
+              // cargado (PLN-1D §5) — nunca de nada que Claude haya
+              // escrito, y son EXACTAMENTE la versión contra la que se
+              // validó esta selección (una futura versión 2 del PA
+              // nunca reescribe retroactivamente esta trazabilidad).
+              let trazabilidadCurricularParaSnapshot: TrazabilidadCurricularPlaneacion | null = null
+              if (idsCandidatosProgramaAnaliticoOfrecidos && idsCandidatosProgramaAnaliticoOfrecidos.length > 0 && sesion.grupo_activo_id && supabaseUser) {
                 try {
                   const cargadoParaValidar = await cargarCandidatosProgramaAnaliticoVigente(supabaseUser, sesion.grupo_activo_id)
                   if (cargadoParaValidar.ok) {
@@ -4337,16 +4353,23 @@ Grado: [grado] | Grupo: [grupo]
                     const validado = validarSeleccionItemsProgramaAnalitico(candidatosOfrecidosEsteTurno, resumenParaSnapshot.programaAnaliticoItemIdsPropuestos)
                     // Nunca loguea texto libre (contenido oficial/contextualizado/local) — solo ids técnicos y conteos.
                     console.log(`[PLANEACION_GENERAR][PA] seleccion_validada aceptados=${validado.aceptados.length} rechazados=${validado.rechazados.length}${validado.rechazados.length > 0 ? ` motivos=${JSON.stringify(validado.rechazados.map((r) => r.motivo))}` : ''}`)
+                    trazabilidadCurricularParaSnapshot = construirTrazabilidadCurricular(cargadoParaValidar.programaAnaliticoId, cargadoParaValidar.programaAnaliticoVersionId, validado.aceptados)
                   }
                 } catch (e) {
-                  console.error('[PLANEACION_GENERAR][PA] excepción validando selección curricular (no bloquea el guardado del borrador):', e)
+                  console.error('[PLANEACION_GENERAR][PA] excepción validando selección curricular (trazabilidadCurricular queda null, no bloquea el guardado del borrador):', e)
                 }
               }
+              // PLN-1D §8 (opción B) — la propuesta cruda de Claude
+              // NUNCA se persiste en el snapshot final: solo sirvió
+              // como input de la validación de arriba. Lo único que
+              // entra a V4 como identidad curricular es
+              // trazabilidadCurricularParaSnapshot (ya validado).
+              const resumenSinPropuestaCruda = { ...resumenParaSnapshot, programaAnaliticoItemIdsPropuestos: [] as string[] }
               const conversacionIdParaSnapshot = await obtenerConversacionIdAutorizada()
               if (conversacionIdParaSnapshot && supabaseUser) {
                 const snapshot = planeacionActivaParaAjuste
-                  ? construirPlaneacionActivaAjustada(planeacionActivaParaAjuste, resumenParaSnapshot, textoCompletoParaSnapshot, null)
-                  : construirPlaneacionActivaCreada(resumenParaSnapshot, textoCompletoParaSnapshot, sesion.grupo_activo_id, null)
+                  ? construirPlaneacionActivaAjustada(planeacionActivaParaAjuste, resumenSinPropuestaCruda, textoCompletoParaSnapshot, null, trazabilidadCurricularParaSnapshot)
+                  : construirPlaneacionActivaCreada(resumenSinPropuestaCruda, textoCompletoParaSnapshot, sesion.grupo_activo_id, null, trazabilidadCurricularParaSnapshot)
                 const resultadoGuardado = await guardarPlaneacionActivaCreada(supabaseUser, conversacionIdParaSnapshot, snapshot)
                 console.log(`[PLANEACION_ACTIVA] guardado=${resultadoGuardado.ok}${resultadoGuardado.ok ? '' : ` motivo=${resultadoGuardado.motivo}`}`)
                 // PERSISTENCIA DEFINITIVA DEL MENSAJE ASISTENTE DE

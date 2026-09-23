@@ -57,10 +57,30 @@
 // incrementa version en +1 y sustituye borrador/contenidoCompleto por
 // los nuevos. La creación V3 (arriba) sigue existiendo sin cambios.
 // 'implementar'/'descartar'/'finalizar' siguen fuera de esta fase.
+//
+// schemaVersion 4 (PLN-1D — "trazabilidad curricular validada en el
+// snapshot") — agrega trazabilidadCurricular: la ÚNICA identidad
+// curricular que este snapshot considera confiable, producida
+// EXCLUSIVAMENTE server-side (ver route.ts, bloque PLN-1D) después de
+// validar contra el Programa Analítico vigente real
+// (lib/planeacion/validarSeleccionCurricularPlaneacion.ts) — NUNCA la
+// propuesta cruda de Claude (ResumenBorrador.programaAnaliticoItemIdsPropuestos,
+// que sigue existiendo solo como dato transitorio de parseo, nunca se
+// persiste con contenido real en el snapshot: route.ts la vacía antes
+// de construir V4, ver informe PLN-1D §8 opción B). null cuando el
+// grupo no tenía Programa Analítico publicado ese turno (comportamiento
+// sin cambios respecto a PLN-1C); no-null con items=[] cuando SÍ había
+// Programa Analítico pero ningún item propuesto sobrevivió la
+// validación — nunca se inventa una selección para rellenar. Los
+// snapshots V1/V2/V3 ya persistidos NUNCA se migran ni se completan en
+// caliente — construirPlaneacionActivaCreada/Ajustada ahora producen
+// SIEMPRE V4, pero esPlaneacionActivaValida sigue aceptando V1/V2/V3
+// para lectura, exactamente igual que V2 nunca dejó de aceptar V1.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResumenBorrador } from './extraerBorrador'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
+import type { CandidatoCurricularPlaneacion } from './resolverCurricularPlaneacion'
 
 type CamposComunesPlaneacionActiva = {
   version: number
@@ -80,7 +100,45 @@ export type PlaneacionActivaV3Borrador = CamposV3Base & { estado: 'borrador'; im
 export type PlaneacionActivaV3Implementada = CamposV3Base & { estado: 'implementada'; implementadaEn: string }
 export type PlaneacionActivaV3 = PlaneacionActivaV3Borrador | PlaneacionActivaV3Implementada
 
-export type PlaneacionActiva = PlaneacionActivaV1 | PlaneacionActivaV2 | PlaneacionActivaV3
+// PLN-1D — contrato de trazabilidad curricular. `campoFormativo` y
+// `curriculoContenidoId` son null EXCLUSIVAMENTE cuando
+// procedencia==='local' (mismo invariante que CandidatoCurricularPlaneacion
+// en resolverCurricularPlaneacion.ts, reforzado aquí también en
+// runtime por trazabilidadCurricularValida — nunca solo confiado por
+// construcción). pda=[] siempre que procedencia==='local'.
+export type PdaTrazabilidadCurricular = {
+  programaAnaliticoItemPdaId: string
+  curriculoPdaId: string
+  curriculoPdaGradoId: string
+  texto: string
+}
+
+export type ItemTrazabilidadCurricular = {
+  programaAnaliticoItemId: string
+  procedencia: 'oficial' | 'contextualizado' | 'local'
+  curriculoContenidoId: string | null
+  campoFormativo: { id: string; nombre: string } | null
+  pda: PdaTrazabilidadCurricular[]
+}
+
+export type TrazabilidadCurricularPlaneacion = {
+  programaAnaliticoId: string
+  programaAnaliticoVersionId: string
+  items: ItemTrazabilidadCurricular[]
+}
+
+type CamposV4Base = CamposComunesPlaneacionActiva & { schemaVersion: 4; contenidoCompleto: string; trazabilidadCurricular: TrazabilidadCurricularPlaneacion | null }
+export type PlaneacionActivaV4Borrador = CamposV4Base & { estado: 'borrador'; implementadaEn: null }
+export type PlaneacionActivaV4Implementada = CamposV4Base & { estado: 'implementada'; implementadaEn: string }
+export type PlaneacionActivaV4 = PlaneacionActivaV4Borrador | PlaneacionActivaV4Implementada
+
+export type PlaneacionActiva = PlaneacionActivaV1 | PlaneacionActivaV2 | PlaneacionActivaV3 | PlaneacionActivaV4
+
+// V3 y V4 comparten exactamente la misma forma de ciclo de vida
+// (estado/implementadaEn) — un ajuste puede partir de CUALQUIERA de
+// los dos (un V3 histórico todavía en DB, o un V4 ya creado por esta
+// fase), la salida de construirPlaneacionActivaAjustada siempre es V4.
+export type PlaneacionActivaAjustable = PlaneacionActivaV3 | PlaneacionActivaV4
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -95,18 +153,50 @@ export function construirPlaneacionActivaCreada(
   resumen: ResumenBorrador,
   contenidoCompleto: string,
   grupoId: string,
-  origenMensajeId: string | null
-): PlaneacionActivaV3Borrador {
+  origenMensajeId: string | null,
+  trazabilidadCurricular: TrazabilidadCurricularPlaneacion | null
+): PlaneacionActivaV4Borrador {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     version: 1,
     estado: 'borrador',
     contexto: { grupoId },
     borrador: resumen,
     contenidoCompleto,
+    trazabilidadCurricular,
     origenMensajeId,
     actualizadoEn: new Date().toISOString(),
     implementadaEn: null,
+  }
+}
+
+// PLN-1D §5 — construye trazabilidadCurricular EXCLUSIVAMENTE a partir
+// de candidatos YA VALIDADOS server-side (ver
+// validarSeleccionItemsProgramaAnalitico) y de
+// programaAnaliticoId/programaAnaliticoVersionId que el LLAMADOR debe
+// tomar del mismo contexto server-side usado para cargar esos
+// candidatos (cargarCandidatosProgramaAnaliticoVigente) — nunca de
+// nada que Claude haya escrito. Pura, 0 I/O.
+export function construirTrazabilidadCurricular(
+  programaAnaliticoId: string,
+  programaAnaliticoVersionId: string,
+  candidatosAceptados: CandidatoCurricularPlaneacion[]
+): TrazabilidadCurricularPlaneacion {
+  return {
+    programaAnaliticoId,
+    programaAnaliticoVersionId,
+    items: candidatosAceptados.map((c) => ({
+      programaAnaliticoItemId: c.programaAnaliticoItemId,
+      procedencia: c.procedencia,
+      curriculoContenidoId: c.curriculoContenidoId,
+      campoFormativo: c.campoFormativo ? { id: c.campoFormativo.id, nombre: c.campoFormativo.nombre } : null,
+      pda: c.pda.map((p) => ({
+        programaAnaliticoItemPdaId: p.programaAnaliticoItemPdaId,
+        curriculoPdaId: p.curriculoPdaId,
+        curriculoPdaGradoId: p.curriculoPdaGradoId,
+        texto: p.texto,
+      })),
+    })),
   }
 }
 
@@ -121,18 +211,29 @@ export function construirPlaneacionActivaCreada(
 // `estado` (nunca spread + cast) para que TypeScript garantice en
 // compilación que el resultado sigue siendo un PlaneacionActivaV3
 // coherente, sin depender de una aserción de tipo.
+// PLN-1D §9 — snapshotAnterior puede ser V3 (histórico, sin
+// trazabilidadCurricular) o V4 — en AMBOS casos la salida es V4 y
+// trazabilidadCurricular viene SIEMPRE del parámetro nuevo, NUNCA de
+// snapshotAnterior (aunque fuera V4 con una selección distinta) — un
+// ajuste nunca mezcla silenciosamente identidad curricular vieja con
+// nueva. Si el llamador no tiene contexto curricular disponible este
+// turno (grupo sin PA, o una condición excepcional real), debe pasar
+// null explícitamente — fail-closed, nunca se hereda la trazabilidad
+// anterior "por si acaso".
 export function construirPlaneacionActivaAjustada(
-  snapshotAnterior: PlaneacionActivaV3,
+  snapshotAnterior: PlaneacionActivaAjustable,
   nuevoBorrador: ResumenBorrador,
   nuevoContenidoCompleto: string,
-  origenMensajeId: string | null
-): PlaneacionActivaV3 {
+  origenMensajeId: string | null,
+  trazabilidadCurricular: TrazabilidadCurricularPlaneacion | null
+): PlaneacionActivaV4 {
   const base = {
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     version: snapshotAnterior.version + 1,
     contexto: { grupoId: snapshotAnterior.contexto.grupoId },
     borrador: nuevoBorrador,
     contenidoCompleto: nuevoContenidoCompleto,
+    trazabilidadCurricular,
     origenMensajeId,
     actualizadoEn: new Date().toISOString(),
   }
@@ -198,16 +299,18 @@ function esFechaIsoEstricta(valor: unknown): valor is string {
   return new Date(timestamp).toISOString() === valor
 }
 
-// SOLO para schemaVersion=3 — refuerza en runtime la misma coherencia
-// que la unión discriminada de PlaneacionActivaV3 ya exige en tiempo de
-// compilación: 'borrador' exige implementadaEn EXACTAMENTE null (nunca
-// un string, ni siquiera vacío); 'implementada' exige implementadaEn
-// como fecha ISO 8601 ESTRICTA (ver esFechaIsoEstricta arriba), no
-// cualquier valor meramente parseable por Date.parse. Cualquier otro
-// valor de `estado`, o cualquier combinación cruzada, es inválido —
-// fail-closed, nunca se aproxima ni se corrige el valor.
+// Compartida por schemaVersion 3 y 4 (ambos tienen exactamente la
+// misma forma de ciclo de vida) — refuerza en runtime la misma
+// coherencia que la unión discriminada de PlaneacionActivaV3/V4 ya
+// exige en tiempo de compilación: 'borrador' exige implementadaEn
+// EXACTAMENTE null (nunca un string, ni siquiera vacío); 'implementada'
+// exige implementadaEn como fecha ISO 8601 ESTRICTA (ver
+// esFechaIsoEstricta arriba), no cualquier valor meramente parseable
+// por Date.parse. Cualquier otro valor de `estado`, o cualquier
+// combinación cruzada, es inválido — fail-closed, nunca se aproxima ni
+// se corrige el valor.
 //
-// NOTA — actualizadoEn (camposComunesValidos, compartido por v1/v2/v3)
+// NOTA — actualizadoEn (camposComunesValidos, compartido por v1/v2/v3/v4)
 // sigue validándose solo con Date.parse, el mismo criterio laxo de
 // siempre: NO se amplió a esFechaIsoEstricta en esta ronda porque no
 // pude confirmar sin riesgo que TODOS los snapshots v1/v2 ya
@@ -215,10 +318,76 @@ function esFechaIsoEstricta(valor: unknown): valor is string {
 // inspeccioné el string crudo, solo su valor ya interpretado como
 // fecha) — endurecerlo aquí podría invalidar un snapshot histórico
 // real. Queda señalado como pendiente, no corregido.
-function estadoV3Valido(v: Record<string, unknown>): boolean {
+function estadoCicloVidaValido(v: Record<string, unknown>): boolean {
   if (v.estado === 'borrador') return v.implementadaEn === null
   if (v.estado === 'implementada') return esFechaIsoEstricta(v.implementadaEn)
   return false
+}
+
+const PROCEDENCIAS_TRAZABILIDAD_VALIDAS = new Set(['oficial', 'contextualizado', 'local'])
+
+// null es válido (campo formativo de un item local) — cuando SÍ viene
+// un objeto, id y nombre deben ser strings reales no vacíos, nunca
+// aproximados.
+function campoFormativoTrazabilidadValido(v: unknown): boolean {
+  if (v === null) return true
+  if (typeof v !== 'object') return false
+  const c = v as Record<string, unknown>
+  return typeof c.id === 'string' && c.id.trim() !== '' && typeof c.nombre === 'string' && c.nombre.trim() !== ''
+}
+
+function pdaTrazabilidadValido(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null) return false
+  const p = v as Record<string, unknown>
+  return (
+    typeof p.programaAnaliticoItemPdaId === 'string' &&
+    REGEX_UUID.test(p.programaAnaliticoItemPdaId) &&
+    typeof p.curriculoPdaId === 'string' &&
+    REGEX_UUID.test(p.curriculoPdaId) &&
+    typeof p.curriculoPdaGradoId === 'string' &&
+    REGEX_UUID.test(p.curriculoPdaGradoId) &&
+    typeof p.texto === 'string' &&
+    p.texto.trim() !== ''
+  )
+}
+
+// Refuerza en runtime, en la última barrera antes de confiar en un
+// snapshot leído de DB, el MISMO invariante que ya garantiza la
+// construcción (construirTrazabilidadCurricular) y el propio PA-3A:
+// un item con procedencia 'local' NUNCA tiene curriculoContenidoId,
+// campoFormativo ni PDA — y un item oficial/contextualizado SIEMPRE
+// tiene curriculoContenidoId real. Nunca confía en que el JSONB de DB
+// ya venga bien formado solo porque esta misma función lo escribió
+// alguna vez.
+function itemTrazabilidadValido(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null) return false
+  const it = v as Record<string, unknown>
+  if (typeof it.programaAnaliticoItemId !== 'string' || !REGEX_UUID.test(it.programaAnaliticoItemId)) return false
+  if (typeof it.procedencia !== 'string' || !PROCEDENCIAS_TRAZABILIDAD_VALIDAS.has(it.procedencia)) return false
+  if (!campoFormativoTrazabilidadValido(it.campoFormativo)) return false
+  if (!Array.isArray(it.pda) || !it.pda.every(pdaTrazabilidadValido)) return false
+
+  if (it.procedencia === 'local') {
+    return it.curriculoContenidoId === null && it.campoFormativo === null && (it.pda as unknown[]).length === 0
+  }
+  return typeof it.curriculoContenidoId === 'string' && it.curriculoContenidoId.trim() !== ''
+}
+
+// SOLO para schemaVersion=4. null es válido (grupo sin Programa
+// Analítico publicado ese turno). Cuando no es null: ids reales de
+// programa_analitico/programa_analitico_version (nunca aproximados) e
+// items[] (puede estar vacío — "PA disponible pero ninguna selección
+// sobrevivió la validación" es un estado real y válido, nunca se trata
+// como error).
+function trazabilidadCurricularValida(v: Record<string, unknown>): boolean {
+  const t = v.trazabilidadCurricular
+  if (t === null) return true
+  if (typeof t !== 'object') return false
+  const tt = t as Record<string, unknown>
+  if (typeof tt.programaAnaliticoId !== 'string' || !REGEX_UUID.test(tt.programaAnaliticoId)) return false
+  if (typeof tt.programaAnaliticoVersionId !== 'string' || !REGEX_UUID.test(tt.programaAnaliticoVersionId)) return false
+  if (!Array.isArray(tt.items) || !tt.items.every(itemTrazabilidadValido)) return false
+  return true
 }
 
 export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionActiva {
@@ -229,7 +398,8 @@ export function esPlaneacionActivaValida(valor: unknown): valor is PlaneacionAct
 
   if (v.schemaVersion === 1) return true
   if (v.schemaVersion === 2) return contenidoCompletoValido(v)
-  if (v.schemaVersion === 3) return contenidoCompletoValido(v) && estadoV3Valido(v)
+  if (v.schemaVersion === 3) return contenidoCompletoValido(v) && estadoCicloVidaValido(v)
+  if (v.schemaVersion === 4) return contenidoCompletoValido(v) && estadoCicloVidaValido(v) && trazabilidadCurricularValida(v)
   return false
 }
 

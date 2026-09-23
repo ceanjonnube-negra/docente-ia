@@ -26,7 +26,7 @@ import { listarPlaneaciones } from './persistencia'
 import { calcularFechasPlaneacion, type DiaNoLaborable, type ResultadoCalculoFechas } from './calculoFechasHabiles'
 import type { SesionContexto } from '../sesionContexto'
 import type { ResumenBorrador } from './extraerBorrador'
-import type { PlaneacionActivaV3 } from './planeacionActiva'
+import type { PlaneacionActivaAjustable } from './planeacionActiva'
 import { prepararContextoCurricularPlaneacion, type ContextoCurricularParaPrompt } from './resolverCurricularPlaneacion'
 
 export type SolicitudGeneracionPlaneacion = {
@@ -152,7 +152,7 @@ export async function prepararContextoGeneracionPlaneacion(
   sb: SupabaseClient,
   sesion: SesionContexto,
   solicitud: SolicitudGeneracionPlaneacion,
-  snapshotHeredado?: PlaneacionActivaV3
+  snapshotHeredado?: PlaneacionActivaAjustable
 ): Promise<ResultadoContextoGeneracion> {
   const grupoId = sesion.grupo_activo_id!
   const anio = Number(sesion.fecha_actual.slice(0, 4))
