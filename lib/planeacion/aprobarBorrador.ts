@@ -290,6 +290,24 @@ export async function aprobarBorradorPlaneacion(
       return { ok: false, codigo: 'YA_GUARDADA', mensaje: 'Esta planeación ya está guardada.' }
     }
 
+    // PLN-1E-F-FIX — planeaciones.campo_formativo es NOT NULL sin
+    // default (ver informe forense PLN-1E-F, última brecha NOT NULL de
+    // esta tabla, expuesta apenas al corregirse institucion_id en
+    // 2a82f41). Se deriva EXCLUSIVAMENTE de resumen.camposFormativos
+    // (a su vez, con V4 válido, viene de resumenDesdeSnapshotV4 —
+    // nunca del cliente ni de una consulta nueva), reutilizando el
+    // MISMO CAMPOS_FORMATIVOS_VALIDOS ya usado más abajo para
+    // proyectos_seguimiento — el primer valor que de verdad pertenezca
+    // al enum real, nunca simplemente camposFormativos[0] (que podría
+    // ser texto libre inventado por Claude). Fail-closed: si ninguno
+    // es válido, la aprobación se detiene aquí con un resultado
+    // explícito — nunca se inventa un campo formativo ni se llama IA
+    // para resolverlo.
+    const campoFormativoValidado = resumen.camposFormativos.find((c) => CAMPOS_FORMATIVOS_VALIDOS.has(c)) ?? null
+    if (!campoFormativoValidado) {
+      return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador no tiene un campo formativo reconocido — pídeme que lo genere de nuevo antes de guardarlo.' }
+    }
+
     // Fase 1: planeación temporal (version=0, invisible) — se crea o
     // se recupera, nunca se duplica.
     let planeacionId: string
@@ -301,6 +319,7 @@ export async function aprobarBorradorPlaneacion(
         {
           docente_id: sesion.docente_id,
           grupo_id: sesion.grupo_activo_id,
+          campo_formativo: campoFormativoValidado,
           periodo_evaluacion_id: periodoActual?.id ?? null,
           nombre: resumen.nombre,
           proposito: resumen.proposito,

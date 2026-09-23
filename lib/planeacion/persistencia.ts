@@ -61,6 +61,15 @@ export type DatosProyectoPlaneacion = Omit<PlaneacionProyecto, 'id' | 'planeacio
 export type DatosCrearPlaneacion = {
   docente_id: string // se valida contra la sesión real, ver resolverDocenteId
   grupo_id: string
+  // PLN-1E-F-FIX — planeaciones.campo_formativo es NOT NULL sin
+  // default (ver informe forense PLN-1E-F, último requisito NOT NULL
+  // faltante del INSERT real). Debe llegar YA VALIDADO desde el
+  // llamador (aprobarBorrador.ts deriva este valor de
+  // resumen.camposFormativos, filtrado contra el mismo
+  // CAMPOS_FORMATIVOS_VALIDOS que ya usa para proyectos_seguimiento) —
+  // esta función nunca lo deriva por su cuenta ni lo aproxima con un
+  // valor por defecto, ver validación fail-closed más abajo.
+  campo_formativo: string
   periodo_evaluacion_id?: string | null
   nombre: string
   proposito?: string | null
@@ -84,6 +93,12 @@ export async function crearPlaneacion(ctx: ContextoPlaneacion, datos: DatosCrear
   }
   if (!datos.grupo_id || !datos.nombre?.trim()) {
     return fallo('CAMPOS_FALTANTES', 'Faltan el grupo o el nombre de la planeación.')
+  }
+  // Fail-closed: campo_formativo es NOT NULL en la tabla real y debe
+  // llegar ya validado por el llamador — nunca se inventa aquí ni se
+  // aproxima con un valor por defecto.
+  if (!datos.campo_formativo?.trim()) {
+    return fallo('CAMPOS_FALTANTES', 'Falta el campo formativo de la planeación.')
   }
 
   // PLN-1E-C-FIX — institucion_id AMPLÍA la MISMA consulta que ya
@@ -115,6 +130,7 @@ export async function crearPlaneacion(ctx: ContextoPlaneacion, datos: DatosCrear
       docente_id: docenteId,
       grupo_id: datos.grupo_id,
       institucion_id: grupo.institucion_id,
+      campo_formativo: datos.campo_formativo,
       ciclo_escolar_id: grupo.ciclo_escolar_id,
       periodo_evaluacion_id: datos.periodo_evaluacion_id ?? null,
       nombre: datos.nombre.trim(),

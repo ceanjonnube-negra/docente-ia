@@ -19,6 +19,7 @@ import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, con
 import type { CandidatoCurricularPlaneacion } from '../lib/planeacion/resolverCurricularPlaneacion'
 import type { ResumenBorrador } from '../lib/planeacion/extraerBorrador'
 import type { SesionContexto } from '../lib/sesionContexto'
+import { CAMPOS_FORMATIVOS } from '../lib/seguimiento/tipos'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -663,6 +664,180 @@ async function main() {
     const rutas = interno._rutasStorage()
     verificar(rutas.some((r) => r.includes('MARCADORSNAPSHOTV4UNICO')), 'PLN-1E-E CASO M. el documento definitivo se generó a partir del texto del snapshot V4 (marcador único presente en la ruta de Storage)')
     verificar(!rutas.some((r) => /no_fue_posible|fue_posible_guardar/i.test(r)), 'PLN-1E-E CASO M. el documento definitivo NO se generó a partir del mensaje de error del historial')
+  }
+
+  // ============================================================
+  // PLN-1E-F-FIX — campo_formativo persistido al aprobar: la última
+  // brecha NOT NULL sin default de `planeaciones` (informe forense
+  // PLN-1E-F). Se deriva EXCLUSIVAMENTE de resumen.camposFormativos
+  // (a su vez de resumenDesdeSnapshotV4 cuando hay V4 válido, ver
+  // PLN-1E-E), filtrado contra CAMPOS_FORMATIVOS_VALIDOS, tomando el
+  // PRIMER valor realmente válido — nunca camposFormativos[0] a ciegas.
+  // ============================================================
+
+  function construirSnapshotV4ConCampos(camposFormativos: string[], candidatos: CandidatoCurricularPlaneacion[] = [ITEM_OFICIAL]): PlaneacionActivaV4 {
+    const trazabilidad = construirTrazabilidadCurricular('22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', candidatos)
+    return construirPlaneacionActivaCreada({ ...resumenFixture(), camposFormativos }, construirBloque().split('\n\n📎')[0].trim(), '11111111-1111-4111-8111-111111111111', null, trazabilidad)
+  }
+
+  // PLN-1E-F-FIX CASO A — campo formativo válido llega exactamente al INSERT de planeaciones.campo_formativo.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-a', planeacion_activa: snapshot })
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-a')
+    verificar(r.ok === true, 'PLN-1E-F-FIX CASO A precondición: aprobación exitosa')
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(fila?.campo_formativo === 'Lenguajes', 'PLN-1E-F-FIX CASO A. campo_formativo = "Lenguajes" exacto en la fila insertada')
+  }
+
+  // PLN-1E-F-FIX CASO B — cada campo permitido por CAMPOS_FORMATIVOS_VALIDOS atraviesa el flujo sin transformación.
+  for (const campo of CAMPOS_FORMATIVOS) {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos([campo])
+    interno._tabla('conversaciones_chat').push({ id: `conv-cf-b-${campo}`, planeacion_activa: snapshot })
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, `conv-cf-b-${campo}`)
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(r.ok === true && fila?.campo_formativo === campo, `PLN-1E-F-FIX CASO B. "${campo}" atraviesa el flujo sin transformación`)
+  }
+
+  // PLN-1E-F-FIX CASO C — un valor no permitido no llega al INSERT.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Materia inventada'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-c', planeacion_activa: snapshot })
+    const filasAntes = interno._tabla('planeaciones').length
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-c')
+    verificar(r.ok === false && r.codigo === 'BORRADOR_INCOMPLETO', 'PLN-1E-F-FIX CASO C. un campo formativo no permitido produce BORRADOR_INCOMPLETO')
+    verificar(interno._tabla('planeaciones').length === filasAntes, 'PLN-1E-F-FIX CASO C. ningún valor no permitido llega al INSERT (0 filas nuevas)')
+  }
+
+  // PLN-1E-F-FIX CASO D — camposFormativos=[] falla antes del INSERT.
+  // NOTA: un V4 con camposFormativos=[] nunca puede ser "válido" — la
+  // MISMA regla de completitud (validarContenidoBorrador, exigida
+  // desde antes de esta microfase) ya invalida un snapshot así en
+  // esPlaneacionActivaValida, así que el caso realista y alcanzable es
+  // sin V4 (fallback histórico): un bloque de resumen al que le falta
+  // por completo la línea "Campos formativos" produce
+  // resumen.camposFormativos=[] vía extraerResumenBorrador, y
+  // validarContenidoBorrador lo rechaza ANTES de llegar a mi nuevo
+  // campoFormativoValidado/crearPlaneacion — mismo código de error,
+  // mismo resultado ("falla antes del INSERT").
+  {
+    const lineasSinCamposFormativos = CAMPOS_BLOQUE.filter(([etiqueta]) => etiqueta !== 'Campos formativos').map(([etiqueta, valor]) => `${etiqueta}: ${valor}`)
+    const bloqueSinCamposFormativos = `Borrador sin campos formativos.\n\n📎 RESUMEN PARA GUARDAR\n${lineasSinCamposFormativos.join('\n')}\n\n¿Deseas corregir algo o aprobarla para guardarla?`
+    const historialSinCamposFormativos = [{ role: 'assistant', content: bloqueSinCamposFormativos }]
+
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const filasAntes = interno._tabla('planeaciones').length
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), historialSinCamposFormativos, null)
+    verificar(r.ok === false && r.codigo === 'BORRADOR_INCOMPLETO', 'PLN-1E-F-FIX CASO D. camposFormativos=[] produce BORRADOR_INCOMPLETO (validarContenidoBorrador, antes de mi nuevo chequeo)')
+    verificar(interno._tabla('planeaciones').length === filasAntes, 'PLN-1E-F-FIX CASO D. camposFormativos=[] no llega al INSERT')
+  }
+
+  // PLN-1E-F-FIX CASO E — un string inventado/no reconocido (único elemento) falla antes del INSERT.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Ciencias Naturales (no existe en el enum real)'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-e', planeacion_activa: snapshot })
+    const filasAntes = interno._tabla('planeaciones').length
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-e')
+    verificar(r.ok === false && r.codigo === 'BORRADOR_INCOMPLETO', 'PLN-1E-F-FIX CASO E. un string inventado/no reconocido produce BORRADOR_INCOMPLETO')
+    verificar(interno._tabla('planeaciones').length === filasAntes, 'PLN-1E-F-FIX CASO E. el string inventado no llega al INSERT')
+  }
+
+  // PLN-1E-F-FIX CASO F — con varios campos donde el primero es inválido, se selecciona el primer valor VÁLIDO (no array[0] a ciegas).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Materia inventada', 'Saberes y Pensamiento Científico'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-f', planeacion_activa: snapshot })
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-f')
+    verificar(r.ok === true, 'PLN-1E-F-FIX CASO F precondición: aprobación exitosa (sí hay un valor válido, aunque no sea el primero)')
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(fila?.campo_formativo === 'Saberes y Pensamiento Científico', 'PLN-1E-F-FIX CASO F. selecciona el primer valor VÁLIDO ("Saberes y Pensamiento Científico"), nunca camposFormativos[0] ("Materia inventada")')
+  }
+
+  // PLN-1E-F-FIX CASO G — el valor persistido proviene de resumen.camposFormativos (estructural: ni del cliente ni de una consulta nueva).
+  {
+    const contenido = readFileSyncModulo('lib/planeacion/aprobarBorrador.ts')
+    verificar(/resumen\.camposFormativos\.find/.test(contenido), 'PLN-1E-F-FIX CASO G. campo_formativo se deriva de resumen.camposFormativos.find(...), no de otra fuente')
+    verificar(!/sesion\.\w*campo/i.test(contenido), 'PLN-1E-F-FIX CASO G. campo_formativo nunca se lee desde `sesion` (dato de cliente)')
+  }
+
+  // PLN-1E-F-FIX CASO H — V4 sigue usando candidato.borrador como fuente del resumen (campo_formativo Y contenidos/pda del snapshot, nunca del historial).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['De lo Humano y lo Comunitario'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-h', planeacion_activa: snapshot })
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_DIFERENTE, 'conv-cf-h')
+    verificar(r.ok === true, 'PLN-1E-F-FIX CASO H precondición: aprobación exitosa con historial totalmente distinto')
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(fila?.campo_formativo === 'De lo Humano y lo Comunitario', 'PLN-1E-F-FIX CASO H. campo_formativo viene del snapshot V4 (candidato.borrador), nunca del historial ("Ética, Naturaleza y Sociedades")')
+  }
+
+  // PLN-1E-F-FIX CASO I — el caso real de retry con historial terminado en mensaje de error sigue funcionando (con campo_formativo incluido).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-i', planeacion_activa: snapshot })
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_CON_ERROR_INTERMEDIO, 'conv-cf-i')
+    verificar(r.ok === true, 'PLN-1E-F-FIX CASO I. el retry real (historial terminado en el mensaje de error) sigue aprobando correctamente tras agregar campo_formativo')
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(fila?.campo_formativo === 'Lenguajes', 'PLN-1E-F-FIX CASO I. campo_formativo persistido correctamente incluso en el caso real del retry')
+  }
+
+  // PLN-1E-F-FIX CASO J — institucion_id sigue llegando correctamente desde grupos.institucion_id (reconfirmación end-to-end tras este cambio).
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-j', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-j')
+    const fila = interno._tabla('planeaciones')[0] as { institucion_id?: string }
+    verificar(fila?.institucion_id === 'institucion-1', 'PLN-1E-F-FIX CASO J. institucion_id sigue llegando de grupos.institucion_id, sin regresión')
+  }
+
+  // PLN-1E-F-FIX CASO K — el INSERT resultante satisface todas las columnas NOT NULL sin default conocidas de planeaciones.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-k', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-k')
+    const fila = interno._tabla('planeaciones')[0] as { id?: string; institucion_id?: string; docente_id?: string; grupo_id?: string; campo_formativo?: string }
+    verificar(!!fila?.id && !!fila?.institucion_id && !!fila?.docente_id && !!fila?.grupo_id && !!fila?.campo_formativo, 'PLN-1E-F-FIX CASO K. id/institucion_id/docente_id/grupo_id/campo_formativo (todas las columnas NOT NULL sin default) están presentes')
+  }
+
+  // PLN-1E-F-FIX CASO L — 0 llamadas IA nuevas (estático).
+  {
+    const contenidoAprobar = readFileSyncModulo('lib/planeacion/aprobarBorrador.ts')
+    const contenidoPersistencia = readFileSyncModulo('lib/planeacion/persistencia.ts')
+    verificar(!/anthropic\.messages|\.stream\(\)|new Anthropic/i.test(contenidoAprobar) && !/anthropic\.messages|\.stream\(\)|new Anthropic/i.test(contenidoPersistencia), 'PLN-1E-F-FIX CASO L. ni aprobarBorrador.ts ni persistencia.ts referencian Anthropic tras este cambio')
+  }
+
+  // PLN-1E-F-FIX CASO M — 0 SELECT adicionales: sigue siendo exactamente 1 SELECT a conversaciones_chat y 1 SELECT a grupos por aprobación.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-m', planeacion_activa: snapshot })
+    await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-m')
+    verificar(interno._consultasA('conversaciones_chat') === 1, 'PLN-1E-F-FIX CASO M. exactamente 1 SELECT a conversaciones_chat (campo_formativo se deriva en memoria, sin SELECT adicional)')
+  }
+
+  // PLN-1E-F-FIX CASO N — la idempotencia existente no cambia: un retry sobre la misma huella recupera la MISMA fila, con el MISMO campo_formativo.
+  {
+    const { sb, interno } = clienteFalso({ id: 'docente-1' }, datosBase())
+    const snapshot = construirSnapshotV4ConCampos(['Lenguajes'])
+    interno._tabla('conversaciones_chat').push({ id: 'conv-cf-n', planeacion_activa: snapshot })
+
+    interno.forzarErrorEn('planeaciones', 'update')
+    const r1 = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-n')
+    verificar(r1.ok === false, 'PLN-1E-F-FIX CASO N precondición: primer intento falla (Fase 6 forzada a fallar), fila temporal ya creada con campo_formativo')
+    interno.quitarErrorForzado('planeaciones', 'update')
+
+    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), HISTORIAL_VALIDO, 'conv-cf-n')
+    verificar(r2.ok === true, 'PLN-1E-F-FIX CASO N. el reintento sobre la misma huella tiene éxito')
+    verificar(interno._tabla('planeaciones').length === 1, 'PLN-1E-F-FIX CASO N. sigue existiendo UNA sola fila — el reintento nunca duplica')
+    const fila = interno._tabla('planeaciones')[0] as { campo_formativo?: string }
+    verificar(fila?.campo_formativo === 'Lenguajes', 'PLN-1E-F-FIX CASO N. el campo_formativo final sigue siendo el mismo tras el reintento — la idempotencia no cambió')
   }
 
   console.log(fallos === 0 ? `\n✓ Todo correcto (0 fallos).` : `\n✗ ${fallos} fallo(s).`)
