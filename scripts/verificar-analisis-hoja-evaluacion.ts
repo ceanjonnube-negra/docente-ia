@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs'
 import {
   validarResultadoExtraccionHoja,
   analizarImagenHojaEvaluacion,
+  normalizarImagenHojaParaVision,
+  type ConvertidorHeic,
 } from '../lib/seguimiento/analisisHojaEvaluacion'
 import type Anthropic from '@anthropic-ai/sdk'
 
@@ -191,6 +193,118 @@ async function main() {
     const rutaContenido = readFileSync(new URL('../app/api/proyectos-seguimiento/[id]/analizar-hoja/route.ts', import.meta.url), 'utf-8')
     verificar(!rutaContenido.includes('obtenerRosterConPosicion'), 'N. analizar-hoja/route.ts nunca llama obtenerRosterConPosicion (roster vivo) — solo usa roster_congelado, nunca un sustituto')
     verificar(/!rosterCongelado \|\| rosterCongelado\.length === 0/.test(rutaContenido), 'N. fail-closed explícito si roster_congelado está ausente o vacío')
+  }
+
+  // ============================================================
+  // EVAL-1D.1 — normalización HEIC/HEIF antes de la única llamada de visión.
+  // ============================================================
+
+  const BUFFER_JPG_FALSO = Buffer.from('contenido-jpg-de-prueba')
+  const BUFFER_PNG_FALSO = Buffer.from('contenido-png-de-prueba')
+  const BUFFER_WEBP_FALSO = Buffer.from('contenido-webp-de-prueba')
+  const BUFFER_HEIC_FALSO = Buffer.from('contenido-heic-de-prueba')
+
+  // CASO M — JPG sigue funcionando sin conversión (passthrough exacto, 0 trabajo adicional).
+  {
+    let convertidorLlamado = false
+    const convertidorFalso: ConvertidorHeic = async () => { convertidorLlamado = true; return new Uint8Array([1]) }
+    const r = await normalizarImagenHojaParaVision(BUFFER_JPG_FALSO, 'jpg', convertidorFalso)
+    verificar(r.mediaType === 'image/jpeg', 'CASO M. extensión jpg produce mediaType image/jpeg')
+    verificar(r.base64 === BUFFER_JPG_FALSO.toString('base64'), 'CASO M. JPG pasa tal cual, sin ninguna transformación de sus bytes')
+    verificar(convertidorLlamado === false, 'CASO M. JPG nunca invoca el convertidor HEIC')
+  }
+
+  // CASO N — PNG sigue funcionando sin conversión.
+  {
+    let convertidorLlamado = false
+    const convertidorFalso: ConvertidorHeic = async () => { convertidorLlamado = true; return new Uint8Array([1]) }
+    const r = await normalizarImagenHojaParaVision(BUFFER_PNG_FALSO, 'PNG', convertidorFalso) // mayúsculas para probar normalización de extensión
+    verificar(r.mediaType === 'image/png', 'CASO N. extensión png (en mayúsculas) produce mediaType image/png')
+    verificar(r.base64 === BUFFER_PNG_FALSO.toString('base64'), 'CASO N. PNG pasa tal cual, sin ninguna transformación de sus bytes')
+    verificar(convertidorLlamado === false, 'CASO N. PNG nunca invoca el convertidor HEIC')
+  }
+
+  // CASO O — WEBP sigue funcionando sin conversión.
+  {
+    const r = await normalizarImagenHojaParaVision(BUFFER_WEBP_FALSO, 'webp')
+    verificar(r.mediaType === 'image/webp', 'CASO O. extensión webp produce mediaType image/webp')
+    verificar(r.base64 === BUFFER_WEBP_FALSO.toString('base64'), 'CASO O. WEBP pasa tal cual, sin ninguna transformación de sus bytes')
+  }
+
+  // CASO P — HEIC (y HEIF) entran al camino de conversión (nunca al passthrough directo).
+  {
+    let recibidoPorConvertidor: Buffer | null = null
+    const convertidorFalso: ConvertidorHeic = async ({ buffer }) => { recibidoPorConvertidor = buffer; return new Uint8Array([0xff, 0xd8, 0xff]) }
+    const r = await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorFalso)
+    verificar(recibidoPorConvertidor === BUFFER_HEIC_FALSO, 'CASO P. HEIC invoca el convertidor con el buffer original exacto')
+    verificar(r.mediaType === 'image/jpeg', 'CASO P. el resultado de convertir HEIC siempre es image/jpeg')
+    verificar(r.base64 !== BUFFER_HEIC_FALSO.toString('base64'), 'CASO P. el base64 final es el CONVERTIDO, nunca el HEIC original sin tocar')
+
+    let recibidoHeif: Buffer | null = null
+    const convertidorFalso2: ConvertidorHeic = async ({ buffer }) => { recibidoHeif = buffer; return new Uint8Array([0xff, 0xd8, 0xff]) }
+    await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heif', convertidorFalso2)
+    verificar(recibidoHeif === BUFFER_HEIC_FALSO, 'CASO P. la extensión .heif también entra al mismo camino de conversión')
+  }
+
+  // CASO Q — conversión fallida: fail-closed, y en el flujo real (encadenado con el análisis) 0 llamadas IA.
+  {
+    const convertidorQueFalla: ConvertidorHeic = async () => { throw new Error('archivo HEIC corrupto simulado') }
+    let lanzo = false
+    try { await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorQueFalla) } catch { lanzo = true }
+    verificar(lanzo, 'CASO Q. una conversión HEIC fallida rechaza la normalización (fail-closed)')
+
+    // Encadenado como en el endpoint real: si la normalización falla,
+    // analizarImagenHojaEvaluacion NUNCA debe alcanzarse.
+    let llamadasIA = 0
+    const anthropicFalso = { messages: { create: async () => { llamadasIA++; return { content: [] } } } } as unknown as Anthropic
+    try {
+      const img = await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorQueFalla)
+      await analizarImagenHojaEvaluacion(anthropicFalso, img, 28)
+    } catch { /* esperado */ }
+    verificar(llamadasIA === 0, 'CASO Q. una conversión fallida nunca llega a invocar anthropic.messages.create (0 llamadas IA)')
+  }
+
+  // CASO R — conversión correcta: la imagen ya convertida llega intacta a la única llamada IA (exactamente 1).
+  {
+    const convertidorExitoso: ConvertidorHeic = async () => new Uint8Array([0xff, 0xd8, 0xff, 0xe0])
+    const respuestaValida = { hojaLegible: true, filas: [filaCompleta(1, [1, 1, 1, 1, 1])] }
+    let llamadasIA = 0
+    let mediaTypeRecibidoPorIA: string | null = null
+    const anthropicFalso = {
+      messages: {
+        create: async (params: { messages: Array<{ content: Array<{ type: string; source?: { media_type: string } }> }> }) => {
+          llamadasIA++
+          const bloqueImagen = params.messages[0].content.find((b) => b.type === 'image')
+          mediaTypeRecibidoPorIA = bloqueImagen?.source?.media_type ?? null
+          return { content: [{ type: 'text', text: JSON.stringify(respuestaValida) }] }
+        },
+      },
+    } as unknown as Anthropic
+
+    const img = await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorExitoso)
+    await analizarImagenHojaEvaluacion(anthropicFalso, img, 28)
+    verificar(llamadasIA === 1, 'CASO R. una conversión HEIC exitosa resulta en EXACTAMENTE 1 llamada a anthropic.messages.create')
+    verificar(mediaTypeRecibidoPorIA === 'image/jpeg', 'CASO R. la IA recibe la imagen ya convertida como image/jpeg, nunca como HEIC')
+  }
+
+  // CASO S — reconfirmación: nunca escrituras en seguimiento_resultados tras agregar la conversión HEIC.
+  {
+    const libContenido = readFileSync(new URL('../lib/seguimiento/analisisHojaEvaluacion.ts', import.meta.url), 'utf-8')
+    verificar(!libContenido.includes(".from('seguimiento_resultados')"), 'CASO S. analisisHojaEvaluacion.ts (con la conversión HEIC agregada) sigue sin escribir en seguimiento_resultados')
+  }
+
+  // CASO T — nunca crea otro archivo permanente en Storage (ni sube el resultado convertido).
+  {
+    const libContenido = readFileSync(new URL('../lib/seguimiento/analisisHojaEvaluacion.ts', import.meta.url), 'utf-8')
+    const rutaContenido = readFileSync(new URL('../app/api/proyectos-seguimiento/[id]/analizar-hoja/route.ts', import.meta.url), 'utf-8')
+    verificar(!libContenido.includes('.upload(') && !libContenido.includes('subirBuffer'), 'CASO T. analisisHojaEvaluacion.ts nunca sube nada a Storage — la conversión HEIC vive solo en memoria')
+    verificar(!rutaContenido.includes('.upload(') && !rutaContenido.includes('subirBuffer'), 'CASO T. analizar-hoja/route.ts nunca sube nada a Storage — solo descarga (descargarBuffer)')
+  }
+
+  // CASO U — captura_pendiente conserva fotoStoragePath original (el archivo HEIC subido en EVAL-1C nunca se reemplaza).
+  {
+    const rutaContenido = readFileSync(new URL('../app/api/proyectos-seguimiento/[id]/analizar-hoja/route.ts', import.meta.url), 'utf-8')
+    verificar(/captura_pendiente:\s*\{\s*\.\.\.capturaPendiente,/.test(rutaContenido), 'CASO U. el UPDATE de captura_pendiente conserva (...capturaPendiente) el fotoStoragePath original, solo agrega extraidoBruto/extraidoEn')
   }
 
   console.log('')
