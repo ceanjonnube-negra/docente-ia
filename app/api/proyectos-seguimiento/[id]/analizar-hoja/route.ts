@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { descargarBuffer, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
-import { analizarImagenHojaEvaluacion, type MediaTypeImagenHoja } from '@/lib/seguimiento/analisisHojaEvaluacion'
+import { analizarImagenHojaEvaluacion, normalizarImagenHojaParaVision, type MediaTypeImagenHoja } from '@/lib/seguimiento/analisisHojaEvaluacion'
 
 export const runtime = 'nodejs'
 
@@ -14,17 +14,19 @@ export const runtime = 'nodejs'
 // únicamente en proyectos_seguimiento.captura_pendiente.extraidoBruto
 // (columna ya preparada en EVAL-1B para exactamente este propósito) —
 // nunca en una tabla de historial académico real.
+//
+// EVAL-1D.1 — antes de la única llamada de visión, la imagen pasa por
+// normalizarImagenHojaParaVision() (lib/seguimiento/analisisHojaEvaluacion.ts):
+// JPG/PNG/WEBP se usan tal cual; HEIC/HEIF (formato por defecto de
+// fotos de iPhone, ya aceptado por EVAL-1C en la carga pero no
+// soportado directamente por la API de visión) se decodifica y
+// recodifica a JPEG server-side, en memoria, sin tocar Storage ni
+// captura_pendiente.fotoStoragePath. Esa conversión nunca cuenta como
+// llamada IA.
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-const MIME_POR_EXTENSION: Record<string, MediaTypeImagenHoja> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  webp: 'image/webp',
-}
 
 const ESTADOS_POST_CONFIRMACION = new Set(['confirmado', 'corregido', 'sustituido', 'cerrado'])
 
@@ -100,17 +102,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'Esta hoja fue generada antes de que existiera el registro de alumnos congelado y no admite análisis automático.' }, { status: 409 })
     }
 
-    // Media type derivado de la extensión real del archivo ya subido
-    // — nunca se acepta una URL ni un tipo que mande el cliente en
-    // este request. HEIC (aceptado por EVAL-1C para la carga) no es
-    // un formato que la API de visión de Anthropic soporte
-    // directamente — se rechaza aquí con un mensaje honesto en vez de
-    // intentar un análisis que fallaría de todos modos.
+    // Extensión real derivada de la ruta del archivo ya subido — nunca
+    // se acepta un mediaType que mande el cliente en este request.
     const extension = capturaPendiente.fotoStoragePath.split('.').pop()?.toLowerCase() || ''
-    const mediaType = MIME_POR_EXTENSION[extension]
-    if (!mediaType) {
-      return NextResponse.json({ error: 'Esta fotografía está en un formato (probablemente HEIC) que todavía no se puede analizar automáticamente. Vuelve a subirla como JPG, PNG o WEBP.' }, { status: 409 })
-    }
 
     // Descarga real desde Storage — únicamente la ruta ya autorizada y
     // vinculada a este proyecto (captura_pendiente.fotoStoragePath),
@@ -122,11 +116,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo leer la fotografía.' }, { status: 500 })
     }
 
+    // EVAL-1D.1 — normaliza el formato ANTES de la única llamada de
+    // visión (la conversión NUNCA cuenta como llamada IA): JPG/PNG/WEBP
+    // pasan tal cual; HEIC/HEIF (formato por defecto de fotos de
+    // iPhone, ya aceptado por EVAL-1C en la carga) se decodifica y
+    // recodifica a JPEG en memoria — nunca se sube a Storage, nunca se
+    // toca captura_pendiente.fotoStoragePath (sigue apuntando al
+    // archivo original). Fail-closed: si la normalización falla, el
+    // flujo se detiene aquí, ANTES de cualquier llamada a Anthropic.
+    let imagenNormalizada: { base64: string; mediaType: MediaTypeImagenHoja }
+    try {
+      imagenNormalizada = await normalizarImagenHojaParaVision(buffer, extension)
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo preparar la fotografía para el análisis.' }, { status: 409 })
+    }
+
     let resultado
     try {
       resultado = await analizarImagenHojaEvaluacion(
         anthropic,
-        { base64: buffer.toString('base64'), mediaType },
+        imagenNormalizada,
         rosterCongelado.length
       )
     } catch (e) {

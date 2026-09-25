@@ -35,6 +35,7 @@
 // una lectura dudosa (más de un dígito, o un dígito fuera de 1-4).
 
 import Anthropic from '@anthropic-ai/sdk'
+import convertirHeic from 'heic-convert'
 import { interpretarMarcas, type LecturaMarca } from './conversionCalificacion'
 import { CANTIDAD_INDICADORES_HOJA, type NivelEvaluacion } from './tipos'
 
@@ -88,6 +89,79 @@ function esMediaTypeValido(valor: unknown): valor is MediaTypeImagenHoja {
 export type ImagenHojaEvaluacion = {
   base64: string
   mediaType: MediaTypeImagenHoja
+}
+
+// Extensiones que ya llegan en un mediaType soportado directamente
+// por la API de visión — pasan sin ningún trabajo adicional.
+const MIME_POR_EXTENSION_DIRECTA: Record<string, MediaTypeImagenHoja> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+}
+
+// EVAL-1D.1 — extensiones que EVAL-1C ya acepta en la carga
+// (foto-hoja/route.ts) pero que la API de visión de Anthropic NO
+// soporta directamente — el formato por defecto de fotos de iPhone.
+// Aquí, y solo aquí, se normalizan a JPEG ANTES de la única llamada
+// de visión — nunca se envían tal cual.
+const EXTENSIONES_HEIC = new Set(['heic', 'heif'])
+
+// Calidad de recompresión JPEG tras decodificar el HEIC original —
+// deliberadamente alta (heic2any, la conversión ya existente del lado
+// del cliente, usa 0.9; aquí se usa un punto más para no perder
+// nitidez en los dígitos manuscritos, el único dato que de verdad
+// importa leer). Nunca cambia las dimensiones/resolución del píxel
+// original — heic-convert solo recodifica, no reescala.
+const CALIDAD_JPEG_DESDE_HEIC = 0.92
+
+// Firma mínima del único método de heic-convert que se usa — extraída
+// aparte para poder inyectar un doble determinista en pruebas (mismo
+// criterio ya usado en todo el proyecto para el cliente Anthropic/
+// Supabase: nunca se crea la dependencia real dentro de la función,
+// siempre se recibe, con un default real para no obligar a los
+// llamadores de producción a pasarla).
+export type ConvertidorHeic = (opciones: { buffer: Buffer; format: 'JPEG'; quality: number }) => Promise<Uint8Array>
+
+// EVAL-1D.1 — punto único de normalización de imagen ANTES de
+// analizarImagenHojaEvaluacion(). JPG/PNG/WEBP pasan tal cual (0
+// trabajo adicional, 0 recompresión). HEIC/HEIF se decodifican y
+// recodifican a JPEG server-side, en memoria — nunca se sube el
+// resultado a Storage, nunca se toca el archivo original
+// (captura_pendiente.fotoStoragePath sigue apuntando al HEIC
+// original tal como EVAL-1C lo dejó). La conversión NUNCA cuenta como
+// llamada IA — es decodificación/recompresión pura, determinista, sin
+// ningún modelo de por medio. Fail-closed: si el HEIC está corrupto o
+// heic-convert no logra decodificarlo, se relanza el error tal cual —
+// el llamador nunca debe alcanzar analizarImagenHojaEvaluacion() en
+// ese caso (0 llamadas IA ante una conversión fallida).
+export async function normalizarImagenHojaParaVision(
+  buffer: Buffer,
+  extension: string,
+  convertidorHeic: ConvertidorHeic = convertirHeic
+): Promise<ImagenHojaEvaluacion> {
+  const ext = extension.toLowerCase()
+
+  const mediaTypeDirecto = MIME_POR_EXTENSION_DIRECTA[ext]
+  if (mediaTypeDirecto) {
+    return { base64: buffer.toString('base64'), mediaType: mediaTypeDirecto }
+  }
+
+  if (EXTENSIONES_HEIC.has(ext)) {
+    let convertido: Uint8Array
+    try {
+      convertido = await convertidorHeic({ buffer, format: 'JPEG', quality: CALIDAD_JPEG_DESDE_HEIC })
+    } catch (e) {
+      throw new Error(`No se pudo convertir la fotografía HEIC para analizarla: ${e instanceof Error ? e.message : 'archivo no decodificable'}.`)
+    }
+    const bufferConvertido = Buffer.from(convertido)
+    if (bufferConvertido.length === 0) {
+      throw new Error('La conversión de la fotografía HEIC produjo un archivo vacío.')
+    }
+    return { base64: bufferConvertido.toString('base64'), mediaType: 'image/jpeg' }
+  }
+
+  throw new Error('Formato de imagen no soportado para el análisis.')
 }
 
 // Único dato dinámico que entra al prompt además de la propia imagen
