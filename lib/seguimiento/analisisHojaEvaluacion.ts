@@ -59,6 +59,14 @@ export type CeldaHojaEvaluacion = {
   // decidido por la IA. Es la única señal que una fase posterior debe
   // usar para decidir qué mostrarle al docente para revisión.
   dudoso: boolean
+  // EVAL-1F — true únicamente cuando el DOCENTE (nunca la IA) escribió
+  // esta lectura a mano vía corregir-celda/route.ts, sobrescribiendo lo
+  // que la IA transcribió. Campo aditivo: ausente/undefined en toda
+  // extraidoBruto escrita antes de EVAL-1F, equivale a false — nunca
+  // se asume una corrección que no ocurrió. Es la única señal que hace
+  // que confirmarResultadosHoja.ts trate una celda como NO bloqueante
+  // sin importar su lectura/confianza original.
+  corregidoManualmente?: boolean
 }
 
 export type FilaHojaEvaluacion = {
