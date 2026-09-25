@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { descargarBuffer, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
-import { analizarImagenHojaEvaluacion, normalizarImagenHojaParaVision, type MediaTypeImagenHoja } from '@/lib/seguimiento/analisisHojaEvaluacion'
+import { calcularCantidadPaginasHoja } from '@/lib/documentGen/generarHojaSeguimientoPdf'
+import {
+  analizarImagenesHojaEvaluacion,
+  normalizarImagenesHojaParaVision,
+  extraerFotosCapturaPendiente,
+} from '@/lib/seguimiento/analisisHojaEvaluacion'
 
 export const runtime = 'nodejs'
 
@@ -15,14 +20,25 @@ export const runtime = 'nodejs'
 // (columna ya preparada en EVAL-1B para exactamente este propósito) —
 // nunca en una tabla de historial académico real.
 //
-// EVAL-1D.1 — antes de la única llamada de visión, la imagen pasa por
-// normalizarImagenHojaParaVision() (lib/seguimiento/analisisHojaEvaluacion.ts):
-// JPG/PNG/WEBP se usan tal cual; HEIC/HEIF (formato por defecto de
-// fotos de iPhone, ya aceptado por EVAL-1C en la carga pero no
-// soportado directamente por la API de visión) se decodifica y
-// recodifica a JPEG server-side, en memoria, sin tocar Storage ni
-// captura_pendiente.fotoStoragePath. Esa conversión nunca cuenta como
-// llamada IA.
+// EVAL-1D.1 — antes de la única llamada de visión, cada fotografía
+// pasa por normalizarImagenesHojaParaVision()
+// (lib/seguimiento/analisisHojaEvaluacion.ts): JPG/PNG/WEBP se usan
+// tal cual; HEIC/HEIF (formato por defecto de fotos de iPhone, ya
+// aceptado por EVAL-1C en la carga pero no soportado directamente por
+// la API de visión) se decodifica y recodifica a JPEG server-side, en
+// memoria, sin tocar Storage ni captura_pendiente.fotos. Esa
+// conversión nunca cuenta como llamada IA.
+//
+// EVAL-1D.2 — soporte multipágina. Una hoja puede tener más de una
+// fotografía (una por página física, ver foto-hoja/route.ts), pero
+// TODAS se analizan juntas en UNA SOLA llamada de visión (nunca una
+// llamada por fotografía) — mismo patrón ya probado en
+// analizarImagenesListaOficial (lib/listaOficial/analisisListaOficial.ts).
+// El número de páginas ESPERADO se deriva de forma puramente
+// aritmética (calcularCantidadPaginasHoja, sin IA) a partir de
+// roster_congelado.length — si la cantidad de fotografías ya
+// cargadas no coincide EXACTAMENTE con ese número, el análisis se
+// rechaza fail-closed ANTES de descargar o normalizar nada.
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -30,7 +46,7 @@ const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 const ESTADOS_POST_CONFIRMACION = new Set(['confirmado', 'corregido', 'sustituido', 'cerrado'])
 
-type CapturaPendiente = { fotoStoragePath?: string; fotoSubidaEn?: string } | null
+type CapturaPendiente = { fotos?: unknown; fotoStoragePath?: string; fotoSubidaEn?: string; extraidoBruto?: unknown; extraidoEn?: string } | null
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: proyectoId } = await params
@@ -71,7 +87,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const capturaPendiente = (proyecto.captura_pendiente as CapturaPendiente) ?? null
-    if (!capturaPendiente?.fotoStoragePath) {
+    const fotos = extraerFotosCapturaPendiente(capturaPendiente)
+    if (fotos.length === 0) {
       return NextResponse.json({ error: 'Este proyecto todavía no tiene ninguna fotografía cargada.' }, { status: 409 })
     }
     if (!proyecto.hoja_id) {
@@ -102,40 +119,63 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'Esta hoja fue generada antes de que existiera el registro de alumnos congelado y no admite análisis automático.' }, { status: 409 })
     }
 
-    // Extensión real derivada de la ruta del archivo ya subido — nunca
-    // se acepta un mediaType que mande el cliente en este request.
-    const extension = capturaPendiente.fotoStoragePath.split('.').pop()?.toLowerCase() || ''
-
-    // Descarga real desde Storage — únicamente la ruta ya autorizada y
-    // vinculada a este proyecto (captura_pendiente.fotoStoragePath),
-    // nunca una URL arbitraria que mande el cliente.
-    let buffer: Buffer
-    try {
-      buffer = await descargarBuffer(supabase, capturaPendiente.fotoStoragePath, BUCKET_HOJAS_SEGUIMIENTO)
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo leer la fotografía.' }, { status: 500 })
+    // EVAL-1D.2 — el número de páginas ESPERADO se deriva, sin ninguna
+    // llamada IA, de la MISMA aritmética que usó el renderizador real
+    // del PDF para paginar este roster exacto
+    // (lib/documentGen/generarHojaSeguimientoPdf.ts). Fail-closed: si
+    // el número de fotografías ya cargadas no coincide EXACTAMENTE con
+    // ese total, el análisis se rechaza aquí — ANTES de descargar,
+    // normalizar o gastar ninguna llamada de visión — nunca se
+    // aproxima el resultado con las páginas que sí están presentes.
+    const paginasEsperadas = calcularCantidadPaginasHoja(rosterCongelado.length)
+    if (fotos.length !== paginasEsperadas) {
+      return NextResponse.json(
+        {
+          error:
+            fotos.length < paginasEsperadas
+              ? `Esta hoja tiene ${paginasEsperadas} páginas y solo se cargó${fotos.length === 1 ? '' : 'n'} ${fotos.length}. Sube todas las páginas antes de analizar.`
+              : `Se cargaron más fotografías (${fotos.length}) de las que corresponden a esta hoja (${paginasEsperadas}).`,
+        },
+        { status: 409 }
+      )
     }
 
-    // EVAL-1D.1 — normaliza el formato ANTES de la única llamada de
-    // visión (la conversión NUNCA cuenta como llamada IA): JPG/PNG/WEBP
-    // pasan tal cual; HEIC/HEIF (formato por defecto de fotos de
-    // iPhone, ya aceptado por EVAL-1C en la carga) se decodifica y
-    // recodifica a JPEG en memoria — nunca se sube a Storage, nunca se
-    // toca captura_pendiente.fotoStoragePath (sigue apuntando al
-    // archivo original). Fail-closed: si la normalización falla, el
-    // flujo se detiene aquí, ANTES de cualquier llamada a Anthropic.
-    let imagenNormalizada: { base64: string; mediaType: MediaTypeImagenHoja }
+    // fotos ya viene ordenado por página ascendente
+    // (extraerFotosCapturaPendiente) — se preserva ese orden en todo
+    // el resto del flujo, hasta el arreglo final de bloques de imagen
+    // que se le entrega al modelo.
+    let buffers: { buffer: Buffer; extension: string }[]
     try {
-      imagenNormalizada = await normalizarImagenHojaParaVision(buffer, extension)
+      buffers = await Promise.all(
+        fotos.map(async (foto) => ({
+          buffer: await descargarBuffer(supabase, foto.storagePath, BUCKET_HOJAS_SEGUIMIENTO),
+          extension: foto.storagePath.split('.').pop()?.toLowerCase() || '',
+        }))
+      )
     } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo preparar la fotografía para el análisis.' }, { status: 409 })
+      return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo leer una de las fotografías.' }, { status: 500 })
+    }
+
+    // EVAL-1D.1/EVAL-1D.2 — normaliza el formato de CADA página ANTES
+    // de la única llamada de visión (la conversión NUNCA cuenta como
+    // llamada IA): JPG/PNG/WEBP pasan tal cual; HEIC/HEIF se decodifica
+    // y recodifica a JPEG en memoria, una sola vez por foto — nunca se
+    // sube a Storage, nunca se tocan las rutas originales. Fail-closed
+    // por lote completo: si CUALQUIER página falla al normalizarse, el
+    // flujo se detiene aquí, ANTES de cualquier llamada a Anthropic —
+    // nunca se analiza un subconjunto de páginas.
+    let imagenesNormalizadas
+    try {
+      imagenesNormalizadas = await normalizarImagenesHojaParaVision(buffers)
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo preparar una de las fotografías para el análisis.' }, { status: 409 })
     }
 
     let resultado
     try {
-      resultado = await analizarImagenHojaEvaluacion(
+      resultado = await analizarImagenesHojaEvaluacion(
         anthropic,
-        imagenNormalizada,
+        imagenesNormalizadas,
         rosterCongelado.length
       )
     } catch (e) {

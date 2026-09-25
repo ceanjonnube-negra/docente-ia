@@ -64,9 +64,36 @@ function main() {
   // Reemplazo, no acumulación — limpieza de la foto anterior sin confirmar.
   verificar(contenido.includes('capturaPrevia') && contenido.includes('eliminarArchivo'), '13. Reemplaza (limpia) una captura pendiente anterior en vez de acumular fotografías huérfanas')
 
-  // Persistencia mínima — solo lo que EVAL-1C debe escribir, nada de extracción/resultados.
-  verificar(contenido.includes("captura_pendiente:") && contenido.includes('fotoStoragePath'), "14. Persiste únicamente captura_pendiente.fotoStoragePath — el snapshot temporal ya diseñado en EVAL-1B")
+  // Persistencia mínima — solo lo que EVAL-1C/EVAL-1D.2 deben escribir, nada de extracción/resultados.
+  verificar(contenido.includes("captura_pendiente:") && contenido.includes('fotos'), "14. Persiste captura_pendiente.fotos (arreglo ordenado, EVAL-1D.2) — evolución compatible del snapshot temporal diseñado en EVAL-1B")
   verificar(contenido.includes("estado: 'fotografia_cargada'"), "15. Transiciona el proyecto al estado 'fotografia_cargada' (valor ya válido en el CHECK real, nunca usado hasta ahora)")
+
+  // ============================================================
+  // EVAL-1D.2 — soporte multipágina.
+  // ============================================================
+
+  // Campo "pagina" opcional, con default 1 — una hoja de 1 sola página
+  // sigue funcionando exactamente igual sin que el cliente lo envíe.
+  verificar(contenido.includes("formData.get('pagina')"), "19. Lee un campo 'pagina' opcional del formData")
+  verificar(/pagina\s*=\s*paginaBruta\s*===\s*null\s*\|\|\s*paginaBruta\s*===\s*''\s*\?\s*1\s*:/.test(contenido), "20. 'pagina' ausente/vacía siempre equivale a página 1 (compatibilidad con un cliente que nunca envía este campo)")
+  verificar(/!Number\.isInteger\(pagina\)\s*\|\|\s*pagina\s*<\s*1/.test(contenido), "21. Rechaza un valor de página no entero o menor a 1")
+
+  // El máximo de página aceptado se deriva de la geometría real del
+  // PDF (roster_congelado.length), nunca de un número que el cliente
+  // pueda inflar.
+  verificar(contenido.includes('calcularCantidadPaginasHoja') && contenido.includes("from '@/lib/documentGen/generarHojaSeguimientoPdf'"), "22. Importa calcularCantidadPaginasHoja (misma fuente de verdad que el renderizador real del PDF) para acotar el número de página")
+  verificar(/pagina > paginasEsperadas/.test(contenido), "23. Rechaza una página fuera del rango real de la hoja (pagina > paginasEsperadas) — nunca acepta 'página 37' de una hoja de 1 sola página")
+
+  // Reemplaza SOLO la página cargada, conserva las demás — nunca
+  // acumula fotografías arbitrariamente (el máximo real de entradas
+  // queda acotado por paginasEsperadas, validado antes de subir nada).
+  verificar(contenido.includes('extraerFotosCapturaPendiente'), "24. Lee las fotos previas con extraerFotosCapturaPendiente — misma función que analizar-hoja/route.ts, compatibilidad retroactiva total con la forma histórica de 1 sola foto")
+  verificar(/fotosPrevias\.filter\(\(f\) => f\.pagina !== pagina\)/.test(contenido), "25. Al reemplazar, conserva las páginas DISTINTAS a la que se está subiendo — nunca las pierde ni las duplica")
+
+  // Cualquier carga (nueva o de reemplazo) invalida una transcripción
+  // previa — captura_pendiente se reescribe SOLO con el arreglo de
+  // fotos actualizado, nunca conserva un extraidoBruto obsoleto.
+  verificar(/captura_pendiente:\s*\{\s*fotos:\s*fotosActualizadas\s*\}/.test(contenido), "26. El UPDATE reescribe captura_pendiente completo con solo { fotos: fotosActualizadas } — cualquier extraidoBruto previo queda invalidado, nunca sobrevive a una foto nueva")
   // Búsqueda de un USO real (.from('seguimiento_resultados')), nunca
   // una simple mención en comentario (el propio archivo explica en
   // prosa, a propósito, que NO escribe ahí — esa frase no debe contar
