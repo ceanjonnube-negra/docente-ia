@@ -55,6 +55,15 @@ export type ArchivoGeneradoInfo = {
   // cliente lo guarda en materialVisualActivo para poder "regenerar"
   // más adelante conservando el versionado.
   assetId?: string
+  // EVAL-1G — id real de proyectos_seguimiento (ver lib/seguimiento/
+  // tipos.ts), solo presente cuando tipoDocumento==='hoja_evaluacion'.
+  // Es lo único que la tarjeta necesita para poder ofrecer "Subir foto
+  // ya contestada" (CapturaHoja.tsx) — sin él, esa acción no puede
+  // resolver a qué proyecto pertenece la hoja, así que simplemente no
+  // se muestra. Campo aditivo: una tarjeta de hoja generada ANTES de
+  // este cambio (ya persistida en una conversación existente) no lo
+  // trae — se restaura igual, solo sin esa acción nueva, nunca rompe.
+  proyectoSeguimientoId?: string
 }
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo

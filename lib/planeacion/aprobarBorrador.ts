@@ -74,7 +74,7 @@ export type ResultadoAprobacion =
   // completa (la planeación y la hoja ya quedaron guardadas) — el
   // docente siempre puede pedir el archivo después escribiendo en el
   // chat, igual que antes de que existiera esta mejora.
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
 
 type TurnoHistorial = { role: string; content: string }
@@ -541,7 +541,13 @@ export async function aprobarBorradorPlaneacion(
       ok: true,
       planeacion: confirmada.datos,
       duracionDias: resumen.duracionDias,
-      hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url, urlVer: resultadoHoja.urlVer },
+      // EVAL-1G — proyectoSeguimientoId (ya resuelto arriba, Fase 3)
+      // viaja de vuelta al llamador para que app/api/chat/route.ts
+      // pueda incluirlo en la tarjeta de la hoja — sin él, la acción
+      // "Subir foto ya contestada" no puede resolver a qué proyecto
+      // pertenece. Aditivo: no cambia ningún consumidor existente de
+      // este campo `hoja`.
+      hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url, urlVer: resultadoHoja.urlVer, proyectoSeguimientoId },
       documentoPlaneacion: documentoWord && documentoPdf
         ? {
             word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes },

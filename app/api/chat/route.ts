@@ -2166,7 +2166,11 @@ export async function POST(req: NextRequest) {
             const archivoPdfPlaneacion = { tipo: 'pdf', nombre: resultado.documentoPlaneacion.pdf.nombre, url: resultado.documentoPlaneacion.pdf.url, urlVer: resultado.documentoPlaneacion.pdf.urlVer, tipoDocumento: 'planeacion' as const }
             marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoPdfPlaneacion), 'utf-8').toString('base64')}]]`)
           }
-          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, urlVer: resultado.hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const }
+          // EVAL-1G — proyectoSeguimientoId viaja en la tarjeta para
+          // que "Subir foto ya contestada" (CapturaHoja.tsx) sepa a
+          // qué proyecto pertenece esta hoja, sin tener que adivinarlo
+          // ni volver a resolverlo por nombre/fecha.
+          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, urlVer: resultado.hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const, proyectoSeguimientoId: resultado.hoja.proyectoSeguimientoId }
           marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
           return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcadores.join('\n')}`)
         } catch (e) {
