@@ -16,6 +16,26 @@
 
 import type { NivelEvaluacion } from './tipos'
 
+// EVAL-1B — única función que traduce la escala numérica de
+// captura/impresión (1-4, NivelEvaluacion) al enum textual que
+// realmente es la fuente canónica en DB (seguimiento_resultados.nivel,
+// CHECK real: 'destacado'|'logrado'|'en_proceso'|'requiere_apoyo'|
+// 'no_evaluado' — ver informe EVAL-1B). Sin marca (null) -> 'no_evaluado',
+// nunca 0 ni ningún otro valor aproximado. Dirección única (número ->
+// texto): la conversión inversa no se necesita todavía.
+export type NivelTextoCanonico = 'destacado' | 'logrado' | 'en_proceso' | 'requiere_apoyo' | 'no_evaluado'
+
+const MAPA_NIVEL_A_TEXTO_CANONICO: Record<NivelEvaluacion, NivelTextoCanonico> = {
+  4: 'destacado',
+  3: 'logrado',
+  2: 'en_proceso',
+  1: 'requiere_apoyo',
+}
+
+export function nivelATextoCanonico(nivel: NivelEvaluacion | null): NivelTextoCanonico {
+  return nivel == null ? 'no_evaluado' : MAPA_NIVEL_A_TEXTO_CANONICO[nivel]
+}
+
 export type ReglaConversionCalificacion = {
   id: string
   nombre: string

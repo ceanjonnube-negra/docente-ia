@@ -20,9 +20,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { obtenerRosterConPosicion } from '../rosterGrupo'
 import { generarCodigoHoja } from '../identificadorHoja'
-import { generarHojaSeguimientoPdfBuffer, nombreArchivoHoja } from '../documentGen/generarHojaSeguimientoPdf'
+import { generarHojaSeguimientoPdfBuffer, nombreArchivoHoja, type AlumnoHoja } from '../documentGen/generarHojaSeguimientoPdf'
 import { subirBuffer, crearUrlFirmada, eliminarArchivo, rutaArchivo, BUCKET_HOJAS_SEGUIMIENTO } from '../documentGen/almacenamiento'
-import type { IndicadorProyecto } from './tipos'
+import type { IndicadorProyecto, IndicadorCongelado, AlumnoRosterCongelado } from './tipos'
 
 const MAX_INTENTOS_IDENTIFICADOR = 3
 
@@ -69,6 +69,17 @@ export async function generarYGuardarHojaSeguimiento(
   let hojaId: string
   let identificadorVisible: string
 
+  // EVAL-1B — alumnos/indicadores que efectivamente alimentan el PDF:
+  // por defecto (retry sobre una hoja ya existente, rama de abajo) se
+  // usan los valores EN VIVO ya recibidos/leídos arriba — exactamente
+  // el comportamiento histórico, sin ningún cambio. Solo la rama de
+  // creación nueva los sustituye por el roster/indicadores YA
+  // CONGELADOS que se acaban de insertar — mismo array lógico para
+  // Storage (PDF) y para DB (roster_congelado/indicadores), nunca dos
+  // fuentes que puedan divergir entre sí.
+  let alumnosParaPdf: AlumnoHoja[] = (roster || []).map((a) => ({ nombre: a.nombre, posicion: a.posicion }))
+  let indicadoresParaPdf: IndicadorProyecto[] = datos.indicadores
+
   if (hojaExistente && hojaExistente.storage_path) {
     // Ya estaba completamente lista de un intento anterior — nunca se
     // regenera ni se vuelve a subir, solo se confirma el vínculo.
@@ -79,15 +90,42 @@ export async function generarYGuardarHojaSeguimiento(
   }
 
   if (hojaExistente) {
+    // Retry sobre una hoja que ya existe (la subida a Storage falló en
+    // un intento previo): NUNCA se escribe ni se modifica
+    // roster_congelado/indicadores — esos ya quedaron fijos (o
+    // permanecen null, si la hoja es histórica) desde su creación
+    // original. alumnosParaPdf/indicadoresParaPdf conservan los
+    // valores en vivo definidos arriba, igual que siempre.
     hojaId = hojaExistente.id
     identificadorVisible = hojaExistente.identificador_visible
   } else {
+    // EVAL-1B — se congela EXACTAMENTE UNA VEZ, en el mismo INSERT que
+    // crea la hoja: `roster` (recién leído arriba, sin ninguna
+    // recomputación posterior) y `datos.indicadores` (tal como llegó
+    // el llamador) son la ÚNICA fuente, tanto para lo que se persiste
+    // como para lo que se imprime.
+    const rosterCongelado: AlumnoRosterCongelado[] = (roster || []).map((a) => ({
+      alumno_id: a.id,
+      inscripcion_id: a.inscripcion_id,
+      nombre: a.nombre,
+      posicion: a.posicion,
+    }))
+    const indicadoresCongelados: IndicadorCongelado[] = datos.indicadores.map((indicador, index) => ({
+      ...indicador,
+      numero_indicador: index + 1,
+    }))
+
     let insertada: { id: string; identificador_visible: string } | null = null
     for (let intento = 0; intento < MAX_INTENTOS_IDENTIFICADOR && !insertada; intento++) {
       const candidato = generarCodigoHoja()
       const { data: hoja, error: errorHoja } = await sb
         .from('hojas_evaluacion')
-        .insert({ proyecto_id: datos.proyectoId, identificador_visible: candidato, indicadores: datos.indicadores })
+        .insert({
+          proyecto_id: datos.proyectoId,
+          identificador_visible: candidato,
+          indicadores: indicadoresCongelados,
+          roster_congelado: rosterCongelado,
+        })
         .select('id, identificador_visible')
         .single()
       if (!errorHoja && hoja) {
@@ -99,6 +137,13 @@ export async function generarYGuardarHojaSeguimiento(
     if (!insertada) return { ok: false, error: 'No se pudo generar un identificador único para la hoja. Intenta de nuevo.' }
     hojaId = insertada.id
     identificadorVisible = insertada.identificador_visible
+
+    // El PDF se construye desde el MISMO array recién congelado y
+    // persistido arriba — nunca se vuelve a leer `roster` ni
+    // `datos.indicadores` sueltos para esto, eliminando de raíz
+    // cualquier posibilidad de que Storage y DB queden desalineados.
+    alumnosParaPdf = rosterCongelado.map((a) => ({ nombre: a.nombre, posicion: a.posicion }))
+    indicadoresParaPdf = indicadoresCongelados
   }
 
   const bufferPdf = await generarHojaSeguimientoPdfBuffer(
@@ -109,8 +154,8 @@ export async function generarYGuardarHojaSeguimiento(
       fechaInicio: datos.fechaInicio,
       fechaFin: datos.fechaFin,
       identificadorVisible,
-      indicadores: datos.indicadores,
-      alumnos: (roster || []).map((a) => ({ nombre: a.nombre, posicion: a.posicion })),
+      indicadores: indicadoresParaPdf,
+      alumnos: alumnosParaPdf,
     },
     perfil,
     zonaHoraria

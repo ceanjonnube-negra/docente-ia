@@ -72,3 +72,30 @@ export type IndicadorProyecto = {
   indicador_especifico: string
   aspecto_general: AspectoGeneral
 }
+
+// EVAL-1B — forma exacta que se congela UNA SOLA VEZ dentro de
+// hojas_evaluacion.indicadores al crear una hoja nueva (ver
+// lib/seguimiento/generarYGuardarHoja.ts). numero_indicador se deriva
+// EXCLUSIVAMENTE del índice del indicador dentro del array en ese
+// momento (index + 1, rango 1..CANTIDAD_INDICADORES_HOJA) — nunca se
+// recalcula ni se reordena después de creada la hoja. Tipo aditivo:
+// no modifica IndicadorProyecto, así que ningún llamador existente
+// (aprobarBorrador.ts, app/api/proyectos-seguimiento/[id]/hoja/route.ts)
+// necesita cambiar.
+export type IndicadorCongelado = IndicadorProyecto & {
+  numero_indicador: number
+}
+
+// EVAL-1B — forma exacta que se congela UNA SOLA VEZ dentro de
+// hojas_evaluacion.roster_congelado al crear una hoja nueva. Debe
+// representar EXACTAMENTE el roster (mismos alumnos, mismo orden, misma
+// posición) que en ese momento alimenta el PDF real — nunca se
+// recalcula, actualiza ni sustituye después. Una hoja histórica
+// generada antes de esta fase (ej. SG-VXKR) no tiene esta columna
+// poblada (queda null) — fail-closed, sin backfill ni aproximación.
+export type AlumnoRosterCongelado = {
+  alumno_id: string
+  inscripcion_id: string
+  nombre: string
+  posicion: number
+}
