@@ -28,6 +28,7 @@ import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 import TarjetaPropuestaLista from './TarjetaPropuestaLista'
+import CapturaHoja from './CapturaHoja'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
@@ -362,6 +363,16 @@ function TarjetaDescarga({
             </div>
           )}
         </div>
+      )}
+      {/* EVAL-1G — acción contextual "Subir foto ya contestada", solo
+          en la tarjeta de la hoja de evaluación y solo cuando trae el
+          id del proyecto (tarjetas generadas antes de este cambio no
+          lo traen — simplemente no ofrecen esta acción, nunca rompen).
+          Vive fuera del bloque !ocultarPorVencido a propósito: que la
+          URL firmada del PDF haya vencido no afecta la capacidad de
+          fotografiar/analizar la hoja, son recursos independientes. */}
+      {principal.tipoDocumento === 'hoja_evaluacion' && principal.proyectoSeguimientoId && (
+        <CapturaHoja proyectoId={principal.proyectoSeguimientoId} />
       )}
     </div>
   )
