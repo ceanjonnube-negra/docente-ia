@@ -46,8 +46,12 @@ import { prepararEncabezado } from './encabezadoDocumento'
 import { NIVELES_EVALUACION, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 
 const ANCHO_PAGINA = 792 // carta apaisada (11in), en puntos
-const ALTO_PAGINA = 612 // carta apaisada (8.5in)
-const MARGEN = 24 // margen seguro de impresión en los 4 lados (~0.33in, por encima del mínimo típico de 0.25in)
+// EVAL-1D.2 — ALTO_PAGINA/MARGEN exportados (antes privados del
+// módulo): calcularCantidadPaginasHoja() los necesita para replicar
+// EXACTAMENTE la misma aritmética de paginación del renderizador real,
+// sin duplicar valores que pudieran divergir.
+export const ALTO_PAGINA = 612 // carta apaisada (8.5in)
+export const MARGEN = 24 // margen seguro de impresión en los 4 lados (~0.33in, por encima del mínimo típico de 0.25in)
 const ANCHO_CONTENIDO = ANCHO_PAGINA - MARGEN * 2
 
 const COLOR_TITULO = rgb(0.122, 0.161, 0.216) // #1F2937
@@ -94,6 +98,13 @@ export type DatosHojaSeguimiento = {
 export const ALTO_FILA_MINIMO = 15
 export const ALTO_FILA_MAXIMO = 26
 
+// EVAL-1D.2 — hoisted a nivel de módulo (antes locales a
+// generarHojaSeguimientoPdfBuffer) para que calcularCantidadPaginasHoja()
+// pueda usar EXACTAMENTE los mismos valores, sin una segunda copia que
+// pudiera desalinearse si alguno cambia aquí.
+export const ALTO_ENCABEZADO_TABLA = 20 // una sola fila: # | Alumno | I1..I5 | Nivel final — nunca repite la escala aquí
+export const RESERVA_INFERIOR_TABLA = 4 // colchón extra bajo la última fila, además del margen — el borde de la tabla nunca queda pegado al límite de impresión
+
 export async function generarHojaSeguimientoPdfBuffer(
   datos: DatosHojaSeguimiento,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -114,8 +125,6 @@ export async function generarHojaSeguimientoPdfBuffer(
 
   const ANCHO_NUM = 20
   const ANCHO_NOMBRE = 240 // suficiente para nombre(s) y dos apellidos completos
-  const ALTO_ENCABEZADO_TABLA = 20 // una sola fila: # | Alumno | I1..I5 | Nivel final — nunca repite la escala aquí
-  const RESERVA_INFERIOR_TABLA = 4 // colchón extra bajo la última fila, además del margen — el borde de la tabla nunca queda pegado al límite de impresión
 
   let pagina: PDFPage = pdfDoc.addPage([ANCHO_PAGINA, ALTO_PAGINA])
   let y = ALTO_PAGINA - MARGEN - 3 // pequeño respiro respecto al borde superior, nunca pegado al margen exacto
@@ -305,4 +314,50 @@ export async function generarHojaSeguimientoPdfBuffer(
 
 export function nombreArchivoHoja(identificadorVisible: string): string {
   return `hoja-seguimiento-${identificadorVisible}.pdf`
+}
+
+// EVAL-1D.2 — altura fija que consumen, ANTES de dibujar la tabla,
+// dibujarEncabezadoInstitucional + dibujarMetadatosProyecto +
+// dibujarLeyenda + dibujarListaIndicadores (arriba en este archivo).
+// Es un valor FIJO — depende solo de tamaños de fuente y número de
+// líneas (nunca del ANCHO del texto, que solo afecta truncamiento
+// horizontal), así que es seguro tratarlo como constante:
+//   institucional (2 líneas):        10*1.3 + 8*1.3        = 23.4
+//   metadatos (título + línea meta): 2 + 14 + 10.5          = 26.5
+//   leyenda (1 línea):                                        10.5
+//   lista de indicadores (5 en 3 columnas => 2 filas):
+//     ceil(CANTIDAD_INDICADORES_HOJA/3)*10.5 + 6            = 27
+// Si esta suma alguna vez se desalinea del renderizador real, el
+// propio test (verificar-paginacion-hoja-evaluacion.ts) lo detecta:
+// genera un PDF real y compara pdf-lib.getPageCount() contra este
+// cálculo para varios tamaños de grupo — nunca confía solo en el
+// comentario.
+const ALTURA_ENCABEZADO_ANTES_DE_TABLA = 23.4 + 26.5 + 10.5 + (Math.ceil(CANTIDAD_INDICADORES_HOJA / 3) * 10.5 + 6)
+
+// EVAL-1D.2 — calcula, de forma puramente aritmética (sin pdf-lib, sin
+// renderizar nada), cuántas páginas físicas produciría
+// generarHojaSeguimientoPdfBuffer para un roster de `cantidadAlumnos`
+// — MISMA lógica exacta de paginación del renderizador real (mismos
+// valores de ALTO_FILA_MINIMO/MAXIMO/ALTO_ENCABEZADO_TABLA/
+// RESERVA_INFERIOR_TABLA/ALTO_PAGINA/MARGEN, mismo orden de
+// decisiones). Se usa para validar, SIN ninguna llamada IA, cuántas
+// fotografías corresponde subir/analizar para una hoja dada.
+export function calcularCantidadPaginasHoja(cantidadAlumnos: number): number {
+  const n = Math.max(Math.floor(cantidadAlumnos), 1)
+
+  const yInicioPagina1 = ALTO_PAGINA - MARGEN - 3 - ALTURA_ENCABEZADO_ANTES_DE_TABLA
+  const yInicioPaginaSiguiente = ALTO_PAGINA - MARGEN - 3 // páginas 2+ solo repiten el encabezado de la tabla, no el institucional/metadatos/leyenda/indicadores
+
+  const alturaDisponibleFilasTotal = yInicioPagina1 - ALTO_ENCABEZADO_TABLA - MARGEN - RESERVA_INFERIOR_TABLA
+  const ALTO_FILA = Math.min(ALTO_FILA_MAXIMO, Math.max(ALTO_FILA_MINIMO, alturaDisponibleFilasTotal / n))
+
+  const y0Pagina1 = yInicioPagina1 - ALTO_ENCABEZADO_TABLA
+  const y0PaginaSiguiente = yInicioPaginaSiguiente - ALTO_ENCABEZADO_TABLA
+
+  const filasPagina1 = Math.max(1, Math.floor((y0Pagina1 - MARGEN) / ALTO_FILA))
+  if (n <= filasPagina1) return 1
+
+  const filasPorPaginaSiguiente = Math.max(1, Math.floor((y0PaginaSiguiente - MARGEN) / ALTO_FILA))
+  const restantes = n - filasPagina1
+  return 1 + Math.ceil(restantes / filasPorPaginaSiguiente)
 }

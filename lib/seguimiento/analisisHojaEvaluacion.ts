@@ -164,13 +164,116 @@ export async function normalizarImagenHojaParaVision(
   throw new Error('Formato de imagen no soportado para el análisis.')
 }
 
-// Único dato dinámico que entra al prompt además de la propia imagen
-// (regla B/C del informe: contexto mínimo, nunca historial ni datos
-// de alumnos) — cuántas filas se esperan realmente, para que la IA
-// tenga una referencia real contra la cual no quedarse corta ni
-// inventar filas de más. Nunca nombres, nunca IDs, nunca el roster.
-function construirInstrucciones(cantidadFilasEsperadas: number): string {
-  return `Eres un asistente que transcribe con extremo cuidado la fotografía de una hoja de evaluación escolar mexicana ya impresa y contestada a mano.
+// EVAL-1D.2 — versión plural de normalizarImagenHojaParaVision: una
+// entrada por página, en el MISMO orden en que se reciben (el
+// llamador es responsable de ordenarlas por número de página ANTES de
+// llamar aquí — ver extraerFotosCapturaPendiente más abajo). Cada foto
+// pasa exactamente UNA vez por la normalización (nunca se reconvierte
+// una imagen ya convertida, nunca se llama esta función más de una
+// vez por foto en todo el flujo). Fail-closed por lote completo: si
+// CUALQUIER página falla al normalizarse (HEIC corrupto, formato no
+// soportado), el error se relanza de inmediato y NINGUNA imagen del
+// lote llega a analizarImagenesHojaEvaluacion — nunca se analiza un
+// subconjunto de páginas disponibles ni se completa con las que sí se
+// pudieron convertir.
+export async function normalizarImagenesHojaParaVision(
+  fotos: { buffer: Buffer; extension: string }[],
+  convertidorHeic: ConvertidorHeic = convertirHeic
+): Promise<ImagenHojaEvaluacion[]> {
+  const resultado: ImagenHojaEvaluacion[] = []
+  for (const foto of fotos) {
+    resultado.push(await normalizarImagenHojaParaVision(foto.buffer, foto.extension, convertidorHeic))
+  }
+  return resultado
+}
+
+// EVAL-1D.2 — una entrada del arreglo ordenado
+// proyectos_seguimiento.captura_pendiente.fotos: una fotografía por
+// página física de la hoja. `pagina` es 1-indexada y se declara
+// explícitamente en la carga (foto-hoja/route.ts) — nunca se infiere
+// del orden de llegada del arreglo ni del orden de subida.
+export type FotoCapturaHoja = {
+  storagePath: string
+  pagina: number
+  subidaEn: string
+}
+
+// Forma real (parcial) de captura_pendiente que necesita
+// extraerFotosCapturaPendiente — deliberadamente mínima y local a este
+// archivo, para no acoplar este módulo puro al tipo completo de la
+// fila de proyectos_seguimiento (que vive en el route handler).
+type CapturaPendienteConFotos = {
+  fotos?: unknown
+  // Forma histórica, escrita por EVAL-1C antes de que existiera el
+  // soporte multipágina — una sola fotografía, sin número de página
+  // explícito porque en ese momento solo existía una página posible.
+  fotoStoragePath?: unknown
+  fotoSubidaEn?: unknown
+} | null | undefined
+
+// EVAL-1D.2 — único punto de lectura de "qué fotografías tiene esta
+// captura en curso", con compatibilidad retroactiva TOTAL: si existe
+// el arreglo nuevo captura_pendiente.fotos (toda captura escrita desde
+// este cambio en adelante, incluidas las de 1 sola página), se usa tal
+// cual, validando cada entrada — fail-closed sobre el arreglo COMPLETO
+// ante cualquier forma inesperada o página duplicada, nunca un
+// subconjunto. Si no existe ese arreglo pero SÍ existe el campo
+// histórico fotoStoragePath (toda captura_pendiente escrita antes de
+// este cambio), se envuelve como una sola foto de página 1 — ninguna
+// captura previa deja de funcionar. Devuelve SIEMPRE ordenado por
+// pagina ascendente.
+export function extraerFotosCapturaPendiente(capturaPendiente: unknown): FotoCapturaHoja[] {
+  const cp = capturaPendiente as CapturaPendienteConFotos
+  if (!cp || typeof cp !== 'object') return []
+
+  if (Array.isArray(cp.fotos)) {
+    const fotos: FotoCapturaHoja[] = []
+    for (const f of cp.fotos) {
+      if (typeof f !== 'object' || f === null) return []
+      const obj = f as Record<string, unknown>
+      if (typeof obj.storagePath !== 'string' || !obj.storagePath) return []
+      if (typeof obj.pagina !== 'number' || !Number.isInteger(obj.pagina) || obj.pagina < 1) return []
+      if (typeof obj.subidaEn !== 'string' || !obj.subidaEn) return []
+      fotos.push({ storagePath: obj.storagePath, pagina: obj.pagina, subidaEn: obj.subidaEn })
+    }
+    const paginasVistas = new Set(fotos.map((f) => f.pagina))
+    // Páginas duplicadas: fail-closed sobre el arreglo completo — nunca
+    // se adivina cuál de las dos copias de una misma página es la
+    // buena.
+    if (paginasVistas.size !== fotos.length) return []
+    return fotos.sort((a, b) => a.pagina - b.pagina)
+  }
+
+  if (typeof cp.fotoStoragePath === 'string' && cp.fotoStoragePath) {
+    const subidaEn = typeof cp.fotoSubidaEn === 'string' && cp.fotoSubidaEn ? cp.fotoSubidaEn : new Date(0).toISOString()
+    return [{ storagePath: cp.fotoStoragePath, pagina: 1, subidaEn }]
+  }
+
+  return []
+}
+
+// Único dato dinámico que entra al prompt además de las propias
+// imágenes (regla B/C del informe: contexto mínimo, nunca historial ni
+// datos de alumnos) — cuántas filas se esperan en TOTAL (sumando todas
+// las páginas), para que la IA tenga una referencia real contra la
+// cual no quedarse corta ni inventar filas de más. Nunca nombres,
+// nunca IDs, nunca el roster.
+//
+// EVAL-1D.2 — cantidadImagenes ajusta el prompt para el caso
+// multipágina: cuando hay más de una fotografía, se le aclara
+// EXPLÍCITAMENTE al modelo que son páginas CONSECUTIVAS de la MISMA
+// hoja física (en el orden en que se le entregan los bloques de
+// imagen), nunca hojas de alumnos distintos ni fotos repetidas de la
+// misma página — para que nunca transcriba dos veces la misma fila ni
+// mezcle posiciones entre páginas.
+function construirInstrucciones(cantidadFilasEsperadas: number, cantidadImagenes: number): string {
+  const contextoPaginas = cantidadImagenes > 1
+    ? `Recibirás ${cantidadImagenes} fotografías. Son páginas CONSECUTIVAS de la MISMA hoja física, en orden (la primera imagen es la página 1, la segunda es la página 2, y así sucesivamente) — nunca hojas de alumnos distintos, nunca la misma página repetida. Cada página tiene su propio encabezado de tabla, pero las posiciones "#" NUNCA se repiten entre páginas — continúan la numeración de la hoja completa. Transcribe cada página tal como la ves, sin mezclar filas entre páginas.`
+    : 'Recibirás 1 sola fotografía con toda la hoja.'
+
+  return `Eres un asistente que transcribe con extremo cuidado la(s) fotografía(s) de una hoja de evaluación escolar mexicana ya impresa y contestada a mano.
+
+${contextoPaginas}
 
 Tu ÚNICA tarea es TRANSCRIBIR lo que ves — nunca decidir un nivel, nunca inferir, nunca completar nada, nunca identificar quién es cada alumno.
 
@@ -180,7 +283,7 @@ Estructura real de la hoja (de izquierda a derecha):
 - Cinco columnas angostas "I1" a "I5" — cada una es una celda vacía donde el docente escribió A MANO un solo dígito (4, 3, 2 o 1), o la dejó en blanco.
 - Una última columna más ancha "Nivel final" — IGNÓRALA POR COMPLETO, no la transcribas, no pertenece a esta tarea.
 
-La hoja tiene aproximadamente ${cantidadFilasEsperadas} filas de alumnos. Úsalo solo como referencia para no perder ni inventar filas — si la foto muestra menos filas legibles de las esperadas, reporta solo las que realmente puedas leer.
+La hoja tiene aproximadamente ${cantidadFilasEsperadas} filas de alumnos EN TOTAL (sumando todas las páginas). Úsalo solo como referencia para no perder ni inventar filas — si las fotos muestran menos filas legibles de las esperadas, reporta solo las que realmente puedas leer.
 
 Reglas estrictas, en orden de prioridad:
 1. Para cada fila que puedas identificar por su número "#" impreso, reporta el número EXACTO que ves impreso ahí — nunca lo infieras por el orden ni lo asumas consecutivo.
@@ -189,7 +292,8 @@ Reglas estrictas, en orden de prioridad:
 4. "confianza" es independiente por cada celda — "alta" solo si el dígito es completamente inequívoco; "media" o "baja" ante cualquier duda real, sin importar cuántos dígitos reportaste.
 5. NUNCA infieras el valor de una celda por el rendimiento de otras celdas de la misma fila, por el nombre del alumno, por un promedio, ni por ningún patrón — cada celda se lee de forma completamente independiente.
 6. NUNCA transcribas la columna "Alumno" ni la columna "Nivel final" — no forman parte de esta tarea.
-7. Si la fotografía completa es demasiado borrosa, está cortada, muestra un documento distinto, o por cualquier razón no puedes transcribir la tabla con una confianza razonable, responde "hojaLegible": false y NO incluyas ninguna fila — nunca fabriques una tabla que parezca completa a partir de una foto que en realidad no puedes leer.
+7. Si alguna de las fotografías es demasiado borrosa, está cortada, muestra un documento distinto, o por cualquier razón no puedes transcribir esa página con una confianza razonable, responde "hojaLegible": false y NO incluyas ninguna fila de NINGUNA página — nunca fabriques una tabla que parezca completa a partir de fotos que en realidad no puedes leer todas.
+8. Nunca reportes la misma posición "#" dos veces, aunque aparezca en dos fotografías distintas por error — cada posición existe una sola vez en la hoja completa.
 
 Responde ÚNICAMENTE con un JSON válido (sin explicación, sin markdown, sin backticks), con este formato exacto:
 {
@@ -324,20 +428,52 @@ export function validarResultadoExtraccionHoja(parseado: unknown, posicionesMaxi
   return { filas: filasValidas.sort((a, b) => a.posicion - b.posicion), observacionGeneral }
 }
 
+// EVAL-1D.2 — límite defensivo de páginas/fotografías por hoja. Un
+// grupo escolar real en México prácticamente nunca excede ~45-50
+// alumnos (calcularCantidadPaginasHoja(50) = 2 páginas) — este máximo
+// deja margen amplio por encima de cualquier grupo real
+// (calcularCantidadPaginasHoja(150) = 5) sin dejar de acotar un abuso
+// claro (una hoja no puede, en la práctica, requerir docenas de
+// fotografías). No reutiliza MAXIMO_IMAGENES_LISTA_OFICIAL (=4, de
+// lib/listaOficial/analisisListaOficial.ts) porque ese límite responde
+// a un producto distinto (reutilización de imágenes históricas en
+// Chat) sin relación con la paginación real de este documento.
+export const MAXIMO_PAGINAS_HOJA = 6
+
 // Única llamada real a Anthropic de todo este archivo (regla A/L del
 // informe EVAL-1D: máximo 1 llamada de visión, 0 llamadas de texto
-// adicionales, 0 IA para matching o conversión de escala).
-export async function analizarImagenHojaEvaluacion(
+// adicionales, 0 IA para matching o conversión de escala) — incluso
+// cuando la hoja tiene varias páginas: EVAL-1D.2 envía TODAS las
+// fotografías dentro del MISMO mensaje/llamada, mismo patrón ya
+// probado en analizarImagenesListaOficial
+// (lib/listaOficial/analisisListaOficial.ts) — nunca una llamada por
+// fotografía.
+export async function analizarImagenesHojaEvaluacion(
   anthropic: Anthropic,
-  imagen: ImagenHojaEvaluacion,
+  imagenes: ImagenHojaEvaluacion[],
   cantidadFilasEsperadas: number
 ): Promise<ResultadoExtraccionHojaEvaluacion> {
-  if (!esMediaTypeValido(imagen.mediaType)) {
-    throw new Error('La fotografía tiene un formato no soportado.')
+  if (imagenes.length === 0) {
+    throw new Error('No se recibió ninguna fotografía de la hoja para analizar.')
+  }
+  // Fail-closed por límite: nunca se procesa un subconjunto silencioso
+  // de las fotografías recibidas — igual que en
+  // analizarImagenesListaOficial, si vienen más páginas de las
+  // soportadas se rechaza la operación completa.
+  if (imagenes.length > MAXIMO_PAGINAS_HOJA) {
+    throw new Error(`Se recibieron demasiadas fotografías (máximo ${MAXIMO_PAGINAS_HOJA} páginas por hoja).`)
+  }
+  if (imagenes.some((img) => !esMediaTypeValido(img.mediaType))) {
+    throw new Error('Una o más fotografías tienen un formato no soportado.')
   }
   if (!Number.isInteger(cantidadFilasEsperadas) || cantidadFilasEsperadas < 1) {
     throw new Error('No hay un roster congelado válido para interpretar esta hoja.')
   }
+
+  const bloquesImagen = imagenes.map((img) => ({
+    type: 'image' as const,
+    source: { type: 'base64' as const, media_type: img.mediaType, data: img.base64 },
+  }))
 
   const respuesta = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -345,10 +481,7 @@ export async function analizarImagenHojaEvaluacion(
     messages: [
       {
         role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: imagen.mediaType, data: imagen.base64 } },
-          { type: 'text', text: construirInstrucciones(cantidadFilasEsperadas) },
-        ],
+        content: [...bloquesImagen, { type: 'text', text: construirInstrucciones(cantidadFilasEsperadas, imagenes.length) }],
       },
     ],
   })

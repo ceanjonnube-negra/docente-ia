@@ -5,15 +5,23 @@
 // Mismo criterio ya usado en analisisListaOficial.ts: la validación
 // server-side (validarResultadoExtraccionHoja) se prueba directo, sin
 // necesitar el cliente Anthropic real — solo la llamada real
-// (analizarImagenHojaEvaluacion) necesita un cliente, y para esa se
+// (analizarImagenesHojaEvaluacion) necesita un cliente, y para esa se
 // usa un doble mínimo que cuenta invocaciones de .messages.create().
+//
+// EVAL-1D.2 — la función real ya es plural
+// (analizarImagenesHojaEvaluacion, recibe un arreglo de imágenes); las
+// pruebas de esta sección (caso único de UNA sola página) la invocan
+// con un arreglo de 1 elemento — el comportamiento de una hoja de una
+// página debe seguir siendo exactamente el mismo. Las pruebas
+// específicas de multipágina viven en
+// scripts/verificar-analisis-hoja-multipagina.ts.
 //
 // Se ejecuta con `npx tsx scripts/verificar-analisis-hoja-evaluacion.ts`.
 
 import { readFileSync } from 'node:fs'
 import {
   validarResultadoExtraccionHoja,
-  analizarImagenHojaEvaluacion,
+  analizarImagenesHojaEvaluacion,
   normalizarImagenHojaParaVision,
   type ConvertidorHeic,
 } from '../lib/seguimiento/analisisHojaEvaluacion'
@@ -171,8 +179,8 @@ async function main() {
       },
     } as unknown as Anthropic
 
-    const r = await analizarImagenHojaEvaluacion(anthropicFalso, { base64: 'ZmFrZQ==', mediaType: 'image/jpeg' }, 28)
-    verificar(llamadas === 1, 'CASO I. exactamente 1 llamada a anthropic.messages.create por análisis')
+    const r = await analizarImagenesHojaEvaluacion(anthropicFalso, [{ base64: 'ZmFrZQ==', mediaType: 'image/jpeg' }], 28)
+    verificar(llamadas === 1, 'CASO I. exactamente 1 llamada a anthropic.messages.create por análisis (1 sola página)')
     verificar(r.filas.length === 1, 'CASO I. el resultado real de esa única llamada se valida y se regresa correctamente')
   }
 
@@ -184,7 +192,7 @@ async function main() {
     verificar(!rutaContenido.includes(".from('seguimiento_resultados')"), 'CASO J. analizar-hoja/route.ts nunca escribe en seguimiento_resultados')
     verificar(!rutaContenido.includes('SERVICE_ROLE') && !rutaContenido.includes('createClient('), 'CASO J. analizar-hoja/route.ts no usa SERVICE_ROLE ni crea su propio cliente')
     verificar(rutaContenido.includes("captura_pendiente:") && rutaContenido.includes('extraidoBruto'), 'CASO J. lo único que se persiste es captura_pendiente.extraidoBruto (columna ya preparada en EVAL-1B)')
-    verificar(!/anthropic\.messages\.create/.test(libContenido.split('async function analizarImagenHojaEvaluacion')[0]), 'CASO J. ninguna llamada a Anthropic ocurre antes de la validación/construcción del prompt (una sola función concentra la única llamada real)')
+    verificar(!/anthropic\.messages\.create/.test(libContenido.split('export async function analizarImagenesHojaEvaluacion')[0]), 'CASO J. ninguna llamada a Anthropic ocurre antes de la validación/construcción del prompt (una sola función concentra la única llamada real)')
     verificar((libContenido.match(/anthropic\.messages\.create/g) || []).length === 1, 'CASO J. el archivo entero contiene exactamente 1 referencia a anthropic.messages.create')
   }
 
@@ -254,12 +262,12 @@ async function main() {
     verificar(lanzo, 'CASO Q. una conversión HEIC fallida rechaza la normalización (fail-closed)')
 
     // Encadenado como en el endpoint real: si la normalización falla,
-    // analizarImagenHojaEvaluacion NUNCA debe alcanzarse.
+    // analizarImagenesHojaEvaluacion NUNCA debe alcanzarse.
     let llamadasIA = 0
     const anthropicFalso = { messages: { create: async () => { llamadasIA++; return { content: [] } } } } as unknown as Anthropic
     try {
       const img = await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorQueFalla)
-      await analizarImagenHojaEvaluacion(anthropicFalso, img, 28)
+      await analizarImagenesHojaEvaluacion(anthropicFalso, [img], 28)
     } catch { /* esperado */ }
     verificar(llamadasIA === 0, 'CASO Q. una conversión fallida nunca llega a invocar anthropic.messages.create (0 llamadas IA)')
   }
@@ -282,7 +290,7 @@ async function main() {
     } as unknown as Anthropic
 
     const img = await normalizarImagenHojaParaVision(BUFFER_HEIC_FALSO, 'heic', convertidorExitoso)
-    await analizarImagenHojaEvaluacion(anthropicFalso, img, 28)
+    await analizarImagenesHojaEvaluacion(anthropicFalso, [img], 28)
     verificar(llamadasIA === 1, 'CASO R. una conversión HEIC exitosa resulta en EXACTAMENTE 1 llamada a anthropic.messages.create')
     verificar(mediaTypeRecibidoPorIA === 'image/jpeg', 'CASO R. la IA recibe la imagen ya convertida como image/jpeg, nunca como HEIC')
   }
@@ -301,10 +309,10 @@ async function main() {
     verificar(!rutaContenido.includes('.upload(') && !rutaContenido.includes('subirBuffer'), 'CASO T. analizar-hoja/route.ts nunca sube nada a Storage — solo descarga (descargarBuffer)')
   }
 
-  // CASO U — captura_pendiente conserva fotoStoragePath original (el archivo HEIC subido en EVAL-1C nunca se reemplaza).
+  // CASO U — captura_pendiente conserva las fotos originales (el/los archivo(s) subido(s) en EVAL-1C/EVAL-1D.2 nunca se reemplazan por el análisis).
   {
     const rutaContenido = readFileSync(new URL('../app/api/proyectos-seguimiento/[id]/analizar-hoja/route.ts', import.meta.url), 'utf-8')
-    verificar(/captura_pendiente:\s*\{\s*\.\.\.capturaPendiente,/.test(rutaContenido), 'CASO U. el UPDATE de captura_pendiente conserva (...capturaPendiente) el fotoStoragePath original, solo agrega extraidoBruto/extraidoEn')
+    verificar(/captura_pendiente:\s*\{\s*\.\.\.capturaPendiente,/.test(rutaContenido), 'CASO U. el UPDATE de captura_pendiente conserva (...capturaPendiente) las fotos originales (fotos[] o el fotoStoragePath histórico), solo agrega extraidoBruto/extraidoEn')
   }
 
   console.log('')
