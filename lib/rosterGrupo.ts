@@ -2,6 +2,15 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type AlumnoConPosicion = {
   id: string
+  // EVAL-1B — id real de la inscripción activa que produjo esta fila
+  // (antes descartado: la consulta original solo pedía
+  // alumnos(...) anidado y nunca el id de la propia fila de
+  // inscripciones). Necesario para congelar de forma determinista el
+  // roster de una hoja de evaluación (ver
+  // lib/seguimiento/generarYGuardarHoja.ts) — ningún consumidor
+  // existente (Lista, Ficha, Chat IA, vista previa) se ve afectado,
+  // solo ganan un campo adicional que no usaban.
+  inscripcion_id: string
   nombre: string
   curp: string | null
   sexo: string | null
@@ -33,9 +42,13 @@ export async function obtenerRosterConPosicion(
   sb: SupabaseClient,
   grupoId: string
 ): Promise<{ data: AlumnoConPosicion[]; error: unknown }> {
+  // EVAL-1B — se agrega `id` (de la propia fila de inscripciones) a la
+  // MISMA consulta que ya traía alumnos(...) anidado — nunca un SELECT
+  // aparte — para poder derivar inscripcion_id sin duplicar la lectura
+  // del roster.
   const { data, error } = await sb
     .from('inscripciones')
-    .select('alumnos(id, nombre, curp, sexo, fecha_nacimiento)')
+    .select('id, alumnos(id, nombre, curp, sexo, fecha_nacimiento)')
     .eq('grupo_id', grupoId)
     .eq('estatus', 'activo')
 
@@ -44,7 +57,10 @@ export async function obtenerRosterConPosicion(
   }
 
   const roster = data
-    .map(i => i.alumnos as unknown as Omit<AlumnoConPosicion, 'posicion'> | null)
+    .map(i => {
+      const alumno = i.alumnos as unknown as Omit<AlumnoConPosicion, 'posicion' | 'inscripcion_id'> | null
+      return alumno ? { ...alumno, inscripcion_id: i.id as unknown as string } : null
+    })
     .filter((a): a is Omit<AlumnoConPosicion, 'posicion'> => a !== null)
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .map((a, index) => ({ ...a, posicion: index + 1 }))
