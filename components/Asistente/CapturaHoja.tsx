@@ -44,6 +44,13 @@ export type EstadoCapturaHoja =
   | 'sin_fotografia'
   | 'captura_incompleta'
   | 'lista_para_analizar'
+  // Ver lib/seguimiento/estadoCapturaHoja.ts — todas las páginas están
+  // cargadas pero analizar-hoja rechazó la fotografía por no
+  // corresponder a la hoja de este proyecto (captura_pendiente.
+  // validacionIdentidad). Deliberadamente distinto de
+  // 'lista_para_analizar': nunca se re-analiza automáticamente al
+  // recargar.
+  | 'identidad_no_valida'
   | 'revision_pendiente'
   | 'lista_para_confirmar'
   | 'confirmado'
@@ -75,6 +82,7 @@ export default function CapturaHoja({
   const [paginasCargadas, setPaginasCargadas] = useState(0)
   const [totalAlumnos, setTotalAlumnos] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [abriendoHoja, setAbriendoHoja] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   // Guarda de doble-tap real (no depende solo de deshabilitar el botón
   // en pantalla): mientras esté en true, ninguna acción nueva arranca,
@@ -92,6 +100,31 @@ export default function CapturaHoja({
     })
     const json = await res.json()
     if (res.ok) setTotalAlumnos(json.matriz?.alumnos?.length ?? null)
+  }
+
+  const verHoja = async () => {
+    if (abriendoHoja) return
+    setAbriendoHoja(true)
+    try {
+      const accessToken = await obtenerAccessToken()
+      if (!accessToken) {
+        setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+        return
+      }
+      const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/hoja-url`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || 'No se pudo abrir la hoja.')
+        return
+      }
+      window.open(json.urlVer, '_blank')
+    } catch {
+      setError('No se pudo abrir la hoja.')
+    } finally {
+      setAbriendoHoja(false)
+    }
   }
 
   // analizar()/cargarEstado() envuelven su fetch/json en try/catch: una
@@ -113,6 +146,17 @@ export default function CapturaHoja({
       })
       const json = await res.json()
       if (!res.ok) {
+        // Rechazo de identidad (señal estructurada, nunca inferida del
+        // texto del mensaje — ver analizar-hoja/route.ts): el servidor
+        // ya persistió captura_pendiente.validacionIdentidad, así que
+        // re-sincroniza vía cargarEstado() en vez de un error genérico
+        // — el estado real ('identidad_no_valida') ya refleja esto
+        // correctamente, sin necesidad de que el cliente lo recuerde
+        // por su cuenta.
+        if (json.razon === 'identidad_no_valida') {
+          await cargarEstado()
+          return
+        }
         setError(json.error || 'No se pudo leer la fotografía.')
         setFase('error')
         return
@@ -344,6 +388,20 @@ export default function CapturaHoja({
           <button type="button" onClick={abrirSelector} className={claseBoton('primario')}>
             📷 Agregar página {paginasCargadas + 1}
           </button>
+        </>
+      )}
+
+      {fase !== 'error' && !EN_CURSO.includes(fase) && estado === 'identidad_no_valida' && (
+        <>
+          <p className="text-[11px] text-amber-700">Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.</p>
+          <div className="flex gap-1.5">
+            <button type="button" onClick={verHoja} disabled={abriendoHoja} className={claseBoton('secundario')}>
+              👁️ {abriendoHoja ? 'Abriendo…' : 'Ver hoja'}
+            </button>
+            <button type="button" onClick={abrirSelector} className={claseBoton('primario')}>
+              📷 Volver a fotografiar
+            </button>
+          </div>
         </>
       )}
 

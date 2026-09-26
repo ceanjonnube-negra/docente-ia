@@ -24,6 +24,16 @@ export type EstadoCapturaHoja =
   | 'sin_fotografia'
   | 'captura_incompleta'
   | 'lista_para_analizar'
+  // Todas las páginas están cargadas pero analizar-hoja rechazó la
+  // fotografía por identidad (ver captura_pendiente.validacionIdentidad
+  // — auditoría "Los Insectos y su Papel en la Naturaleza"). Estado
+  // deliberadamente DISTINTO de 'lista_para_analizar': evita que el
+  // cliente vuelva a auto-analizar la misma fotografía rechazada al
+  // recargar, sin necesidad de borrar la foto ni de falsear
+  // extraidoBruto con una extracción vacía. Desaparece solo, en cuanto
+  // el docente sube una fotografía nueva (foto-hoja/route.ts reemplaza
+  // captura_pendiente por completo).
+  | 'identidad_no_valida'
   | 'revision_pendiente'
   | 'lista_para_confirmar'
   | 'confirmado'
@@ -51,6 +61,12 @@ export function determinarEstadoCapturaHoja(params: {
   extraidoBruto: ResultadoExtraccionHojaEvaluacion | null
   rosterCongelado: AlumnoRosterCongelado[]
   indicadoresCongelados: IndicadorCongelado[]
+  // true únicamente cuando captura_pendiente.validacionIdentidad.estado
+  // === 'rechazada' para la captura ACTUAL (nunca inferido de otra
+  // cosa) — ver analizar-hoja/route.ts. Opcional/aditivo: ausente
+  // equivale a false, así cualquier llamador que todavía no lo pase
+  // conserva el comportamiento exacto de siempre.
+  identidadRechazada?: boolean
 }): ResultadoEstadoCapturaHoja {
   const base = { paginasEsperadas: params.paginasEsperadas, paginasCargadas: params.paginasCargadas }
 
@@ -61,6 +77,11 @@ export function determinarEstadoCapturaHoja(params: {
   if (!params.extraidoBruto) {
     if (params.paginasCargadas === 0) return { estado: 'sin_fotografia', ...base }
     if (params.paginasCargadas < params.paginasEsperadas) return { estado: 'captura_incompleta', ...base }
+    // Todas las páginas cargadas pero sin extraidoBruto: o bien nunca
+    // se analizó (caso normal, 'lista_para_analizar'), o bien SÍ se
+    // analizó y el servidor rechazó la fotografía por identidad —
+    // nunca se confunden entre sí.
+    if (params.identidadRechazada) return { estado: 'identidad_no_valida', ...base }
     // paginasCargadas >= paginasEsperadas (nunca debería ser mayor —
     // foto-hoja ya rechaza pagina > paginasEsperadas al subir — pero
     // >= es la comparación defensiva correcta, nunca ===).

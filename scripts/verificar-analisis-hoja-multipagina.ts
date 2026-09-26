@@ -141,7 +141,7 @@ async function main() {
     const imagenes = await normalizarImagenesHojaParaVision([{ buffer: BUF_JPG_1, extension: 'jpg' }])
     const r = await analizarImagenesHojaEvaluacion(anthropic, imagenes, 1)
     verificar(contarLlamadas() === 1, '3. 1 página JPG: exactamente 1 llamada IA')
-    verificar(r.filas.length === 1, '3b. 1 página JPG: se extrae la única fila esperada')
+    verificar(r.extraccion.filas.length === 1, '3b. 1 página JPG: se extrae la única fila esperada')
   }
 
   // ============================================================
@@ -174,7 +174,7 @@ async function main() {
     verificar(bloquesImagen.length === 2, '5b. 2 páginas JPG: el ÚNICO mensaje enviado contiene 2 bloques de imagen')
     const bloquesTexto = contenidosEnviados[0].filter((b) => b.type === 'text')
     verificar(bloquesTexto.length === 1, '5c. 2 páginas JPG: exactamente 1 bloque de texto (instrucciones) en el mismo mensaje')
-    verificar(r.filas.length === 2, '5d. 2 páginas JPG: se extraen las filas de ambas páginas del resultado')
+    verificar(r.extraccion.filas.length === 2, '5d. 2 páginas JPG: se extraen las filas de ambas páginas del resultado')
   }
 
   // ============================================================
