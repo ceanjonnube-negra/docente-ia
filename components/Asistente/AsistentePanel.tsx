@@ -1013,6 +1013,13 @@ export default function AsistentePanel() {
               <span className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-sm">📋</span>
               <span className="text-sm font-semibold text-gray-800">Planeación</span>
             </a>
+            {/* EVAL-1I — memoria operativa de las hojas de evaluación
+                ya generadas (por Planeación, vía el Chat IA) del grupo
+                activo: capturar/revisar/confirmar resultados. */}
+            <a href="/dashboard/evaluacion" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
+              <span className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center text-sm">✅</span>
+              <span className="text-sm font-semibold text-gray-800">Evaluación</span>
+            </a>
             <a href="/dashboard/calendario" className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-gray-50">
               <span className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-sm">📅</span>
               <span className="text-sm font-semibold text-gray-800">Calendario</span>
