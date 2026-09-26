@@ -11,23 +11,26 @@
 // hoja generada, aparece — punto.
 //
 // Reutiliza EVAL-1B→1G íntegramente: el estado de cada hoja viene de
-// GET estado-captura (mismo enum discreto ya usado por CapturaHoja),
-// y la captura/análisis/revisión/confirmación las hace CapturaHoja.tsx
-// tal cual (misma instancia, mismo componente, 0 lógica duplicada) —
-// esta pantalla solo decide QUÉ proyecto mostrar, nunca CÓMO capturar.
+// GET estado-captura (mismo enum discreto ya usado por CapturaHoja,
+// UNA sola vez por proyecto — nunca una segunda consulta solo para
+// pintar el badge/texto), y la captura/análisis/revisión/confirmación
+// las hace CapturaHoja.tsx tal cual (misma instancia, mismo
+// componente, 0 lógica duplicada) — esta pantalla solo decide QUÉ
+// proyecto mostrar, nunca CÓMO capturar.
+//
+// PULIDO UX (post-validación en iPhone) — la tarjeta ahora comunica el
+// estado real con lenguaje llano para el docente (nunca el enum
+// técnico) y una sola acción principal contextual. CapturaHoja recibe
+// onEstadoCambiado (callback opcional, ver ese archivo) para que la
+// tarjeta padre se mantenga sincronizada EN VIVO mientras está
+// expandida (ej. justo después de confirmar), sin ninguna consulta
+// adicional — solo reenvía el mismo valor que CapturaHoja ya obtuvo.
 
 import { useCallback, useEffect, useState } from 'react'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { supabase } from '@/lib/supabaseClient'
-import CapturaHoja from '@/components/Asistente/CapturaHoja'
-
-type EstadoCapturaHoja =
-  | 'sin_fotografia'
-  | 'captura_incompleta'
-  | 'lista_para_analizar'
-  | 'revision_pendiente'
-  | 'lista_para_confirmar'
-  | 'confirmado'
+import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 
 type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
 
@@ -42,31 +45,42 @@ type Proyecto = {
   hojas_evaluacion: HojaEmbebida
 }
 
+// Lenguaje llano para el docente — nunca el enum técnico
+// (EstadoCapturaHoja) ni el estado interno de proyectos_seguimiento.
 const ETIQUETA_ESTADO: Record<EstadoCapturaHoja, string> = {
-  sin_fotografia: 'Pendiente de captura',
-  captura_incompleta: 'Captura parcial',
-  lista_para_analizar: 'Analizando…',
-  revision_pendiente: 'Revisión pendiente',
+  sin_fotografia: 'Pendiente de resultados',
+  captura_incompleta: 'Captura incompleta',
+  lista_para_analizar: 'Lista para analizar',
+  revision_pendiente: 'Requiere revisión',
   lista_para_confirmar: 'Lista para confirmar',
-  confirmado: 'Confirmada',
+  confirmado: 'Resultados registrados',
 }
 
-const ETIQUETA_BOTON: Record<EstadoCapturaHoja, string> = {
+// confirmado no tiene entrada aquí a propósito: es un estado
+// terminal, nunca vuelve a ofrecer Capturar/Continuar/Revisar/Confirmar.
+const ETIQUETA_ACCION: Partial<Record<EstadoCapturaHoja, string>> = {
   sin_fotografia: 'Capturar resultados',
   captura_incompleta: 'Continuar captura',
   lista_para_analizar: 'Continuar',
   revision_pendiente: 'Revisar resultados',
   lista_para_confirmar: 'Confirmar resultados',
-  confirmado: 'Ver detalle',
 }
 
-const COLOR_BADGE: Record<EstadoCapturaHoja, string> = {
-  sin_fotografia: 'bg-gray-100 text-gray-600',
-  captura_incompleta: 'bg-amber-100 text-amber-700',
-  lista_para_analizar: 'bg-blue-100 text-blue-700',
-  revision_pendiente: 'bg-amber-100 text-amber-700',
-  lista_para_confirmar: 'bg-blue-100 text-blue-700',
-  confirmado: 'bg-green-100 text-green-700',
+const ICONO_ACCION: Partial<Record<EstadoCapturaHoja, string>> = {
+  sin_fotografia: '📷',
+  captura_incompleta: '📷',
+  lista_para_analizar: '▶️',
+  revision_pendiente: '🔍',
+  lista_para_confirmar: '✅',
+}
+
+const COLOR_ESTADO: Record<EstadoCapturaHoja, string> = {
+  sin_fotografia: 'text-gray-500',
+  captura_incompleta: 'text-amber-600',
+  lista_para_analizar: 'text-blue-600',
+  revision_pendiente: 'text-amber-600',
+  lista_para_confirmar: 'text-blue-600',
+  confirmado: 'text-green-600',
 }
 
 export default function EvaluacionPage() {
@@ -81,26 +95,35 @@ export default function EvaluacionPage() {
   const [nombreGrupo, setNombreGrupo] = useState('')
   const [proyectos, setProyectos] = useState<Proyecto[]>([])
   const [estados, setEstados] = useState<Record<string, EstadoCapturaHoja>>({})
+  const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
   const [seleccionado, setSeleccionado] = useState<string | null>(null)
-  const [urlHoja, setUrlHoja] = useState<Record<string, string>>({})
   const [cargandoUrl, setCargandoUrl] = useState<string | null>(null)
 
+  // Única fuente del estado de cada tarjeta: se consulta UNA vez por
+  // proyecto al cargar la lista. CapturaHoja, al expandirse, hace su
+  // propia consulta interna (necesaria para que funcione de forma
+  // independiente, ej. desde la tarjeta del Chat) — pero a partir de
+  // ahí, cualquier cambio real se refleja aquí vía onEstadoCambiado,
+  // nunca repitiendo esta consulta.
   const cargarEstadosDe = useCallback(async (accessToken: string, lista: Proyecto[]) => {
     const resultados = await Promise.all(
       lista.map(async (p) => {
         const res = await fetch(`/api/proyectos-seguimiento/${p.id}/estado-captura`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         })
-        if (!res.ok) return [p.id, null] as const
         const json = await res.json()
-        return [p.id, json.estado as EstadoCapturaHoja] as const
+        if (!res.ok) return { id: p.id, estado: null, error: json.error as string | undefined }
+        return { id: p.id, estado: json.estado as EstadoCapturaHoja, error: undefined }
       })
     )
     setEstados((prev) => {
       const siguiente = { ...prev }
-      for (const [id, estado] of resultados) {
-        if (estado) siguiente[id] = estado
-      }
+      for (const r of resultados) if (r.estado) siguiente[r.id] = r.estado
+      return siguiente
+    })
+    setErroresEstado((prev) => {
+      const siguiente = { ...prev }
+      for (const r of resultados) if (r.error) siguiente[r.id] = r.error
       return siguiente
     })
   }, [])
@@ -199,6 +222,9 @@ export default function EvaluacionPage() {
       setCargandoUrl(null)
       return
     }
+    // URL firmada SIEMPRE regenerada a demanda — nunca se persiste
+    // como fuente de verdad, y una que ya venció no impide nada más
+    // en esta pantalla (capturar resultados no depende de ella).
     const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/hoja-url`, {
       headers: { Authorization: `Bearer ${session.access_token}` },
     })
@@ -208,21 +234,11 @@ export default function EvaluacionPage() {
       setError(json.error || 'No se pudo abrir la hoja.')
       return
     }
-    setUrlHoja((prev) => ({ ...prev, [proyectoId]: json.urlVer }))
     window.open(json.urlVer, '_blank')
   }
 
-  const alternarSeleccion = async (proyectoId: string) => {
-    if (seleccionado === proyectoId) {
-      setSeleccionado(null)
-      // Al cerrar, refresca el estado real de ese proyecto — puede
-      // haber cambiado dentro de CapturaHoja (foto subida, análisis
-      // corrido, confirmación) mientras estaba expandido.
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session) cargarEstadosDe(session.access_token, proyectos.filter((p) => p.id === proyectoId))
-      return
-    }
-    setSeleccionado(proyectoId)
+  const alternarSeleccion = (proyectoId: string) => {
+    setSeleccionado((actual) => (actual === proyectoId ? null : proyectoId))
   }
 
   if (cargando) {
@@ -252,7 +268,11 @@ export default function EvaluacionPage() {
 
         {proyectos.map((proyecto) => {
           const estado = estados[proyecto.id]
+          const errorEstado = erroresEstado[proyecto.id]
           const expandido = seleccionado === proyecto.id
+          const fecha = proyecto.fecha_inicio ? formatearFecha(proyecto.fecha_inicio, obtenerZonaHorariaDispositivo()) : null
+          const accion = estado ? ETIQUETA_ACCION[estado] : undefined
+
           return (
             <div key={proyecto.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
               <div className="p-4 flex items-start gap-3">
@@ -260,14 +280,11 @@ export default function EvaluacionPage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-gray-900 truncate">{proyecto.nombre}</p>
                   <p className="text-xs text-gray-400">
-                    {proyecto.hojas_evaluacion?.identificador_visible ?? ''}
-                    {proyecto.fecha_inicio ? ` · ${proyecto.fecha_inicio}` : ''}
+                    {fecha}
+                    {fecha && (estado || errorEstado) ? ' · ' : ''}
+                    {estado && <span className={`font-medium ${COLOR_ESTADO[estado]}`}>{ETIQUETA_ESTADO[estado]}</span>}
+                    {!estado && errorEstado && <span className="font-medium text-amber-600">No disponible para captura automática</span>}
                   </p>
-                  {estado && (
-                    <span className={`inline-block mt-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full ${COLOR_BADGE[estado]}`}>
-                      {ETIQUETA_ESTADO[estado]}
-                    </span>
-                  )}
                 </div>
               </div>
 
@@ -280,18 +297,26 @@ export default function EvaluacionPage() {
                 >
                   {cargandoUrl === proyecto.id ? 'Abriendo…' : '👁️ Ver hoja'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => alternarSeleccion(proyecto.id)}
-                  className="flex-1 bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-teal-700"
-                >
-                  {expandido ? 'Cerrar' : estado ? ETIQUETA_BOTON[estado] : 'Abrir'}
-                </button>
+                {/* confirmado y "no disponible" nunca ofrecen una
+                    segunda acción — mismo criterio "estado terminal /
+                    sin pipeline automático", pantalla silenciosa. */}
+                {accion && (
+                  <button
+                    type="button"
+                    onClick={() => alternarSeleccion(proyecto.id)}
+                    className="flex-1 bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-teal-700"
+                  >
+                    {expandido ? 'Cerrar' : `${ICONO_ACCION[estado!]} ${accion}`}
+                  </button>
+                )}
               </div>
 
               {expandido && (
                 <div className="border-t border-gray-50">
-                  <CapturaHoja proyectoId={proyecto.id} />
+                  <CapturaHoja
+                    proyectoId={proyecto.id}
+                    onEstadoCambiado={(nuevoEstado) => setEstados((prev) => ({ ...prev, [proyecto.id]: nuevoEstado }))}
+                  />
                 </div>
               )}
             </div>

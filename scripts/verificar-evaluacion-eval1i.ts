@@ -31,6 +31,7 @@ const listaRuta = readFileSync(raiz('app', 'api', 'proyectos-seguimiento', 'rout
 const hojaUrlRuta = readFileSync(raiz('app', 'api', 'proyectos-seguimiento', '[id]', 'hoja-url', 'route.ts'), 'utf-8')
 const paginaEvaluacion = readFileSync(raiz('app', 'dashboard', 'evaluacion', 'page.tsx'), 'utf-8')
 const asistentePanel = readFileSync(raiz('components', 'Asistente', 'AsistentePanel.tsx'), 'utf-8')
+const capturaHoja = readFileSync(raiz('components', 'Asistente', 'CapturaHoja.tsx'), 'utf-8')
 
 function main() {
   // ============================================================
@@ -60,7 +61,10 @@ function main() {
   verificar(paginaEvaluacion.includes("'use client'"), '14. La pantalla de Evaluación es un componente cliente')
   verificar(paginaEvaluacion.includes('docente_contexto_activo') && paginaEvaluacion.includes('ciclos_escolares.activo'), '15. Resuelve el grupo activo con el MISMO mecanismo canónico ya usado en Lista (MG-A: contexto persistido validado, nunca por nombre)')
   verificar(!/nombre_grupo\s*===|filtrar.*nombre/i.test(paginaEvaluacion), '16. Nunca resuelve el grupo por nombre/heurística de texto')
-  verificar(paginaEvaluacion.includes("import CapturaHoja from '@/components/Asistente/CapturaHoja'") && paginaEvaluacion.includes('<CapturaHoja proyectoId={proyecto.id} />'), '17. Reutiliza CapturaHoja.tsx tal cual, con proyectoId — nunca reimplementa su lógica de captura')
+  verificar(
+    /import CapturaHoja,?.*from '@\/components\/Asistente\/CapturaHoja'/.test(paginaEvaluacion) && paginaEvaluacion.includes('proyectoId={proyecto.id}'),
+    '17. Reutiliza CapturaHoja.tsx tal cual, con proyectoId — nunca reimplementa su lógica de captura'
+  )
   verificar(!paginaEvaluacion.includes('type="file"'), '18. La pantalla de Evaluación NO crea ningún <input type="file"> propio — toda la captura de fotos pasa por CapturaHoja')
   verificar(!paginaEvaluacion.includes(".from('evaluaciones')"), '19. Nunca lee ni escribe la tabla histórica/desconectada evaluaciones')
   verificar(!paginaEvaluacion.includes(".insert(") && !paginaEvaluacion.includes(".update(") && !paginaEvaluacion.includes(".upsert("), '20. La pantalla en sí no hace NINGUNA escritura propia — toda escritura real la hace CapturaHoja a través de las rutas ya existentes')
@@ -82,6 +86,36 @@ function main() {
     ['/dashboard/lista', '/dashboard/planeacion', '/dashboard/calendario', '/documentos'].every((href) => asistentePanel.includes(`href="${href}"`)),
     '28. Los 4 ítems de navegación preexistentes (Lista/Planeación/Calendario/Documentos) siguen intactos — no se eliminó ni reorganizó ninguno'
   )
+
+  // ============================================================
+  // 5. Pulido UX — tarjeta contextual (post-validación en iPhone).
+  // ============================================================
+  verificar(paginaEvaluacion.includes("sin_fotografia: 'Capturar resultados'"), "29. sin_fotografia -> acción 'Capturar resultados'")
+  verificar(paginaEvaluacion.includes("captura_incompleta: 'Continuar captura'"), "30. captura_incompleta -> acción 'Continuar captura'")
+  verificar(paginaEvaluacion.includes("revision_pendiente: 'Revisar resultados'"), "31. revision_pendiente -> acción 'Revisar resultados'")
+  verificar(paginaEvaluacion.includes("lista_para_confirmar: 'Confirmar resultados'"), "32. lista_para_confirmar -> acción 'Confirmar resultados'")
+  verificar(paginaEvaluacion.includes("confirmado: 'Resultados registrados'"), "33. confirmado -> etiqueta 'Resultados registrados'")
+  // confirmado es terminal: NUNCA debe tener una entrada de acción —
+  // ETIQUETA_ACCION es Partial<Record<...>> precisamente para que
+  // omitirlo sea válido en TypeScript y real en tiempo de ejecución
+  // (accion queda undefined -> no se renderiza ningún botón de acción).
+  verificar(!/ETIQUETA_ACCION[\s\S]{0,400}confirmado:/.test(paginaEvaluacion), '34. confirmado NUNCA tiene una acción de captura asociada — estado terminal real, no solo visual')
+  // El identificador técnico (ej. "SG-VXKR") ya no se muestra en la
+  // tarjeta — sigue existiendo en BD/PDF/pipeline, solo se oculta aquí.
+  verificar(!/\{fecha\}[\s\S]{0,20}identificador_visible|identificador_visible[\s\S]{0,20}\{fecha\}/.test(paginaEvaluacion), '35. La tarjeta ya no muestra identificador_visible junto a la fecha (oculto en la vista, intacto en BD/PDF/pipeline)')
+  verificar(paginaEvaluacion.includes('formatearFecha') && paginaEvaluacion.includes("from '@/lib/tiempo/TimeService'"), '36. La fecha se formatea con formatearFecha (lib ya existente, mismo criterio de zona horaria que el resto de la app) — nunca un formateador nuevo')
+  verificar(paginaEvaluacion.includes('erroresEstado') && paginaEvaluacion.includes('No disponible para captura automática'), '37. Una hoja histórica sin roster congelado (estado-captura falla) se comunica con un mensaje honesto y sin botón de acción, en vez de caer en un genérico "Abrir"')
+
+  // Exactamente 1 consulta a estado-captura por proyecto al cargar —
+  // nunca una segunda solo por el pulido visual.
+  const llamadasEstadoCaptura = (paginaEvaluacion.match(/\/estado-captura/g) || []).length
+  verificar(llamadasEstadoCaptura === 1, `38. page.tsx referencia /estado-captura exactamente 1 vez (una sola consulta por proyecto al cargar la lista) — recuento real: ${llamadasEstadoCaptura}`)
+
+  // onEstadoCambiado — mecanismo mínimo y local, aditivo, opcional.
+  verificar(capturaHoja.includes('onEstadoCambiado?:'), '39. CapturaHoja.tsx: onEstadoCambiado es un prop OPCIONAL (la tarjeta del Chat, que no lo pasa, sigue funcionando idéntica)')
+  verificar(/onEstadoCambiado\?\.\(estado\)/.test(capturaHoja), '40. CapturaHoja.tsx: el callback reenvía el mismo `estado` que el componente ya obtuvo — nunca dispara una consulta nueva')
+  verificar(paginaEvaluacion.includes('onEstadoCambiado={(nuevoEstado)'), '41. page.tsx pasa onEstadoCambiado para mantener la tarjeta sincronizada en vivo mientras CapturaHoja está expandida')
+  verificar(asistentePanel.includes('<CapturaHoja proyectoId={principal.proyectoSeguimientoId} />') && !asistentePanel.includes('onEstadoCambiado'), '42. La tarjeta del Chat (AsistentePanel.tsx) sigue usando CapturaHoja SIN el callback — comportamiento idéntico a EVAL-1G, sin cambios')
 
   console.log('')
   if (fallos > 0) {
