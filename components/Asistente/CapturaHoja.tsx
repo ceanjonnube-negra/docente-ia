@@ -88,6 +88,20 @@ export default function CapturaHoja({
   // en pantalla): mientras esté en true, ninguna acción nueva arranca,
   // sin importar cuántas veces se dispare el evento.
   const enCursoRef = useRef(false)
+  // Señal local de "la PRÓXIMA carga exitosa inicia una captura nueva"
+  // (ver diseño "Volver a fotografiar" — auditoría "Los Insectos y su
+  // Papel en la Naturaleza"). Ref, no estado: no debe perderse entre
+  // renders ni reiniciarse por sí sola. Se arma al pulsar "Volver a
+  // fotografiar" (en revision_pendiente o identidad_no_valida) y se
+  // desarma ÚNICAMENTE tras confirmar el éxito real de esa carga
+  // (dentro de onArchivoSeleccionado) — si la subida falla o lanza una
+  // excepción, permanece armada para que un reintento (otro tap de
+  // "Volver a fotografiar") siga tratándose como reinicio. Cancelar el
+  // selector nativo de archivos nunca dispara onChange (ningún archivo
+  // seleccionado), así que la señal queda simplemente armada y a la
+  // espera — A no se toca en absoluto hasta que de verdad se elija una
+  // fotografía nueva.
+  const reiniciarCapturaRef = useRef(false)
 
   const obtenerAccessToken = async (): Promise<string | null> => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -242,20 +256,39 @@ export default function CapturaHoja({
         return
       }
 
+      // Capturado ANTES del await de red: si "Volver a fotografiar" armó
+      // la señal, esta carga es inequívocamente la primera (página 1)
+      // de una captura nueva — nunca se deriva de paginasCargadas, que
+      // en ese momento todavía refleja la captura ANTERIOR completa.
+      const esReinicio = reiniciarCapturaRef.current
+
       const formData = new FormData()
       formData.append('access_token', accessToken)
       formData.append('foto', file)
       // Nunca el orden de un FileList — el número de página lo controla
       // el propio estado del componente (ver comentario de cabecera).
-      formData.append('pagina', String(paginasCargadas + 1))
+      // Reinicio de captura: siempre página 1 (por definición, es la
+      // primera foto de la captura nueva) — nunca paginasCargadas + 1,
+      // que pertenecería a la captura anterior.
+      formData.append('pagina', String(esReinicio ? 1 : paginasCargadas + 1))
+      if (esReinicio) formData.append('reiniciarCaptura', 'true')
 
       const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/foto-hoja`, { method: 'POST', body: formData })
       const json = await res.json()
       if (!res.ok) {
+        // La señal de reinicio NUNCA se desarma aquí — sigue armada
+        // para que un reintento (otro tap de "Volver a fotografiar")
+        // se trate igual como inicio de captura nueva. La captura
+        // anterior tampoco se tocó: foto-hoja/route.ts nunca alcanza a
+        // escribir captura_pendiente si la subida no se completó.
         setError(json.error || 'No se pudo subir la fotografía.')
         setFase('error')
         return
       }
+
+      // Éxito real confirmado (res.ok) — recién aquí se desarma la
+      // señal, nunca antes.
+      if (esReinicio) reiniciarCapturaRef.current = false
 
       setPaginasCargadas(json.paginasCargadas)
       setPaginasEsperadas(json.paginasEsperadas)
@@ -312,6 +345,19 @@ export default function CapturaHoja({
   const abrirSelector = () => {
     if (enCursoRef.current) return
     inputRef.current?.click()
+  }
+
+  // "Volver a fotografiar" — disponible en revision_pendiente e
+  // identidad_no_valida. NUNCA limpia captura_pendiente ni hace una
+  // llamada de reset separada: solo arma la señal local (ver
+  // reiniciarCapturaRef) y reutiliza EXACTAMENTE el mismo selector que
+  // ya usan "Subir foto"/"Agregar página" — la sustitución real de la
+  // captura ocurre íntegramente dentro de la subida normal
+  // (onArchivoSeleccionado -> foto-hoja/route.ts), nunca antes.
+  const volverAFotografiar = () => {
+    if (enCursoRef.current) return
+    reiniciarCapturaRef.current = true
+    abrirSelector()
   }
 
   const claseBoton = (variante: 'primario' | 'secundario') =>
@@ -398,7 +444,7 @@ export default function CapturaHoja({
             <button type="button" onClick={verHoja} disabled={abriendoHoja} className={claseBoton('secundario')}>
               👁️ {abriendoHoja ? 'Abriendo…' : 'Ver hoja'}
             </button>
-            <button type="button" onClick={abrirSelector} className={claseBoton('primario')}>
+            <button type="button" onClick={volverAFotografiar} className={claseBoton('primario')}>
               📷 Volver a fotografiar
             </button>
           </div>
@@ -408,9 +454,14 @@ export default function CapturaHoja({
       {fase !== 'error' && !EN_CURSO.includes(fase) && estado === 'revision_pendiente' && (
         <>
           <p className="text-[11px] text-amber-700">Algunas respuestas no se leyeron con claridad — necesitan tu revisión antes de confirmar.</p>
-          <a href={`/dashboard/seguimiento/${proyectoId}/revisar`} className={claseBoton('primario')}>
-            Revisar y corregir
-          </a>
+          <div className="flex gap-1.5">
+            <a href={`/dashboard/seguimiento/${proyectoId}/revisar`} className={claseBoton('secundario')}>
+              Revisar y corregir
+            </a>
+            <button type="button" onClick={volverAFotografiar} className={claseBoton('primario')}>
+              📷 Volver a fotografiar
+            </button>
+          </div>
         </>
       )}
 
