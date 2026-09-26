@@ -69,7 +69,11 @@ function main() {
   // ORDEN DE PÁGINAS — el <input> nunca lleva `multiple`.
   verificar(/type="file"/.test(capturaHojaSinComentarios) && !/multiple/.test(capturaHojaSinComentarios), '12. CapturaHoja.tsx: el <input type="file"> NUNCA lleva `multiple` en el código real (fuera de comentarios) — cada selección entrega exactamente 1 archivo, el número de página nunca depende del orden de un FileList')
   verificar(capturaHoja.includes('accept="image/*,.heic,.heif"'), '13. CapturaHoja.tsx: acepta HEIC/HEIF explícitamente además de image/* (mismo whitelist real de foto-hoja/route.ts)')
-  verificar(/formData\.append\('pagina', String\(paginasCargadas \+ 1\)\)/.test(capturaHoja), '14. CapturaHoja.tsx: el número de página se calcula del estado propio del componente (paginasCargadas + 1), nunca de un índice de selección múltiple')
+  // Desde "Volver a fotografiar" (reinicio real de captura), la página
+  // enviada es 1 fijo (esReinicio ? 1 : ...) — sigue siendo estado
+  // propio del componente, nunca un índice de FileList; en el caso
+  // normal (sin reinicio) sigue siendo exactamente paginasCargadas+1.
+  verificar(/formData\.append\('pagina', String\(esReinicio \? 1 : paginasCargadas \+ 1\)\)/.test(capturaHoja), '14. CapturaHoja.tsx: el número de página se calcula del estado propio del componente (esReinicio ? 1 : paginasCargadas + 1), nunca de un índice de selección múltiple')
   // Secuencial, nunca Promise.all — cada subida se dispara desde UNA
   // selección de archivo (no multiple), así que estructuralmente no
   // puede existir un bucle que suba varias en paralelo.

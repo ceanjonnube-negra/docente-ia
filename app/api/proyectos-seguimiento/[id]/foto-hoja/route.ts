@@ -32,6 +32,25 @@ export const runtime = 'nodejs'
 // (captura_pendiente.extraidoBruto) — una foto distinta en cualquier
 // página vuelve obsoleta cualquier análisis anterior de la hoja
 // completa.
+//
+// Reinicio real de captura (ver diseño "Volver a fotografiar" — auditoría
+// "Los Insectos y su Papel en la Naturaleza"): un campo opcional
+// "reiniciarCaptura", considerado verdadero ÚNICAMENTE cuando su valor
+// es exactamente la cadena 'true' (nunca una coerción amplia), indica
+// que ESTA fotografía es la primera de una captura lógica NUEVA — el
+// arreglo de páginas previamente cargadas (de cualquier captura
+// anterior, con cualquier número de página) se trata como vacío al
+// construir el arreglo final, así que fotosActualizadas termina
+// conteniendo EXCLUSIVAMENTE esta fotografía, sin importar cuántas
+// páginas hubiera antes. Reutiliza el MISMO cálculo de fotosActualizadas
+// de siempre (más abajo, sin ninguna rama nueva ahí) — la única
+// diferencia es qué arreglo previo se le entrega. Deliberadamente NO
+// se borra ningún objeto de Storage de la captura anterior en esta
+// fase (ver comentario junto a fotosPrevias) — quedan simplemente
+// desreferenciados de captura_pendiente.fotos, inalcanzables para
+// cualquier flujo real (análisis/revisión/confirmación siempre parten
+// de ese arreglo, nunca escanean Storage aparte); su limpieza física
+// es un problema independiente, fuera de este alcance.
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -78,6 +97,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // cliente necesite enviar este campo nunca.
     const paginaBruta = formData.get('pagina') as string | null
     const pagina = paginaBruta === null || paginaBruta === '' ? 1 : Number(paginaBruta)
+    // Comparación estricta contra la cadena exacta 'true' — nunca
+    // "campo presente = true" ni ninguna otra coerción (ver comentario
+    // de cabecera "Reinicio real de captura").
+    const reiniciarCaptura = formData.get('reiniciarCaptura') === 'true'
 
     // El docente real se resuelve SIEMPRE desde el access_token vía
     // auth.getUser() — mismo patrón de lib/server/authApi.ts ya usado en
@@ -186,7 +209,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // archivos huérfanos — mejor esfuerzo, nunca bloquea la respuesta
     // si la limpieza falla.
     const capturaPrevia = (proyecto.captura_pendiente as CapturaPendiente) ?? null
-    const fotosPrevias = extraerFotosCapturaPendiente(capturaPrevia)
+    // reiniciarCaptura=true: fotosPrevias se trata como vacío — nunca se
+    // lee ninguna página de la captura anterior (de ningún número), así
+    // que el MISMO cálculo de fotosActualizadas de abajo, sin ninguna
+    // rama adicional, produce exactamente [{esta foto}]. Tampoco se
+    // borra nada de Storage aquí (fotoPreviaMismaPagina nunca encuentra
+    // coincidencia contra un arreglo vacío) — ver comentario de
+    // cabecera sobre limpieza física diferida.
+    const fotosPrevias = reiniciarCaptura ? [] : extraerFotosCapturaPendiente(capturaPrevia)
     const fotoPreviaMismaPagina = fotosPrevias.find((f) => f.pagina === pagina)
     if (fotoPreviaMismaPagina && fotoPreviaMismaPagina.storagePath !== ruta) {
       await eliminarArchivo(supabase, fotoPreviaMismaPagina.storagePath, BUCKET_HOJAS_SEGUIMIENTO)
