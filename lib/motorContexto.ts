@@ -903,6 +903,25 @@ export async function eliminarAlumnoDefinitivamente(sb: SupabaseClient, alumnoId
   if (error) throw error;
 }
 
+// Baja académica individual de UNA inscripción vigente — "Dar de baja
+// del grupo" en la ficha individual (app/dashboard/lista/[alumnoId]/
+// page.tsx). Semánticamente distinta de eliminarAlumnoDefinitivamente:
+// esta operación NUNCA borra nada (ver auditoría "flujo real de baja/
+// eliminación de alumnos" — caso real: Renata, grupo 4°B). Delega TODA
+// la validación/escritura a la función SECURITY DEFINER
+// dar_de_baja_inscripcion (migración 20260926000000): `inscripciones`
+// no tiene ninguna policy RLS de escritura, así que esta RPC es el
+// único camino real — nunca un .update() directo del cliente (ese
+// patrón, usado hoy por darDeBajaGrupoCompleto más abajo, no tiene
+// ninguna policy que lo respalde). alumno_id nunca se pasa aquí: la
+// identidad real es inscripcion_id, y la ownership la revalida la
+// propia función contra el docente autenticado, nunca contra un valor
+// que mande el cliente.
+export async function darDeBajaInscripcion(sb: SupabaseClient, inscripcionId: string) {
+  const { error } = await sb.rpc('dar_de_baja_inscripcion', { p_inscripcion_id: inscripcionId });
+  if (error) throw error;
+}
+
 export type ResultadoBajaGrupo = { exito: boolean; error?: string; dadosDeBaja: number };
 
 // Baja lógica de TODO el grupo — "Eliminar lista completa" en
