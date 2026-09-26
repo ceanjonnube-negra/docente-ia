@@ -126,23 +126,31 @@ function main() {
   )
 
   // ============================================================
-  // UX: acción y copy distintos de "Eliminar alumno".
+  // UX — decisión de producto: UNA sola acción visible ("Eliminar
+  // alumno"), que internamente usa EXCLUSIVAMENTE darDeBajaInscripcion.
   // ============================================================
-  verificar(fichaPage.includes("import { eliminarAlumnoDefinitivamente, darDeBajaInscripcion } from '@/lib/motorContexto'"), '15. La ficha individual importa darDeBajaInscripcion junto (no en reemplazo) a eliminarAlumnoDefinitivamente')
-  verificar(fichaPage.includes('Dar de baja del grupo'), "16. Existe el botón/acción 'Dar de baja del grupo', con texto distinto de 'Eliminar alumno'")
-  verificar(fichaPage.includes('mostrarConfirmacionBajaGrupo') && fichaPage.includes('mostrarConfirmacionBaja') === true, '17. La baja individual usa su PROPIO estado de confirmación (mostrarConfirmacionBajaGrupo) — no reutiliza ni pisa el de "Eliminar alumno"')
-  verificar(fichaPage.includes('errorBajaGrupo') && fichaPage.includes('errorBaja'), '17b. Maneja su propio estado de error (errorBajaGrupo), separado de errorBaja')
+  const fichaPageSinComentarios = fichaPage.replace(/\/\/.*$/gm, '')
+  verificar(fichaPage.includes("import { darDeBajaInscripcion } from '@/lib/motorContexto'"), '15a. La ficha individual importa ÚNICAMENTE darDeBajaInscripcion de motorContexto')
+  verificar(!fichaPageSinComentarios.includes('eliminarAlumnoDefinitivamente'), '15b. eliminarAlumnoDefinitivamente no se referencia en código real de la ficha individual (0 imports, 0 llamadas) — solo se menciona en comentarios explicando que ya no se invoca')
+  verificar(!fichaPage.includes('Dar de baja del grupo') && !fichaPage.includes('Eliminar definitivamente'), '16. Ya no existe ningún botón/texto "Dar de baja del grupo" ni "Eliminar definitivamente" — una sola acción visible')
+  verificar((fichaPage.match(/>\s*Eliminar alumno\s*</g) || []).length === 1, '16b. Existe exactamente UN botón visible con el texto "Eliminar alumno"')
+  verificar(!fichaPage.includes('mostrarConfirmacionBaja ') && !fichaPage.includes('mostrarConfirmacionBaja &&') && !fichaPage.includes('mostrarConfirmacionBaja)'), '17. Ya no existe el estado/modal separado mostrarConfirmacionBaja (de eliminarAlumnoDefinitivamente) — un único flujo de confirmación (mostrarConfirmacionBajaGrupo)')
+  verificar(!fichaPage.includes('errorBaja ') && !fichaPage.includes('errorBaja)') && !fichaPage.includes('errorBaja}'), '17b. Ya no existe el estado de error separado errorBaja — un único errorBajaGrupo')
+  verificar((fichaPage.match(/fixed inset-0 z-50/g) || []).length === 1, '17c. Existe un único modal de confirmación en toda la pantalla (antes había 2)')
 
   const bloqueModalBaja = (() => {
-    const inicio = fichaPage.indexOf('¿Dar de baja a este alumno del grupo?')
+    const inicio = fichaPage.indexOf('¿Eliminar a este alumno de la lista?')
     const fin = fichaPage.indexOf('Cancelar', inicio) + 'Cancelar'.length
     return fichaPage.slice(Math.max(0, inicio - 200), fin)
   })()
-  verificar(!/permanente|no podrá recuperarse|eliminar[aá]? (permanentemente|definitivamente)/i.test(bloqueModalBaja), '18. El modal de "Dar de baja del grupo" NO usa lenguaje de eliminación permanente/irreversible')
-  verificar(/historial.*conservar[áa]|conservar[áa].*historial/i.test(bloqueModalBaja), '19. El modal de "Dar de baja del grupo" explica que el historial se conservará')
+  verificar(fichaPage.includes('¿Eliminar a este alumno de la lista?'), "18. Existe el modal con el texto exacto '¿Eliminar a este alumno de la lista?'")
+  verificar(!/permanente|no podrá recuperarse|eliminar[aá]? (permanentemente|definitivamente)|del sistema/i.test(bloqueModalBaja), '19. El modal NO usa lenguaje de eliminación permanente/irreversible ni jerga interna ("del sistema")')
+  verificar(/informaci[oó]n e historial se conservar[áa]n|historial.*conservar[áa]n?/i.test(bloqueModalBaja), '20. El modal explica, en lenguaje simple, que la información y el historial se conservarán')
+  verificar(bloqueModalBaja.includes('Eliminar de la lista'), "21. El botón de confirmación dice 'Eliminar de la lista'")
+  verificar(bloqueModalBaja.includes(`{dandoDeBaja ? 'Eliminando...' : 'Eliminar de la lista'}`), '21b. onClick del botón de confirmación sigue siendo confirmarBajaGrupo (que llama exclusivamente darDeBajaInscripcion) — solo cambió el texto visible')
 
-  verificar(listaPage.includes("searchParams.get('baja') === '1'"), "20. Lista distingue ?baja=1 de ?eliminado=1 con su propio estado (mostrarExitoBajaGrupo)")
-  verificar(listaPage.includes('Alumno dado de baja del grupo. Su historial se conservó.'), '21. El banner de éxito de la baja individual usa un mensaje propio, sin la palabra "eliminado"')
+  verificar(listaPage.includes("searchParams.get('baja') === '1'"), "22. Lista distingue ?baja=1 de ?eliminado=1 con su propio estado (mostrarExitoBajaGrupo)")
+  verificar(listaPage.includes('Alumno eliminado de la lista.'), '23. El banner de éxito usa el mensaje simple "Alumno eliminado de la lista."')
 
   console.log('')
   if (fallos > 0) {

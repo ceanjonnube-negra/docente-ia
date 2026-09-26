@@ -60,10 +60,11 @@ function ListaPageContent() {
 
   const [mostrarExitoImportacion, setMostrarExitoImportacion] = useState(() => searchParams.get('importado') === '1')
   const [mostrarExitoBaja, setMostrarExitoBaja] = useState(() => searchParams.get('eliminado') === '1')
-  // Distinto de mostrarExitoBaja (esa es "eliminado", del DELETE
-  // definitivo) — este es el "Dar de baja del grupo" nuevo, que
-  // preserva alumno/historial, así que necesita su propio mensaje, sin
-  // lenguaje de eliminación.
+  // Distinto de mostrarExitoBaja (esa era la ruta del DELETE
+  // definitivo, ya sin ningún botón que la dispare) — ?baja=1 es la
+  // única acción real de "Eliminar alumno" hoy: internamente una baja
+  // lógica (darDeBajaInscripcion) que preserva alumno/historial, así
+  // que su mensaje nunca usa lenguaje de eliminación permanente.
   const [mostrarExitoBajaGrupo, setMostrarExitoBajaGrupo] = useState(() => searchParams.get('baja') === '1')
   const [nombreGrupo, setNombreGrupo] = useState('')
   const [grupo, setGrupo] = useState<GrupoParaImportar | null>(null)
@@ -538,7 +539,7 @@ function ListaPageContent() {
 
       {mostrarExitoBajaGrupo && (
         <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-100 text-center text-xs font-semibold text-emerald-700">
-          ✅ Alumno dado de baja del grupo. Su historial se conservó.
+          ✅ Alumno eliminado de la lista.
         </div>
       )}
 

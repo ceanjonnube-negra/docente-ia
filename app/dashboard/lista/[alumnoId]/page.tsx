@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
-import { eliminarAlumnoDefinitivamente, darDeBajaInscripcion } from '@/lib/motorContexto'
+import { darDeBajaInscripcion } from '@/lib/motorContexto'
 import { useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
@@ -134,7 +134,7 @@ export default function FichaAlumnoPage() {
   const [observacionesInscripcion, setObservacionesInscripcion] = useState<string | null>(null)
   const [grupoId, setGrupoId] = useState<string | null>(null)
   // Identidad real de la inscripción vigente (nunca alumno_id) — es lo
-  // que "Dar de baja del grupo" necesita para identificar de forma
+  // que el botón "Eliminar alumno" necesita para identificar de forma
   // inequívoca QUÉ inscripción transicionar. null si el alumno no
   // tiene ninguna inscripción activa en este momento (ya dado de baja,
   // o nunca inscrito) — en ese caso el botón de baja no se muestra.
@@ -173,13 +173,13 @@ export default function FichaAlumnoPage() {
   const [sexo, setSexo] = useState('')
   const [fechaNacimiento, setFechaNacimiento] = useState('')
 
-  const [mostrarConfirmacionBaja, setMostrarConfirmacionBaja] = useState(false)
-  const [eliminando, setEliminando] = useState(false)
-  const [errorBaja, setErrorBaja] = useState('')
-
-  // "Dar de baja del grupo" — acción distinta de "Eliminar alumno":
-  // estado propio, nunca reutiliza mostrarConfirmacionBaja/errorBaja
-  // (ver comentario de darDeBajaInscripcion en lib/motorContexto.ts).
+  // "Eliminar alumno" — única acción visible en esta pantalla (ver
+  // decisión de producto "una sola acción visible"). Para el docente
+  // significa "retirar de la lista vigente"; internamente sigue
+  // usando EXCLUSIVAMENTE darDeBajaInscripcion (baja lógica, nunca
+  // DELETE) — eliminarAlumnoDefinitivamente (DELETE físico) ya no se
+  // invoca desde ningún botón de esta pantalla, sin haberse tocado ni
+  // su RPC ni su migración.
   const [mostrarConfirmacionBajaGrupo, setMostrarConfirmacionBajaGrupo] = useState(false)
   const [dandoDeBaja, setDandoDeBaja] = useState(false)
   const [errorBajaGrupo, setErrorBajaGrupo] = useState('')
@@ -356,18 +356,6 @@ export default function FichaAlumnoPage() {
       setMensaje('No se pudo guardar: error de conexión.')
     }
     setGuardando(false)
-  }
-
-  const confirmarBaja = async () => {
-    setEliminando(true)
-    setErrorBaja('')
-    try {
-      await eliminarAlumnoDefinitivamente(supabase, alumnoId)
-      router.push('/dashboard/lista?eliminado=1')
-    } catch (err) {
-      setErrorBaja(err instanceof Error ? err.message : 'No se pudo eliminar al alumno.')
-      setEliminando(false)
-    }
   }
 
   const confirmarBajaGrupo = async () => {
@@ -918,70 +906,28 @@ export default function FichaAlumnoPage() {
             </div>
           </div>
 
-          <div className="pt-3 border-t border-gray-100 space-y-2">
+          <div className="pt-3 border-t border-gray-100">
             {inscripcionId && (
               <button
                 onClick={() => setMostrarConfirmacionBajaGrupo(true)}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-amber-50 border border-amber-200 text-sm font-semibold text-amber-700 hover:bg-amber-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-amber-300"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
               >
-                Dar de baja del grupo
+                Eliminar alumno
               </button>
             )}
-            <button
-              onClick={() => setMostrarConfirmacionBaja(true)}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-red-50 border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-100 active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-red-300"
-            >
-              Eliminar alumno
-            </button>
           </div>
 
         </div>
       </div>
 
-      {mostrarConfirmacionBaja && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6">
-            <p className="text-base font-bold text-gray-900 text-center mb-2">
-              ¿Deseas eliminar definitivamente este alumno del sistema?
-            </p>
-            <p className="text-sm text-gray-500 text-center mb-5">
-              Esta acción eliminará permanentemente al alumno y toda su información asociada. No podrá recuperarse.
-            </p>
-
-            {errorBaja && (
-              <p className="text-xs text-center text-red-600 bg-red-50 border border-red-100 rounded-xl py-2 px-3 mb-4">
-                {errorBaja}
-              </p>
-            )}
-
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={confirmarBaja}
-                disabled={eliminando}
-                className="w-full bg-red-600 text-white py-3 rounded-full font-semibold text-sm hover:bg-red-700 active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
-              >
-                {eliminando ? 'Eliminando...' : 'Eliminar definitivamente'}
-              </button>
-              <button
-                onClick={() => { setMostrarConfirmacionBaja(false); setErrorBaja('') }}
-                disabled={eliminando}
-                className="w-full bg-gray-100 text-gray-700 py-3 rounded-full font-semibold text-sm hover:bg-gray-200 active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-gray-300 focus:ring-offset-2"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {mostrarConfirmacionBajaGrupo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/40 backdrop-blur-sm">
           <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6">
             <p className="text-base font-bold text-gray-900 text-center mb-2">
-              ¿Dar de baja a este alumno del grupo?
+              ¿Eliminar a este alumno de la lista?
             </p>
             <p className="text-sm text-gray-500 text-center mb-5">
-              Dejará de aparecer en la lista vigente de este grupo. Su historial (asistencia, incidencias, evaluaciones, evidencias y fichas) se conservará por completo.
+              Dejará de aparecer en este grupo. Su información e historial se conservarán.
             </p>
 
             {errorBajaGrupo && (
@@ -994,9 +940,9 @@ export default function FichaAlumnoPage() {
               <button
                 onClick={confirmarBajaGrupo}
                 disabled={dandoDeBaja}
-                className="w-full bg-amber-600 text-white py-3 rounded-full font-semibold text-sm hover:bg-amber-700 active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-2"
+                className="w-full bg-red-600 text-white py-3 rounded-full font-semibold text-sm hover:bg-red-700 active:scale-[0.98] transition-all disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
               >
-                {dandoDeBaja ? 'Dando de baja...' : 'Dar de baja del grupo'}
+                {dandoDeBaja ? 'Eliminando...' : 'Eliminar de la lista'}
               </button>
               <button
                 onClick={() => { setMostrarConfirmacionBajaGrupo(false); setErrorBajaGrupo('') }}
