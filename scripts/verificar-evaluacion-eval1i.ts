@@ -95,11 +95,13 @@ function main() {
   verificar(paginaEvaluacion.includes("revision_pendiente: 'Revisar resultados'"), "31. revision_pendiente -> acción 'Revisar resultados'")
   verificar(paginaEvaluacion.includes("lista_para_confirmar: 'Confirmar resultados'"), "32. lista_para_confirmar -> acción 'Confirmar resultados'")
   verificar(paginaEvaluacion.includes("confirmado: 'Resultados registrados'"), "33. confirmado -> etiqueta 'Resultados registrados'")
-  // confirmado es terminal: NUNCA debe tener una entrada de acción —
-  // ETIQUETA_ACCION es Partial<Record<...>> precisamente para que
-  // omitirlo sea válido en TypeScript y real en tiempo de ejecución
-  // (accion queda undefined -> no se renderiza ningún botón de acción).
-  verificar(!/ETIQUETA_ACCION[\s\S]{0,400}confirmado:/.test(paginaEvaluacion), '34. confirmado NUNCA tiene una acción de captura asociada — estado terminal real, no solo visual')
+  // confirmado es terminal: NUNCA debe tener una acción real. Desde la
+  // corrección "tarjeta de Evaluación queda inaccesible tras
+  // recargar", ETIQUETA_ACCION es un Record COMPLETO (ya no Partial) a
+  // propósito, así que confirmado SÍ aparece como clave — pero con
+  // valor null explícito, nunca un string real (accion queda null ->
+  // el mismo `{accion && (...)}` de siempre sigue sin renderizar botón).
+  verificar(/ETIQUETA_ACCION[\s\S]{0,400}confirmado: null/.test(paginaEvaluacion), '34. confirmado tiene null EXPLÍCITO en ETIQUETA_ACCION — nunca una acción real, estado terminal real, no solo visual')
   // El identificador técnico (ej. "SG-VXKR") ya no se muestra en la
   // tarjeta — sigue existiendo en BD/PDF/pipeline, solo se oculta aquí.
   verificar(!/\{fecha\}[\s\S]{0,20}identificador_visible|identificador_visible[\s\S]{0,20}\{fecha\}/.test(paginaEvaluacion), '35. La tarjeta ya no muestra identificador_visible junto a la fecha (oculto en la vista, intacto en BD/PDF/pipeline)')
