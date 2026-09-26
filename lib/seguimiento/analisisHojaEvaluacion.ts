@@ -87,6 +87,31 @@ export type ResultadoExtraccionHojaEvaluacion = {
   observacionGeneral?: string
 }
 
+// Validación de identidad de hoja (ver auditoría "Los Insectos y su
+// Papel en la Naturaleza" — una fotografía de un documento distinto
+// fue aceptada porque nada verificaba que la foto correspondiera a
+// esta hoja). Diseño deliberado: este módulo NUNCA recibe el
+// identificador_visible ESPERADO como parámetro — el modelo solo
+// OBSERVA y transcribe lo que ve impreso, sin saber cuál sería el
+// valor "correcto" (evita sesgar la lectura). La comparación contra
+// hojas_evaluacion.identificador_visible vive exclusivamente en el
+// route handler (analizar-hoja/route.ts), que es quien conoce ambos
+// valores. "El modelo observa. El servidor valida."
+export type ResultadoAnalisisHojaEvaluacion = {
+  extraccion: ResultadoExtraccionHojaEvaluacion
+  // Código tal como el modelo lo transcribió, SIN normalizar (trim/
+  // uppercase/formato) — esa normalización es responsabilidad del
+  // llamador (regla de negocio, no de extracción). null si el modelo
+  // no lo vio, no fue legible, o no tuvo certeza — nunca inventado.
+  identificadorVisibleObservado: string | null
+}
+
+function normalizarIdentificadorVisibleObservado(valor: unknown): string | null {
+  if (typeof valor !== 'string') return null
+  const limpio = valor.trim()
+  return limpio.length > 0 ? limpio : null
+}
+
 export type MediaTypeImagenHoja = 'image/jpeg' | 'image/png' | 'image/webp'
 const MEDIA_TYPES_VALIDOS: MediaTypeImagenHoja[] = ['image/jpeg', 'image/png', 'image/webp']
 
@@ -302,10 +327,12 @@ Reglas estrictas, en orden de prioridad:
 6. NUNCA transcribas la columna "Alumno" ni la columna "Nivel final" — no forman parte de esta tarea.
 7. Si alguna de las fotografías es demasiado borrosa, está cortada, muestra un documento distinto, o por cualquier razón no puedes transcribir esa página con una confianza razonable, responde "hojaLegible": false y NO incluyas ninguna fila de NINGUNA página — nunca fabriques una tabla que parezca completa a partir de fotos que en realidad no puedes leer todas.
 8. Nunca reportes la misma posición "#" dos veces, aunque aparezca en dos fotografías distintas por error — cada posición existe una sola vez en la hoja completa.
+9. Además, busca en la(s) fotografía(s) un pequeño recuadro con un código corto impreso (formato "SG-" seguido de 4 caracteres, por ejemplo "SG-4F7K"), normalmente cerca de la esquina superior derecha de la hoja. Transcríbelo en "identificadorVisible" EXACTAMENTE tal como lo ves. Si no existe, no es legible, o no tienes certeza completa, responde null en ese campo — NUNCA lo inventes, completes ni lo deduzcas de ninguna otra información (nunca a partir del nombre del proyecto, de los alumnos, ni de nada distinto de ese recuadro impreso).
 
 Responde ÚNICAMENTE con un JSON válido (sin explicación, sin markdown, sin backticks), con este formato exacto:
 {
   "hojaLegible": true | false,
+  "identificadorVisible": "<código exacto tal como lo ves impreso, o null si no existe o no es legible>",
   "filas": [
     {
       "posicion": <número impreso real>,
@@ -460,7 +487,7 @@ export async function analizarImagenesHojaEvaluacion(
   anthropic: Anthropic,
   imagenes: ImagenHojaEvaluacion[],
   cantidadFilasEsperadas: number
-): Promise<ResultadoExtraccionHojaEvaluacion> {
+): Promise<ResultadoAnalisisHojaEvaluacion> {
   if (imagenes.length === 0) {
     throw new Error('No se recibió ninguna fotografía de la hoja para analizar.')
   }
@@ -504,5 +531,15 @@ export async function analizarImagenesHojaEvaluacion(
     throw new Error('No pude interpretar el análisis de la hoja. Intenta de nuevo con una foto más clara.')
   }
 
-  return validarResultadoExtraccionHoja(parseado, cantidadFilasEsperadas)
+  const extraccion = validarResultadoExtraccionHoja(parseado, cantidadFilasEsperadas)
+
+  // Observación de identidad — extraída del MISMO parseado, sin
+  // ninguna llamada adicional. Nunca lanza por sí sola: un valor
+  // ausente/mal formado simplemente se normaliza a null (fail-closed
+  // en la COMPARACIÓN posterior del llamador, nunca aquí).
+  const obj = parseado as Record<string, unknown>
+  return {
+    extraccion,
+    identificadorVisibleObservado: normalizarIdentificadorVisibleObservado(obj.identificadorVisible),
+  }
 }

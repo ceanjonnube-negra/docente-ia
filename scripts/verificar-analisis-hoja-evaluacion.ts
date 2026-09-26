@@ -181,7 +181,7 @@ async function main() {
 
     const r = await analizarImagenesHojaEvaluacion(anthropicFalso, [{ base64: 'ZmFrZQ==', mediaType: 'image/jpeg' }], 28)
     verificar(llamadas === 1, 'CASO I. exactamente 1 llamada a anthropic.messages.create por análisis (1 sola página)')
-    verificar(r.filas.length === 1, 'CASO I. el resultado real de esa única llamada se valida y se regresa correctamente')
+    verificar(r.extraccion.filas.length === 1, 'CASO I. el resultado real de esa única llamada se valida y se regresa correctamente')
   }
 
   // CASO J — 0 escrituras en seguimiento_resultados (estructural, en los 2 archivos nuevos).

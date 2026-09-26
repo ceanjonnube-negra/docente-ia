@@ -21,7 +21,7 @@ export const runtime = 'nodejs'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-type CapturaPendiente = { extraidoBruto?: unknown } | null
+type CapturaPendiente = { extraidoBruto?: unknown; validacionIdentidad?: { estado?: unknown } } | null
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: proyectoId } = await params
@@ -78,6 +78,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const extraidoBruto = (capturaPendiente?.extraidoBruto as ResultadoExtraccionHojaEvaluacion | undefined) ?? null
     const paginasEsperadas = calcularCantidadPaginasHoja(rosterCongelado.length)
 
+    // Señal explícita de rechazo (ver captura_pendiente.validacionIdentidad
+    // en analizar-hoja/route.ts) — nunca inferida de la ausencia de
+    // extraidoBruto por sí sola, que también es el estado normal
+    // "todavía no se ha analizado nada".
+    const identidadRechazada = capturaPendiente?.validacionIdentidad?.estado === 'rechazada'
+
     const resultado = determinarEstadoCapturaHoja({
       estadoProyecto: proyecto.estado,
       paginasEsperadas,
@@ -85,6 +91,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       extraidoBruto,
       rosterCongelado,
       indicadoresCongelados,
+      identidadRechazada,
     })
 
     return NextResponse.json(resultado)

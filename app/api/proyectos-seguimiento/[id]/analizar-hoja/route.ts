@@ -8,6 +8,7 @@ import {
   normalizarImagenesHojaParaVision,
   extraerFotosCapturaPendiente,
 } from '@/lib/seguimiento/analisisHojaEvaluacion'
+import { normalizarIdentificadorHoja, esIdentificadorHojaValido } from '@/lib/identificadorHoja'
 
 export const runtime = 'nodejs'
 
@@ -44,9 +45,39 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// Validación de identidad de hoja (ver auditoría "Los Insectos y su
+// Papel en la Naturaleza" — una fotografía de un documento
+// completamente distinto fue aceptada como si fuera la hoja oficial
+// del proyecto, porque nada comparaba la foto contra la hoja
+// esperada). Reutiliza EXCLUSIVAMENTE normalizarIdentificadorHoja/
+// esIdentificadorHojaValido de lib/identificadorHoja.ts — misma
+// fuente que ya usa generarCodigoHoja() para crear el identificador
+// real, nunca una copia separada del alfabeto/formato.
+//
+// Comparación ESTRICTA, nunca aproximada (regla explícita: sin fuzzy
+// matching, sin distancia de edición, sin "se parece a"): el único
+// margen que se acepta es trim + mayúsculas — cualquier otra
+// diferencia, o un código que no cumpla el formato real, es un
+// rechazo. `esperado` viene directo de hojas_evaluacion.identificador_visible
+// (generado por generarCodigoHoja(), siempre bien formado) —
+// `observado` es lo que el modelo transcribió, sin ninguna garantía.
+function identidadHojaValida(observado: string | null, esperado: string): boolean {
+  if (observado === null) return false
+  const normalizado = normalizarIdentificadorHoja(observado)
+  if (!esIdentificadorHojaValido(normalizado)) return false
+  return normalizado === normalizarIdentificadorHoja(esperado)
+}
+
+// Mensaje único y simple para el docente — nunca menciona OCR,
+// schema, roster congelado ni "identity mismatch" (ver instrucción de
+// UX). Mismo mensaje tanto si el código no coincide como si no fue
+// legible — el docente no necesita distinguir esos dos casos.
+const MENSAJE_IDENTIDAD_NO_VALIDA =
+  'Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.'
+
 const ESTADOS_POST_CONFIRMACION = new Set(['confirmado', 'corregido', 'sustituido', 'cerrado'])
 
-type CapturaPendiente = { fotos?: unknown; fotoStoragePath?: string; fotoSubidaEn?: string; extraidoBruto?: unknown; extraidoEn?: string } | null
+type CapturaPendiente = { fotos?: unknown; fotoStoragePath?: string; fotoSubidaEn?: string; extraidoBruto?: unknown; extraidoEn?: string; validacionIdentidad?: unknown } | null
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: proyectoId } = await params
@@ -102,7 +133,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // implique que la hoja tiene roster congelado.
     const { data: hoja, error: errorHoja } = await supabase
       .from('hojas_evaluacion')
-      .select('id, roster_congelado')
+      .select('id, identificador_visible, roster_congelado')
       .eq('id', proyecto.hoja_id)
       .maybeSingle()
     if (errorHoja) {
@@ -173,6 +204,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     let resultado
     try {
+      // EL MODELO NUNCA RECIBE hoja.identificador_visible — analizar-
+      // Imagenes/ConstruirInstrucciones no toma ese valor como
+      // parámetro en ningún punto de esta llamada; el modelo solo
+      // transcribe lo que observa (ver comentario de cabecera de
+      // ResultadoAnalisisHojaEvaluacion en analisisHojaEvaluacion.ts).
+      // La comparación ocurre EXCLUSIVAMENTE abajo, server-side.
       resultado = await analizarImagenesHojaEvaluacion(
         anthropic,
         imagenesNormalizadas,
@@ -185,12 +222,56 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo analizar la fotografía.' }, { status: 422 })
     }
 
+    // Gate de identidad — ANTES de persistir cualquier fila y ANTES de
+    // que exista la más mínima posibilidad de que
+    // fila.posicion -> rosterCongelado.posicion -> alumno se ejecute
+    // (esa asociación solo vive en construirMatrizRevision/
+    // prepararResultadosConfirmacion, lib/seguimiento/
+    // confirmarResultadosHoja.ts, que NUNCA se llaman con un
+    // extraidoBruto que no haya pasado por aquí primero — ver
+    // revisar-hoja/route.ts y confirmar-hoja/route.ts, ambos leen
+    // captura_pendiente.extraidoBruto YA persistido, nunca antes).
+    //
+    // captura_pendiente.extraidoBruto significa EXCLUSIVAMENTE
+    // "extracción de una fotografía cuya identidad ya fue validada" —
+    // un rechazo NUNCA lo escribe, ni siquiera vacío (eso falsearía
+    // esa semántica de cara a consumidores futuros de historial
+    // individual/grupal). La señal de rechazo vive en su propio campo,
+    // validacionIdentidad, que determinarEstadoCapturaHoja ya sabe
+    // distinguir de "todavía no se analizó nada" (estado
+    // 'identidad_no_valida', nunca 'lista_para_analizar') sin
+    // necesidad de tocar Storage ni captura_pendiente.fotos: en cuanto
+    // el docente sube una fotografía nueva, foto-hoja/route.ts
+    // reemplaza captura_pendiente por completo y esta señal
+    // desaparece sola.
+    if (!identidadHojaValida(resultado.identificadorVisibleObservado, hoja.identificador_visible)) {
+      const { error: errorRechazo } = await supabase
+        .from('proyectos_seguimiento')
+        .update({
+          captura_pendiente: {
+            ...capturaPendiente,
+            validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida', validadaEn: new Date().toISOString() },
+          },
+          actualizado_en: new Date().toISOString(),
+        })
+        .eq('id', proyectoId)
+      if (errorRechazo) {
+        return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+      }
+      return NextResponse.json({ error: MENSAJE_IDENTIDAD_NO_VALIDA, razon: 'identidad_no_valida' }, { status: 409 })
+    }
+
     const { error: errorUpdate } = await supabase
       .from('proyectos_seguimiento')
       .update({
         captura_pendiente: {
           ...capturaPendiente,
-          extraidoBruto: resultado,
+          // Limpia explícitamente cualquier rechazo previo (defensivo:
+          // en el flujo normal ya desaparece al subir una foto nueva,
+          // pero esta escritura nunca debe dejar extraidoBruto e
+          // validacionIdentidad='rechazada' coexistiendo).
+          validacionIdentidad: null,
+          extraidoBruto: resultado.extraccion,
           extraidoEn: new Date().toISOString(),
         },
         estado: 'requiere_revision',
@@ -201,7 +282,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'El análisis se completó pero no se pudo registrar. Intenta de nuevo.' }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, estado: 'requiere_revision', filas: resultado.filas.length })
+    return NextResponse.json({ ok: true, estado: 'requiere_revision', filas: resultado.extraccion.filas.length })
   } catch (err) {
     console.error(`Error en POST /api/proyectos-seguimiento/${proyectoId}/analizar-hoja:`, err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error inesperado.' }, { status: 500 })
