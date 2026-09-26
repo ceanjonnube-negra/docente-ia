@@ -45,9 +45,22 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
     }
 
+    // EVAL-1I — hojas_evaluacion!hoja_id(...) embebe la hoja
+    // relacionada en LA MISMA consulta (evita un patrón N+1: sin esto,
+    // Evaluación tendría que hacer una consulta extra por cada
+    // proyecto solo para saber el identificador_visible/storage_path
+    // de su hoja). El hint "!hoja_id" es obligatorio: proyectos_seguimiento
+    // y hojas_evaluacion tienen DOS relaciones FK reales entre sí
+    // (hojas_evaluacion.proyecto_id Y proyectos_seguimiento.hoja_id) —
+    // sin el hint, PostgREST rechaza el embed por ambiguo. Nunca
+    // incluye una URL firmada aquí (ver hoja-url/route.ts): esta
+    // consulta es de solo lectura de metadata, ninguna llamada a
+    // Storage.
     const { data, error } = await supabase
       .from('proyectos_seguimiento')
-      .select('id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, estado, hoja_id, creado_en')
+      .select(
+        'id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, estado, hoja_id, creado_en, hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en)'
+      )
       .eq('grupo_id', grupoId)
       .order('creado_en', { ascending: false })
 
