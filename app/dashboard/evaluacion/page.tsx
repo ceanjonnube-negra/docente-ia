@@ -57,22 +57,36 @@ const ETIQUETA_ESTADO: Record<EstadoCapturaHoja, string> = {
   confirmado: 'Resultados registrados',
 }
 
-// confirmado no tiene entrada aquí a propósito: es un estado
-// terminal, nunca vuelve a ofrecer Capturar/Continuar/Revisar/Confirmar.
-const ETIQUETA_ACCION: Partial<Record<EstadoCapturaHoja, string>> = {
+// Record COMPLETO (no Partial) a propósito — ver auditoría "tarjeta de
+// Evaluación queda inaccesible tras recargar": el botón que alterna
+// `seleccionado` (única forma de expandir/re-expandir una tarjeta)
+// solo se renderiza cuando esta tabla tiene una entrada para el
+// estado real. Con Partial, un estado nuevo sin entrada aquí quedaba
+// con una tarjeta muda, sin ningún control para reabrirla — un hueco
+// que TypeScript no detectaba. Con Record completo, cualquier valor
+// nuevo de EstadoCapturaHoja que no se agregue aquí rompe el build en
+// vez de fallar en silencio en producción. `confirmado: null` es la
+// única exclusión intencional: es un estado terminal, nunca vuelve a
+// ofrecer Capturar/Continuar/Revisar/Confirmar/Corregir — el mismo
+// `{accion && (...)}` de abajo ya trata `null` igual que `undefined`.
+const ETIQUETA_ACCION: Record<EstadoCapturaHoja, string | null> = {
   sin_fotografia: 'Capturar resultados',
   captura_incompleta: 'Continuar captura',
   lista_para_analizar: 'Continuar',
+  identidad_no_valida: 'Corregir fotografía',
   revision_pendiente: 'Revisar resultados',
   lista_para_confirmar: 'Confirmar resultados',
+  confirmado: null,
 }
 
-const ICONO_ACCION: Partial<Record<EstadoCapturaHoja, string>> = {
+const ICONO_ACCION: Record<EstadoCapturaHoja, string | null> = {
   sin_fotografia: '📷',
   captura_incompleta: '📷',
   lista_para_analizar: '▶️',
+  identidad_no_valida: '📷',
   revision_pendiente: '🔍',
   lista_para_confirmar: '✅',
+  confirmado: null,
 }
 
 const COLOR_ESTADO: Record<EstadoCapturaHoja, string> = {
