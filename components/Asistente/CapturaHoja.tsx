@@ -40,7 +40,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
-type EstadoCapturaHoja =
+export type EstadoCapturaHoja =
   | 'sin_fotografia'
   | 'captura_incompleta'
   | 'lista_para_analizar'
@@ -52,7 +52,23 @@ type Fase = 'cargando' | 'listo' | 'subiendo' | 'analizando' | 'confirmando' | '
 
 const EN_CURSO: Fase[] = ['cargando', 'subiendo', 'analizando', 'confirmando']
 
-export default function CapturaHoja({ proyectoId }: { proyectoId: string }) {
+export default function CapturaHoja({
+  proyectoId,
+  // EVAL-1I (pulido UX de Evaluación) — callback OPCIONAL, puramente
+  // de observación: no cambia en nada el comportamiento interno de
+  // este componente (sigue siendo la única fuente de la verdad de
+  // CÓMO capturar/analizar/confirmar). Existe solo para que un padre
+  // que muestre su propio resumen del estado (ej. la tarjeta de
+  // Evaluación) pueda mantenerlo sincronizado EN VIVO mientras este
+  // componente está expandido, sin repetir ninguna llamada a
+  // estado-captura por su cuenta — se le pasa exactamente el mismo
+  // valor que este componente ya obtuvo. La tarjeta de la hoja en el
+  // Chat (AsistentePanel.tsx) no lo pasa — sigue funcionando idéntico.
+  onEstadoCambiado,
+}: {
+  proyectoId: string
+  onEstadoCambiado?: (estado: EstadoCapturaHoja) => void
+}) {
   const [fase, setFase] = useState<Fase>('cargando')
   const [estado, setEstado] = useState<EstadoCapturaHoja | null>(null)
   const [paginasEsperadas, setPaginasEsperadas] = useState(0)
@@ -134,6 +150,15 @@ export default function CapturaHoja({ proyectoId }: { proyectoId: string }) {
     cargarEstado()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Notifica al padre (si le pasó el callback) cada vez que el estado
+  // real cambia — mount inicial, después de subir/analizar/confirmar.
+  // Nunca dispara una consulta nueva: solo reenvía el valor que este
+  // componente ya obtuvo por su cuenta.
+  useEffect(() => {
+    if (estado) onEstadoCambiado?.(estado)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estado])
 
   const onArchivoSeleccionado = async (file: File) => {
     if (enCursoRef.current) return
