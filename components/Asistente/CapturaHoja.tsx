@@ -94,56 +94,75 @@ export default function CapturaHoja({
     if (res.ok) setTotalAlumnos(json.matriz?.alumnos?.length ?? null)
   }
 
+  // analizar()/cargarEstado() envuelven su fetch/json en try/catch: una
+  // excepción de red (pestaña suspendida en segundo plano de iOS
+  // Safari durante la espera real de la llamada de visión, AbortError,
+  // pérdida momentánea de conexión, respuesta no-JSON) NUNCA debe
+  // dejar `fase` congelada en 'analizando'/'cargando' — siempre debe
+  // resolver a 'error', con un mensaje que no asume que el servidor
+  // falló (puede haber terminado bien: por eso el botón "Reintentar"/
+  // "Verificar estado" solo vuelve a leer el estado real, nunca vuelve
+  // a subir la foto ni a llamar analizar-hoja por su cuenta).
   const analizar = async (accessToken: string) => {
     setFase('analizando')
-    const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/analizar-hoja`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: accessToken }),
-    })
-    const json = await res.json()
-    if (!res.ok) {
-      setError(json.error || 'No se pudo leer la fotografía.')
+    try {
+      const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/analizar-hoja`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: accessToken }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || 'No se pudo leer la fotografía.')
+        setFase('error')
+        return
+      }
+      await cargarEstado()
+    } catch (err) {
+      setError('No pudimos confirmar si la hoja terminó de leerse. Verifica el estado antes de reintentar.')
       setFase('error')
-      return
     }
-    await cargarEstado()
   }
 
   const cargarEstado = async () => {
     setFase('cargando')
     setError(null)
-    const accessToken = await obtenerAccessToken()
-    if (!accessToken) {
-      setError('Tu sesión expiró. Vuelve a iniciar sesión.')
-      setFase('error')
-      return
-    }
-    const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/estado-captura`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
-    const json = await res.json()
-    if (!res.ok) {
-      setError(json.error || 'No se pudo consultar el estado de esta hoja.')
-      setFase('error')
-      return
-    }
-    setEstado(json.estado)
-    setPaginasEsperadas(json.paginasEsperadas)
-    setPaginasCargadas(json.paginasCargadas)
+    try {
+      const accessToken = await obtenerAccessToken()
+      if (!accessToken) {
+        setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+        setFase('error')
+        return
+      }
+      const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/estado-captura`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || 'No se pudo consultar el estado de esta hoja.')
+        setFase('error')
+        return
+      }
+      setEstado(json.estado)
+      setPaginasEsperadas(json.paginasEsperadas)
+      setPaginasCargadas(json.paginasCargadas)
 
-    // Caso de reanudación: todas las páginas ya estaban cargadas pero
-    // el análisis no llegó a dispararse (ej. el docente cerró la app
-    // justo después de subir la última página) — se retoma solo, sin
-    // pedirle nada de nuevo al docente.
-    if (json.estado === 'lista_para_analizar') {
-      await analizar(accessToken)
-      return
+      // Caso de reanudación: todas las páginas ya estaban cargadas pero
+      // el análisis no llegó a dispararse (ej. el docente cerró la app
+      // justo después de subir la última página) — se retoma solo, sin
+      // pedirle nada de nuevo al docente.
+      if (json.estado === 'lista_para_analizar') {
+        await analizar(accessToken)
+        return
+      }
+      if (json.estado === 'revision_pendiente' || json.estado === 'lista_para_confirmar') {
+        await cargarMatrizParaResumen(accessToken)
+      }
+      setFase('listo')
+    } catch (err) {
+      setError('No se pudo consultar el estado de esta hoja. Verifica tu conexión e intenta de nuevo.')
+      setFase('error')
     }
-    if (json.estado === 'revision_pendiente' || json.estado === 'lista_para_confirmar') {
-      await cargarMatrizParaResumen(accessToken)
-    }
-    setFase('listo')
   }
 
   useEffect(() => {
@@ -160,45 +179,55 @@ export default function CapturaHoja({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estado])
 
+  // onArchivoSeleccionado()/confirmar() envuelven TODO su cuerpo (tras
+  // marcar enCursoRef.current=true) en try/finally: sin importar si
+  // terminan bien, con un error de servidor, o con una excepción de
+  // red/cliente (fetch/res.json/AbortError/pestaña suspendida), el
+  // finally SIEMPRE libera la guarda — nunca queda un camino de salida
+  // que la deje atascada en true.
   const onArchivoSeleccionado = async (file: File) => {
     if (enCursoRef.current) return
     enCursoRef.current = true
     setFase('subiendo')
     setError(null)
-    const accessToken = await obtenerAccessToken()
-    if (!accessToken) {
-      setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+    try {
+      const accessToken = await obtenerAccessToken()
+      if (!accessToken) {
+        setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+        setFase('error')
+        return
+      }
+
+      const formData = new FormData()
+      formData.append('access_token', accessToken)
+      formData.append('foto', file)
+      // Nunca el orden de un FileList — el número de página lo controla
+      // el propio estado del componente (ver comentario de cabecera).
+      formData.append('pagina', String(paginasCargadas + 1))
+
+      const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/foto-hoja`, { method: 'POST', body: formData })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || 'No se pudo subir la fotografía.')
+        setFase('error')
+        return
+      }
+
+      setPaginasCargadas(json.paginasCargadas)
+      setPaginasEsperadas(json.paginasEsperadas)
+
+      if (json.paginasCargadas >= json.paginasEsperadas) {
+        await analizar(accessToken)
+      } else {
+        setEstado('captura_incompleta')
+        setFase('listo')
+      }
+    } catch (err) {
+      setError('No pudimos confirmar si tu fotografía terminó de subirse. Verifica el estado antes de reintentar.')
       setFase('error')
+    } finally {
       enCursoRef.current = false
-      return
     }
-
-    const formData = new FormData()
-    formData.append('access_token', accessToken)
-    formData.append('foto', file)
-    // Nunca el orden de un FileList — el número de página lo controla
-    // el propio estado del componente (ver comentario de cabecera).
-    formData.append('pagina', String(paginasCargadas + 1))
-
-    const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/foto-hoja`, { method: 'POST', body: formData })
-    const json = await res.json()
-    if (!res.ok) {
-      setError(json.error || 'No se pudo subir la fotografía.')
-      setFase('error')
-      enCursoRef.current = false
-      return
-    }
-
-    setPaginasCargadas(json.paginasCargadas)
-    setPaginasEsperadas(json.paginasEsperadas)
-
-    if (json.paginasCargadas >= json.paginasEsperadas) {
-      await analizar(accessToken)
-    } else {
-      setEstado('captura_incompleta')
-      setFase('listo')
-    }
-    enCursoRef.current = false
   }
 
   const confirmar = async () => {
@@ -206,29 +235,34 @@ export default function CapturaHoja({
     enCursoRef.current = true
     setFase('confirmando')
     setError(null)
-    const accessToken = await obtenerAccessToken()
-    if (!accessToken) {
-      setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+    try {
+      const accessToken = await obtenerAccessToken()
+      if (!accessToken) {
+        setError('Tu sesión expiró. Vuelve a iniciar sesión.')
+        setFase('error')
+        return
+      }
+      const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/confirmar-hoja`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: accessToken }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || 'No se pudo confirmar. Intenta de nuevo.')
+        setFase('error')
+        return
+      }
+      // Estado terminal explícito, tal como lo confirmó el servidor —
+      // nunca se vuelve a ofrecer subir/confirmar después de esto.
+      setEstado('confirmado')
+      setFase('listo')
+    } catch (err) {
+      setError('No pudimos confirmar si tus resultados se guardaron. Verifica el estado antes de reintentar.')
       setFase('error')
+    } finally {
       enCursoRef.current = false
-      return
     }
-    const res = await fetch(`/api/proyectos-seguimiento/${proyectoId}/confirmar-hoja`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: accessToken }),
-    })
-    const json = await res.json()
-    enCursoRef.current = false
-    if (!res.ok) {
-      setError(json.error || 'No se pudo confirmar. Intenta de nuevo.')
-      setFase('error')
-      return
-    }
-    // Estado terminal explícito, tal como lo confirmó el servidor —
-    // nunca se vuelve a ofrecer subir/confirmar después de esto.
-    setEstado('confirmado')
-    setFase('listo')
   }
 
   const abrirSelector = () => {
@@ -279,7 +313,20 @@ export default function CapturaHoja({
       )}
 
       {fase === 'subiendo' && <p className="text-[11px] text-gray-500">Subiendo fotografía…</p>}
-      {fase === 'analizando' && <p className="text-[11px] text-gray-500">Leyendo la hoja…</p>}
+      {fase === 'analizando' && (
+        <div className="space-y-1">
+          <p className="text-[11px] text-gray-500">Leyendo la hoja… puede tardar un momento.</p>
+          {/* "Verificar estado" llama ÚNICAMENTE a cargarEstado() — nunca
+              vuelve a subir la foto ni a llamar analizar-hoja por su
+              cuenta. Existe para el caso real donde el servidor ya
+              terminó (extraidoBruto/estado ya persistidos) pero el
+              cliente nunca llegó a enterarse; es seguro pulsarlo más de
+              una vez porque solo lee el estado real, nunca escribe. */}
+          <button type="button" onClick={cargarEstado} className="text-[11px] text-gray-400 underline underline-offset-2 hover:text-gray-600">
+            Verificar estado
+          </button>
+        </div>
+      )}
       {fase === 'confirmando' && <p className="text-[11px] text-gray-500">Guardando resultados…</p>}
       {fase === 'cargando' && estado !== null && <p className="text-[11px] text-gray-400">Actualizando…</p>}
 
