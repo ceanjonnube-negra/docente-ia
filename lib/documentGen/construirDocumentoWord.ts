@@ -8,7 +8,7 @@
 // en ambos lados — la única diferencia es cómo se empaqueta y entrega el
 // resultado, que SÍ es específico de cada entorno (navegador vs Node).
 
-import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType, ImageRun } from 'docx'
+import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType, ImageRun, type ISectionOptions } from 'docx'
 import { prepararEncabezado } from './encabezadoDocumento'
 
 // Ver "Documentos ilustrados + guías completas e ilustradas", Fase 2A
@@ -194,7 +194,15 @@ const generarTablaGenerica = (filas: string[][]): Table => {
 // cambio.
 const esExamenOActividad = (texto: string): boolean => texto.trim().startsWith('📝')
 
-export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Document {
+// seccionesAdicionales (COMPOSICIÓN CANÓNICA — "Planeación + hoja de
+// evaluación al final del mismo archivo"): opcional, al final, para no
+// romper a ninguno de los 2 llamadores existentes (generarWordServidor.ts,
+// utils/generarWord.ts) — omitido, el comportamiento es EXACTAMENTE el
+// de siempre (1 sola sección). Si se pasa, se agrega tal cual después
+// de la sección de la planeación — nunca se reemplaza ni se fusiona con
+// ella, cada sección conserva sus propias `properties` (así una sección
+// de hoja puede pedir orientación landscape sin afectar a la planeación).
+export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>, seccionesAdicionales?: ISectionOptions[]): Document {
   const enc = prepararEncabezado(perfil, zonaHoraria)
 
   // Encabezado institucional — UNO solo, siempre igual, nunca lo
@@ -372,11 +380,14 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
   ]
 
   return new Document({
-    sections: [{
-      headers: { default: encabezado },
-      properties: { page: { margin: { top: 1400, right: 900, bottom: 900, left: 900 } } },
-      children: [...elementos, ...piePagina]
-    }]
+    sections: [
+      {
+        headers: { default: encabezado },
+        properties: { page: { margin: { top: 1400, right: 900, bottom: 900, left: 900 } } },
+        children: [...elementos, ...piePagina]
+      },
+      ...(seccionesAdicionales ?? []),
+    ]
   })
 }
 

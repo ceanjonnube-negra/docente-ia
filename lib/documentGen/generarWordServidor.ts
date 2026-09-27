@@ -6,12 +6,15 @@
 // nunca depende de que el docente toque un botón: el archivo ya existe
 // en Storage antes de que la respuesta llegue al chat.
 
-import { Packer } from 'docx'
+import { Packer, type ISectionOptions } from 'docx'
 import { construirDocumentoWord, type ImagenParaDocumentoWord } from './construirDocumentoWord'
 
+// seccionesAdicionales: ver construirDocumentoWord.ts — opcional, al
+// final, mismo criterio de compatibilidad (omitido = comportamiento
+// EXACTAMENTE actual).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function generarWordBuffer(texto: string, perfil: any, zonaHoraria: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>): Promise<Buffer> {
-  const doc = construirDocumentoWord(texto, perfil, zonaHoraria, imagenesPorDescripcion)
+export async function generarWordBuffer(texto: string, perfil: any, zonaHoraria: string | null, imagenesPorDescripcion?: Map<string, ImagenParaDocumentoWord>, seccionesAdicionales?: ISectionOptions[]): Promise<Buffer> {
+  const doc = construirDocumentoWord(texto, perfil, zonaHoraria, imagenesPorDescripcion, seccionesAdicionales)
   return Packer.toBuffer(doc)
 }
 

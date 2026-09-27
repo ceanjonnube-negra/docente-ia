@@ -41,8 +41,26 @@ import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
-import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
 import { esPlaneacionActivaValida, type TrazabilidadCurricularPlaneacion } from './planeacionActiva'
+// COMPOSICIÓN CANÓNICA — "Planeación + hoja de evaluación al final del
+// mismo archivo" (Fase 4.5, ver más abajo). generarPdfBuffer/
+// generarWordBuffer y las primitivas de Storage son las MISMAS que ya
+// usa ejecutarHerramientaDocumento (herramientas.ts) — reutilizadas
+// directamente aquí porque esa función no expone su buffer intermedio
+// para componerlo con la hoja antes de subir.
+import { generarPdfBuffer, nombreArchivoPdf } from '../documentGen/generarPdfServidor'
+import { generarWordBuffer, nombreArchivoWordServidor } from '../documentGen/generarWordServidor'
+import { subirBuffer, crearUrlFirmada, rutaArchivo } from '../documentGen/almacenamiento'
+import { extraerTitulo } from '../documentGen/parseContenido'
+import {
+  hidratarDatosHojaSeguimiento,
+  descargarPdfHojaCanonica,
+  componerPdfPlaneacionConHoja,
+  construirSeccionHojaEvaluacionWord,
+  ErrorComposicionHoja,
+  type HojaCanonicaParaComposicion,
+  type ProyectoParaComposicion,
+} from '../documentGen/componerHojaEnPlaneacion'
 import type { Planeacion } from './tipos'
 
 export type CodigoErrorAprobacion =
@@ -472,32 +490,83 @@ export async function aprobarBorradorPlaneacion(
       console.error('[PLANEACION_GENERAR][aprobar] fallo generando la hoja de evaluación:', resultadoHoja.error)
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
+    // hojaId aislado en un const propio (no resultadoHoja.hojaId
+    // directo): TypeScript no propaga el narrowing de `resultadoHoja.ok`
+    // dentro de las funciones de Fase 4.5 definidas más abajo en este
+    // mismo scope — este valor ya es un string simple, sin ambigüedad.
+    const hojaId: string = resultadoHoja.hojaId
 
-    // Fase 4.5: Word + PDF DEFINITIVOS de la planeación (AJUSTE
-    // AISLADO — "descarga real en Word y PDF") — mismo generador real
-    // ya usado por FINALIZAR ARCHIVO (ejecutarHerramientaDocumento,
-    // lib/documentGen/herramientas.ts: sube a Storage y devuelve una
-    // URL firmada real, nunca una vista previa por token), aplicado a
-    // los DOS formatos desde el MISMO texto completo del borrador —
-    // nunca una conversión iniciada por botón ni un segundo paso
-    // aparte. A diferencia de la hoja (Fase 4), esto es MEJOR ESFUERZO:
-    // si falla, NO se aborta la aprobación — la planeación y la hoja ya
-    // son válidas por sí solas, y el docente siempre puede pedir el
-    // archivo después escribiendo en el chat (mismo camino que existía
-    // antes de esta mejora). Idempotente: si un intento anterior de
-    // esta MISMA huella ya generó ambos formatos (evaluacion.documento_word/
-    // documento_pdf ya presentes), se reutilizan tal cual — nunca se
-    // regeneran ni se duplican archivos en Storage.
+    // Fase 4.5: Word + PDF DEFINITIVOS de la planeación, cada uno con
+    // la hoja de evaluación CANÓNICA anexada al final (COMPOSICIÓN
+    // CANÓNICA — "Planeación + hoja de evaluación al final del mismo
+    // archivo"). PDF: se copian las páginas REALES ya existentes de
+    // hojas_evaluacion (nunca se regenera la hoja). Word: se agrega
+    // una sección landscape NATIVA (tabla real), hidratada
+    // EXCLUSIVAMENTE desde hojas_evaluacion.roster_congelado/
+    // indicadores — nunca desde alumnos actuales ni desde la
+    // planeación vigente. Esta fase NUNCA llama
+    // generarYGuardarHojaSeguimiento ni escribe en hojas_evaluacion/
+    // seguimiento_resultados — solo lee la hoja ya asegurada en Fase 4.
+    //
+    // A diferencia de la hoja (Fase 4), esto sigue siendo MEJOR
+    // ESFUERZO: si falla, NO se aborta la aprobación — la planeación y
+    // la hoja ya son válidas por sí solas, y el docente siempre puede
+    // pedir el archivo después escribiendo en el chat. Si la
+    // composición de un formato falla en cualquier paso (buffer de
+    // planeación, descarga de la hoja, merge/tabla, subida), ESE
+    // documento_word/documento_pdf permanece sin registrar — nunca se
+    // guarda un archivo "planeación sola" como si estuviera completo.
+    //
+    // Idempotente: solo se reutiliza un documento cacheado si
+    // incluye_hoja===true Y su hoja_id coincide con la hoja canónica
+    // actual (hojaId) — cualquier otro caso (ausente,
+    // sin incluye_hoja, o de otra hoja) dispara una generación nueva,
+    // siempre compuesta. Documentos ya publicados (version>=1) nunca
+    // llegan aquí de nuevo (ver el gate YA_GUARDADA al inicio de esta
+    // función), así que los históricos sin incluye_hoja jamás se
+    // regeneran automáticamente por este camino.
     // url_ver (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
     // PDF'"): solo presente en documento_pdf — segunda URL firmada sin
-    // `download`, para el botón "Ver PDF". Opcional: una planeación
-    // aprobada antes de este ajuste puede tener documento_pdf sin
-    // url_ver — TarjetaDescarga simplemente sigue mostrando el botón
-    // único de siempre para esos casos, sin romper nada.
-    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string }
+    // `download`, para el botón "Ver PDF".
+    type DocumentoGuardado = {
+      nombre: string
+      url: string
+      tamano_bytes?: number
+      url_ver?: string
+      // COMPOSICIÓN CANÓNICA: storage_path permite regenerar solo la
+      // URL firmada cuando expire, sin recomponer nada. hoja_id +
+      // incluye_hoja identifican de qué hoja canónica es composición
+      // este archivo — nunca se infiere ni se recalcula.
+      storage_path?: string
+      hoja_id?: string
+      incluye_hoja?: boolean
+    }
     const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado; trazabilidad_curricular?: TrazabilidadCurricularPlaneacion } } | null)?.evaluacion
-    let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
-    let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
+    const esReutilizable = (doc: DocumentoGuardado | undefined | null): doc is DocumentoGuardado =>
+      !!doc && doc.incluye_hoja === true && doc.hoja_id === hojaId
+    let documentoWord: DocumentoGuardado | null = esReutilizable(evaluacionPrevia?.documento_word) ? evaluacionPrevia!.documento_word! : null
+    let documentoPdf: DocumentoGuardado | null = esReutilizable(evaluacionPrevia?.documento_pdf) ? evaluacionPrevia!.documento_pdf! : null
+
+    // Lectura ÚNICA y compartida (word y pdf) de la hoja canónica y su
+    // proyecto — solo si de verdad hace falta generar algo. Nunca
+    // reconstruye roster desde alumnos actuales ni indicadores desde
+    // la planeación vigente: ambos ya viven congelados en
+    // hojas_evaluacion desde Fase 4.
+    let hojaCanonica: HojaCanonicaParaComposicion | null = null
+    let proyectoCanonico: ProyectoParaComposicion | null = null
+    async function obtenerHojaYProyectoCanonicos() {
+      if (hojaCanonica && proyectoCanonico) return { hojaCanonica, proyectoCanonico }
+      const [{ data: hojaRow, error: errorHojaRow }, { data: proyectoRow, error: errorProyectoRow }] = await Promise.all([
+        sb.from('hojas_evaluacion').select('identificador_visible, roster_congelado, indicadores, storage_path').eq('id', hojaId).single(),
+        sb.from('proyectos_seguimiento').select('nombre, campos_formativos, fecha_inicio, fecha_fin, periodo_evaluacion_id').eq('id', proyectoSeguimientoId).single(),
+      ])
+      if (errorHojaRow || !hojaRow) throw new ErrorComposicionHoja('No se pudo leer la hoja canónica para componer el documento.')
+      if (errorProyectoRow || !proyectoRow) throw new ErrorComposicionHoja('No se pudo leer el proyecto de seguimiento para componer el documento.')
+      hojaCanonica = hojaRow as unknown as HojaCanonicaParaComposicion
+      proyectoCanonico = proyectoRow as unknown as ProyectoParaComposicion
+      return { hojaCanonica, proyectoCanonico }
+    }
+
     if (!documentoWord || !documentoPdf) {
       try {
         // PLN-1E-B — prioridad al snapshot V4 (contenidoCompletoDefinitivo):
@@ -511,19 +580,39 @@ export async function aprobarBorradorPlaneacion(
         const ultimoTurno = historial[historial.length - 1]
         const textoCompleto = contenidoCompletoDefinitivo ?? (ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : '')
         if (textoCompleto) {
+          // titulo: MISMA fuente que ejecutarHerramientaDocumento usaba
+          // internamente (extraerTitulo sobre el texto real del
+          // borrador) — se preserva aquí para no cambiar de dónde sale
+          // el nombre del archivo al introducir la composición.
+          const titulo = extraerTitulo(textoCompleto)
           if (!documentoWord) {
-            const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
-            documentoWord = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes }
+            const { hojaCanonica: hoja, proyectoCanonico: proyecto } = await obtenerHojaYProyectoCanonicos()
+            const datosHoja = await hidratarDatosHojaSeguimiento(sb, hoja, proyecto)
+            const seccionHoja = construirSeccionHojaEvaluacionWord(datosHoja, perfil, null)
+            const bufferCompuesto = await generarWordBuffer(textoCompleto, perfil, null, undefined, [seccionHoja])
+            const nombre = nombreArchivoWordServidor(titulo)
+            const ruta = rutaArchivo(sesion.docente_id, nombre)
+            await subirBuffer(sb, ruta, bufferCompuesto, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+            const url = await crearUrlFirmada(sb, ruta, nombre)
+            documentoWord = { nombre, url, tamano_bytes: bufferCompuesto.length, storage_path: ruta, hoja_id: hojaId, incluye_hoja: true }
           }
           if (!documentoPdf) {
-            const generado = await ejecutarHerramientaDocumento('pdf', textoCompleto, perfil, null, sb, sesion.docente_id)
-            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, url_ver: generado.urlVer }
+            const { hojaCanonica: hoja } = await obtenerHojaYProyectoCanonicos()
+            const bufferPlaneacion = await generarPdfBuffer(textoCompleto, perfil, null)
+            const bufferHoja = await descargarPdfHojaCanonica(sb, hoja)
+            const bufferCompuesto = await componerPdfPlaneacionConHoja(bufferPlaneacion, bufferHoja)
+            const nombre = nombreArchivoPdf(titulo)
+            const ruta = rutaArchivo(sesion.docente_id, nombre)
+            await subirBuffer(sb, ruta, bufferCompuesto, 'application/pdf')
+            const url = await crearUrlFirmada(sb, ruta, nombre)
+            const urlVer = await crearUrlFirmada(sb, ruta)
+            documentoPdf = { nombre, url, tamano_bytes: bufferCompuesto.length, url_ver: urlVer, storage_path: ruta, hoja_id: hojaId, incluye_hoja: true }
           }
         } else {
           console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omite Word/PDF definitivos')
         }
       } catch (e) {
-        console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo generando Word/PDF definitivos de la planeación (no bloquea la aprobación):', e)
+        console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo Word/PDF definitivos de la planeación con su hoja (no bloquea la aprobación; ese documento queda sin registrar, nunca se guarda incompleto):', e)
       }
     }
 
@@ -565,7 +654,7 @@ export async function aprobarBorradorPlaneacion(
           evidencias: resumen.evidencias,
           fuente: 'chat_ia',
           proyecto_seguimiento_id: proyectoSeguimientoId,
-          hoja_id: resultadoHoja.hojaId,
+          hoja_id: hojaId,
           hoja_identificador_visible: resultadoHoja.identificadorVisible,
           ...(documentoWord ? { documento_word: documentoWord } : {}),
           ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
