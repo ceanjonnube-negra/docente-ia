@@ -1896,7 +1896,30 @@ class AsistenteServiceImpl {
     // lógica de "documento activo" (tipoFinalizar/enviarComoEdicion),
     // cae directo al camino normal (más abajo), exactamente como si no
     // hubiera ningún documento activo.
-    if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno) {
+    //
+    // CORRECCIÓN — "conversacion_id=null + orden visual incorrecto tras
+    // aprobar una planeación y pedir una imagen nueva" (auditoría
+    // READ-ONLY aprobada por separado, causa raíz demostrada): "imagen"
+    // no está en SUSTANTIVOS_DOCUMENTO (pareceNuevoDocumento nunca la
+    // reconoce como "documento nuevo"), así que una petición real de
+    // imagen NUEVA ("Crea una imagen de un salón de clases...") con un
+    // documentoActivo vigente (ej. la planeación recién aprobada) caía
+    // aquí y se tratada como "finaliza/convierte EL DOCUMENTO DE TEXTO
+    // activo a formato imagen" (ejecutarConversionFormato →
+    // enviarComoFinalizacion → ejecutarFinalizacion) — un camino que
+    // (a) nunca pasa conversacionId a enviarTexto (por eso el asset
+    // quedaba con conversacion_id=null) y (b) inyecta el resultado
+    // dentro del mensaje asistente VIEJO (editandoDocumentoId), nunca
+    // en uno nuevo — de ahí que la tarjeta apareciera antes del mensaje
+    // nuevo del docente. MISMO criterio determinista que ya excluye
+    // este caso para materialVisualActivo unas líneas más abajo
+    // (detectarHerramientaDocumento(limpio) !== 'imagen') — nunca una
+    // heurística nueva. Con esta exclusión, una imagen nueva real cae
+    // directo al camino normal de abajo (enviarComoTrabajoDocumento),
+    // exactamente como si no hubiera ningún documento activo — el
+    // mismo camino que ya pasa conversacionId correctamente y ya crea
+    // un mensaje asistente nuevo.
+    if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno && detectarHerramientaDocumento(limpio) !== 'imagen') {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un

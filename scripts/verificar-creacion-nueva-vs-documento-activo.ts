@@ -101,8 +101,17 @@ async function main() {
   // ============================================================
   // 5. AsistenteService.ts — el gate real usa pareceNuevoDocumento
   //    ANTES de decidir editar/finalizar el documento activo.
+  //
+  // CORRECCIÓN — "conversacion_id=null + orden visual incorrecto tras
+  // aprobar una planeación y pedir una imagen nueva" (aprobada por
+  // separado): la condición ganó una tercera exclusión determinista
+  // (detectarHerramientaDocumento(limpio) !== 'imagen', ver su propia
+  // suite dedicada — scripts/verificar-imagen-nueva-vs-documento-
+  // activo.ts) — pareceNuevoDocumento sigue siendo, sin cambio, la
+  // primera y principal exclusión que esta prueba original quería
+  // demostrar.
   // ============================================================
-  verificar(cuerpoAsistenteService.includes('if (this.documentoActivo && !pareceNuevoDocumento(limpio)) {'), 'enviarMensaje() excluye explícitamente los mensajes de creación nueva del bloque de documento activo — nunca los trata como edición/finalización del documento viejo')
+  verificar(cuerpoAsistenteService.includes("if (this.documentoActivo && !pareceNuevoDocumento(limpio) && !esOperacionSobreDatoPersonalAlumno && detectarHerramientaDocumento(limpio) !== 'imagen') {"), 'enviarMensaje() excluye explícitamente los mensajes de creación nueva del bloque de documento activo — nunca los trata como edición/finalización del documento viejo')
   verificar(/import \{[^}]*\bpareceNuevoDocumento\b[^}]*\} from '\.\/documentos'/.test(cuerpoAsistenteService), 'pareceNuevoDocumento se importa realmente desde lib/asistente/documentos.ts (no una copia local)')
 
   // ============================================================
