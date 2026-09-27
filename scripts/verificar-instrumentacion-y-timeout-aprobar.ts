@@ -115,23 +115,32 @@ async function main() {
   verificar(timeoutFetchMs - maxDurationMs === 10_000, `El margen sobre maxDuration es de 10000ms (190s - 180s), tal como se pidió (encontrado: ${timeoutFetchMs - maxDurationMs}ms)`)
 
   // ============================================================
-  // 5. Ningún otro presupuesto de timeout se redujo — solo se tocó
-  //    TIMEOUT_FETCH_MS, nada más.
+  // 5. Ningún otro presupuesto de timeout se redujo por ESTA fase —
+  //    solo se tocó TIMEOUT_FETCH_MS aquí. TIMEOUT_FETCH_DOCUMENTO_MS/
+  //    TIMEOUT_FETCH_IMAGEN_MS y la agrupación del ternario cambiaron
+  //    después, en la fase "coherencia de timeouts del Chat IA —
+  //    OpenAI Images" (aprobada por separado, ver
+  //    scripts/verificar-timeout-openai-imagenes.ts para su propia
+  //    suite dedicada) — esta prueba solo confirma que ninguno de esos
+  //    valores posteriores quedó por DEBAJO de lo que tenía en esta
+  //    fase (nunca una reducción), no que sean idénticos para siempre.
   // ============================================================
   verificar(/const TIMEOUT_SESION_MS = 12_000/.test(motorTexto), 'TIMEOUT_SESION_MS sigue en 12_000 — sin cambios')
   verificar(/const TIMEOUT_FETCH_DIAGNOSTICO_MS = 90_000/.test(motorTexto), 'TIMEOUT_FETCH_DIAGNOSTICO_MS sigue en 90_000 — sin cambios')
-  verificar(/const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000/.test(motorTexto), 'TIMEOUT_FETCH_DOCUMENTO_MS (finalizarArchivo/varias imágenes/edición/regenerar imagen) sigue en 130_000 — sin cambios, ningún flujo especial perdió presupuesto')
-  verificar(/const TIMEOUT_FETCH_IMAGEN_MS = 150_000/.test(motorTexto), 'TIMEOUT_FETCH_IMAGEN_MS (imagen nueva desde texto) sigue en 150_000 — sin cambios')
+  verificar(/const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000/.test(motorTexto), 'TIMEOUT_FETCH_DOCUMENTO_MS (esVariasImagenes/esEdicionDocumento) sigue en 130_000 — nunca reducido')
+  const timeoutFetchImagenMatchV2 = motorTexto.match(/const TIMEOUT_FETCH_IMAGEN_MS = (\d+)_?(\d*)/)
+  const timeoutFetchImagenMsV2 = timeoutFetchImagenMatchV2 ? Number(`${timeoutFetchImagenMatchV2[1]}${timeoutFetchImagenMatchV2[2]}`) : 0
+  verificar(timeoutFetchImagenMsV2 >= 150_000, `TIMEOUT_FETCH_IMAGEN_MS nunca quedó por debajo de 150_000 (valor de esta fase) — encontrado: ${timeoutFetchImagenMsV2} (subió a 190_000 en la fase posterior de OpenAI Images, nunca bajó)`)
 
-  // La rama que selecciona el timeout (el ternario completo) sigue con
-  // la MISMA estructura/orden de condiciones — solo cambió el VALOR de
-  // una de las constantes que usa, nunca la lógica de selección.
-  verificar(
-    motorTexto.includes(
-      "finalizarArchivo || esVariasImagenes || regenerarImagen || esEdicionDocumento\n          ? TIMEOUT_FETCH_DOCUMENTO_MS\n          : esImagenNuevaDesdeTexto\n            ? TIMEOUT_FETCH_IMAGEN_MS\n            : (diagnosticoActivo ? Math.max(TIMEOUT_FETCH_DIAGNOSTICO_MS, TIMEOUT_FETCH_MS) : TIMEOUT_FETCH_MS)"
-    ),
-    'El ternario que elige el timeout del fetch conserva EXACTAMENTE la misma estructura y orden de condiciones — solo cambió el valor de TIMEOUT_FETCH_MS, nunca la lógica de selección'
-  )
+  // La rama que selecciona el timeout sigue evaluando exactamente las
+  // mismas 6 señales deterministas de siempre (finalizarArchivo,
+  // esVariasImagenes, regenerarImagen, esEdicionDocumento,
+  // esImagenNuevaDesdeTexto, diagnosticoActivo) — la fase posterior de
+  // OpenAI Images reagrupó CUÁLES de ellas comparten bucket (ver su
+  // propia suite), pero ninguna señal nueva se agregó ni se quitó.
+  for (const senal of ['finalizarArchivo', 'esVariasImagenes', 'regenerarImagen', 'esEdicionDocumento', 'esImagenNuevaDesdeTexto', 'diagnosticoActivo']) {
+    verificar(motorTexto.includes(senal), `El ternario sigue considerando la señal "${senal}" — ninguna señal determinista se perdió`)
+  }
 
   // ============================================================
   // 6. Cero llamadas IA/fetch nuevas en motorTextoClaude.ts — mismo

@@ -119,30 +119,56 @@ const TIMEOUT_FETCH_MS = 190_000
 // al límite duro del servidor. Retirar junto con el resto del
 // diagnóstico.
 const TIMEOUT_FETCH_DIAGNOSTICO_MS = 90_000
-// Fetch de FINALIZAR ARCHIVO (finalizarArchivo presente): puede incluir
-// una redacción completa de Claude sin streaming de hasta 8000 tokens
-// (CASO 3, hasta TIMEOUT_ANTHROPIC_DOCUMENTO_MS=55s en el servidor) más
-// la conversión/subida/verificación real del archivo — un documento
-// grande tardando 40-90s es NORMAL, no un cuelgue, y no debe mostrar
-// "Tardó demasiado en responder" (ver RFC "generación de documentos
-// tolerante a tiempos largos"). 130s deja margen real de sobra incluso
-// con un reintento interno del servidor de por medio.
+// Fetch de EDICIÓN/ANÁLISIS sin llamada real a OpenAI Images —
+// esVariasImagenes (varias fotos adjuntas, Claude las ANALIZA por
+// visión, nunca genera nada) y esEdicionDocumento (editar el
+// contenido de un documento existente, mismo streaming de Sonnet de
+// siempre). CORRECCIÓN — "coherencia de timeouts del Chat IA" (auditoría
+// aprobada por separado): finalizarArchivo y regenerarImagen SALIERON
+// de este bucket — sí pueden llamar a OpenAI Images (ver
+// TIMEOUT_FETCH_IMAGEN_MS más abajo), estos dos NUNCA lo hacen —
+// esVariasImagenes es puro análisis por Sonnet (client.messages.create
+// con TIMEOUT_ANTHROPIC_MS=120s en el servidor) y esEdicionDocumento
+// jamás pasa por CASO 3 (server-side, esEdicionDocumento=true anula
+// tipoHerramientaSolicitado — único punto donde se generan imágenes
+// embebidas, ver generarImagenesParaDocumento en
+// app/api/chat/route.ts, que solo se invoca ahí). Evidencia real y
+// representativa de ESTE código, para esEdicionDocumento: 61258/66310/
+// 75911/76042/77138ms (dominado por Sonnet, nunca por artefactos Word/
+// PDF/evaluación, que ya son perezosos y cuestan ~131ms). 130s deja un
+// margen real de ~53s (~41%) sobre el máximo observado — SIN
+// necesidad de acercarse a maxDuration=180s, porque ninguno de los dos
+// caminos depende de una llamada externa sin timeout propio.
 const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
-// CORRECCIÓN — evidencia real: dbg_1787065556208_ai557w ("Crea una
-// imagen para anunciar el regreso a clases..."). El cliente abortó a
-// los ~90.4s (TIMEOUT_FETCH_DIAGNOSTICO_MS, el único timeout que
-// aplicaba a una generación de imagen estándar con diagnóstico
-// activo; SIN diagnóstico habría sido el entonces vigente
-// TIMEOUT_FETCH_MS de 35s — peor aún; hoy TIMEOUT_FETCH_MS ya es 190s,
-// ver su comentario) pero el servidor terminó de generar y persistir la imagen real
-// en Supabase/Storage hasta los ~111.4s — el pipeline SÍ funcionó,
-// solo llegó tarde para el timeout que tenía asignado. La migración a
-// gpt-image-2 (con su paso de razonamiento antes de generar, según
-// documentación oficial) explica de forma plausible ese tiempo mayor.
-// 150s deja margen real sobre esos ~111.4s observados, sin acercarse
-// al techo duro del servidor (maxDuration=180s, ver app/api/chat/
-// route.ts).
-const TIMEOUT_FETCH_IMAGEN_MS = 150_000
+// Fetch de cualquier camino que SÍ puede llamar a OpenAI Images
+// (images.generate/images.edit, ver lib/imageGen/proveedores/
+// openaiImagenes.ts) — generación de imagen nueva desde texto
+// (esImagenNuevaDesdeTexto), edición de una imagen existente
+// (regenerarImagen), y FINALIZAR ARCHIVO (finalizarArchivo: la mayoría
+// de las veces es una exportación simple sin ninguna imagen, pero
+// ejecutarHerramientaDocumento SÍ puede disparar
+// generarImagenesParaDocumento si el texto ya tiene marcadores
+// [[IMAGEN:...]] — el cliente no puede saber de antemano cuál de los
+// dos casos es, así que se le da el margen del caso que sí llama al
+// proveedor; el caso simple de todos modos termina mucho antes, sin
+// ningún costo real por tener un techo más alto).
+//
+// CORRECCIÓN — "coherencia de timeouts del Chat IA" (auditoría aprobada
+// por separado): ninguna de las dos llamadas de images.* traía timeout
+// propio (el SDK de OpenAI usaba su default de 600s) — el único límite
+// real era el kill duro de Vercel a maxDuration=180s. Se agregó un
+// timeout interno explícito de 140s a esas llamadas
+// (TIMEOUT_OPENAI_IMAGENES_MS, ver openaiImagenes.ts) — con eso, el
+// presupuesto real que el servidor puede consumir en estos caminos
+// sigue acotado por maxDuration=180s (140s de la llamada + margen para
+// el resto del pipeline), así que el cliente NUNCA debe abandonar
+// antes de ese techo: mismo criterio ya aplicado a TIMEOUT_FETCH_MS
+// (maxDuration + 10s de margen) — nunca un valor menor, porque
+// volvería a reproducir la misma contradicción cliente<servidor que
+// ya causó un incidente real (dbg_1787065556208_ai557w: servidor
+// terminó a los ~111.4s, cliente ya había abortado antes con el
+// timeout vigente en ese momento).
+const TIMEOUT_FETCH_IMAGEN_MS = 190_000
 
 class ErrorLimiteDeTiempo extends Error {}
 
@@ -351,13 +377,17 @@ export class MotorTextoClaude implements MotorConversacional {
       )
       const contextoTexto = construirInstrucciones(perfil, this.contexto)
 
-      // Varias imágenes también necesitan el margen largo de un
-      // documento: el servidor procesa varios MB y Claude analiza
-      // varias fotos a la vez, más lento que un turno de solo texto.
+      // esVariasImagenes: Claude ANALIZA por visión varias fotos
+      // adjuntas (el servidor procesa varios MB) — nunca genera nada,
+      // nunca llama a OpenAI Images. Sigue en el bucket de
+      // TIMEOUT_FETCH_DOCUMENTO_MS (ver su comentario) — la auditoría
+      // "coherencia de timeouts del Chat IA" solo encontró un riesgo
+      // TEÓRICO aquí (130s vs ~152s de peor caso ARITMÉTICO si Sesión+
+      // RAG+Nivel0+Anthropic agotaran cada uno su propio timeout
+      // individual), sin ningún incidente real que lo demuestre —
+      // se conserva sin cambio a propósito, para no tocar un valor sin
+      // evidencia real que lo justifique.
       const esVariasImagenes = !!adjuntos && adjuntos.length > 1
-      // regenerarImagen (Fase 0+1) también necesita el margen largo —
-      // generar una imagen real con el proveedor puede tardar tanto
-      // como un documento, nunca menos.
       // CORRECCIÓN — "timeout cliente para generación de imagen desde
       // texto" (ver dbg_1787065556208_ai557w): reutiliza el MISMO
       // detector determinista que ya usa AsistenteService.enviarMensaje
@@ -366,9 +396,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // fotos adjuntas (eso es análisis de foto, no generación), el
       // turno recibe TIMEOUT_FETCH_IMAGEN_MS sin importar si el
       // diagnóstico está activo o no. Evaluado ANTES del gate de
-      // diagnóstico a propósito: antes, una generación de imagen
-      // estándar solo llegaba a 90s con diagnóstico activo, o 35s sin
-      // él — ambos insuficientes frente a los ~111.4s reales medidos.
+      // diagnóstico a propósito.
       const esImagenNuevaDesdeTexto = !finalizarArchivo && !esVariasImagenes && !regenerarImagen && !adjunto && !adjuntos?.length && detectarHerramientaDocumento(texto) === 'imagen'
       // CORRECCIÓN — "timeout cliente incompatible con ediciones
       // documentales reales" (ver auditoría "descomponer los ~76s"
@@ -382,9 +410,16 @@ export class MotorTextoClaude implements MotorConversacional {
       // planeacion_generar (el cliente todavía no tiene la
       // clasificación de Nivel0 en este punto) y sin importar el tipo
       // de documento: cualquier edición de contenido puede ser larga.
-      // 130s es un TECHO de espera, no una demora artificial — si
-      // responde antes, termina antes; si nunca responde, sigue
-      // abortando igual que siempre.
+      // Sigue en el bucket de TIMEOUT_FETCH_DOCUMENTO_MS — confirmado
+      // por auditoría que esEdicionDocumento nunca llega a CASO 3
+      // (server-side, tipoHerramientaSolicitado=null cuando
+      // esEdicionDocumento=true) y por lo tanto nunca dispara
+      // generarImagenesParaDocumento; su presupuesto real sigue siendo
+      // el mismo streaming de Sonnet de siempre, sin cambio.
+      // finalizarArchivo y regenerarImagen SALIERON de este bucket —
+      // ver TIMEOUT_FETCH_IMAGEN_MS (ambos pueden llamar a OpenAI
+      // Images: finalizarArchivo si el documento ya tiene marcadores
+      // [[IMAGEN:...]], regenerarImagen siempre).
       // CORRECCIÓN — "proteger timeout de creación de planeaciones":
       // TIMEOUT_FETCH_MS (rama final de abajo) ya es 190s por sí solo,
       // igual o mayor que TIMEOUT_FETCH_DIAGNOSTICO_MS (90s) — el gate
@@ -398,10 +433,10 @@ export class MotorTextoClaude implements MotorConversacional {
       // TIMEOUT_FETCH_MS bajara de 90s otra vez) ampliarlo.
       temporizadorFetch = setTimeout(
         () => this.controlador?.abort(),
-        finalizarArchivo || esVariasImagenes || regenerarImagen || esEdicionDocumento
-          ? TIMEOUT_FETCH_DOCUMENTO_MS
-          : esImagenNuevaDesdeTexto
-            ? TIMEOUT_FETCH_IMAGEN_MS
+        finalizarArchivo || regenerarImagen || esImagenNuevaDesdeTexto
+          ? TIMEOUT_FETCH_IMAGEN_MS
+          : esVariasImagenes || esEdicionDocumento
+            ? TIMEOUT_FETCH_DOCUMENTO_MS
             : (diagnosticoActivo ? Math.max(TIMEOUT_FETCH_DIAGNOSTICO_MS, TIMEOUT_FETCH_MS) : TIMEOUT_FETCH_MS)
       )
 
@@ -694,7 +729,13 @@ export class MotorTextoClaude implements MotorConversacional {
   // renderizado actual lo invoca.
   async generarArchivoDirecto(tipo: string, documentoTexto: string): Promise<ArchivoGeneradoInfo> {
     const controlador = new AbortController()
-    const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_FETCH_DOCUMENTO_MS)
+    // Mismo bucket que finalizarArchivo en enviarTexto() — ver
+    // TIMEOUT_FETCH_IMAGEN_MS: esta llamada también usa
+    // finalizarArchivo (server-side, ejecutarHerramientaDocumento
+    // puede disparar generarImagenesParaDocumento si documentoTexto ya
+    // tiene marcadores [[IMAGEN:...]]), el mismo riesgo real que
+    // motivó separar este bucket de TIMEOUT_FETCH_DOCUMENTO_MS.
+    const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_FETCH_IMAGEN_MS)
     try {
       const { user, session, perfil } = await conLimiteDeTiempo(
         obtenerPerfilYSesion(),
