@@ -372,7 +372,22 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
     }
   }
 
-  const piePagina = esExamenOActividad(texto) ? [] : [
+  // Ver auditoría "encabezado duplicado en la página landscape" — CAUSA
+  // RAÍZ real, confirmada por inspección OOXML del .docx compuesto: el
+  // pie de firma vive en el BODY de esta sección (planeación), justo
+  // antes del sectPr que la separa de la sección de la hoja de
+  // evaluación (componerHojaEnPlaneacion.ts); la hoja YA repite su
+  // propia identidad institucional (escuela/docente/grado/grupo/ciclo)
+  // en su propio encabezado autocontenido, unas líneas después, en la
+  // página landscape inmediata. header2 (vacío, sin cambio) nunca podía
+  // evitar esta redundancia — no es un header, es contenido de body.
+  // Único llamador real de generarWordBuffer con seccionesAdicionales
+  // no vacío hoy: la composición planeación+hoja (aprobarBorrador.ts) —
+  // confirmado revisando TODOS los llamadores del repositorio antes de
+  // usar esta condición; si en el futuro aparece otro uso real de
+  // seccionesAdicionales que no sea la hoja, esta condición debe
+  // revisarse, nunca asumirse generalizable sin volver a auditar.
+  const piePagina = esExamenOActividad(texto) || (seccionesAdicionales && seccionesAdicionales.length > 0) ? [] : [
     new Paragraph({ children: [new TextRun('')], spacing: { before: 480 } }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '______________________________', size: 20, color: COLOR_TEXTO_SUAVE })] }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: enc.docente, bold: true, size: 20, color: COLOR_TEXTO })], spacing: { before: 80 } }),

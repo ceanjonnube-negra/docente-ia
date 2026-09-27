@@ -618,6 +618,106 @@ async function main() {
     verificar(pgSzsG.some((p) => p.includes('w:orient="portrait"')), '21b. La sección de planeación conserva orientación portrait real')
   }
 
+  // ============================================================
+  // H. Ver auditoría "encabezado duplicado en la página landscape" —
+  // el pie de firma de la planeación (línea, nombre del docente,
+  // "Docente de grupo") es contenido de BODY, justo antes del sectPr
+  // que cierra la sección de planeación; la hoja ya repite su propia
+  // identidad institucional en su encabezado autocontenido, inmediato
+  // después. Corrección: omitir el pie de firma SOLO cuando se
+  // compone con una hoja (seccionesAdicionales no vacío) — nunca en
+  // documentos normales.
+  // ============================================================
+
+  // H-A. Planeación + hoja: el pie de firma ya NO debe estar presente.
+  {
+    const seccionH = construirSeccionHojaEvaluacionWord(DATOS_HOJA_PRUEBA, PERFIL_PRUEBA, null)
+    const bufferConHoja = await generarWordBuffer(TEXTO_PLANEACION_PRUEBA, PERFIL_PRUEBA, null, undefined, [seccionH])
+    const zipConHoja = await JSZip.loadAsync(bufferConHoja)
+    const xmlConHoja = (await zipConHoja.file('word/document.xml')?.async('string')) ?? ''
+    const rutasHeaderRelsConHoja = (await zipConHoja.file('word/_rels/document.xml.rels')?.async('string')) ?? ''
+
+    verificar(!xmlConHoja.includes('Docente de grupo'), 'H-A1. Con hoja adjunta: "Docente de grupo" NO aparece en ningún lugar del documento (el pie de firma fue omitido)')
+    verificar(!xmlConHoja.includes('______________________________'), 'H-A2. Con hoja adjunta: la línea de firma ("____...") NO aparece')
+    // El nombre del docente puede seguir apareciendo (header institucional
+    // + encabezado propio de la hoja lo necesitan) — lo que NO debe
+    // aparecer es el PÁRRAFO DE FIRMA en bold tamaño 20 (formato exacto
+    // del pie), verificado por ausencia de "Docente de grupo" arriba,
+    // que es literal y exclusivo de ese bloque.
+    const idxSectPrH = xmlConHoja.indexOf('<w:sectPr')
+    const cuerpoAntesDelCorte = xmlConHoja.slice(0, idxSectPrH)
+    verificar(!cuerpoAntesDelCorte.includes('Docente de grupo'), 'H-A3. El pie de firma NO está inmediatamente antes del sectPr que separa planeación de la hoja')
+    verificar(cuerpoAntesDelCorte.includes(TEXTO_PLANEACION_PRUEBA.split('\n')[0].replace('# ', '')) || cuerpoAntesDelCorte.includes('Planeación de prueba'), 'H-A4. El contenido real de la planeación sigue presente antes del corte de sección')
+
+    // El encabezado autocontenido de la hoja (después del sectPr) sigue intacto.
+    const cuerpoDespuesDelCorte = xmlConHoja.slice(idxSectPrH)
+    verificar(cuerpoDespuesDelCorte.includes(DATOS_HOJA_PRUEBA.nombreProyecto) && cuerpoDespuesDelCorte.includes(DATOS_HOJA_PRUEBA.identificadorVisible), 'H-A5. El encabezado autocontenido de la hoja (nombre del proyecto + SG) sigue presente después del corte de sección')
+
+    // header1 institucional sigue presente y header2 sigue vacío — sin cambio respecto a 7272cfd.
+    const headerRefsH = xmlConHoja.match(/<w:headerReference[^/]*\/>/g) || []
+    verificar(headerRefsH.length === 2, `H-A6. Siguen existiendo 2 <w:headerReference> reales (encontrados: ${headerRefsH.length})`)
+    const relHeadersH = [...rutasHeaderRelsConHoja.matchAll(/<Relationship Id="(rId\d+)"[^>]*Target="(header\d*\.xml)"/g)]
+    let header1TextoH = ''
+    let header2TextoH = ''
+    for (const [, , target] of relHeadersH) {
+      const contenido = (await zipConHoja.file(`word/${target}`)?.async('string')) ?? ''
+      if (contenido.includes(PERFIL_PRUEBA.escuela)) header1TextoH = contenido
+      else header2TextoH = contenido
+    }
+    verificar(!!header1TextoH && header1TextoH.includes(PERFIL_PRUEBA.escuela), 'H-A7. header1 institucional de la planeación sigue presente, sin cambios')
+    verificar(!!header2TextoH && (header2TextoH.match(/<w:t[ >]/g) || []).length === 0, 'H-A8. header2 de la hoja sigue siendo propio y realmente vacío (sin ningún <w:t> con texto)')
+  }
+
+  // H-B. Documento SIN hoja (seccionesAdicionales ausente): el pie de
+  // firma se conserva EXACTAMENTE igual — sin regresión.
+  {
+    const bufferSinHoja = await generarWordBuffer(TEXTO_PLANEACION_PRUEBA, PERFIL_PRUEBA, null)
+    const zipSinHoja = await JSZip.loadAsync(bufferSinHoja)
+    const xmlSinHoja = (await zipSinHoja.file('word/document.xml')?.async('string')) ?? ''
+
+    verificar(xmlSinHoja.includes('Docente de grupo'), 'H-B1. Sin hoja adjunta: "Docente de grupo" SIGUE apareciendo (comportamiento preexistente conservado)')
+    verificar(xmlSinHoja.includes('______________________________'), 'H-B2. Sin hoja adjunta: la línea de firma SIGUE apareciendo')
+    verificar(xmlSinHoja.includes(PERFIL_PRUEBA.nombre), 'H-B3. Sin hoja adjunta: el nombre del docente SIGUE apareciendo en el pie de firma')
+  }
+
+  // H-C. Regresión explícita del layout de la tabla de la hoja (27
+  // alumnos reales, 5 indicadores, columnWidths=14440, Alumno=4621,
+  // landscape, tabla nativa) — reconstruida de forma independiente en
+  // este bloque para no depender de que el bloque G no cambie.
+  {
+    const nombresRoster27H = [
+      'Dylan Yosueth Hernández Sandoval', 'Francisco Manuel Hernández González', 'Génesis Fernanda Aguirre González',
+      'Gissel Abdali Grajeda Hernández', 'Halit Eduardo Trejo Álvarez', 'Itzae Manuel Vallejo Munguía', 'Josemaría Arjona Ramos',
+      'Kimberly Guadalupe Montes Alcántar', 'Sofía Alejandra Delgadillo Pérez',
+      'Audrey Abad Rojas', 'Axel Jesús Bañuelos Álvarez', 'Axel Ricardo Vargas Núñez', 'Carlos Jossel Ortega Trejo',
+      'Celina Tello González', 'Eileen Danelly Abraham Benítez', 'Joshua Daniel Herrera Alcántar',
+      'Keily Alessandra Estrada Guardado', 'Lucio Alberto Alonso Arellano', 'Luis Ángel Mora Canales',
+      'María Alejandra Agraz Toriz', 'María José Delgado Hernández', 'María Paula Inés Bueno', 'Maximiliano Lepe Chávez',
+      'Regina Yazmín Espinoza Meza', 'Salvador Emiliano Páez Álvarez', 'Santiago Medina Romero', 'Sebastián Zosa Bernal',
+    ]
+    verificar(nombresRoster27H.length === 27, `H-C0. Roster de regresión con 27 nombres reales (encontrados: ${nombresRoster27H.length})`)
+    const datosHC = construirDatosPrueba(27, 'SG-262N')
+    const seccionHC = construirSeccionHojaEvaluacionWord(datosHC, PERFIL_PRUEBA, null)
+    verificar(seccionHC.properties?.page?.size?.orientation === 'landscape', 'H-C1. La sección de la hoja sigue pidiendo orientación landscape')
+
+    const bufferHC = await generarWordBuffer(TEXTO_PLANEACION_PRUEBA, PERFIL_PRUEBA, null, undefined, [seccionHC])
+    const zipHC = await JSZip.loadAsync(bufferHC)
+    const xmlHC = (await zipHC.file('word/document.xml')?.async('string')) ?? ''
+    const tblStartHC = xmlHC.indexOf('<w:tbl>')
+    const tblEndHC = xmlHC.indexOf('</w:tbl>') + '</w:tbl>'.length
+    const tblHC = xmlHC.slice(tblStartHC, tblEndHC)
+
+    verificar(datosHC.alumnos.every((a) => xmlHC.includes(a.nombre)), 'H-C2. Los 27 alumnos siguen presentes en el documento')
+    verificar(datosHC.indicadores.length === 5 && datosHC.indicadores.every((i) => xmlHC.includes(i.indicador_especifico)), 'H-C3. Los 5 indicadores siguen presentes')
+    verificar(/<w:tblLayout w:type="fixed"\/>/.test(tblHC), 'H-C4. TableLayoutType.FIXED sigue presente en la tabla (<w:tblLayout w:type="fixed"/>)')
+    const gridColsHC = (tblHC.match(/<w:gridCol[^/]*\/>/g) || []).map((g) => Number(g.match(/w:w="(\d+)"/)?.[1] ?? 0))
+    verificar(gridColsHC.reduce((a, b) => a + b, 0) === 14440, `H-C5. Los columnWidths siguen sumando exactamente 14440 twips (obtenida: ${gridColsHC.reduce((a, b) => a + b, 0)})`)
+    verificar(gridColsHC[1] === 4621, `H-C6. La columna Alumno sigue en 4621 twips (obtenido: ${gridColsHC[1]})`)
+    const pgSzsHC = xmlHC.match(/<w:pgSz[^/]*\/>/g) || []
+    verificar(pgSzsHC.some((p) => p.includes('w:w="15840"') && p.includes('w:h="12240"') && p.includes('w:orient="landscape"')), 'H-C7. La orientación landscape (Carta apaisada 15840×12240) de la hoja sigue intacta')
+    verificar(!xmlHC.includes('<w:drawing') && !xmlHC.includes('<pic:pic'), 'H-C8. La tabla sigue siendo nativa, sin rasterización')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)
