@@ -20,6 +20,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { execSync } from 'node:child_process'
 import JSZip from 'jszip'
 import { PDFDocument } from 'pdf-lib'
 import {
@@ -196,6 +197,43 @@ async function main() {
       verificar(documentoXml.includes('Alumno Prueba Uno') && documentoXml.includes('Alumno Prueba Dos') && documentoXml.includes('Alumno Prueba Tres'), 'B11. El .docx compuesto contiene el roster de prueba real (los 3 alumnos)')
       verificar(documentoXml.includes('Indicador de prueba uno') && documentoXml.includes('Indicador de prueba dos'), 'B12. El .docx compuesto contiene los indicadores de prueba reales')
       verificar(documentoXml.includes('Proyecto de Prueba Composición') && documentoXml.includes('Planeación de prueba'), 'B13. El .docx compuesto contiene TANTO el contenido de la planeación COMO el de la hoja — un solo archivo, dos partes')
+
+      // --- AJUSTE DE MAQUETACIÓN — Carta landscape explícita + spacing
+      // explícito en la tabla (ver auditoría "la hoja de 27 alumnos se
+      // derramaba a una segunda página"). Verificado sobre el pgSz/
+      // spacing REALMENTE serializados, no sobre la intención de
+      // entrada. ---
+      const pgSzs = documentoXml.match(/<w:pgSz[^/]*\/>/g) || []
+      verificar(pgSzs.length === 2, `B14. El documento compuesto tiene exactamente 2 <w:pgSz> reales (una por sección) — encontrados: ${pgSzs.length}`)
+      verificar(
+        pgSzs.some((p) => p.includes('w:w="15840"') && p.includes('w:h="12240"') && p.includes('w:orient="landscape"')),
+        'B15. La sección de la hoja tiene w:pgSz w:w="15840" w:h="12240" w:orient="landscape" — Carta apaisada real (11×8.5in), no el default A4 de la librería'
+      )
+      const cantidadLandscape = pgSzs.filter((p) => p.includes('w:orient="landscape"')).length
+      verificar(cantidadLandscape === 1, `B16. Solo UNA sección (la de la hoja) es landscape — la sección de planeación no fue alterada (encontradas landscape: ${cantidadLandscape})`)
+
+      const tblStartIdx = documentoXml.indexOf('<w:tbl>')
+      const tblEndIdx = documentoXml.indexOf('</w:tbl>') + '</w:tbl>'.length
+      const tablaXml = documentoXml.slice(tblStartIdx, tblEndIdx)
+      const spacingsEnTabla = tablaXml.match(/<w:spacing[^/]*\/>/g) || []
+      verificar(spacingsEnTabla.length > 0, 'B17. Los párrafos de la tabla tienen <w:spacing> explícito (no dependen del default del visor)')
+      verificar(
+        spacingsEnTabla.every((s) => s.includes('w:before="0"') && s.includes('w:after="0"')),
+        'B18. TODOS los párrafos de celda tienen before=0 y after=0 explícitos — ninguno hereda el espaciado "Normal" del visor'
+      )
+      verificar(
+        spacingsEnTabla.every((s) => /w:lineRule="exact"/.test(s) && /w:line="\d+"/.test(s)),
+        'B19. TODOS los párrafos de celda fijan line/lineRule="exact" — altura de línea determinista, no arbitraria'
+      )
+      const valoresLine = new Set(spacingsEnTabla.map((s) => s.match(/w:line="(\d+)"/)?.[1]))
+      verificar(valoresLine.size === 1, `B20. El valor de line es el MISMO para todas las celdas (una sola constante de tamaño de fuente) — valores encontrados: ${[...valoresLine].join(',')}`)
+      const lineEncontrado = Number([...valoresLine][0])
+      const tamanoFuenteEsperado = 9 // TAMANO_CELDA_TABLA=18 medios-puntos = 9pt real
+      const lineEsperado = Math.round(tamanoFuenteEsperado * 1.2 * 20)
+      verificar(lineEncontrado === lineEsperado, `B21. El valor de line (${lineEncontrado}) coincide EXACTAMENTE con tamaño_fuente(9pt) × 1.2 × 20 = ${lineEsperado} — derivado del tamaño real de fuente, nunca un número arbitrario`)
+
+      const tcMars = tablaXml.match(/<w:tcMar>[\s\S]*?<\/w:tcMar>/g) || []
+      verificar(tcMars.length > 0, 'B22. Las celdas de la tabla tienen <w:tcMar> explícito (márgenes de celda deterministas, no heredados del visor)')
     }
   }
 
@@ -299,6 +337,141 @@ async function main() {
     verificar(!/documentoPdf = null/.test(bloqueFase45), 'E5 (escenario PDF-ok/Word-falla). Nada dentro de Fase 4.5 reinicia documentoPdf a null — un PDF ya asignado sobrevive a un fallo posterior de Word')
     // Escenario 3: ambos funcionan → Fase 5 los persiste solo si están presentes (spread condicional ya verificado en tests 14-17).
     verificar(/\.\.\.\(documentoWord \? \{ documento_word: documentoWord \} : \{\}\)/.test(aprobarBorradorSinComentarios) && /\.\.\.\(documentoPdf \? \{ documento_pdf: documentoPdf \} : \{\}\)/.test(aprobarBorradorSinComentarios), 'E6 (escenario ambos-ok / ambos-fallan). Fase 5 persiste cada documento SOLO si quedó asignado — ambos presentes se guardan ambos, ambos ausentes no se guarda ninguno')
+  }
+
+  // ============================================================
+  // F. AJUSTE DE MAQUETACIÓN — caso 27 (real), caso pequeño, caso
+  // grande, y presupuesto vertical estructural. Ver auditoría "la
+  // hoja de 27 alumnos se derramaba a una segunda página en Word".
+  // ============================================================
+
+  // F0 — ¿existe un renderer OOXML real disponible LOCALMENTE (LibreOffice/
+  // soffice)? Puramente informativo: si no existe, estas pruebas NUNCA
+  // afirman un pageCount real — solo verifican estructura OOXML y un
+  // presupuesto vertical aritmético, dejando explícito que la
+  // confirmación visual final requiere el Word real en el iPhone.
+  let rendererDisponible: string | null = null
+  for (const candidato of ['soffice', 'libreoffice']) {
+    try {
+      execSync(`which ${candidato}`, { stdio: 'pipe' })
+      rendererDisponible = candidato
+      break
+    } catch {
+      // no encontrado, se prueba el siguiente candidato
+    }
+  }
+  console.log(rendererDisponible ? `ℹ F0. Renderer OOXML local encontrado: ${rendererDisponible} — se podría usar para un pageCount real.` : 'ℹ F0. No se encontró soffice/libreoffice en este entorno local — el pageCount real NO puede confirmarse aquí. Las pruebas de este bloque son estructurales/aritméticas, nunca una afirmación de páginas reales. La confirmación visual final requiere Word real (iPhone).')
+
+  function construirDatosPrueba(cantidadAlumnos: number, sgPrueba: string): DatosHojaSeguimiento {
+    return {
+      nombreProyecto: 'Con pan, festejamos y convivimos',
+      camposFormativos: ['Lenguajes'],
+      trimestreNombre: null,
+      fechaInicio: '2026-10-05',
+      fechaFin: '2026-10-05',
+      identificadorVisible: sgPrueba,
+      indicadores: [
+        { indicador_especifico: 'Narra oralmente con fluidez y claridad una tradición familiar o comunitaria relacionada con el pan', aspecto_general: 'logro_aprendizaje' },
+        { indicador_especifico: 'Produce un texto descriptivo escrito con oraciones completas', aspecto_general: 'producto_evidencia' },
+        { indicador_especifico: 'Aplica correctamente el uso de mayúsculas al inicio de oración y en nombres propios', aspecto_general: 'logro_aprendizaje' },
+        { indicador_especifico: 'Expresa con vocabulario propio el valor cultural y simbólico del pan', aspecto_general: 'aplicacion_aprendizajes' },
+        { indicador_especifico: 'Muestra disposición para escuchar y valorar las tradiciones de sus compañeros', aspecto_general: 'participacion_colaboracion' },
+      ],
+      alumnos: Array.from({ length: cantidadAlumnos }, (_, i) => ({ nombre: `Alumno Apellido Apellido ${i + 1}`, posicion: i + 1 })),
+    }
+  }
+
+  // F1 — CASO 27 (el caso real E2E): nombres de longitud realista,
+  // 5 indicadores reales, SG real de la prueba E2E.
+  {
+    const datos27 = construirDatosPrueba(27, 'SG-262N')
+    const seccion = construirSeccionHojaEvaluacionWord(datos27, PERFIL_PRUEBA, null)
+    const buffer = await generarWordBuffer('# Planeacion\n\nContenido real.\n', PERFIL_PRUEBA, null, undefined, [seccion])
+    const zip = await JSZip.loadAsync(buffer)
+    const xml = (await zip.file('word/document.xml')?.async('string')) ?? ''
+
+    verificar(datos27.alumnos.every((a) => xml.includes(a.nombre)), 'F1a (27 alumnos). Los 27 nombres están presentes en el documento')
+    const indices27 = datos27.alumnos.map((a) => xml.indexOf(a.nombre))
+    verificar(indices27.every((idx, i) => i === 0 || idx > indices27[i - 1]), 'F1b (27 alumnos). Los 27 nombres aparecen en orden ascendente de posición')
+    verificar(datos27.indicadores.every((ind) => xml.includes(ind.indicador_especifico)), 'F1c (27 alumnos). Los 5 indicadores completos están presentes')
+    verificar((xml.match(/SG-262N/g) || []).length === 1, 'F1d (27 alumnos). SG-262N aparece exactamente una vez')
+    verificar((xml.match(/<w:tbl>/g) || []).length === 1, 'F1e (27 alumnos). Existe una sola tabla nativa real')
+    verificar(!xml.includes('<w:drawing') && !xml.includes('<pic:pic'), 'F1f (27 alumnos). Sin rasterización — cero imágenes/drawings')
+    verificar((xml.match(/<w:pgSz[^/]*w:orient="landscape"[^/]*\/>/g) || []).length === 1 || /w:orient="landscape"/.test(xml), 'F1g (27 alumnos). La sección de la hoja sigue siendo landscape')
+  }
+
+  // F2 — CASO PEQUEÑO (5 alumnos): misma estructura, sin deformaciones
+  // introducidas por el ajuste (anchos de columna siguen sumando lo
+  // mismo, celdas siguen presentes, nada se rompe con pocas filas).
+  {
+    const datos5 = construirDatosPrueba(5, 'SG-PEQ1')
+    const seccion = construirSeccionHojaEvaluacionWord(datos5, PERFIL_PRUEBA, null)
+    const buffer = await generarWordBuffer('# Planeacion\n\nContenido real.\n', PERFIL_PRUEBA, null, undefined, [seccion])
+    const zip = await JSZip.loadAsync(buffer)
+    const xml = (await zip.file('word/document.xml')?.async('string')) ?? ''
+
+    verificar(datos5.alumnos.every((a) => xml.includes(a.nombre)), 'F2a (5 alumnos). Los 5 nombres están presentes')
+    verificar((xml.match(/<w:tr\b/g) || []).length === 6, `F2b (5 alumnos). La tabla tiene exactamente 6 filas (1 encabezado + 5 alumnos) — encontradas: ${(xml.match(/<w:tr\b/g) || []).length}`)
+    verificar((xml.match(/w:type="pct" w:w="32%"/g) || []).length >= 1, 'F2c (5 alumnos). El ancho de la columna Alumno (32%) se conserva igual que con 27 — sin recalcular proporciones por tener menos filas')
+    verificar((xml.match(/SG-PEQ1/g) || []).length === 1, 'F2d (5 alumnos). SG aparece exactamente una vez')
+  }
+
+  // F3 — CASO GRANDE: roster suficientemente grande para que, en la
+  // práctica, exceda una sola página (comportamiento multipágina
+  // natural, nunca bloqueado por código). NO se afirma un pageCount
+  // real aquí (no hay renderer local, ver F0) — solo se confirma que
+  // NINGÚN alumno se pierde/trunca y que el código no contiene ningún
+  // mecanismo que fuerce artificialmente una sola página (saltos
+  // manuales, recorte de contenido, reducción de fuente condicional).
+  {
+    const datosGrande = construirDatosPrueba(90, 'SG-GRANDE')
+    const seccion = construirSeccionHojaEvaluacionWord(datosGrande, PERFIL_PRUEBA, null)
+    const buffer = await generarWordBuffer('# Planeacion\n\nContenido real.\n', PERFIL_PRUEBA, null, undefined, [seccion])
+    const zip = await JSZip.loadAsync(buffer)
+    const xml = (await zip.file('word/document.xml')?.async('string')) ?? ''
+
+    verificar(datosGrande.alumnos.every((a) => xml.includes(a.nombre)), 'F3a (90 alumnos). Los 90 alumnos están presentes — ninguno se pierde ni se trunca con un roster grande')
+    verificar((xml.match(/<w:tr\b/g) || []).length === 91, `F3b (90 alumnos). La tabla tiene 91 filas reales (1 encabezado + 90) — sin recorte artificial (encontradas: ${(xml.match(/<w:tr\b/g) || []).length})`)
+    verificar(componerSinComentarios.includes('tableHeader: true'), 'F3c. tableHeader:true sigue presente — si el visor pagina esta tabla, el encabezado de columnas se repetirá en cada página nueva')
+    verificar(!/w:br[^>]*w:type="page"/.test(xml), 'F3d. No se insertó ningún salto de página manual/artificial')
+    verificar(!/size:\s*Math\.max\(|size:\s*Math\.min\(/.test(componerSinComentarios), 'F3e. El código no reduce el tamaño de fuente condicionalmente según la cantidad de alumnos (nunca "shrink to fit")')
+  }
+
+  // F4 — PRESUPUESTO VERTICAL (estimación estructural/aritmética, NO
+  // un reemplazo de la prueba visual real): con los valores REALES ya
+  // confirmados en el código (fuente de celda 9pt, factor de
+  // interlineado 1.2, márgenes de página 700 twips/lado, márgenes de
+  // celda 20 twips arriba/abajo), calcula si 27 filas + el encabezado
+  // real de la hoja deberían caber dentro del alto disponible de una
+  // página Carta landscape (12240 twips = 612pt).
+  {
+    const altoCartaLandscapePt = 12240 / 20 // 612pt, igual a ALTO_PAGINA del PDF
+    const margenPaginaPt = (700 / 20) * 2 // top+bottom
+    const disponiblePt = altoCartaLandscapePt - margenPaginaPt // 542pt
+
+    const alturaLineaCeldaPt = Math.round(9 * 1.2 * 20) / 20 // 216 twips = 10.8pt
+    const margenCeldaPt = (20 / 20) * 2 // top+bottom = 2pt
+    const alturaFilaPt = alturaLineaCeldaPt + margenCeldaPt // 12.8pt
+
+    // Encabezado real: 10 párrafos, altura de línea por tamaño real +
+    // los `after` explícitos que el propio código ya declara.
+    const lineas = [
+      { size: 22, after: 0 }, // escuela
+      { size: 16, after: 160 }, // docente/grado/grupo/ciclo
+      { size: 24, after: 100 }, // proyecto + SG (tamaño mayor de los 2 runs)
+      { size: 16, after: 100 }, // meta
+      { size: 16, after: 100 }, // leyenda
+      { size: 16, after: 40 }, { size: 16, after: 40 }, { size: 16, after: 40 }, { size: 16, after: 40 }, { size: 16, after: 40 }, // 5 indicadores
+    ]
+    const alturaEncabezadoPt = lineas.reduce((acc, l) => acc + Math.round((l.size / 2) * 1.2 * 20) / 20 + l.after / 20, 0)
+
+    const alturaTabla27Pt = 28 * alturaFilaPt // header + 27 alumnos
+    const totalEstimadoPt = alturaEncabezadoPt + alturaTabla27Pt
+
+    verificar(
+      totalEstimadoPt <= disponiblePt,
+      `F4. Estimación estructural: encabezado(${alturaEncabezadoPt.toFixed(1)}pt) + 28 filas(${alturaTabla27Pt.toFixed(1)}pt) = ${totalEstimadoPt.toFixed(1)}pt <= disponible en Carta landscape (${disponiblePt.toFixed(1)}pt) — el caso de 27 alumnos debería caber en una sola página. Esto es una estimación aritmética a partir de los valores reales del código, NO una confirmación visual — esa requiere abrir el Word real.`
+    )
   }
 
   console.log('')
