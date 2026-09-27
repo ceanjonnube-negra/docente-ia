@@ -224,6 +224,23 @@ export async function aprobarBorradorPlaneacion(
   historial: TurnoHistorial[],
   conversacionId: string | null
 ): Promise<ResultadoAprobacion> {
+  // INSTRUMENTACIÓN DE TIEMPOS (ver auditoría "turno real Aprueba y
+  // guarda esa planeación — 6 minutos de espera sin respuesta visible
+  // en iPhone"): esta rama nunca medía su propia duración por fase
+  // (a diferencia de la rama de streaming, que sí registra
+  // duracionStreamMs/duracionTotalMs) — sin eso, era imposible saber
+  // si el tiempo lo domina Supabase, Storage, la composición de Word/
+  // PDF, o algo distinto, sin adivinar. Solo mide (Date.now(), sin
+  // I/O adicional): nunca cambia qué se ejecuta ni en qué orden.
+  // Nunca imprime contenido de la planeación, nombres de alumnos,
+  // CURP, ni URLs firmadas — solo el nombre de la fase y milisegundos.
+  const tInicioAprobar = Date.now()
+  let tUltimaFase = tInicioAprobar
+  const marcarFase = (fase: string): void => {
+    const ahora = Date.now()
+    console.log(`[APROBAR_PLANEACION:TIEMPO] fase=${fase} duracionMs=${ahora - tUltimaFase} acumuladoMs=${ahora - tInicioAprobar}`)
+    tUltimaFase = ahora
+  }
   if (!sesion.grupo_activo_id) {
     return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: 'No tengo un grupo activo configurado para guardar la planeación.' }
   }
@@ -276,6 +293,7 @@ export async function aprobarBorradorPlaneacion(
       console.log(`[PLANEACION_GENERAR][aprobar] snapshot_v4_usado=false candidato_presente=${candidato != null}`)
     }
   }
+  marcarFase('fase0_snapshot')
 
   // PLN-1E-E — precedencia: un V4 válido para esta conversación/grupo
   // SIEMPRE gana sobre el historial, sin importar qué haya en el
@@ -309,7 +327,9 @@ export async function aprobarBorradorPlaneacion(
     // "ya guardada de verdad" (version>=1) de "hay un intento anterior
     // sin terminar" (version=0, se recupera) de "no existe todavía".
     const existente = await buscarPorHuella(sb, sesion, resumen)
+    marcarFase('chequeo_ya_guardada')
     if (existente && existente.version >= 1) {
+      marcarFase('total')
       return { ok: false, codigo: 'YA_GUARDADA', mensaje: 'Esta planeación ya está guardada.' }
     }
 
@@ -354,10 +374,13 @@ export async function aprobarBorradorPlaneacion(
       )
       if (!creado.ok) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la fila temporal:', creado.error)
+        marcarFase('fase1_fallo')
+        marcarFase('total')
         return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
       }
       planeacionId = creado.datos.id
     }
+    marcarFase('fase1')
 
     // Fase 2: planeacion_proyectos — se crea solo si no existe ya
     // (recuperación). Se trae también `evaluacion` (no solo `id`) para
@@ -388,10 +411,13 @@ export async function aprobarBorradorPlaneacion(
         .single()
       if (errorProyecto || !proyectoPlaneacionCreado) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la relación:', errorProyecto)
+        marcarFase('fase2_fallo')
+        marcarFase('total')
         return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
       }
       proyectoPlaneacionId = proyectoPlaneacionCreado.id
     }
+    marcarFase('fase2')
 
     // Fase 3: proyectos_seguimiento — reutiliza la relación disponible
     // (Seguimiento integrado en Planeación → Proyecto → Seguimiento →
@@ -424,6 +450,8 @@ export async function aprobarBorradorPlaneacion(
           .eq('id', proyectoSeguimientoId)
         if (errorVinculoLegado) {
           console.error('[PLANEACION_GENERAR][aprobar] fallo vinculando el proyecto legado a planeacion_proyecto_id:', errorVinculoLegado)
+          marcarFase('fase3_fallo')
+          marcarFase('total')
           return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
         }
       } else if (vinculoExistente !== proyectoPlaneacionId) {
@@ -433,6 +461,8 @@ export async function aprobarBorradorPlaneacion(
         // no son identidad permanente). Detiene la aprobación con un
         // error controlado en vez de reasignar.
         console.error(`[PLANEACION_GENERAR][aprobar] conflicto: proyecto ${proyectoSeguimientoId} ya vinculado a planeacion_proyecto ${vinculoExistente}, distinto de ${proyectoPlaneacionId}`)
+        marcarFase('fase3_conflicto')
+        marcarFase('total')
         return { ok: false, codigo: 'VINCULO_PLANEACION_PROYECTO_EN_CONFLICTO', mensaje: 'Este proyecto de seguimiento ya está vinculado a otra actividad de planeación — no se puede reasignar automáticamente.' }
       }
       // vinculoExistente === proyectoPlaneacionId: ya coincide, no se escribe nada.
@@ -455,12 +485,15 @@ export async function aprobarBorradorPlaneacion(
         .single()
       if (errorProyectoSeguimiento || !proyectoSeguimiento) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando proyectos_seguimiento:', errorProyectoSeguimiento)
+        marcarFase('fase3_fallo')
+        marcarFase('total')
         return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
       }
       proyectoSeguimientoId = proyectoSeguimiento.id
       hojaIdExistente = null
     }
     void hojaIdExistente // la recuperación real la hace generarYGuardarHojaSeguimiento por proyecto_id
+    marcarFase('fase3')
 
     // Fase 4: hoja de evaluación DEFINITIVA + PDF + Storage — mismo
     // generador y misma función que ya usa Seguimiento (Fase 2),
@@ -488,6 +521,8 @@ export async function aprobarBorradorPlaneacion(
       // completamente aprobada" se cumple sin necesitar un estado
       // técnico adicional.
       console.error('[PLANEACION_GENERAR][aprobar] fallo generando la hoja de evaluación:', resultadoHoja.error)
+      marcarFase('fase4_hoja_fallo')
+      marcarFase('total')
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
     // hojaId aislado en un const propio (no resultadoHoja.hojaId
@@ -495,6 +530,7 @@ export async function aprobarBorradorPlaneacion(
     // dentro de las funciones de Fase 4.5 definidas más abajo en este
     // mismo scope — este valor ya es un string simple, sin ambigüedad.
     const hojaId: string = resultadoHoja.hojaId
+    marcarFase('fase4_hoja')
 
     // Fase 4.5: Word + PDF DEFINITIVOS de la planeación, cada uno con
     // la hoja de evaluación CANÓNICA anexada al final (COMPOSICIÓN
@@ -613,6 +649,7 @@ export async function aprobarBorradorPlaneacion(
             console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo el Word definitivo con su hoja (no bloquea la aprobación ni al PDF; documento_word queda sin registrar, nunca se guarda incompleto):', e)
           }
         }
+        marcarFase('fase4_5_word')
         if (!documentoPdf) {
           try {
             const { hojaCanonica: hoja } = await obtenerHojaYProyectoCanonicos()
@@ -629,6 +666,7 @@ export async function aprobarBorradorPlaneacion(
             console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo el PDF definitivo con su hoja (no bloquea la aprobación ni al Word; documento_pdf queda sin registrar, nunca se guarda incompleto):', e)
           }
         }
+        marcarFase('fase4_5_pdf')
       }
     }
 
@@ -681,8 +719,11 @@ export async function aprobarBorradorPlaneacion(
       .eq('planeacion_id', planeacionId)
     if (errorVinculo) {
       console.error('[PLANEACION_GENERAR][aprobar] fallo vinculando la hoja a planeacion_proyectos:', errorVinculo)
+      marcarFase('fase5_fallo')
+      marcarFase('total')
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
+    marcarFase('fase5')
 
     // Fase 6: promoción — el único punto en el que la planeación se
     // vuelve visible de verdad, ahora que TODO (planeación, proyecto,
@@ -690,8 +731,12 @@ export async function aprobarBorradorPlaneacion(
     const confirmada = await confirmarPlaneacion({ supabase: sb }, planeacionId, ESTADO_FINAL_TRAS_APROBAR)
     if (!confirmada.ok) {
       console.error('[PLANEACION_GENERAR][aprobar] fallo confirmando la planeación:', confirmada.error)
+      marcarFase('fase6_fallo')
+      marcarFase('total')
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
+    marcarFase('fase6_confirmar')
+    marcarFase('total')
 
     return {
       ok: true,
@@ -713,6 +758,8 @@ export async function aprobarBorradorPlaneacion(
     }
   } catch (e) {
     console.error('[PLANEACION_GENERAR][aprobar] excepción no controlada:', e)
+    marcarFase('excepcion')
+    marcarFase('total')
     return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
   }
 }

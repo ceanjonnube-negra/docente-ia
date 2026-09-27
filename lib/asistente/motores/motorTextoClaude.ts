@@ -76,21 +76,37 @@ const TIMEOUT_SESION_MS = 12_000
 // planeación y cualquier generación larga de Nivel4, sin que el
 // cliente pueda saber de antemano cuál de las dos es. Evidencia real
 // (E2E validada): una creación de planeación tardó 61844ms de
-// streaming, muy por encima de los 35s anteriores. Se reutiliza
-// deliberadamente el MISMO techo que TIMEOUT_FETCH_DOCUMENTO_MS (ver
-// su comentario) en vez de una constante nueva — mismo criterio real
-// ya validado ahí. Sigue siendo solo un TECHO de espera, nunca una
-// demora artificial: se libera en cuanto el servidor responde (ver más
-// abajo), una respuesta rápida sigue terminando en el tiempo que de
-// verdad tarda.
-const TIMEOUT_FETCH_MS = 130_000
+// streaming, muy por encima de los 35s anteriores.
+//
+// CORRECCIÓN — "turno real Aprueba y guarda esa planeación, 6 minutos
+// de espera sin respuesta visible en iPhone" (auditoría READ-ONLY
+// aprobada por separado): accion_planeacion_generar==='aprobar'
+// (ejecuta aprobarBorradorPlaneacion — Fases 1-6: hoja + Word/PDF
+// definitivos + Supabase, secuencial, sin llamar a Claude) también cae
+// en este mismo bucket por default — el cliente NUNCA tiene, antes del
+// fetch, ninguna señal determinista de que este turno específico es
+// una aprobación (esa clasificación la resuelve Nivel0 del lado del
+// servidor; inventar aquí una heurística de texto sobre "aprueba"/
+// "guarda" sería frágil y redundante con esa clasificación real). El
+// valor anterior (130s) era MENOR que app/api/chat/route.ts
+// (export const maxDuration = 180) — una contradicción real y
+// demostrada: el cliente podía abandonar una petición de aprobación
+// válida mientras el servidor todavía tenía presupuesto oficial para
+// terminarla, dejando la respuesta de confirmación sin destino aunque
+// la planeación ya hubiera quedado guardada. 190s = maxDuration (180s)
+// + 10s de margen — nunca menor al techo real del servidor para
+// ningún turno que dependa de este bucket. Sigue siendo solo un TECHO
+// de espera, nunca una demora artificial: se libera en cuanto el
+// servidor responde (ver más abajo), una respuesta rápida sigue
+// terminando en el tiempo que de verdad tarda.
+const TIMEOUT_FETCH_MS = 190_000
 // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — pensado originalmente como
 // timeout AMPLIADO exclusivo de Preview con el gate activo (ver
 // "instrumentación temporal de tiempos y consumo"), para dejar que una
 // petición diagnóstica termine de verdad y así medir dónde se va el
 // tiempo real. CORRECCIÓN — "proteger timeout de creación de
 // planeaciones": Planeación ya NO depende de este gate para sobrevivir
-// (TIMEOUT_FETCH_MS por sí solo ya es 130s, mayor que este valor) — se
+// (TIMEOUT_FETCH_MS por sí solo ya es 190s, mayor que este valor) — se
 // conserva únicamente como PISO vía Math.max() más abajo, nunca debe
 // dar MENOS tiempo que el timeout normal aunque hoy quede dominado
 // numéricamente por él. El resto del diagnóstico (roundtrip, trazas,
@@ -117,7 +133,7 @@ const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
 // los ~90.4s (TIMEOUT_FETCH_DIAGNOSTICO_MS, el único timeout que
 // aplicaba a una generación de imagen estándar con diagnóstico
 // activo; SIN diagnóstico habría sido el entonces vigente
-// TIMEOUT_FETCH_MS de 35s — peor aún; hoy TIMEOUT_FETCH_MS ya es 130s,
+// TIMEOUT_FETCH_MS de 35s — peor aún; hoy TIMEOUT_FETCH_MS ya es 190s,
 // ver su comentario) pero el servidor terminó de generar y persistir la imagen real
 // en Supabase/Storage hasta los ~111.4s — el pipeline SÍ funcionó,
 // solo llegó tarde para el timeout que tenía asignado. La migración a
@@ -370,14 +386,14 @@ export class MotorTextoClaude implements MotorConversacional {
       // responde antes, termina antes; si nunca responde, sigue
       // abortando igual que siempre.
       // CORRECCIÓN — "proteger timeout de creación de planeaciones":
-      // TIMEOUT_FETCH_MS (rama final de abajo) ya es 130s por sí solo,
+      // TIMEOUT_FETCH_MS (rama final de abajo) ya es 190s por sí solo,
       // igual o mayor que TIMEOUT_FETCH_DIAGNOSTICO_MS (90s) — el gate
       // de diagnóstico (NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO) YA NO
       // decide si una planeación sobrevive o no; eso ahora lo garantiza
       // el timeout base en cualquier entorno, incluida Production.
       // Math.max() evita una inversión real: sin él, activar el
       // diagnóstico daría MENOS tiempo (90s) que tenerlo apagado
-      // (130s) — el gate nunca debe reducir el margen respecto al
+      // (190s) — el gate nunca debe reducir el margen respecto al
       // timeout normal, solo puede igualarlo o (si en el futuro
       // TIMEOUT_FETCH_MS bajara de 90s otra vez) ampliarlo.
       temporizadorFetch = setTimeout(
