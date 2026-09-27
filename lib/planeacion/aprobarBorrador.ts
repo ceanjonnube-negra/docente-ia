@@ -52,6 +52,7 @@ export type CodigoErrorAprobacion =
   | 'GRUPO_NO_DISPONIBLE'
   | 'YA_GUARDADA'
   | 'ERROR_GUARDADO'
+  | 'VINCULO_PLANEACION_PROYECTO_EN_CONFLICTO'
 
 // Un formato definitivo (Word o PDF) de la planeación ya generado y
 // subido a Storage — mismo shape que ArchivoGenerado
@@ -161,15 +162,19 @@ async function buscarPorHuella(sb: SupabaseClient, sesion: SesionContexto, resum
   return (data as FilaHuella | null) ?? null
 }
 
-type FilaProyectoSeguimiento = { id: string; hoja_id: string | null }
+type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; planeacion_proyecto_id: string | null }
 
 // Misma huella (docente + grupo + nombre + fechas) aplicada a
 // proyectos_seguimiento — recupera un intento anterior incompleto en
-// vez de crear un proyecto duplicado.
+// vez de crear un proyecto duplicado. La huella sigue sirviendo para
+// LOCALIZAR el proyecto (transición histórica, ver vínculo canónico
+// Planeación -> Proyecto de seguimiento), nunca para reasignar
+// planeacion_proyecto_id una vez que ya tiene un valor propio — ver
+// el fail-closed en Fase 3.
 async function buscarProyectoSeguimientoPorHuella(sb: SupabaseClient, sesion: SesionContexto, resumen: ResumenBorrador): Promise<FilaProyectoSeguimiento | null> {
   const { data } = await sb
     .from('proyectos_seguimiento')
-    .select('id, hoja_id')
+    .select('id, hoja_id, planeacion_proyecto_id')
     .eq('docente_id', sesion.docente_id)
     .eq('grupo_id', sesion.grupo_activo_id as string)
     .eq('nombre', resumen.nombre)
@@ -349,25 +354,70 @@ export async function aprobarBorradorPlaneacion(
       console.error('[PLANEACION_GENERAR][aprobar] fallo verificando el proyecto existente:', errorBusquedaProyecto)
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
-    if (!proyectoPlaneacionExistente) {
-      const { error: errorProyecto } = await sb.from('planeacion_proyectos').insert(construirProyecto(resumen, planeacionId))
-      if (errorProyecto) {
+    // proyectoPlaneacionId: el ID real de ESTE planeacion_proyecto,
+    // recuperado (rama existente) o capturado del propio INSERT (rama
+    // nueva) — antes de este ajuste la rama nueva descartaba el id
+    // devuelto por el insert; ahora se captura porque Fase 3 lo
+    // necesita para escribir proyectos_seguimiento.planeacion_proyecto_id.
+    let proyectoPlaneacionId: string
+    if (proyectoPlaneacionExistente) {
+      proyectoPlaneacionId = proyectoPlaneacionExistente.id
+    } else {
+      const { data: proyectoPlaneacionCreado, error: errorProyecto } = await sb
+        .from('planeacion_proyectos')
+        .insert(construirProyecto(resumen, planeacionId))
+        .select('id')
+        .single()
+      if (errorProyecto || !proyectoPlaneacionCreado) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la relación:', errorProyecto)
         return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
       }
+      proyectoPlaneacionId = proyectoPlaneacionCreado.id
     }
 
     // Fase 3: proyectos_seguimiento — reutiliza la relación disponible
     // (Seguimiento integrado en Planeación → Proyecto → Seguimiento →
-    // Hoja de evaluación, nunca como módulo aparte). Vinculado por la
-    // MISMA huella (docente + grupo + nombre + fechas) — sin columna
-    // planeacion_id (no existe en el esquema, no se agrega ninguna).
+    // Hoja de evaluación, nunca como módulo aparte). Localizado por la
+    // MISMA huella (docente + grupo + nombre + fechas) — la huella
+    // sigue sirviendo para ENCONTRAR el proyecto (transición
+    // histórica), pero NUNCA para reasignar planeacion_proyecto_id una
+    // vez que ya tiene un valor propio: ver vínculo canónico
+    // Planeación -> Proyecto de seguimiento (proyectos_seguimiento.
+    // planeacion_proyecto_id -> planeacion_proyectos.id, ON DELETE SET
+    // NULL, sin UNIQUE — varios proyectos pueden legítimamente apuntar
+    // al mismo planeacion_proyecto).
     let proyectoSeguimientoId: string
     let hojaIdExistente: string | null
     const proyectoSeguimientoExistente = await buscarProyectoSeguimientoPorHuella(sb, sesion, resumen)
     if (proyectoSeguimientoExistente) {
       proyectoSeguimientoId = proyectoSeguimientoExistente.id
       hojaIdExistente = proyectoSeguimientoExistente.hoja_id
+
+      const vinculoExistente = proyectoSeguimientoExistente.planeacion_proyecto_id
+      if (vinculoExistente === null) {
+        // Proyecto legado (previo a esta fase) localizado por huella,
+        // todavía sin planeacion_proyecto_id: la relación es
+        // inequívoca DENTRO de este mismo flujo (la huella ya resolvió
+        // exactamente este proyecto y exactamente este planeacion_proyecto
+        // en la misma ejecución) — se vincula una sola vez.
+        const { error: errorVinculoLegado } = await sb
+          .from('proyectos_seguimiento')
+          .update({ planeacion_proyecto_id: proyectoPlaneacionId })
+          .eq('id', proyectoSeguimientoId)
+        if (errorVinculoLegado) {
+          console.error('[PLANEACION_GENERAR][aprobar] fallo vinculando el proyecto legado a planeacion_proyecto_id:', errorVinculoLegado)
+          return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+        }
+      } else if (vinculoExistente !== proyectoPlaneacionId) {
+        // Fail-closed: el proyecto ya tiene una relación histórica
+        // real hacia OTRO planeacion_proyecto — nunca se sobrescribe
+        // silenciosamente por una coincidencia de huella (nombre+fechas
+        // no son identidad permanente). Detiene la aprobación con un
+        // error controlado en vez de reasignar.
+        console.error(`[PLANEACION_GENERAR][aprobar] conflicto: proyecto ${proyectoSeguimientoId} ya vinculado a planeacion_proyecto ${vinculoExistente}, distinto de ${proyectoPlaneacionId}`)
+        return { ok: false, codigo: 'VINCULO_PLANEACION_PROYECTO_EN_CONFLICTO', mensaje: 'Este proyecto de seguimiento ya está vinculado a otra actividad de planeación — no se puede reasignar automáticamente.' }
+      }
+      // vinculoExistente === proyectoPlaneacionId: ya coincide, no se escribe nada.
     } else {
       const camposFormativosValidos = resumen.camposFormativos.filter((c) => CAMPOS_FORMATIVOS_VALIDOS.has(c))
       const { data: proyectoSeguimiento, error: errorProyectoSeguimiento } = await sb
@@ -381,6 +431,7 @@ export async function aprobarBorradorPlaneacion(
           campos_formativos: camposFormativosValidos,
           fecha_inicio: resumen.fechaInicio,
           fecha_fin: resumen.fechaFin,
+          planeacion_proyecto_id: proyectoPlaneacionId,
         })
         .select('id')
         .single()
