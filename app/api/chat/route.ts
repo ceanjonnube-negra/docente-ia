@@ -3663,7 +3663,25 @@ Grado: [grado] | Grupo: [grupo]
   // — se recibe completa aquí (sin streaming) y, si es un documento
   // formal válido, se convierte directo en el archivo real. El maestro
   // nunca ve el contenido en prosa en este caso.
-  if (supabaseUser && userId && tipoHerramientaSolicitado) {
+  //
+  // esTurnoDeBorradorPlaneacion (ver auditoría READ-ONLY "bug de ruteo
+  // Chat IA — Word en título de planeación"): CAUSA RAÍZ real
+  // confirmada con logs de producción — un mensaje como "Genera una
+  // planeación... Ponle como nombre: 'Prueba final Word - ...'" ya
+  // clasifica correctamente como intencion_principal=planeacion_generar
+  // (Nivel0) y ya arma el contexto especializado de planeación (Nivel4,
+  // más arriba, esTurnoDeBorradorPlaneacion=true), pero tipoHerramientaSolicitado
+  // también queda en 'word' porque el TÍTULO pedido para el archivo
+  // contiene la palabra "Word" — detectarFormatoExplicito la detecta en
+  // cualquier parte del mensaje, sin contexto (ver PATRONES_FORMATO en
+  // lib/asistente/documentos.ts, a propósito no se toca aquí). Sin esta
+  // condición, este CASO 3 interceptaba el turno y lo exportaba como
+  // Word genérico ("Documento generado correctamente."), sin llegar
+  // nunca al streaming de abajo que sí sabe construir la tarjeta
+  // canónica de planeación + hoja de evaluación. La intención semántica
+  // de planeación (ya resuelta por Nivel0/Nivel4) debe tener prioridad
+  // sobre una mención incidental de formato — nunca al revés.
+  if (supabaseUser && userId && tipoHerramientaSolicitado && !esTurnoDeBorradorPlaneacion) {
     const etiquetaCaso3 = ETIQUETA_MODULO[tipoHerramientaSolicitado]
     console.log(`[PIPELINE ${etiquetaCaso3}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=claude-directo (sin documento previo que recuperar)`)
     try {
