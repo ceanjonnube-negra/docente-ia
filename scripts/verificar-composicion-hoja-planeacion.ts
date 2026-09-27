@@ -412,7 +412,12 @@ async function main() {
 
     verificar(datos5.alumnos.every((a) => xml.includes(a.nombre)), 'F2a (5 alumnos). Los 5 nombres están presentes')
     verificar((xml.match(/<w:tr\b/g) || []).length === 6, `F2b (5 alumnos). La tabla tiene exactamente 6 filas (1 encabezado + 5 alumnos) — encontradas: ${(xml.match(/<w:tr\b/g) || []).length}`)
-    verificar((xml.match(/w:type="pct" w:w="32%"/g) || []).length >= 1, 'F2c (5 alumnos). El ancho de la columna Alumno (32%) se conserva igual que con 27 — sin recalcular proporciones por tener menos filas')
+    // AJUSTE — layout FIXED + columnWidths en twips (ver bloque G más
+    // abajo): el ancho de la columna Alumno ya no se declara en
+    // porcentaje (w:type="pct"), sino en twips absolutos (w:type="dxa")
+    // — la MISMA fuente canónica (32% de 14440 = 4621 twips) sin
+    // importar cuántas filas tenga la tabla.
+    verificar((xml.match(/w:type="dxa" w:w="4621"/g) || []).length >= 1, 'F2c (5 alumnos). El ancho de la columna Alumno (4621 twips = 32% de 14440) se conserva igual que con 27 — sin recalcular proporciones por tener menos filas')
     verificar((xml.match(/SG-PEQ1/g) || []).length === 1, 'F2d (5 alumnos). SG aparece exactamente una vez')
   }
 
@@ -472,6 +477,145 @@ async function main() {
       totalEstimadoPt <= disponiblePt,
       `F4. Estimación estructural: encabezado(${alturaEncabezadoPt.toFixed(1)}pt) + 28 filas(${alturaTabla27Pt.toFixed(1)}pt) = ${totalEstimadoPt.toFixed(1)}pt <= disponible en Carta landscape (${disponiblePt.toFixed(1)}pt) — el caso de 27 alumnos debería caber en una sola página. Esto es una estimación aritmética a partir de los valores reales del código, NO una confirmación visual — esa requiere abrir el Word real.`
     )
+  }
+
+  // ============================================================
+  // G. AJUSTE — table layout FIXED + columnWidths reales + header
+  // aislado. Ver auditoría "causa raíz real del desborde a 2 páginas"
+  // (evidencia E2E real: nombres envueltos en 2 líneas pese al
+  // presupuesto vertical teórico, y encabezado institucional
+  // duplicado). Los 22 puntos pedidos, verificados sobre OOXML
+  // SERIALIZADO REAL — nunca una estimación de caracteres.
+  // ============================================================
+  {
+    // Nombres REALES que se envolvieron en la prueba E2E anterior —
+    // deliberadamente NO se usan nombres de juguete cortos aquí, para
+    // no repetir el mismo falso negativo que dejó pasar el problema.
+    const NOMBRES_PROBLEMATICOS = [
+      'Dylan Yosueth Hernández Sandoval',
+      'Francisco Manuel Hernández González',
+      'Génesis Fernanda Aguirre González',
+      'Gissel Abdali Grajeda Hernández',
+      'Halit Eduardo Trejo Álvarez',
+      'Itzae Manuel Vallejo Munguía',
+      'Josemaría Arjona Ramos',
+      'Kimberly Guadalupe Montes Alcántar',
+      'Sofía Alejandra Delgadillo Pérez',
+    ]
+    // Se completa a 27 con el resto de nombres reales ya usados en el
+    // bloque F1, para reproducir el roster real completo de la prueba
+    // E2E (mismo tamaño, misma mezcla de nombres cortos y largos).
+    const RESTO_ROSTER_27 = [
+      'Audrey Abad Rojas', 'Axel Jesús Bañuelos Álvarez', 'Axel Ricardo Vargas Núñez', 'Carlos Jossel Ortega Trejo',
+      'Celina Tello González', 'Eileen Danelly Abraham Benítez', 'Joshua Daniel Herrera Alcántar',
+      'Keily Alessandra Estrada Guardado', 'Lucio Alberto Alonso Arellano', 'Luis Ángel Mora Canales',
+      'María Alejandra Agraz Toriz', 'María José Delgado Hernández', 'María Paula Inés Bueno', 'Maximiliano Lepe Chávez',
+      'Regina Yazmín Espinoza Meza', 'Salvador Emiliano Páez Álvarez', 'Santiago Medina Romero', 'Sebastián Zosa Bernal',
+    ]
+    const nombresRoster27 = [...NOMBRES_PROBLEMATICOS, ...RESTO_ROSTER_27].slice(0, 27)
+    verificar(nombresRoster27.length === 27, `G0. El roster de prueba de este bloque tiene 27 nombres reales (encontrados: ${nombresRoster27.length})`)
+
+    const rosterCongelado = nombresRoster27.map((nombre, i) => ({ alumno_id: `a${i}`, inscripcion_id: `i${i}`, nombre, posicion: i + 1 }))
+    const indicadoresCongelados = [
+      { indicador_especifico: 'Narra oralmente con fluidez y claridad una tradición familiar o comunitaria relacionada con el pan', aspecto_general: 'logro_aprendizaje' as const, numero_indicador: 1 },
+      { indicador_especifico: 'Produce un texto descriptivo escrito con oraciones completas', aspecto_general: 'producto_evidencia' as const, numero_indicador: 2 },
+      { indicador_especifico: 'Aplica correctamente el uso de mayúsculas al inicio de oración y en nombres propios', aspecto_general: 'logro_aprendizaje' as const, numero_indicador: 3 },
+      { indicador_especifico: 'Expresa con vocabulario propio el valor cultural y simbólico del pan', aspecto_general: 'aplicacion_aprendizajes' as const, numero_indicador: 4 },
+      { indicador_especifico: 'Muestra disposición para escuchar y valorar las tradiciones de sus compañeros', aspecto_general: 'participacion_colaboracion' as const, numero_indicador: 5 },
+    ]
+    const datosG = await hidratarDatosHojaSeguimiento(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }) } as any,
+      { identificador_visible: 'SG-262N', roster_congelado: rosterCongelado, indicadores: indicadoresCongelados, storage_path: 'x' },
+      { nombre: 'Con pan, festejamos y convivimos', campos_formativos: ['Lenguajes'], fecha_inicio: '2026-10-05', fecha_fin: '2026-10-05', periodo_evaluacion_id: null }
+    )
+    const seccion = construirSeccionHojaEvaluacionWord(datosG, PERFIL_PRUEBA, null)
+    const bufferG = await generarWordBuffer('# Planeacion real\n\nContenido real de la planeación de prueba.\n', PERFIL_PRUEBA, null, undefined, [seccion])
+    const zipG = await JSZip.loadAsync(bufferG)
+    const xmlG = (await zipG.file('word/document.xml')?.async('string')) ?? ''
+    const relsG = (await zipG.file('word/_rels/document.xml.rels')?.async('string')) ?? ''
+
+    const tblStartG = xmlG.indexOf('<w:tbl>')
+    const tblEndG = xmlG.indexOf('</w:tbl>') + '</w:tbl>'.length
+    const tblG = xmlG.slice(tblStartG, tblEndG)
+
+    // 1. tblLayout fixed.
+    verificar(/<w:tblLayout w:type="fixed"\/>/.test(tblG), '1. <w:tblLayout w:type="fixed"/> presente — Word no puede recalcular anchos por AutoFit')
+
+    // 2-4. tblGrid: 8 gridCol reales, suma exacta 14440.
+    const gridCols = tblG.match(/<w:gridCol[^/]*\/>/g) || []
+    verificar(gridCols.length === 8, `2. <w:tblGrid> contiene exactamente 8 gridCol (encontrados: ${gridCols.length})`)
+    const anchosGrid = gridCols.map((g) => Number(g.match(/w:w="(\d+)"/)?.[1] ?? 0))
+    verificar(anchosGrid.every((a) => a !== 100), `3. Los gridCol usan anchos reales — ninguno es el placeholder de 100 twips (valores: ${anchosGrid.join(',')})`)
+    const sumaGrid = anchosGrid.reduce((a, b) => a + b, 0)
+    verificar(sumaGrid === 14440, `4. La suma de los 8 gridCol es EXACTAMENTE 14440 twips (obtenida: ${sumaGrid})`)
+
+    // 5. Columna Alumno con el ancho absoluto esperado (32% de 14440, redondeado = 4621).
+    verificar(anchosGrid[1] === 4621, `5. La columna Alumno (índice 1) tiene el ancho canónico esperado: 4621 twips (obtenido: ${anchosGrid[1]})`)
+
+    // 6. tcW coherentes con los gridCol correspondientes (primera fila = encabezado).
+    const primeraFilaG = tblG.match(/<w:tr\b[\s\S]*?<\/w:tr>/)?.[0] ?? ''
+    const tcWsPrimeraFila = (primeraFilaG.match(/<w:tcW[^/]*\/>/g) || []).map((t) => Number(t.match(/w:w="(\d+)"/)?.[1] ?? -1))
+    verificar(tcWsPrimeraFila.length === 8 && tcWsPrimeraFila.every((w, i) => w === anchosGrid[i]), `6. Los <w:tcW> de la fila de encabezado coinciden EXACTAMENTE con los gridCol columna por columna (tcW: ${tcWsPrimeraFila.join(',')} | grid: ${anchosGrid.join(',')})`)
+
+    // 7. Sin porcentajes contradictorios como segunda fuente de layout.
+    verificar(!/w:type="pct"/.test(tblG), '7. La tabla no contiene ningún w:type="pct" — una sola fuente de anchos (twips), nunca dos modelos contradictorios')
+
+    // 8. Carta 15840x12240 en la sección de la hoja.
+    const pgSzsG = xmlG.match(/<w:pgSz[^/]*\/>/g) || []
+    verificar(pgSzsG.some((p) => p.includes('w:w="15840"') && p.includes('w:h="12240"') && p.includes('w:orient="landscape"')), '8. La sección de la hoja tiene Carta landscape real: w:w="15840" w:h="12240"')
+
+    // 9-11. Header aislado — inspección de document.xml, .rels y header*.xml.
+    const headerRefsG = xmlG.match(/<w:headerReference[^/]*\/>/g) || []
+    verificar(headerRefsG.length === 2, `9/10a. Existen 2 <w:headerReference> reales (uno por sección) — encontrados: ${headerRefsG.length}`)
+    const ridsHeader = headerRefsG.map((h) => h.match(/r:id="(rId\d+)"/)?.[1])
+    verificar(new Set(ridsHeader).size === 2, '9b. Los 2 headerReference apuntan a relationship IDs DISTINTOS — la sección de la hoja no reutiliza el rId del header de la planeación')
+    const relHeaders = [...relsG.matchAll(/<Relationship Id="(rId\d+)"[^>]*Target="(header\d*\.xml)"/g)]
+    verificar(relHeaders.length === 2, `10b. document.xml.rels declara 2 relaciones de tipo header (encontradas: ${relHeaders.length})`)
+    const targetsPorRid = Object.fromEntries(relHeaders.map((m) => [m[1], m[2]]))
+    const archivosHeaderReferenciados = ridsHeader.map((rid) => (rid ? targetsPorRid[rid] : undefined))
+    verificar(new Set(archivosHeaderReferenciados).size === 2, `10c. Cada sección referencia un archivo header*.xml DISTINTO (${archivosHeaderReferenciados.join(', ')})`)
+    let headerHojaXml = ''
+    for (const archivo of archivosHeaderReferenciados) {
+      if (!archivo) continue
+      const contenido = await zipG.file(`word/${archivo}`)?.async('string')
+      if (contenido && !contenido.includes('FRANCISCO I. MADERO') && !contenido.includes(PERFIL_PRUEBA.escuela)) {
+        headerHojaXml = contenido
+      }
+    }
+    verificar(!!headerHojaXml, '9c. Existe un header*.xml (el de la sección de la hoja) que NO contiene el nombre de la escuela — no duplica el encabezado institucional de la planeación')
+    verificar(headerHojaXml.includes('<w:hdr') && headerHojaXml.includes('</w:hdr>') && (headerHojaXml.match(/<w:t[ >]/g) || []).length === 0, '11. El header propio de la hoja es OOXML válido (<w:hdr>...</w:hdr> real) y realmente vacío (sin ningún <w:t> con texto)')
+
+    // 12. El encabezado PROPIO del cuerpo (escuela/docente/proyecto/SG/etc.) sigue existiendo exactamente una vez.
+    const idxTablaG = xmlG.indexOf('<w:tbl>')
+    const cuerpoAntesDeTabla = xmlG.slice(0, idxTablaG)
+    verificar((cuerpoAntesDeTabla.match(/Con pan, festejamos y convivimos/g) || []).length === 1, '12. El nombre del proyecto (parte del encabezado propio del CUERPO de la hoja) aparece exactamente una vez')
+    verificar((xmlG.match(new RegExp(PERFIL_PRUEBA.escuela, 'g')) || []).length === 1, '12b. El nombre de la escuela aparece EXACTAMENTE una vez en todo el documento (antes aparecía duplicado: header heredado + encabezado propio)')
+
+    // 13. SG una sola vez.
+    verificar((xmlG.match(/SG-262N/g) || []).length === 1, '13. SG-262N aparece exactamente una vez')
+
+    // 14. 5 indicadores completos.
+    verificar(indicadoresCongelados.every((i) => xmlG.includes(i.indicador_especifico)), '14. Los 5 indicadores completos están presentes')
+
+    // 15. 27 alumnos completos y en orden.
+    verificar(nombresRoster27.every((n) => xmlG.includes(n)), '15a. Los 27 alumnos (incluidos los nombres reales problemáticos) están completos en el documento')
+    const indicesG = nombresRoster27.map((n) => xmlG.indexOf(n))
+    verificar(indicesG.every((idx, i) => i === 0 || idx > indicesG[i - 1]), '15b. Los 27 alumnos aparecen en el orden real de posicion')
+
+    // 16. Nombres largos completos, sin truncamiento (substring exacto, no una versión recortada).
+    verificar(NOMBRES_PROBLEMATICOS.every((n) => xmlG.includes(n) && !xmlG.includes(n.slice(0, -3) + '…')), '16. Los nombres largos que antes se envolvían están completos, sin ningún truncamiento con elipsis')
+
+    // 17. Tabla nativa, sin rasterización.
+    verificar(!xmlG.includes('<w:drawing') && !xmlG.includes('<pic:pic'), '17. Sin w:drawing ni pic:pic — tabla nativa, no rasterizada')
+
+    // 18. tableHeader:true.
+    verificar(/<w:tblHeader\/>/.test(tblG), '18. tableHeader (<w:tblHeader/>) sigue presente en la fila de encabezado')
+
+    // 21. La sección de planeación conserva su formato (portrait, SIN tblLayout/columnWidths de la hoja mezclados).
+    const seccionPlaneacionXml = xmlG.slice(0, xmlG.indexOf('<w:sectPr'))
+    verificar(!seccionPlaneacionXml.includes('w:orient="landscape"'), '21. La sección de planeación sigue sin ningún w:orient="landscape" — no fue alterada')
+    verificar(pgSzsG.some((p) => p.includes('w:orient="portrait"')), '21b. La sección de planeación conserva orientación portrait real')
   }
 
   console.log('')

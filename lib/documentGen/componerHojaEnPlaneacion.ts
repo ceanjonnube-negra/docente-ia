@@ -29,6 +29,8 @@ import {
   AlignmentType,
   PageOrientation,
   LineRuleType,
+  TableLayoutType,
+  Header,
   type ISectionOptions,
 } from 'docx'
 import { prepararEncabezado } from './encabezadoDocumento'
@@ -194,9 +196,51 @@ const TAMANO_CELDA_TABLA = 18
 // hizo falta).
 const MARGEN_CELDA_TABLA = { top: 20, bottom: 20, left: 80, right: 80 }
 
-function celda(texto: string, opciones: { anchoPct?: number; bold?: boolean; encabezado?: boolean } = {}): TableCell {
+// AJUSTE — "la hoja de 27 alumnos se derramaba pese al presupuesto
+// vertical porque los nombres se envolvían en 2 líneas": causa raíz
+// real, demostrada por inspección OOXML — sin table layout FIXED ni
+// columnWidths explícitos, docx emite un <w:tblGrid> de RELLENO (100
+// twips por columna, sin relación con el ancho real), y Word queda
+// libre de recalcular anchos por AutoFit según el contenido, sin
+// respetar el 32% declarado por celda. La corrección: UNA sola fuente
+// canónica de anchos absolutos en twips, nunca porcentajes como
+// segunda fuente contradictoria — tanto Table.columnWidths como cada
+// TableCell.width (WidthType.DXA, no PERCENTAGE) leen de este mismo
+// array, así que <w:tblGrid> y cada <w:tcW> son consistentes entre sí
+// por construcción.
+//
+// Ancho usable real de la sección landscape: 15840 (ancho de página
+// ya en landscape) − 700 (margen izquierdo) − 700 (margen derecho) =
+// 14440 twips — el mismo par de márgenes ya declarado más abajo en
+// properties.page.margin, nunca un segundo valor que pudiera
+// desalinearse.
+const ANCHO_USABLE_TABLA_TWIPS = 14440
+
+// Construye los anchos absolutos (twips) de las 3+N columnas reales
+// (#, Alumno, I1..IN, Nivel final), derivados TODOS de
+// ANCHO_USABLE_TABLA_TWIPS con las mismas proporciones ya usadas
+// (5% / 32% / resto entre indicadores / 10%). Suma SIEMPRE exacta:
+// el remanente de redondeo (si N no divide limpio el espacio de
+// indicadores) se absorbe de forma determinista en la ÚLTIMA columna
+// ("Nivel final"), nunca repartido al azar ni ignorado.
+function construirAnchosColumnasTwips(cantidadIndicadores: number): number[] {
+  const anchoNum = Math.round(ANCHO_USABLE_TABLA_TWIPS * 0.05)
+  const anchoAlumno = Math.round(ANCHO_USABLE_TABLA_TWIPS * 0.32)
+  const anchoFinalBase = Math.round(ANCHO_USABLE_TABLA_TWIPS * 0.1)
+  const anchoIndicadoresTotal = ANCHO_USABLE_TABLA_TWIPS - anchoNum - anchoAlumno - anchoFinalBase
+  const anchoPorIndicador = cantidadIndicadores > 0 ? Math.floor(anchoIndicadoresTotal / cantidadIndicadores) : 0
+  const anchosIndicadores = Array<number>(cantidadIndicadores).fill(anchoPorIndicador)
+
+  const sumaParcial = anchoNum + anchoAlumno + anchosIndicadores.reduce((a, b) => a + b, 0) + anchoFinalBase
+  const remanente = ANCHO_USABLE_TABLA_TWIPS - sumaParcial
+  const anchoFinal = anchoFinalBase + remanente // absorbe SIEMPRE el remanente, incluso 0
+
+  return [anchoNum, anchoAlumno, ...anchosIndicadores, anchoFinal]
+}
+
+function celda(texto: string, opciones: { anchoTwips?: number; bold?: boolean; encabezado?: boolean } = {}): TableCell {
   return new TableCell({
-    width: opciones.anchoPct !== undefined ? { size: opciones.anchoPct, type: WidthType.PERCENTAGE } : undefined,
+    width: opciones.anchoTwips !== undefined ? { size: opciones.anchoTwips, type: WidthType.DXA } : undefined,
     borders: BORDES_TODOS,
     margins: MARGEN_CELDA_TABLA,
     shading: opciones.encabezado ? { type: ShadingType.CLEAR, color: 'auto', fill: 'F3F4F6' } : undefined,
@@ -277,23 +321,22 @@ export function construirSeccionHojaEvaluacionWord(
     ),
   ]
 
-  // Anchos: # angosto, Alumno el más ancho, indicadores comparten el
-  // resto en partes iguales (usa la cantidad REAL, nunca asume 5), y
-  // Nivel final ligeramente más ancho que un indicador — mismo
-  // criterio proporcional que la hoja PDF.
-  const anchoNum = 5
-  const anchoAlumno = 32
-  const anchoFinal = 10
-  const anchoIndicadores = Math.max(0, 100 - anchoNum - anchoAlumno - anchoFinal)
-  const anchoPorIndicador = cantidadIndicadores > 0 ? anchoIndicadores / cantidadIndicadores : 0
+  // Fuente ÚNICA de anchos (twips) — # / Alumno / I1..IN / Nivel final.
+  // La MISMA lista alimenta Table.columnWidths (define <w:tblGrid>) y
+  // cada TableCell.width (define <w:tcW>) — nunca dos fuentes (% y
+  // twips) que pudieran desalinearse entre sí.
+  const anchosColumnas = construirAnchosColumnasTwips(cantidadIndicadores)
+  const [anchoNum, anchoAlumno, ...anchosIndicadoresYFinal] = anchosColumnas
+  const anchosIndicadores = anchosIndicadoresYFinal.slice(0, cantidadIndicadores)
+  const anchoFinal = anchosIndicadoresYFinal[cantidadIndicadores]
 
   const filaEncabezado = new TableRow({
     tableHeader: true,
     children: [
-      celda('#', { anchoPct: anchoNum, encabezado: true }),
-      celda('Alumno', { anchoPct: anchoAlumno, encabezado: true }),
-      ...datos.indicadores.map((_, i) => celda(`I${i + 1}`, { anchoPct: anchoPorIndicador, encabezado: true })),
-      celda('Nivel final', { anchoPct: anchoFinal, encabezado: true }),
+      celda('#', { anchoTwips: anchoNum, encabezado: true }),
+      celda('Alumno', { anchoTwips: anchoAlumno, encabezado: true }),
+      ...datos.indicadores.map((_, i) => celda(`I${i + 1}`, { anchoTwips: anchosIndicadores[i], encabezado: true })),
+      celda('Nivel final', { anchoTwips: anchoFinal, encabezado: true }),
     ],
   })
 
@@ -304,15 +347,24 @@ export function construirSeccionHojaEvaluacionWord(
     (alumno) =>
       new TableRow({
         children: [
-          celda(String(alumno.posicion), { anchoPct: anchoNum }),
-          celda(alumno.nombre, { anchoPct: anchoAlumno }),
-          ...Array.from({ length: cantidadIndicadores }, () => celda('', { anchoPct: anchoPorIndicador })),
-          celda('', { anchoPct: anchoFinal }),
+          celda(String(alumno.posicion), { anchoTwips: anchoNum }),
+          celda(alumno.nombre, { anchoTwips: anchoAlumno }),
+          ...Array.from({ length: cantidadIndicadores }, (_, i) => celda('', { anchoTwips: anchosIndicadores[i] })),
+          celda('', { anchoTwips: anchoFinal }),
         ],
       })
   )
 
-  const tabla = new Table({ rows: [filaEncabezado, ...filasAlumnos], width: { size: 100, type: WidthType.PERCENTAGE } })
+  // layout: FIXED — obliga a Word a respetar columnWidths/tcW tal
+  // cual, sin AutoFit ni redistribución por contenido (la causa real
+  // del wrap de nombres ya demostrada). width en DXA (no PERCENTAGE)
+  // porque ya viaja en twips absolutos desde la misma fuente única.
+  const tabla = new Table({
+    rows: [filaEncabezado, ...filasAlumnos],
+    width: { size: ANCHO_USABLE_TABLA_TWIPS, type: WidthType.DXA },
+    columnWidths: anchosColumnas,
+    layout: TableLayoutType.FIXED,
+  })
 
   return {
     properties: {
@@ -329,6 +381,15 @@ export function construirSeccionHojaEvaluacionWord(
         margin: { top: 700, right: 700, bottom: 700, left: 700 },
       },
     },
+    // Header PROPIO vacío — nunca hereda el header institucional de la
+    // sección de planeación (construirDocumentoWord.ts), que hoy
+    // duplicaba la misma información ya presente en `encabezado` (más
+    // arriba, dentro del cuerpo) y consumía espacio vertical real en
+    // cada página landscape sin haber sido contemplado en ningún
+    // presupuesto. La API de docx exige al menos un Paragraph para un
+    // Header válido — se usa uno vacío, nunca contenido copiado del
+    // header de la planeación.
+    headers: { default: new Header({ children: [new Paragraph({ children: [] })] }) },
     children: [...encabezado, tabla],
   }
 }
