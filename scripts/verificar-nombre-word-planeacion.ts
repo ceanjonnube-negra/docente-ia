@@ -16,7 +16,7 @@
 // Compartir no se tocaron.
 // Se ejecuta con `npx tsx scripts/verificar-nombre-word-planeacion.ts`.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import JSZip from 'jszip'
 import { generarWordBuffer, nombreArchivoWordServidor } from '../lib/documentGen/generarWordServidor'
@@ -131,9 +131,38 @@ async function main() {
   //        Compartir permanecen intactos; ningún botón crea mensajes
   //        role:user.
   // ============================================================
-  verificar(cuerpoPanel.includes('async function descargarArchivo(url: string, nombreSugerido: string)'), '10a. descargarArchivo (mecanismo real de "Descargar Word") sigue existiendo sin cambios')
-  verificar(cuerpoPanel.includes("onClick={() => window.open(archivo.urlVer, '_blank')}"), '10b. "Ver PDF" sigue abriendo archivo.urlVer sin cambios')
-  verificar(cuerpoPanel.includes('function descargarPdfDirecto(') && cuerpoPanel.includes('onClick={() => descargarPdfDirecto(archivo.url, archivo.nombre)}'), '10c. "Descargar PDF" sigue usando descargarPdfDirecto sin cambios')
+  verificar(cuerpoPanel.includes('async function descargarArchivo(url: string, nombreSugerido: string)'), '10a. descargarArchivo (mecanismo Blob, hoy solo usado por VentanaImagen) sigue existiendo sin cambios')
+  // 10b/10c — ACTUALIZADO (arquitectura real vigente, ver auditoría
+  // "revisión de composición canónica Planeación+hoja"): abrirArchivo/
+  // descargarPdfDirecto YA NO EXISTEN con esos nombres — se
+  // generalizaron a abrirArchivo(archivo)/descargarArchivoDirecto(archivo)
+  // para servir Word/PDF/PPT/Excel con una sola función cada uno, en
+  // una fase posterior a cuando se escribió la versión anterior de
+  // este test. La garantía funcional que SÍ importa (Ver PDF abre
+  // urlVer con fallback a url; Descargar PDF sigue forzando descarga
+  // real vía POST a /api/archivos/descargar, nunca <a href> directo —
+  // la corrección real de Safari/iPhone) se conserva íntegra dentro de
+  // las nuevas funciones; solo cambió el nombre/forma, no la
+  // corrección — confirmado por lectura directa del archivo real antes
+  // de actualizar este test (nunca se tocó AsistentePanel.tsx para
+  // esto).
+  verificar(
+    cuerpoPanel.includes("function abrirArchivo(archivo: { url: string; urlVer?: string }) {") &&
+      cuerpoPanel.includes("window.open(archivo.urlVer ?? archivo.url, '_blank')") &&
+      cuerpoPanel.includes('onClick={() => abrirArchivo(archivo)}'),
+    '10b. "Ver PDF" abre archivo.urlVer (con fallback a archivo.url si urlVer no existe) vía abrirArchivo(archivo)'
+  )
+  verificar(
+    cuerpoPanel.includes("function descargarArchivoDirecto(archivo: { tipo: string; url: string; nombre: string }) {") &&
+      cuerpoPanel.includes("form.action = '/api/archivos/descargar'") &&
+      /if \(archivo\.tipo === 'pdf'\) \{[\s\S]{0,600}form\.submit\(\)/.test(cuerpoPanel) &&
+      cuerpoPanel.includes('onClick={() => descargarArchivoDirecto(archivo)}'),
+    '10c. "Descargar PDF" sigue forzando descarga real vía POST a /api/archivos/descargar (nunca <a href> directo) dentro de descargarArchivoDirecto(archivo) — misma corrección real de Safari/iPhone, generalizada a un solo mecanismo para todos los formatos'
+  )
+  verificar(
+    existsSync(join(__dirname, '..', 'app', 'api', 'archivos', 'descargar', 'route.ts')),
+    '10e. La ruta /api/archivos/descargar que recibe ese POST sigue existiendo realmente en el repo'
+  )
   verificar(cuerpoPanel.includes('async function compartirArchivo('), '10d. Compartir (compartirArchivo) sigue existiendo sin cambios')
   {
     const bloqueTarjeta = cuerpoPanel

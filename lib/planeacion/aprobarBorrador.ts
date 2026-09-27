@@ -568,24 +568,38 @@ export async function aprobarBorradorPlaneacion(
     }
 
     if (!documentoWord || !documentoPdf) {
-      try {
-        // PLN-1E-B — prioridad al snapshot V4 (contenidoCompletoDefinitivo):
-        // elimina la divergencia cliente/servidor detectada en
-        // PLN-1E-A (el `historial` que manda el cliente refleja el
-        // texto tal como se STREAMEÓ, ANTES de la sustitución
-        // server-side de PLN-1D1/PLN-1D2 — el snapshot persistido, en
-        // cambio, YA es el texto corregido). El historial sigue siendo
-        // el único fallback cuando no hay V4 válido para este turno —
-        // nunca al revés.
-        const ultimoTurno = historial[historial.length - 1]
-        const textoCompleto = contenidoCompletoDefinitivo ?? (ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : '')
-        if (textoCompleto) {
-          // titulo: MISMA fuente que ejecutarHerramientaDocumento usaba
-          // internamente (extraerTitulo sobre el texto real del
-          // borrador) — se preserva aquí para no cambiar de dónde sale
-          // el nombre del archivo al introducir la composición.
-          const titulo = extraerTitulo(textoCompleto)
-          if (!documentoWord) {
+      // PLN-1E-B — prioridad al snapshot V4 (contenidoCompletoDefinitivo):
+      // elimina la divergencia cliente/servidor detectada en PLN-1E-A
+      // (el `historial` que manda el cliente refleja el texto tal
+      // como se STREAMEÓ, ANTES de la sustitución server-side de
+      // PLN-1D1/PLN-1D2 — el snapshot persistido, en cambio, YA es el
+      // texto corregido). El historial sigue siendo el único fallback
+      // cuando no hay V4 válido para este turno — nunca al revés. Esta
+      // resolución nunca falla de forma que dependa de Word/PDF, así
+      // que vive FUERA de ambos try — ninguno de los dos debe
+      // considerarse responsable si el texto simplemente no existe.
+      const ultimoTurno = historial[historial.length - 1]
+      const textoCompleto = contenidoCompletoDefinitivo ?? (ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : '')
+      if (!textoCompleto) {
+        console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omiten Word/PDF definitivos')
+      } else {
+        // titulo: MISMA fuente que ejecutarHerramientaDocumento usaba
+        // internamente (extraerTitulo sobre el texto real del
+        // borrador) — se preserva aquí para no cambiar de dónde sale
+        // el nombre del archivo al introducir la composición.
+        const titulo = extraerTitulo(textoCompleto)
+
+        // Word y PDF son artefactos INDEPENDIENTES — cada uno en su
+        // propio try/catch, nunca uno compartido: un fallo componiendo
+        // Word (o descargando/leyendo la hoja para Word) NUNCA debe
+        // impedir que PDF se intente, y viceversa. obtenerHojaYProyectoCanonicos()
+        // sigue siendo una sola lectura compartida (memoizada arriba)
+        // cuando ambos la necesitan y tienen éxito — la independencia
+        // es sobre la generación/subida de cada formato, no sobre
+        // evitar repetir la lectura canónica cuando de verdad se
+        // comparte con éxito.
+        if (!documentoWord) {
+          try {
             const { hojaCanonica: hoja, proyectoCanonico: proyecto } = await obtenerHojaYProyectoCanonicos()
             const datosHoja = await hidratarDatosHojaSeguimiento(sb, hoja, proyecto)
             const seccionHoja = construirSeccionHojaEvaluacionWord(datosHoja, perfil, null)
@@ -595,8 +609,12 @@ export async function aprobarBorradorPlaneacion(
             await subirBuffer(sb, ruta, bufferCompuesto, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
             const url = await crearUrlFirmada(sb, ruta, nombre)
             documentoWord = { nombre, url, tamano_bytes: bufferCompuesto.length, storage_path: ruta, hoja_id: hojaId, incluye_hoja: true }
+          } catch (e) {
+            console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo el Word definitivo con su hoja (no bloquea la aprobación ni al PDF; documento_word queda sin registrar, nunca se guarda incompleto):', e)
           }
-          if (!documentoPdf) {
+        }
+        if (!documentoPdf) {
+          try {
             const { hojaCanonica: hoja } = await obtenerHojaYProyectoCanonicos()
             const bufferPlaneacion = await generarPdfBuffer(textoCompleto, perfil, null)
             const bufferHoja = await descargarPdfHojaCanonica(sb, hoja)
@@ -607,12 +625,10 @@ export async function aprobarBorradorPlaneacion(
             const url = await crearUrlFirmada(sb, ruta, nombre)
             const urlVer = await crearUrlFirmada(sb, ruta)
             documentoPdf = { nombre, url, tamano_bytes: bufferCompuesto.length, url_ver: urlVer, storage_path: ruta, hoja_id: hojaId, incluye_hoja: true }
+          } catch (e) {
+            console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo el PDF definitivo con su hoja (no bloquea la aprobación ni al Word; documento_pdf queda sin registrar, nunca se guarda incompleto):', e)
           }
-        } else {
-          console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omite Word/PDF definitivos')
         }
-      } catch (e) {
-        console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo componiendo Word/PDF definitivos de la planeación con su hoja (no bloquea la aprobación; ese documento queda sin registrar, nunca se guarda incompleto):', e)
       }
     }
 

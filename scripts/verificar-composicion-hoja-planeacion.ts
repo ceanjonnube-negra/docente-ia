@@ -199,6 +199,108 @@ async function main() {
     }
   }
 
+  // --- OOXML: inspección estructural real del .docx compuesto — más
+  // de un w:sectPr, landscape solo en la sección de la hoja (la
+  // planeación conserva su orientación original), la tabla/hoja
+  // aparece DESPUÉS del contenido de planeación, SG aparece una sola
+  // vez, y el roster se renderiza en el orden real de posicion tras
+  // pasar por la MISMA hidratación que usa aprobarBorrador.ts (roster
+  // deliberadamente desordenado en el jsonb de entrada, para probar
+  // que el orden final depende de `posicion`, nunca del orden de
+  // inserción del array). ---
+  {
+    const rosterDesordenado = [
+      { alumno_id: 'z', inscripcion_id: 'iz', nombre: 'Zeta Alumno', posicion: 3 },
+      { alumno_id: 'a', inscripcion_id: 'ia', nombre: 'Alfa Alumno', posicion: 1 },
+      { alumno_id: 'b', inscripcion_id: 'ib', nombre: 'Beta Alumno', posicion: 2 },
+    ]
+    const datosOrdenados = await hidratarDatosHojaSeguimiento(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }) } as any,
+      { identificador_visible: 'SG-OOXML', roster_congelado: rosterDesordenado, indicadores: [{ indicador_especifico: 'Indicador OOXML', aspecto_general: 'logro_aprendizaje', numero_indicador: 1 }], storage_path: 'x' },
+      { nombre: 'Proyecto OOXML', campos_formativos: ['Lenguajes'], fecha_inicio: '2026-02-01', fecha_fin: '2026-02-02', periodo_evaluacion_id: null }
+    )
+    const seccionHoja = construirSeccionHojaEvaluacionWord(datosOrdenados, PERFIL_PRUEBA, null)
+    const textoPlaneacionOoxml = '# Planeacion OOXML\n\nContenido real y reconocible de la planeacion.\n'
+    const buffer = await generarWordBuffer(textoPlaneacionOoxml, PERFIL_PRUEBA, null, undefined, [seccionHoja])
+    const zip = await JSZip.loadAsync(buffer)
+    const xml = await zip.file('word/document.xml')?.async('string')
+    verificar(!!xml, 'C1. El .docx compuesto (flujo real de hidratación) contiene word/document.xml')
+    if (xml) {
+      const cantidadSectPr = (xml.match(/<w:sectPr/g) || []).length
+      verificar(cantidadSectPr >= 2, `C2. Existe más de un w:sectPr en el documento (encontrados: ${cantidadSectPr}) — 2 secciones reales, no una sola`)
+
+      const idxPrimerSectPr = xml.indexOf('<w:sectPr')
+      const seccionPlaneacion = xml.slice(0, idxPrimerSectPr)
+      const seccionHojaXml = xml.slice(idxPrimerSectPr)
+      verificar(!/w:orient="landscape"/.test(seccionPlaneacion), 'C3. La sección de la planeación (antes del primer sectPr) NO hereda landscape por accidente')
+      verificar(/w:orient="landscape"/.test(seccionHojaXml), 'C4. La sección de la hoja (desde el primer sectPr en adelante) sí es landscape')
+
+      const idxContenidoPlaneacion = xml.indexOf('Contenido real y reconocible de la planeacion')
+      const idxTablaHoja = xml.indexOf('<w:tbl>')
+      verificar(idxContenidoPlaneacion > -1 && idxTablaHoja > idxContenidoPlaneacion, 'C5. La tabla de la hoja aparece DESPUÉS del contenido de la planeación en el documento')
+
+      const ocurrenciasSG = (xml.match(/SG-OOXML/g) || []).length
+      verificar(ocurrenciasSG === 1, `C6. SG-OOXML aparece exactamente UNA vez en todo el documento (encontradas: ${ocurrenciasSG})`)
+
+      const idxAlfa = xml.indexOf('Alfa Alumno')
+      const idxBeta = xml.indexOf('Beta Alumno')
+      const idxZeta = xml.indexOf('Zeta Alumno')
+      verificar(idxAlfa > -1 && idxBeta > idxAlfa && idxZeta > idxBeta, `C7. Los alumnos aparecen en el ORDEN de roster_congelado por posición (Alfa[1] < Beta[2] < Zeta[3]), no en el orden desordenado del array de entrada (índices: Alfa=${idxAlfa}, Beta=${idxBeta}, Zeta=${idxZeta})`)
+    }
+  }
+
+  // --- PDF multipágina real: hoja con roster grande (fuerza 2 páginas
+  // físicas reales, ver calcularCantidadPaginasHoja) — confirma que
+  // copyPages + getPageIndices() copian TODAS las páginas de la hoja,
+  // nunca solo la primera. ---
+  {
+    const rosterGrande = Array.from({ length: 45 }, (_, i) => ({ nombre: `Alumno Multipagina ${i + 1}`, posicion: i + 1 }))
+    const datosHojaMultipagina: DatosHojaSeguimiento = { ...DATOS_HOJA_PRUEBA, identificadorVisible: 'SG-MULTI', alumnos: rosterGrande }
+    const bufferHojaMultipagina = await generarHojaSeguimientoPdfBuffer(datosHojaMultipagina, PERFIL_PRUEBA, null)
+    const paginasHojaMultipagina = (await PDFDocument.load(bufferHojaMultipagina)).getPageCount()
+    verificar(paginasHojaMultipagina >= 2, `D1. La hoja de prueba con 45 alumnos realmente ocupa ${paginasHojaMultipagina} páginas físicas (>= 2, precondición real del caso multipágina)`)
+
+    const bufferPlaneacionMulti = await generarPdfBuffer(TEXTO_PLANEACION_PRUEBA, PERFIL_PRUEBA, null)
+    const paginasPlaneacionMulti = (await PDFDocument.load(bufferPlaneacionMulti)).getPageCount()
+    const bufferCompuestoMulti = await componerPdfPlaneacionConHoja(bufferPlaneacionMulti, bufferHojaMultipagina)
+    const paginasCompuestoMulti = (await PDFDocument.load(bufferCompuestoMulti)).getPageCount()
+    verificar(
+      paginasCompuestoMulti === paginasPlaneacionMulti + paginasHojaMultipagina,
+      `D2. pageCount final (${paginasCompuestoMulti}) = pageCount planeación (${paginasPlaneacionMulti}) + pageCount hoja multipágina (${paginasHojaMultipagina}) — copyPages/getPageIndices() copiaron TODAS las páginas`
+    )
+  }
+
+  // ============================================================
+  // 2. FALLO INDEPENDIENTE — Word y PDF nunca se bloquean entre sí.
+  // Verificación estructural (no ejecuta Fase 4.5 completa: confirma,
+  // por lectura del código real, que cada formato vive en su propio
+  // try/catch y que el resultado exitoso de uno sobrevive aunque el
+  // otro falle después).
+  // ============================================================
+  {
+    // El try de Word y el try de PDF deben ser DOS bloques try/catch
+    // independientes (nunca uno solo envolviendo ambos) dentro del
+    // mismo `if (!documentoWord || !documentoPdf) { ... }`.
+    const idxTryWord = bloqueFase45.indexOf('if (!documentoWord)')
+    const idxCatchWord = bloqueFase45.indexOf('} catch (e) {', idxTryWord)
+    const idxTryPdf = bloqueFase45.indexOf('if (!documentoPdf)')
+    const idxCatchPdf = bloqueFase45.indexOf('} catch (e) {', idxTryPdf)
+    verificar(idxTryWord > -1 && idxCatchWord > idxTryWord && idxCatchWord < idxTryPdf, 'E1. El try/catch de Word se cierra ANTES de que empiece el bloque de PDF — no es un try compartido')
+    verificar(idxTryPdf > -1 && idxCatchPdf > idxTryPdf, 'E2. PDF tiene su propio try/catch independiente, después del de Word')
+    verificar((bloqueFase45.match(/} catch \(e\) {/g) || []).length >= 2, 'E3. Existen al menos 2 bloques catch independientes en Fase 4.5 (uno por formato, nunca uno compartido)')
+
+    // Escenario 1: Word funciona y PDF falla → documentoWord debe
+    // seguir asignado cuando se llega a Fase 5 (nunca se resetea por
+    // el catch de PDF, que está en un try distinto).
+    verificar(!/documentoWord = null/.test(bloqueFase45), 'E4 (escenario Word-ok/PDF-falla). Nada dentro de Fase 4.5 reinicia documentoWord a null — un Word ya asignado sobrevive a un fallo posterior de PDF')
+    // Escenario 2: PDF funciona y Word falla → documentoPdf debe
+    // seguir asignado igual, por el mismo motivo, en sentido inverso.
+    verificar(!/documentoPdf = null/.test(bloqueFase45), 'E5 (escenario PDF-ok/Word-falla). Nada dentro de Fase 4.5 reinicia documentoPdf a null — un PDF ya asignado sobrevive a un fallo posterior de Word')
+    // Escenario 3: ambos funcionan → Fase 5 los persiste solo si están presentes (spread condicional ya verificado en tests 14-17).
+    verificar(/\.\.\.\(documentoWord \? \{ documento_word: documentoWord \} : \{\}\)/.test(aprobarBorradorSinComentarios) && /\.\.\.\(documentoPdf \? \{ documento_pdf: documentoPdf \} : \{\}\)/.test(aprobarBorradorSinComentarios), 'E6 (escenario ambos-ok / ambos-fallan). Fase 5 persiste cada documento SOLO si quedó asignado — ambos presentes se guardan ambos, ambos ausentes no se guarda ninguno')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)
