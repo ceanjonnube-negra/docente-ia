@@ -134,7 +134,14 @@ Introducción breve sobre el tema.
   //    imagen real cuando existe en el mapa, omiten en silencio
   //    cuando no (nunca lanzan por una descripción sin imagen).
   // ============================================================
-  verificar(cuerpoConstruirWord.includes("import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType, ImageRun } from 'docx'"), 'construirDocumentoWord.ts importa ImageRun de docx (embebido real, no un placeholder de texto)')
+  // (AUDITORÍA 2026-09-29): el import literal exacto ya no aplica — la
+  // composición con la hoja canónica (Fase 4.5) agregó `type ISectionOptions`
+  // al mismo import para tipar `seccionesAdicionales`, una incorporación
+  // legítima que no afecta este contrato. Se protege el contrato real
+  // (ImageRun sigue disponible) sin exigir el orden/forma textual exacta del
+  // import; el embebido real con una imagen de verdad ya se prueba más abajo
+  // (bloque 5, Packer.toBuffer con un PNG real).
+  verificar(/import \{[^}]*\bImageRun\b[^}]*\} from 'docx'/.test(cuerpoConstruirWord), 'construirDocumentoWord.ts sigue importando ImageRun de docx (embebido real, no un placeholder de texto)')
   verificar(cuerpoConstruirWord.includes('const descripcionImagen = esImagen(linea)') && cuerpoConstruirWord.includes('if (imagen) {'), 'construirDocumentoWord.ts solo embebe si la descripción tiene imagen real en el mapa')
   verificar(cuerpoConstruirWord.includes('continue') && /descripcionImagen[\s\S]{0,20}if \(descripcionImagen\)/.test(cuerpoConstruirWord) === false, 'construirDocumentoWord.ts salta (continue) la línea de imagen sin caer en el resto de la clasificación (título/bullet/párrafo)')
   verificar(cuerpoGenerarPdf.includes('await pdfDoc.embedPng(imagen.buffer)') && cuerpoGenerarPdf.includes('pagina.drawImage(png,'), 'generarPdfServidor.ts embebe la imagen real con pdf-lib (embedPng + drawImage)')
@@ -201,7 +208,11 @@ Introducción breve sobre el tema.
   // 9. No regresión — TarjetaDescarga (imagen suelta, Fase 0+1/
   //    corrección) sigue intacta, no se tocó en esta fase.
   // ============================================================
-  verificar(cuerpoPanel.includes("principal.tipo === 'imagen' ? 'Imagen activa' : 'Documento activo'"), 'El indicador de imagen activa (corrección previa) sigue intacto — no se tocó en esta fase')
+  // (AUDITORÍA 2026-09-29): el indicador "Imagen activa"/"Documento activo"
+  // fue retirado intencionalmente en 2b817d7 ("refactor(planeacion): retira
+  // flujo implementar — Fase L1") — la UI ya no lo muestra y no quedó
+  // ningún comportamiento productivo que proteger. Se elimina esta
+  // expectativa sin sustituto artificial para una UI que ya no existe.
   verificar(cuerpoPanel.includes('🖼️ Ilustración: {l.descripcion}'), 'La vista previa en vivo del chat muestra un aviso ligero mientras se redacta un documento ilustrado (no dobla la fila vacía ni rompe la vista previa)')
 
   console.log('')

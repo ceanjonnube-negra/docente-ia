@@ -99,17 +99,27 @@ async function main() {
     verificar(bufferWord.length > 0 && bufferWord.subarray(0, 2).toString('latin1') === 'PK', '6. El Word generado es un archivo .docx real (firma ZIP "PK" — un docx es internamente un ZIP con XML de OOXML válido)')
     verificar(bufferWord.length > 1000, '7. El Word generado tiene un tamaño real y sustancial (no un archivo vacío o truncado) — consistente con un .docx abrible en Word/Pages/Google Docs')
     verificar(bufferPdf.length > 0 && bufferPdf.subarray(0, 4).toString('latin1') === '%PDF', '8. El PDF generado sigue siendo un .pdf real y válido (firma "%PDF")')
-    // Ambos se generaron con el MISMO texto de entrada (TEXTO_PLANEACION) — la prueba en sí misma demuestra que "misma fuente" es posible; en producción, tanto el marcador Word como el PDF de la vista previa parten de la MISMA variable `datosDocumento`/`textoCompleto` (verificado a nivel de código en el punto 9b).
+    // Ambos se generaron con el MISMO texto de entrada (TEXTO_PLANEACION) — la prueba en sí misma demuestra que "misma fuente" es posible; en producción, tanto el marcador Word como el PDF de la vista previa parten de la MISMA variable `datosDocumento`/`textoCompleto` (verificado a nivel de código en el punto 9a).
     const seccionMarcadores = rutaRouteChat.slice(rutaRouteChat.indexOf('const textoCompleto = extraerTextoCompletoBorrador'), rutaRouteChat.indexOf('planeacionPdfGenerado=true planeacionWordGenerado=true'))
     verificar(
       (seccionMarcadores.match(/datosComprimidos/g) ?? []).length >= 2,
       '9a. La URL de Word y la URL de PDF en la vista previa reutilizan el MISMO payload comprimido (datosComprimidos) — nunca dos extracciones de texto distintas'
     )
-    verificar(rutaAprobar.includes('const textoCompleto = ultimoTurno?.role'), '9b. La generación definitiva (aprobación) también extrae el texto completo UNA sola vez y lo usa para ambos formatos')
-    verificar(
-      /await ejecutarHerramientaDocumento\('word', textoCompleto,/.test(rutaAprobar) && /await ejecutarHerramientaDocumento\('pdf', textoCompleto,/.test(rutaAprobar),
-      '9c. Word y PDF definitivos se generan a partir de la MISMA variable textoCompleto — nunca una segunda interpretación del contenido'
-    )
+    // 9b/9c (AUDITORÍA 2026-09-29): la generación DEFINITIVA (aprobación) ya
+    // no extrae el texto vía `ultimoTurno?.role` ni genera Word/PDF con
+    // ejecutarHerramientaDocumento('word'|'pdf', textoCompleto, ...) — desde
+    // PLN-1E-B (snapshot V4, prioridad a `contenidoCompletoDefinitivo` sobre
+    // el historial) y la composición con la hoja canónica (Fase 4.5:
+    // generarWordBuffer/generarPdfBuffer en tries independientes, fusionados
+    // con la hoja) ese contrato cambió de raíz. Ambos comportamientos ya
+    // están protegidos con mayor precisión por suites vigentes:
+    //   - prioridad de contenidoCompletoDefinitivo sobre el historial:
+    //     verificar-aprobar-planeacion-snapshot-v4.ts (CASO G)
+    //   - Word/PDF definitivos generados desde la MISMA textoCompleto,
+    //     compuestos con la hoja, cada uno en su propio try/catch:
+    //     verificar-composicion-hoja-planeacion.ts
+    // No se duplica aquí para no dejar una aserción frágil sobre texto
+    // literal de una implementación ya reemplazada.
   }
 
   // ============================================================
@@ -129,7 +139,17 @@ async function main() {
   // ============================================================
   {
     verificar(!rutaPanel.includes('agregarArchivoATarjeta'), '13a. No existe ninguna función que reescriba/reemplace el arreglo de archivos al descargar (el menú de conversión que hacía eso fue retirado por completo)')
-    verificar(codigoRealTarjeta.includes('archivos.map((archivo)'), '13b. Cada botón "Descargar" es de solo lectura sobre el arreglo `archivos` ya recibido — nunca lo modifica ni quita entradas')
+    // 13b (AUDITORÍA 2026-09-29): desde FASE V1-A la tarjeta ya no recorre
+    // `archivos` directamente — deriva `archivosVista` con `.map()` (nunca
+    // .filter()/.slice()) para poder refrescar la URL de la imagen principal
+    // sin mutar `archivos`. El invariante real a proteger sigue siendo el
+    // mismo de antes (nunca se quita/reordena una entrada, solo puede
+    // sustituirse su `url`), verificado de forma estructural y no por texto
+    // literal frágil:
+    verificar(rutaPanel.includes('const archivosVista = archivos.map('), '13b-1. archivosVista se deriva con .map() directamente sobre `archivos` — un .map() siempre conserva el mismo tamaño y orden (nunca quita ni reordena entradas)')
+    verificar(rutaPanel.includes('{ ...archivo, url:') && rutaPanel.includes(': archivo))'), '13b-2. Cada entrada del mapeo solo puede resultar en (a) el mismo `archivo` sin tocar, o (b) un spread `{...archivo, url: ...}` que conserva todos sus campos originales y únicamente sustituye `url` — nunca se construye una entrada distinta')
+    verificar(!codigoRealTarjeta.includes('archivosVista.filter(') && !codigoRealTarjeta.includes('archivos.filter('), '13b-3. Ningún .filter() se aplica sobre archivos/archivosVista dentro de la tarjeta — ninguna entrada puede desaparecer antes de renderizarse')
+    verificar(codigoRealTarjeta.includes('archivosVista.map((archivo)'), '13b-4. El render de los botones "Descargar" recorre `archivosVista` completo — solo lectura, nunca un subconjunto filtrado ni una lista reconstruida aparte')
     verificar(!rutaAprobar.includes('.delete(') && !rutaVistaPreviaPdf.includes('.delete(') && !rutaVistaPreviaWord.includes('.delete('), '14. Ninguno de los caminos de generación (aprobación, vista previa Word, vista previa PDF) ejecuta DELETE sobre ninguna tabla')
   }
 
@@ -137,9 +157,15 @@ async function main() {
   // 15. No se generan archivos duplicados — Fase 4.5 es idempotente.
   // ============================================================
   {
-    verificar(rutaAprobar.includes('evaluacionPrevia?.documento_word ?? null'), '15a. Si un intento anterior de la MISMA huella ya generó el Word definitivo, se reutiliza tal cual (nunca se regenera)')
-    verificar(rutaAprobar.includes('evaluacionPrevia?.documento_pdf ?? null'), '15b. Lo mismo para el PDF definitivo')
-    verificar(rutaAprobar.includes('if (!documentoWord) {') && rutaAprobar.includes('if (!documentoPdf) {'), '15c. La generación real (ejecutarHerramientaDocumento) solo se dispara si el formato correspondiente TODAVÍA no existe')
+    // 15a/15b (AUDITORÍA 2026-09-29): la reutilización ya NO es incondicional
+    // (`evaluacionPrevia?.documento_word ?? null` / `?.documento_pdf ?? null`)
+    // — ahora exige `doc.incluye_hoja === true && doc.hoja_id === hojaId`
+    // (función esReutilizable) para no reutilizar un documento compuesto con
+    // una hoja distinta a la vigente. Ese contrato exacto ya está protegido
+    // con mayor precisión por verificar-composicion-hoja-planeacion.ts
+    // (aserción 18b, que exige el regex exacto de esa condición) — no se
+    // duplica aquí.
+    verificar(rutaAprobar.includes('if (!documentoWord) {') && rutaAprobar.includes('if (!documentoPdf) {'), '15c. La generación real solo se dispara si el formato correspondiente TODAVÍA no existe (o no fue reutilizable)')
   }
 
   // ============================================================
