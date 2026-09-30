@@ -16,7 +16,7 @@
 // motor; aquí solo se ve la conversación.
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
@@ -654,6 +654,20 @@ const nombrePila = (nombreCompleto: string | undefined): string => {
 export default function AsistentePanel() {
   const asistente = useAsistente()
   const router = useRouter()
+  const pathnameActual = usePathname()
+  // INSTRUMENTACIÓN TEMPORAL G/H/I/J (ver "microauditoría tramo
+  // posterior al click Abrir en Lista") — mismo gate que A-F:
+  // NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO==='1'. destinoEsperadoGHIJ
+  // es un ref (nunca dispara render) que guarda el destino esperado
+  // SOLO para comparar — nunca se muestra. usePathname() es seguro sin
+  // <Suspense> (a diferencia de useSearchParams(), que si se usara
+  // aquí exigiría envolver TODO el árbol — AsistentePanel se monta en
+  // el layout raíz); el query string se lee puntualmente de
+  // window.location.search, observación pura, nunca usada para
+  // navegar. Retirar junto con el resto de esta instrumentación.
+  const diagnosticoNavegacionActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO === '1'
+  const [diagGHI, setDiagGHI] = useState<{ g: boolean; h: 'push' | 'filtrada' | 'ninguna' | null; i: boolean } | null>(null)
+  const destinoEsperadoGHIJ = useRef<{ pathname: string; tab: string | null } | null>(null)
   const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -719,8 +733,17 @@ export default function AsistentePanel() {
     if (!accion) return
     if (accion.modulo === 'lista' && accion.alumnoId) {
       const ruta = accion.pestana ? `/dashboard/lista/${accion.alumnoId}?tab=${accion.pestana}` : `/dashboard/lista/${accion.alumnoId}`
+      // H/I — observación pura, ver arriba: guarda el destino esperado
+      // ANTES de invocar router.push (línea siguiente, sin cambios) y
+      // marca i:true justo después de esa misma llamada, nunca antes.
+      if (diagnosticoNavegacionActivo) {
+        destinoEsperadoGHIJ.current = { pathname: `/dashboard/lista/${accion.alumnoId}`, tab: accion.pestana ?? null }
+        setDiagGHI((prev) => ({ g: prev?.g ?? true, h: 'push', i: false }))
+      }
       router.push(ruta)
+      if (diagnosticoNavegacionActivo) setDiagGHI((prev) => ({ g: prev?.g ?? true, h: 'push', i: true }))
     } else if (accion.modulo === 'lista') {
+      if (diagnosticoNavegacionActivo) setDiagGHI((prev) => ({ g: prev?.g ?? true, h: accion.grupoId ? 'filtrada' : 'ninguna', i: false }))
       // Navegación a nivel de módulo, sin alumnoId — "muéstrame
       // únicamente los ausentes" (ver navegar_lista_filtrada en
       // app/api/chat/route.ts). En vez de navegar, se abre una
@@ -1271,7 +1294,14 @@ export default function AsistentePanel() {
                         <button
                           key={accion.id}
                           type="button"
-                          onClick={() => m.datosAccionNavegacion ? asistente.confirmarNavegacion(m.id) : m.datosAccionAlumno ? asistente.confirmarCorreccionAlumno(m.id, accion.id) : asistente.confirmarAccionCalendario(m.id, accion.id)}
+                          onClick={() => {
+                            // G — ver instrumentación temporal arriba: solo
+                            // registra que el click llegó a invocar
+                            // confirmarNavegacion, sin alterar la línea
+                            // funcional de abajo (idéntica a como estaba).
+                            if (diagnosticoNavegacionActivo && m.datosAccionNavegacion) setDiagGHI({ g: true, h: null, i: false })
+                            m.datosAccionNavegacion ? asistente.confirmarNavegacion(m.id) : m.datosAccionAlumno ? asistente.confirmarCorreccionAlumno(m.id, accion.id) : asistente.confirmarAccionCalendario(m.id, accion.id)
+                          }}
                           disabled={asistente.generando}
                           className={
                             accion.estilo === 'primario'
@@ -1473,9 +1503,20 @@ export default function AsistentePanel() {
           const msg = asistente.mensajes.find((m) => m.id === d.mensajeId)
           const f = !!(msg?.acciones && msg.acciones.length > 0 && msg.datosAccionNavegacion && !msg.accionElegida)
           const marca = (v: boolean) => (v ? '✓' : '✗')
+          // G/H/I/J — tramo posterior al click (ver diagGHI/destinoEsperadoGHIJ
+          // arriba). J se recalcula en vivo en CADA render, sin timers: se
+          // apoya en que pathnameActual (usePathname()) ya es reactivo por
+          // sí mismo (fuerza un nuevo render cuando Next completa la
+          // transición real), y en una lectura puntual de
+          // window.location.search — nunca se muestra el destino ni
+          // ningún ID, solo el resultado de la comparación.
+          const destino = destinoEsperadoGHIJ.current
+          const tabObservado = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('tab') : null
+          const j = !diagGHI?.i ? '…' : destino && pathnameActual === destino.pathname && tabObservado === destino.tab ? '✓' : '✗'
           return (
             <p className="mb-2 w-full text-[11px] font-mono text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
               NAV DIAG: A{marca(d.a)} B{marca(d.b)} C{marca(d.c)} D{marca(d.d)} E{marca(d.e)} F{marca(f)}
+              {diagGHI && ` | G${marca(diagGHI.g)} H:${diagGHI.h ?? '…'} I${marca(diagGHI.i)} J${j}`}
             </p>
           )
         })()}
