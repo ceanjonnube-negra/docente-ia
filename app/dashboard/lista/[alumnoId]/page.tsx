@@ -1,6 +1,6 @@
 'use client'
-import { useState, useEffect } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 import { darDeBajaInscripcion } from '@/lib/motorContexto'
@@ -69,6 +69,20 @@ const CAMPOS_BORRADOR: { campo: keyof BorradorFicha; etiqueta: string }[] = [
 
 type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evidencias' | 'fichas' | 'resultados'
 
+const PESTANAS_VALIDAS: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evidencias', 'fichas', 'resultados']
+
+// Única interpretación real de `?tab=...` en toda la pantalla — usada
+// tanto en el valor inicial como en la resincronización reactiva de
+// abajo, para no duplicar la regla en dos lugares. Alias de
+// compatibilidad con el Chat IA: lib/clasificadorNivel0.ts
+// (pestana_lista) todavía puede producir 'evaluaciones' (no se tocó);
+// 'evaluaciones' nunca vuelve a ser un valor real de Pestana, solo se
+// traduce aquí. Cualquier valor desconocido/ausente → 'resumen'.
+function resolverPestana(tabCrudo: string | null): Pestana {
+  const tab = tabCrudo === 'evaluaciones' ? 'resultados' : tabCrudo
+  return PESTANAS_VALIDAS.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
+}
+
 function formatFecha(fecha: string | null | undefined): string {
   if (!fecha) return '—'
   return formatearFecha(fecha, obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short', year: 'numeric' })
@@ -108,6 +122,21 @@ function BannerError({ mensaje }: { mensaje: string }) {
   )
 }
 
+// Pantalla completa de carga — reutilizada tal cual como fallback del
+// <Suspense> que envuelve useSearchParams() (necesario para poder
+// resincronizar `pestana` con cambios de ?tab=... sin remontar la
+// página, ver FichaAlumnoPage más abajo) y como el estado `cargando`
+// ya existente — nunca se ve una pantalla distinta a la que ya existía
+// antes de este cambio.
+function SpinnerCargando() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 h-screen bg-gray-50">
+      <div className="w-8 h-8 rounded-full border-2 border-purple-200 border-t-purple-600 animate-spin" />
+      <p className="text-sm text-gray-400">Cargando...</p>
+    </div>
+  )
+}
+
 // Convierte un valor jsonb en líneas de texto seguras para mostrar en pantalla,
 // sin imprimir nunca la estructura JSON cruda (solo "clave: valor" planos).
 function resumenSeguroJson(valor: unknown): string[] {
@@ -141,9 +170,17 @@ function ResumenJson({ valor, vacio }: { valor: unknown; vacio: string }) {
   )
 }
 
-export default function FichaAlumnoPage() {
+// useSearchParams() exige un límite <Suspense> (ver FichaAlumnoPage,
+// el export por defecto de abajo) — es la única forma reactiva real de
+// detectar un cambio de `?tab=...` para EL MISMO alumno (router.push
+// hacia el mismo pathname con distinta query no cambia `alumnoId` vía
+// useParams(), así que ningún efecto dependiente solo de [alumnoId]
+// puede detectarlo). El fallback reutiliza exactamente la misma
+// pantalla que ya existía para `cargando` — cero cambio visual nuevo.
+function FichaAlumnoPageInterna() {
   const { alumnoId } = useParams<{ alumnoId: string }>()
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [alumno, setAlumno] = useState<Alumno | null>(null)
   const [grupo, setGrupo] = useState<Grupo | null>(null)
@@ -179,26 +216,22 @@ export default function FichaAlumnoPage() {
 
   // Pestaña inicial desde ?tab=... (ver "Integración de comandos
   // verbales con navegación y consulta interna" — AsistentePanel
-  // navega aquí con router.push incluyendo este parámetro). Leído
-  // directo de window.location.search en vez de useSearchParams() para
-  // no exigirle un límite de Suspense a toda esta pantalla por un
-  // parámetro opcional — mismo patrón que voiceDebug en
-  // AsistentePanel.tsx.
-  const [pestana, setPestana] = useState<Pestana>(() => {
-    if (typeof window === 'undefined') return 'resumen'
-    const tabCrudo = new URLSearchParams(window.location.search).get('tab')
-    // Alias de compatibilidad con el Chat IA — lib/clasificadorNivel0.ts
-    // (pestana_lista) todavía puede producir 'evaluaciones' (no se tocó
-    // en esta microfase, ver "retiro de Evaluaciones legacy"); este es
-    // el ÚNICO punto real de validación de todo el pipeline de
-    // navegación (AccionNavegacion.pestana viaja como string suelto sin
-    // validar hasta aquí), así que traducirlo aquí basta para que
-    // "muéstrame las evaluaciones de X" siga abriendo la pestaña
-    // correcta en vez de caer silenciosamente a "resumen".
-    const tab = tabCrudo === 'evaluaciones' ? 'resultados' : tabCrudo
-    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evidencias', 'fichas', 'resultados']
-    return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
-  })
+  // navega aquí con router.push incluyendo este parámetro).
+  const [pestana, setPestana] = useState<Pestana>(() => resolverPestana(searchParams.get('tab')))
+
+  // Resincroniza `pestana` cada vez que la URL navegada trae un
+  // ?tab=... distinto — cubre TANTO cambio de alumno (Caso A) COMO
+  // mismo alumno con distinta pestaña pedida (Caso B: "muéstrame las
+  // evidencias de [el mismo alumno ya abierto]"), porque `searchParams`
+  // (a diferencia de `alumnoId`) cambia de referencia en cualquiera de
+  // los dos casos. Nunca se dispara por un cambio manual de pestaña
+  // (setPestana(...) en los botones de abajo no toca la URL, así que
+  // `searchParams` no cambia y este efecto no se re-ejecuta) — un click
+  // manual en "Resultados por proyecto" nunca queda sobrescrito por el
+  // ?tab= anterior de la URL.
+  useEffect(() => {
+    setPestana(resolverPestana(searchParams.get('tab')))
+  }, [searchParams])
   const [cargando, setCargando] = useState(true)
   const [guardando, setGuardando] = useState(false)
   const [mensaje, setMensaje] = useState('')
@@ -520,12 +553,7 @@ export default function FichaAlumnoPage() {
   useHerramientasAsistente([herramientaMarcarAsistencia])
 
   if (cargando) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 h-screen bg-gray-50">
-        <div className="w-8 h-8 rounded-full border-2 border-purple-200 border-t-purple-600 animate-spin" />
-        <p className="text-sm text-gray-400">Cargando...</p>
-      </div>
-    )
+    return <SpinnerCargando />
   }
 
   if (!alumno) {
@@ -1064,5 +1092,13 @@ export default function FichaAlumnoPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function FichaAlumnoPage() {
+  return (
+    <Suspense fallback={<SpinnerCargando />}>
+      <FichaAlumnoPageInterna />
+    </Suspense>
   )
 }
