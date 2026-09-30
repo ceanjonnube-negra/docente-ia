@@ -606,7 +606,17 @@ export class MotorTextoClaude implements MotorConversacional {
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
+      // INSTRUMENTACIÓN TEMPORAL A/B (ver "microauditoría fallo Abrir en
+      // Lista") — gate FAIL-CLOSED idéntico a diagnosticoActivo de
+      // arriba: NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO === '1'
+      // exactamente. Con el flag OFF, diagnosticoNavegacionActivo es
+      // false y navA/navB quedan en false sin coste adicional — ninguna
+      // otra línea de este archivo cambia. Retirar junto con el resto
+      // de esta instrumentación.
+      const diagnosticoNavegacionActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO === '1'
+      const navA = diagnosticoNavegacionActivo && /\[\[NAVEGACION:([^\]]+)\]\]/.test(sinContenido)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
+      const navB = diagnosticoNavegacionActivo && accionNavegacion !== undefined
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
       const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionAlumno)
       const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinPropuestaListaOficial)
@@ -638,6 +648,7 @@ export class MotorTextoClaude implements MotorConversacional {
         shortCircuitOrquestador: esShortCircuitOrquestador || undefined,
         assistantMessageIdPersistidoServer,
         trabajoProgramaAnaliticoId,
+        diagnosticoNavegacionABC: diagnosticoNavegacionActivo ? { a: navA, b: navB, c: accionNavegacion !== undefined } : undefined,
       })
       if (diagnosticoActivo && diagnosticoCurp) {
         this.emitir({

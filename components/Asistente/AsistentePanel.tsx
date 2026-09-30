@@ -1459,6 +1459,26 @@ export default function AsistentePanel() {
             <p>DataChannel.readyState: {asistente.diagnosticoArranqueVoz.dataChannelState}</p>
           </div>
         )}
+        {/* Banner TEMPORAL A-F (ver "microauditoría fallo Abrir en
+            Lista") — solo aparece con
+            NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO='1' (ver
+            motorTextoClaude.ts/AsistenteService.ts), nunca en uso
+            normal. F se calcula aquí mismo, en vivo, sobre el mensaje
+            real que está a punto de renderizarse más abajo. Nunca
+            muestra IDs de alumno, nombres, tokens ni contenido del
+            marcador — solo 6 booleanos técnicos. Quitar junto con el
+            resto de esta instrumentación. */}
+        {asistente.diagnosticoNavegacion && (() => {
+          const d = asistente.diagnosticoNavegacion
+          const msg = asistente.mensajes.find((m) => m.id === d.mensajeId)
+          const f = !!(msg?.acciones && msg.acciones.length > 0 && msg.datosAccionNavegacion && !msg.accionElegida)
+          const marca = (v: boolean) => (v ? '✓' : '✗')
+          return (
+            <p className="mb-2 w-full text-[11px] font-mono text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+              NAV DIAG: A{marca(d.a)} B{marca(d.b)} C{marca(d.c)} D{marca(d.d)} E{marca(d.e)} F{marca(f)}
+            </p>
+          )
+        })()}
         {/* Panel técnico TEMPORAL — ver "diagnóstico roundtrip de
             comparación de CURP sin depender de vercel logs". Solo
             aparece cuando NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO='1'

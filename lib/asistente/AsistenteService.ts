@@ -124,6 +124,13 @@ export type EstadoAsistente = {
   // enviarMensaje (ver ese método) para que cada turno muestre solo su
   // propia traza. Quitar junto con el resto del diagnóstico.
   diagnosticoTecnico: TrazaDiagnosticoCurp | null
+  // INSTRUMENTACIÓN TEMPORAL A-F (ver "microauditoría fallo Abrir en
+  // Lista") — mismo criterio exacto que diagnosticoTecnico: solo se
+  // llena con NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO=1, null en
+  // cualquier otro caso. mensajeId identifica qué burbuja revisar para
+  // F (ver AsistentePanel.tsx). Retirar junto con el resto de esta
+  // instrumentación.
+  diagnosticoNavegacion: { a: boolean; b: boolean; c: boolean; d: boolean; e: boolean; mensajeId: string } | null
   // Registro paso a paso de la última conexión de voz — solo lo renderiza
   // AsistentePanel cuando la URL trae ?voiceDebug=1 (ver ese archivo).
   // Siempre se llena (barato), independientemente de si el panel de
@@ -259,6 +266,7 @@ class AsistenteServiceImpl {
   private avisoVozTimer: ReturnType<typeof setTimeout> | null = null
   private diagnosticoArranqueVoz: DiagnosticoArranqueVoz | null = null
   private diagnosticoTecnico: TrazaDiagnosticoCurp | null = null
+  private diagnosticoNavegacion: { a: boolean; b: boolean; c: boolean; d: boolean; e: boolean; mensajeId: string } | null = null
   private debugVoz: PasoDebugVoz[] = []
   private estadoEscucha: 'escuchando' | 'hablando' | null = null
   private avisoGeneracion: string | null = null
@@ -450,6 +458,7 @@ class AsistenteServiceImpl {
       avisoVoz: this.avisoVoz,
       diagnosticoArranqueVoz: this.diagnosticoArranqueVoz,
       diagnosticoTecnico: this.diagnosticoTecnico,
+      diagnosticoNavegacion: this.diagnosticoNavegacion,
       debugVoz: this.debugVoz,
       estadoEscucha: this.estadoEscucha,
       avisoGeneracion: this.avisoGeneracion,
@@ -1621,6 +1630,19 @@ class AsistenteServiceImpl {
         // voz de abajo también necesita este mismo mensajeFinal, para
         // no repetir el find.
         const mensajeFinal = this.turnoAbierto ? this.mensajes.find(m => m.id === this.turnoAbierto) : undefined
+        // INSTRUMENTACIÓN TEMPORAL D/E (ver "microauditoría fallo Abrir
+        // en Lista") — solo corre cuando evento.diagnosticoNavegacionABC
+        // llegó (es decir, con el flag activo en motorTextoClaude.ts;
+        // ver ese archivo) — con el flag OFF este bloque entero es un
+        // no-op. Retirar junto con el resto de esta instrumentación.
+        if (evento.diagnosticoNavegacionABC) {
+          this.diagnosticoNavegacion = {
+            ...evento.diagnosticoNavegacionABC,
+            d: evento.accionNavegacion !== undefined,
+            e: !!(mensajeFinal?.acciones && mensajeFinal.acciones.length > 0 && mensajeFinal.datosAccionNavegacion && !mensajeFinal.accionElegida),
+            mensajeId: mensajeFinal?.id ?? '',
+          }
+        }
         if (mensajeFinal) {
           // CONTRATO DEFINITIVO DE PROPIEDAD (creación/ajuste de
           // planeación, ver auditoría "convertir SHADOW en arquitectura
@@ -1800,6 +1822,7 @@ class AsistenteServiceImpl {
     const diagnosticoActivo = process.env.NEXT_PUBLIC_DIAGNOSTICO_CURP_ACTIVO === '1'
     const debugRequestId = diagnosticoActivo ? `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` : undefined
     this.diagnosticoTecnico = null
+    this.diagnosticoNavegacion = null
 
     // Vista inicial (sin conversación seleccionada): escribir el primer
     // mensaje ES la acción que crea la conversación nueva — ver

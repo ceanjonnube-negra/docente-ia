@@ -393,7 +393,12 @@ export type EventoMotor =
   // texto siempre '' en ese caso — AsistenteService intercepta esto
   // ANTES de crear/persistir cualquier burbuja (mismo criterio que
   // shortCircuitOrquestador) y arranca el polling del trabajo real.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string }
+  // diagnosticoNavegacionABC — INSTRUMENTACIÓN TEMPORAL (ver
+  // "microauditoría fallo Abrir en Lista"), gate FAIL-CLOSED
+  // NEXT_PUBLIC_DIAGNOSTICO_NAVEGACION_ACTIVO — solo presente cuando el
+  // flag está activo, nunca en uso normal. Retirar junto con el resto
+  // de esta instrumentación.
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string; diagnosticoNavegacionABC?: { a: boolean; b: boolean; c: boolean } }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
