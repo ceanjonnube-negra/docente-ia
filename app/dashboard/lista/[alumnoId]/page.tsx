@@ -26,6 +26,32 @@ type NecesidadApoyo = { id: string; tipo: string | null; descripcion: string | n
 type FichaDescriptiva = { id: string; periodo: string | null; contenido: unknown; creado_en: string }
 type PeriodoEvaluacion = { id: string; nombre: string; numero_periodo: number }
 
+// Resultado granular confirmado desde Evaluación (fuente canónica:
+// seguimiento_resultados) — embebe únicamente proyectos_seguimiento
+// (perímetro RLS ya verificado directamente en Production:
+// seguimiento_resultados_select y proyectos_seguimiento_select, ambas
+// docente_id = auth.uid() vía join). NO se embebe grupos ni
+// hojas_evaluacion en esta microfase — si esas policies se verifican
+// después, se puede ampliar sin tocar esta forma base.
+type ResultadoIndicador = {
+  proyecto_id: string
+  indicador_especifico: string
+  aspecto_general: string
+  nivel: string
+  confianza: number
+  corregido_manualmente: boolean
+  observacion: string | null
+  indicador_numero: number
+  proyectos_seguimiento: {
+    nombre: string
+    fecha_inicio: string | null
+    fecha_fin: string | null
+    periodo_evaluacion_id: string | null
+    origen_resultados: string | null
+    confirmado_en: string | null
+  } | null
+}
+
 type BorradorFicha = {
   fortalezas: string
   areas_oportunidad: string
@@ -42,7 +68,7 @@ const CAMPOS_BORRADOR: { campo: keyof BorradorFicha; etiqueta: string }[] = [
   { campo: 'recomendaciones', etiqueta: 'Recomendaciones' },
 ]
 
-type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas'
+type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas' | 'resultados'
 
 function formatFecha(fecha: string | null | undefined): string {
   if (!fecha) return '—'
@@ -129,6 +155,7 @@ export default function FichaAlumnoPage() {
   const [evidencias, setEvidencias] = useState<Evidencia[]>([])
   const [necesidadesApoyo, setNecesidadesApoyo] = useState<NecesidadApoyo[]>([])
   const [fichasDescriptivas, setFichasDescriptivas] = useState<FichaDescriptiva[]>([])
+  const [resultadosProyecto, setResultadosProyecto] = useState<ResultadoIndicador[]>([])
   const [periodosEvaluacion, setPeriodosEvaluacion] = useState<PeriodoEvaluacion[]>([])
   const [cicloEscolarId, setCicloEscolarId] = useState<string | null>(null)
   const [observacionesInscripcion, setObservacionesInscripcion] = useState<string | null>(null)
@@ -146,6 +173,7 @@ export default function FichaAlumnoPage() {
   const [errorEvidencias, setErrorEvidencias] = useState(false)
   const [errorNecesidades, setErrorNecesidades] = useState(false)
   const [errorFichas, setErrorFichas] = useState(false)
+  const [errorResultados, setErrorResultados] = useState(false)
 
   const [estadoGeneral, setEstadoGeneral] = useState<{ texto: string; clase: string }>({
     texto: 'Sin datos suficientes',
@@ -162,7 +190,7 @@ export default function FichaAlumnoPage() {
   const [pestana, setPestana] = useState<Pestana>(() => {
     if (typeof window === 'undefined') return 'resumen'
     const tab = new URLSearchParams(window.location.search).get('tab')
-    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas']
+    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas', 'resultados']
     return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
   })
   const [cargando, setCargando] = useState(true)
@@ -227,7 +255,7 @@ export default function FichaAlumnoPage() {
       setGrupoId(grupoIdActivo)
       setInscripcionId(inscripcionActiva?.id ?? null)
 
-      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evaluacionesRes, evidenciasRes, necesidadesRes, fichasRes, periodosRes] = await Promise.allSettled([
+      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evaluacionesRes, evidenciasRes, necesidadesRes, fichasRes, periodosRes, resultadosRes] = await Promise.allSettled([
         grupoIdActivo
           ? supabase.from('grupos').select('grado, grupo, nombre_grupo, docente_id').eq('id', grupoIdActivo).single()
           : Promise.resolve({ data: null, error: null }),
@@ -243,6 +271,36 @@ export default function FichaAlumnoPage() {
         cicloEscolarIdActivo
           ? supabase.from('periodos_evaluacion').select('id, nombre, numero_periodo').eq('ciclo_escolar_id', cicloEscolarIdActivo).order('numero_periodo')
           : Promise.resolve({ data: [], error: null }),
+        // Resultados por proyecto (fuente canónica: seguimiento_resultados,
+        // ver "Resultados por proyecto" — microfase de conexión con Evaluación).
+        // Embed ÚNICO hacia proyectos_seguimiento: es el perímetro exacto
+        // verificado directamente en Production (seguimiento_resultados_select
+        // + proyectos_seguimiento_select, ambas docente_id = auth.uid() vía
+        // join) — deliberadamente NO se embebe grupos ni hojas_evaluacion
+        // aquí, esas policies no se verificaron en esta microfase. Sin
+        // condicionar a grupoIdActivo/ciclo: mismo criterio longitudinal por
+        // alumno_id que asistencias/incidencias/evaluaciones/evidencias.
+        supabase
+          .from('seguimiento_resultados')
+          .select(`
+            proyecto_id,
+            indicador_especifico,
+            aspecto_general,
+            nivel,
+            confianza,
+            corregido_manualmente,
+            observacion,
+            indicador_numero,
+            proyectos_seguimiento (
+              nombre,
+              fecha_inicio,
+              fecha_fin,
+              periodo_evaluacion_id,
+              origen_resultados,
+              confirmado_en
+            )
+          `)
+          .eq('alumno_id', alumnoId),
       ])
 
       if (periodosRes.status === 'fulfilled' && !periodosRes.value.error) {
@@ -324,6 +382,14 @@ export default function FichaAlumnoPage() {
       } else {
         setFichasDescriptivas([])
         setErrorFichas(true)
+      }
+
+      if (resultadosRes.status === 'fulfilled' && !resultadosRes.value.error) {
+        setResultadosProyecto((resultadosRes.value.data as unknown as ResultadoIndicador[]) || [])
+        setErrorResultados(false)
+      } else {
+        setResultadosProyecto([])
+        setErrorResultados(true)
       }
 
       setCargando(false)
@@ -503,6 +569,27 @@ export default function FichaAlumnoPage() {
   if (!observacionesInscripcion || !observacionesInscripcion.trim()) faltantesExpediente.push('No hay observaciones registradas.')
   const expedienteCompleto = faltantesExpediente.length === 0
 
+  // Agrupación determinista por proyecto_id (nunca por indicador suelto)
+  // — 1 tarjeta por proyecto con sus indicadores anidados. Orden: por
+  // confirmado_en (fecha real de confirmación de resultados) del más
+  // reciente al más antiguo; si un proyecto no la tiene, se usa
+  // fecha_fin y luego fecha_inicio — nunca proyecto_id (un UUID no es
+  // una fecha).
+  const proyectosResultados = Array.from(
+    resultadosProyecto.reduce((mapa, r) => {
+      const actual = mapa.get(r.proyecto_id)
+      if (actual) actual.indicadores.push(r)
+      else mapa.set(r.proyecto_id, { info: r.proyectos_seguimiento, indicadores: [r] })
+      return mapa
+    }, new Map<string, { info: ResultadoIndicador['proyectos_seguimiento']; indicadores: ResultadoIndicador[] }>()).entries()
+  )
+    .map(([proyectoId, grupo]) => ({ proyectoId, ...grupo }))
+    .sort((a, b) => {
+      const fechaOrden = (info: ResultadoIndicador['proyectos_seguimiento']) =>
+        info?.confirmado_en || info?.fecha_fin || info?.fecha_inicio || ''
+      return fechaOrden(b.info).localeCompare(fechaOrden(a.info))
+    })
+
   // Dirty-state mínimo: deriva directamente de los mismos 3 estados
   // controlados ya existentes (curp/sexo/fechaNacimiento) comparados
   // contra el último valor cargado/guardado en `alumno` — sin estado
@@ -656,6 +743,13 @@ export default function FichaAlumnoPage() {
                   <p className="text-xs font-medium text-gray-500 leading-tight">Ficha descriptiva</p>
                 </div>
                 <p className="text-lg font-bold text-gray-900">{fichasDescriptivas.length > 0 ? fichasDescriptivas.length : 'Sin registros'}</p>
+              </button>
+              <button onClick={() => setPestana('resultados')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'resultados' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
+                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
+                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-teal-50 text-teal-600 flex items-center justify-center text-xs flex-shrink-0">📊</span>
+                  <p className="text-xs font-medium text-gray-500 leading-tight">Resultados por proyecto</p>
+                </div>
+                <p className="text-lg font-bold text-gray-900">{proyectosResultados.length > 0 ? proyectosResultados.length : 'Sin registros'}</p>
               </button>
             </div>
 
@@ -894,6 +988,52 @@ export default function FichaAlumnoPage() {
                   ))}
                 </div>
               </div>
+            </div>
+          </div>
+          )}
+
+          {pestana === 'resultados' && (
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Resultados por proyecto</p>
+              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {errorResultados && <BannerError mensaje="No se pudieron cargar los resultados por proyecto." />}
+              {!errorResultados && proyectosResultados.length === 0 && <EstadoVacio icono="📊" mensaje="Sin resultados de proyectos confirmados." />}
+              {proyectosResultados.map(({ proyectoId, info, indicadores }) => {
+                const periodoNombre = info?.periodo_evaluacion_id
+                  ? periodosEvaluacion.find(p => p.id === info.periodo_evaluacion_id)?.nombre
+                  : null
+                const origenTexto = info?.origen_resultados === 'fotografia' ? 'Por fotografía' : info?.origen_resultados === 'manual' ? 'Manual' : null
+                const rango = info?.fecha_inicio || info?.fecha_fin ? `${formatFecha(info?.fecha_inicio)} – ${formatFecha(info?.fecha_fin)}` : null
+                return (
+                  <div key={proyectoId} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                        <span aria-hidden="true" className="w-6 h-6 rounded-md bg-teal-50 text-teal-600 flex items-center justify-center text-xs flex-shrink-0">📊</span>
+                        {info?.nombre}
+                      </span>
+                      {info?.confirmado_en && <span className="text-xs text-gray-400">{formatFecha(info.confirmado_en)}</span>}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mb-1">
+                      {rango && <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">{rango}</span>}
+                      {periodoNombre && <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Periodo: {periodoNombre}</span>}
+                      {origenTexto && <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">{origenTexto}</span>}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-100 space-y-1.5">
+                      {indicadores.map((r, i) => (
+                        <div key={i} className="text-xs">
+                          <span className="font-medium text-gray-700">{r.indicador_especifico}</span>
+                          <span className="text-gray-500"> — {r.nivel.replace(/_/g, ' ')}</span>
+                          {r.corregido_manualmente && <span className="ml-1 text-amber-600">✏️ Corregido</span>}
+                          {r.observacion && <p className="text-gray-500 mt-0.5">{r.observacion}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </div>
           )}
