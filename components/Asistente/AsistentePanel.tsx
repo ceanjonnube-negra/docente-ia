@@ -742,6 +742,16 @@ export default function AsistentePanel() {
       }
       router.push(ruta)
       if (diagnosticoNavegacionActivo) setDiagGHI((prev) => ({ g: prev?.g ?? true, h: 'push', i: true }))
+      // CORRECCIÓN — "el overlay fixed inset-0 z-50 del chat queda
+      // cubriendo la pantalla destino" (ver microauditoría G-J:
+      // router.push sí navega, pero panelAbierto nunca se tocaba).
+      // Reutiliza exclusivamente AsistenteService.cerrarPanel() (mismo
+      // método que ya usa la flecha "⌄" del header) — solo en ESTA
+      // rama, la única que ejecuta una navegación real de página con
+      // alumnoId. La rama de abajo (lista filtrada, sin alumnoId) sigue
+      // sin cerrar el panel a propósito, tal como documenta su propio
+      // comentario ("para que el chat de abajo nunca se pierda").
+      AsistenteService.cerrarPanel()
     } else if (accion.modulo === 'lista') {
       if (diagnosticoNavegacionActivo) setDiagGHI((prev) => ({ g: prev?.g ?? true, h: accion.grupoId ? 'filtrada' : 'ninguna', i: false }))
       // Navegación a nivel de módulo, sin alumnoId — "muéstrame
