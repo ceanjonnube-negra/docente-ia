@@ -20,7 +20,6 @@ type Grupo = { grado: string | null; grupo: string | null; nombre_grupo: string 
 
 type Asistencia = { fecha: string; presente: boolean }
 type Incidencia = { id: string; fecha: string; tipo: string; descripcion: string; seguimiento: unknown }
-type Evaluacion = { id: string; campo_formativo: string | null; periodo: string | null; calificacion: string | null; rubrica: unknown; creado_en: string }
 type Evidencia = { id: string; tipo: string | null; descripcion: string | null; archivo_url: string | null; creado_en: string }
 type NecesidadApoyo = { id: string; tipo: string | null; descripcion: string | null; activa: boolean; creado_en: string }
 type FichaDescriptiva = { id: string; periodo: string | null; contenido: unknown; creado_en: string }
@@ -68,7 +67,7 @@ const CAMPOS_BORRADOR: { campo: keyof BorradorFicha; etiqueta: string }[] = [
   { campo: 'recomendaciones', etiqueta: 'Recomendaciones' },
 ]
 
-type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas' | 'resultados'
+type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evidencias' | 'fichas' | 'resultados'
 
 function formatFecha(fecha: string | null | undefined): string {
   if (!fecha) return '—'
@@ -151,7 +150,6 @@ export default function FichaAlumnoPage() {
   const [posicion, setPosicion] = useState<number | null>(null)
   const [asistencias, setAsistencias] = useState<Asistencia[]>([])
   const [incidencias, setIncidencias] = useState<Incidencia[]>([])
-  const [evaluaciones, setEvaluaciones] = useState<Evaluacion[]>([])
   const [evidencias, setEvidencias] = useState<Evidencia[]>([])
   const [necesidadesApoyo, setNecesidadesApoyo] = useState<NecesidadApoyo[]>([])
   const [fichasDescriptivas, setFichasDescriptivas] = useState<FichaDescriptiva[]>([])
@@ -169,7 +167,6 @@ export default function FichaAlumnoPage() {
 
   const [errorAsistencia, setErrorAsistencia] = useState(false)
   const [errorIncidencias, setErrorIncidencias] = useState(false)
-  const [errorEvaluaciones, setErrorEvaluaciones] = useState(false)
   const [errorEvidencias, setErrorEvidencias] = useState(false)
   const [errorNecesidades, setErrorNecesidades] = useState(false)
   const [errorFichas, setErrorFichas] = useState(false)
@@ -189,8 +186,17 @@ export default function FichaAlumnoPage() {
   // AsistentePanel.tsx.
   const [pestana, setPestana] = useState<Pestana>(() => {
     if (typeof window === 'undefined') return 'resumen'
-    const tab = new URLSearchParams(window.location.search).get('tab')
-    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas', 'resultados']
+    const tabCrudo = new URLSearchParams(window.location.search).get('tab')
+    // Alias de compatibilidad con el Chat IA — lib/clasificadorNivel0.ts
+    // (pestana_lista) todavía puede producir 'evaluaciones' (no se tocó
+    // en esta microfase, ver "retiro de Evaluaciones legacy"); este es
+    // el ÚNICO punto real de validación de todo el pipeline de
+    // navegación (AccionNavegacion.pestana viaja como string suelto sin
+    // validar hasta aquí), así que traducirlo aquí basta para que
+    // "muéstrame las evaluaciones de X" siga abriendo la pestaña
+    // correcta en vez de caer silenciosamente a "resumen".
+    const tab = tabCrudo === 'evaluaciones' ? 'resultados' : tabCrudo
+    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evidencias', 'fichas', 'resultados']
     return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
   })
   const [cargando, setCargando] = useState(true)
@@ -255,7 +261,7 @@ export default function FichaAlumnoPage() {
       setGrupoId(grupoIdActivo)
       setInscripcionId(inscripcionActiva?.id ?? null)
 
-      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evaluacionesRes, evidenciasRes, necesidadesRes, fichasRes, periodosRes, resultadosRes] = await Promise.allSettled([
+      const [grupoRes, rosterRes, asistenciasRes, incidenciasRes, evidenciasRes, necesidadesRes, fichasRes, periodosRes, resultadosRes] = await Promise.allSettled([
         grupoIdActivo
           ? supabase.from('grupos').select('grado, grupo, nombre_grupo, docente_id').eq('id', grupoIdActivo).single()
           : Promise.resolve({ data: null, error: null }),
@@ -264,7 +270,6 @@ export default function FichaAlumnoPage() {
           : Promise.resolve({ data: [], error: null }),
         supabase.from('asistencias').select('fecha, presente').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
         supabase.from('incidencias').select('id, fecha, tipo, descripcion, seguimiento').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
-        supabase.from('evaluaciones').select('id, campo_formativo, periodo, calificacion, rubrica, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('evidencias').select('id, tipo, descripcion, archivo_url, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('necesidades_apoyo').select('id, tipo, descripcion, activa, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('fichas_descriptivas').select('id, periodo, contenido, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
@@ -279,7 +284,7 @@ export default function FichaAlumnoPage() {
         // join) — deliberadamente NO se embebe grupos ni hojas_evaluacion
         // aquí, esas policies no se verificaron en esta microfase. Sin
         // condicionar a grupoIdActivo/ciclo: mismo criterio longitudinal por
-        // alumno_id que asistencias/incidencias/evaluaciones/evidencias.
+        // alumno_id que asistencias/incidencias/evidencias.
         supabase
           .from('seguimiento_resultados')
           .select(`
@@ -350,14 +355,6 @@ export default function FichaAlumnoPage() {
             ? { texto: 'Requiere atención', clase: 'bg-amber-100 text-amber-700' }
             : { texto: 'Al corriente', clase: 'bg-green-100 text-green-700' }
         )
-      }
-
-      if (evaluacionesRes.status === 'fulfilled' && !evaluacionesRes.value.error) {
-        setEvaluaciones(evaluacionesRes.value.data || [])
-        setErrorEvaluaciones(false)
-      } else {
-        setEvaluaciones([])
-        setErrorEvaluaciones(true)
       }
 
       if (evidenciasRes.status === 'fulfilled' && !evidenciasRes.value.error) {
@@ -546,8 +543,14 @@ export default function FichaAlumnoPage() {
   const fechasActividad = [
     asistencias[0]?.fecha,
     incidencias[0]?.fecha,
-    evaluaciones[0]?.creado_en,
     evidencias[0]?.creado_en,
+    // confirmado_en real de cada resultado confirmado (fuente canónica:
+    // seguimiento_resultados) — nunca fecha_inicio/fecha_fin (esas son
+    // la fecha PLANEADA del proyecto, no un evento real ocurrido). Se
+    // repite varias veces por proyecto (una por indicador) — inofensivo,
+    // el reduce del máximo de abajo da el mismo resultado con o sin
+    // duplicados.
+    ...resultadosProyecto.map(r => r.proyectos_seguimiento?.confirmado_en),
   ].filter(Boolean) as string[]
   const ultimaActividad = fechasActividad.length > 0 ? fechasActividad.reduce((max, f) => (f > max ? f : max)) : null
 
@@ -558,10 +561,16 @@ export default function FichaAlumnoPage() {
   // Estado del expediente: se calcula con datos reales (no con la IA), para
   // que sea determinista y quede claro exactamente qué falta. Esta
   // inteligencia vive únicamente dentro de la pestaña Ficha descriptiva.
+  // "Evidencia de evaluación" del periodo ya NO sale de la tabla legacy
+  // `evaluaciones` (confirmada vacía y sin escritor en Production) —
+  // ahora exige al menos un resultado real de seguimiento_resultados
+  // (fuente canónica) cuyo proyecto pertenezca a ese periodo Y ya haya
+  // sido confirmado (confirmado_en no nulo) — nunca solo la existencia
+  // de un proyecto sin resultados confirmados.
   const faltantesExpediente: string[] = []
   periodosEvaluacion.forEach(p => {
-    const tieneEvaluacion = evaluaciones.some(
-      ev => ev.periodo && ev.periodo.trim().toLowerCase() === p.nombre.trim().toLowerCase()
+    const tieneEvaluacion = resultadosProyecto.some(
+      r => r.proyectos_seguimiento?.periodo_evaluacion_id === p.id && !!r.proyectos_seguimiento?.confirmado_en
     )
     if (!tieneEvaluacion) faltantesExpediente.push(`Falta evaluación del ${p.nombre}.`)
   })
@@ -723,13 +732,6 @@ export default function FichaAlumnoPage() {
                 </div>
                 <p className="text-lg font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('evaluaciones')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evaluaciones' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
-                <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
-                  <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
-                  <p className="text-xs font-medium text-gray-500 leading-tight">Evaluaciones</p>
-                </div>
-                <p className="text-lg font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
-              </button>
               <button onClick={() => setPestana('evidencias')} className={`min-h-[84px] text-left bg-white border rounded-2xl p-3 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === 'evidencias' ? 'border-purple-300 ring-2 ring-purple-200' : 'border-gray-100'}`}>
                 <div className="flex items-center gap-1.5 mb-1.5 min-w-0">
                   <span aria-hidden="true" className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-xs flex-shrink-0">📎</span>
@@ -753,7 +755,7 @@ export default function FichaAlumnoPage() {
               </button>
             </div>
 
-            {(errorAsistencia || errorIncidencias || errorEvaluaciones || errorEvidencias || errorNecesidades) && (
+            {(errorAsistencia || errorIncidencias || errorEvidencias || errorNecesidades) && (
               <BannerError mensaje="Algunos datos no se pudieron cargar por completo." />
             )}
           </div>
@@ -802,40 +804,6 @@ export default function FichaAlumnoPage() {
                     <div className="mt-2 pt-2 border-t border-gray-100">
                       <p className="text-xs font-semibold text-gray-500 mb-1">Seguimiento</p>
                       <ResumenJson valor={i.seguimiento} vacio="Sin detalle de seguimiento." />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-          )}
-
-          {pestana === 'evaluaciones' && (
-          <div>
-            <div className="flex items-center justify-between mb-2.5">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Evaluaciones</p>
-              <button onClick={() => setPestana('resumen')} className="text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-100 active:scale-[0.97] transition-all focus:outline-none focus:ring-2 focus:ring-gray-300">✕ Cerrar</button>
-            </div>
-            <div className="grid sm:grid-cols-2 gap-2.5">
-              {errorEvaluaciones && <BannerError mensaje="No se pudieron cargar las evaluaciones." />}
-              {!errorEvaluaciones && evaluaciones.length === 0 && <EstadoVacio icono="🏆" mensaje="Sin evaluaciones registradas." />}
-              {evaluaciones.map(ev => (
-                <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                      <span aria-hidden="true" className="w-6 h-6 rounded-md bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
-                      {ev.campo_formativo || 'Campo formativo sin registrar'}
-                    </span>
-                    <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 mb-1">
-                    <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Periodo: {ev.periodo || '—'}</span>
-                    <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Calificación: {ev.calificacion || '—'}</span>
-                  </div>
-                  {ev.rubrica != null && (
-                    <div className="mt-2 pt-2 border-t border-gray-100">
-                      <p className="text-xs font-semibold text-gray-500 mb-1">Rúbrica</p>
-                      <ResumenJson valor={ev.rubrica} vacio="Sin detalle de rúbrica." />
                     </div>
                   )}
                 </div>
