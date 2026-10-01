@@ -8,6 +8,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CampoAlumnoCorregible, DiferenciaCalendario } from './asistente/tipos';
+import type { AspectoGeneral } from './seguimiento/tipos';
+import type { NivelTextoCanonico } from './seguimiento/conversionCalificacion';
 
 export type ExcepcionAsistencia = {
   alumno_id: string;
@@ -605,6 +607,78 @@ export async function incidenciasAlumno(sb: SupabaseClient, alumnoId: string): P
     .order('fecha', { ascending: false });
   const incidencias = (data || []) as IncidenciaResumen[];
   return { total: incidencias.length, incidencias };
+}
+
+// Una fila = un indicador específico ya confirmado de un proyecto de
+// Seguimiento (fuente canónica: seguimiento_resultados, ver
+// lib/seguimiento/confirmarResultadosHoja.ts — FilaResultadoConfirmado
+// documenta las mismas columnas reales de la tabla). Mismos
+// nombres/tipos que ya usa esa fuente (AspectoGeneral,
+// NivelTextoCanonico) y que ya prueba en Production
+// app/dashboard/lista/[alumnoId]/page.tsx — esta función no inventa una
+// segunda representación, solo la hace reutilizable server-side y le
+// agrega el filtro de confirmación (ver abajo). proyecto_id vive plano
+// en la fila (así es la tabla); el resto de los datos del proyecto va
+// anidado bajo proyectos_seguimiento, igual que en el embed ya
+// verificado de page.tsx.
+export type ResultadoProyectoConfirmado = {
+  proyecto_id: string
+  indicador_numero: number
+  indicador_especifico: string
+  aspecto_general: AspectoGeneral
+  nivel: NivelTextoCanonico
+  confianza: number
+  corregido_manualmente: boolean
+  observacion: string | null
+  proyectos_seguimiento: {
+    nombre: string
+    periodo_evaluacion_id: string | null
+    origen_resultados: string | null
+    confirmado_en: string
+  } | null
+}
+
+// Lectura server-side de los resultados académicos CANÓNICOS CONFIRMADOS
+// de un alumno (seguimiento_resultados + proyectos_seguimiento) — ver
+// auditoría "contrato real de contexto_alumno / modelo canónico del
+// historial pedagógico". Por diseño:
+// - Opera por alumno_id ya resuelto (identidad canónica) — no busca por
+//   nombre ni hace fuzzy matching; esa responsabilidad es de Nivel 0/
+//   sesión, nunca de esta función.
+// - !inner en el embed + el filtro not-is-null sobre
+//   proyectos_seguimiento.confirmado_en excluyen, en la misma query,
+//   cualquier proyecto que todavía no haya pasado por
+//   confirmar-hoja/route.ts (la ÚNICA fase que escribe
+//   seguimiento_resultados) — nunca se lee captura_pendiente ni un
+//   resultado de OCR sin confirmar; "sin resultados confirmados" y
+//   "error de consulta" se distinguen igual que en contextoAlumno: un
+//   error de Supabase se relanza (throw), nunca se convierte en [].
+// - 1 sola query, 0 llamadas IA. No se agrupa por proyecto ni se
+//   calcula ninguna conclusión pedagógica aquí — eso es responsabilidad
+//   de una capa posterior (síntesis), no de esta lectura.
+export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: string): Promise<ResultadoProyectoConfirmado[]> {
+  const { data, error } = await sb
+    .from('seguimiento_resultados')
+    .select(`
+      proyecto_id,
+      indicador_numero,
+      indicador_especifico,
+      aspecto_general,
+      nivel,
+      confianza,
+      corregido_manualmente,
+      observacion,
+      proyectos_seguimiento!inner (
+        nombre,
+        periodo_evaluacion_id,
+        origen_resultados,
+        confirmado_en
+      )
+    `)
+    .eq('alumno_id', alumnoId)
+    .not('proyectos_seguimiento.confirmado_en', 'is', null);
+  if (error) throw error;
+  return (data || []) as unknown as ResultadoProyectoConfirmado[];
 }
 
 // Único origen de verdad para el grado/grupo que usa TODO el pipeline
