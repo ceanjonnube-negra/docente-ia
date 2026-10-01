@@ -600,11 +600,12 @@ export type IncidenciasAlumnoResumen = { total: number; incidencias: IncidenciaR
 // de cada fila — invisible para el Chat IA). Misma tabla, mismas
 // columnas, solo ahora también consultable desde el servidor.
 export async function incidenciasAlumno(sb: SupabaseClient, alumnoId: string): Promise<IncidenciasAlumnoResumen> {
-  const { data } = await sb
+  const { data, error } = await sb
     .from('incidencias')
     .select('fecha, tipo, descripcion')
     .eq('alumno_id', alumnoId)
     .order('fecha', { ascending: false });
+  if (error) throw error;
   const incidencias = (data || []) as IncidenciaResumen[];
   return { total: incidencias.length, incidencias };
 }
@@ -679,6 +680,51 @@ export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: str
     .not('proyectos_seguimiento.confirmado_en', 'is', null);
   if (error) throw error;
   return (data || []) as unknown as ResultadoProyectoConfirmado[];
+}
+
+// Agregador server-side DETERMINISTA del contexto pedagógico de un
+// alumno — compone exclusivamente los 4 wrappers ya existentes de este
+// mismo archivo (contextoAlumno, resultadosProyectoAlumno,
+// consultarAsistenciaAlumno, incidenciasAlumno), sin reimplementar
+// ninguna de sus queries ni inventar una quinta forma de leer estos
+// datos. No interpreta, no resume, no convierte niveles en adjetivos,
+// no decide fortalezas/dificultades/necesidades de apoyo — datos →
+// datos, nada de prosa. Ver auditoría "contrato real de
+// contexto_alumno / modelo canónico del historial pedagógico" (FD-2).
+//
+// contextoAlumno se mantiene crudo/sin tipar tal como ya lo devuelve
+// contextoAlumno() hoy (ver esa función, línea 313) — esta capa no
+// inventa un contrato interno de esa RPC que el repo no puede
+// demostrar localmente.
+//
+// Las 4 lecturas dependen únicamente de (alumnoId, cicloEscolarId), ya
+// resueltos por el caller — ninguna depende del resultado de otra — así
+// que corren en paralelo vía Promise.all. Las 4 propagan un error real
+// de Supabase (cada una con su propio "if (error) throw error"), así
+// que Promise.all rechaza de inmediato si cualquiera falla: un error
+// nunca se convierte aquí en una fuente vacía. Una fuente vacía
+// (incidencias: [], resultadosProyectos: []) representa exclusivamente
+// "se consultó correctamente y no hay registros" — nunca "no se pudo
+// consultar".
+export type ContextoPedagogicoAlumno = {
+  contextoAlumno: unknown
+  resultadosProyectos: ResultadoProyectoConfirmado[]
+  asistencia: { faltas: number; retardos: number; justificadas: number; dias_registrados: number }
+  incidencias: IncidenciasAlumnoResumen
+}
+
+export async function contextoPedagogicoAlumno(
+  sb: SupabaseClient,
+  alumnoId: string,
+  cicloEscolarId: string
+): Promise<ContextoPedagogicoAlumno> {
+  const [contexto, resultadosProyectos, asistencia, incidencias] = await Promise.all([
+    contextoAlumno(sb, alumnoId, cicloEscolarId),
+    resultadosProyectoAlumno(sb, alumnoId),
+    consultarAsistenciaAlumno(sb, alumnoId, cicloEscolarId),
+    incidenciasAlumno(sb, alumnoId),
+  ]);
+  return { contextoAlumno: contexto, resultadosProyectos, asistencia, incidencias };
 }
 
 // Único origen de verdad para el grado/grupo que usa TODO el pipeline
