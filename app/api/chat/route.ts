@@ -19,6 +19,7 @@ import {
   categoriaEventoCalendario,
   construirTextoListaAlumnos,
   contextoAlumno,
+  contextoPedagogicoAlumno,
   escribirAsistencia,
   registrarAsistenciaMasiva,
   registrarIncidencia,
@@ -28,6 +29,7 @@ import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora, calcularDiasSemanaDeFechasExplicitas } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
+import { INSTRUCCIONES_FICHA_DESCRIPTIVA } from '@/lib/asistente/instruccionesFichaDescriptiva'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
@@ -2490,8 +2492,52 @@ export async function POST(req: NextRequest) {
       if ((clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) || esComparacionVisualDeAlumno) {
         try {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
-            const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
-            contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
+            // FD-3 — una sola entrada lógica al contexto pedagógico
+            // (contextoPedagogicoAlumno, lib/motorContexto.ts): compone
+            // las 4 fuentes ya existentes (contextoAlumno,
+            // resultadosProyectoAlumno, consultarAsistenciaAlumno,
+            // incidenciasAlumno) en paralelo, sin reimplementar ninguna
+            // query aquí. Cada fuente se entrega en su propio bloque
+            // (A-D), nunca mezclada en prosa, para que Claude pueda
+            // distinguir "sin registros" de "sin evidencia de apoyo" —
+            // ver INSTRUCCIONES_FICHA_DESCRIPTIVA.
+            //
+            // FD-3A — try/catch LOCAL a esta intención (a propósito
+            // distinto del catch compartido de Nivel 4 de más abajo,
+            // que solo loguea y sigue sin contexto): si cualquiera de
+            // las 4 fuentes falla, esto es un ERROR DE CONSULTA, no
+            // ausencia de evidencia — dejar que el turno llegara a
+            // Sonnet sin contexto pedagógico ni INSTRUCCIONES_FICHA_
+            // DESCRIPTIVA abriría la puerta a una ficha redactada sin
+            // ninguna de las dos salvaguardas (ver microauditoría
+            // "fail-closed exclusivo de ficha descriptiva"). Por eso
+            // esta rama corta el turno aquí mismo, antes de construir
+            // el bloque de evidencia y el system prompt — nunca llega a
+            // client.messages.create. Ninguna otra rama de Nivel 4
+            // (planeación, calendario, comparación visual) se ve
+            // afectada: siguen cubiertas únicamente por el catch
+            // compartido de más abajo, sin cambios.
+            let ctxPedagogico: Awaited<ReturnType<typeof contextoPedagogicoAlumno>>
+            try {
+              ctxPedagogico = await contextoPedagogicoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
+            } catch (errorContextoFicha) {
+              console.error('[FICHA_DESCRIPTIVA] Error recuperando contexto pedagógico del alumno:', errorContextoFicha)
+              return respuestaTexto('No pude recuperar de forma segura la información necesaria para elaborar la ficha descriptiva. Inténtalo de nuevo en un momento.')
+            }
+            contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO PARA LA FICHA DESCRIPTIVA (usa exclusivamente estos datos, no inventes otros; cada bloque es una fuente distinta, nunca los mezcles):
+
+A) CONTEXTO BASE DEL ALUMNO:
+${JSON.stringify(ctxPedagogico.contextoAlumno)}
+
+B) RESULTADOS ACADÉMICOS CONFIRMADOS (evidencia canónica ya confirmada por el flujo de Seguimiento; [] significa que no hay resultados confirmados disponibles, nunca "buen" ni "bajo" desempeño):
+${JSON.stringify(ctxPedagogico.resultadosProyectos)}
+
+C) ASISTENCIA (resumen canónico; preséntala como dato observado, nunca como patrón estable si el número de días registrados es bajo):
+${JSON.stringify(ctxPedagogico.asistencia)}
+
+D) INCIDENCIAS (registros explícitamente almacenados; [] significa que no hay incidencias registradas recuperadas, nunca que el alumno jamás haya presentado dificultades conductuales):
+${JSON.stringify(ctxPedagogico.incidencias)}`
+            contextoEnriquecido += `\n\n${INSTRUCCIONES_FICHA_DESCRIPTIVA}`
           } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id && clasificacion.accion_planeacion_generar === 'ajustar') {
             // FASE 3B.3 — AJUSTAR desde planeacion_activa (diseño
             // aprobado por separado, "planeacion_activa como fuente de
