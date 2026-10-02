@@ -1477,6 +1477,15 @@ export async function POST(req: NextRequest) {
   // no tiene nada que clasificar, el propio clasificador devuelve
   // "conversacion_general" y el flujo sigue exactamente igual. ---
   let contextoEnriquecido = [contexto || '', resumenGrupoTexto || ''].filter(Boolean).join('\n\n')
+  // FUENTE FACTUAL CERRADA (ver microauditoría "excepción determinista de
+  // ficha_descriptiva en PRIORIZACIÓN DE FUENTES") — se activa EXCLUSIVAMENTE
+  // más abajo, dentro de la rama ficha_descriptiva, y solo DESPUÉS de que
+  // contextoPedagogicoAlumno() resolvió con éxito y de anexar
+  // INSTRUCCIONES_FICHA_DESCRIPTIVA a contextoEnriquecido — nunca si FD-3A
+  // hace early-return (esa ruta nunca llega a esa línea). Mientras siga en
+  // false (cualquier otra intención, o un fallo de FD-3A), el bloque
+  // condicional de PRIORIZACIÓN DE FUENTES no se interpola.
+  let esTurnoFichaDescriptiva = false
   // Ver "Consultar información oficial vigente de la SEP" — true solo si
   // el Clasificador de Nivel 0 (regla 18) autorizó este turno específico
   // para usar la herramienta de búsqueda oficial. Declarado en este
@@ -2538,6 +2547,7 @@ ${JSON.stringify(ctxPedagogico.asistencia)}
 D) INCIDENCIAS (registros explícitamente almacenados; [] significa que no hay incidencias registradas recuperadas, nunca que el alumno jamás haya presentado dificultades conductuales):
 ${JSON.stringify(ctxPedagogico.incidencias)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_FICHA_DESCRIPTIVA}`
+            esTurnoFichaDescriptiva = true
           } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id && clasificacion.accion_planeacion_generar === 'ajustar') {
             // FASE 3B.3 — AJUSTAR desde planeacion_activa (diseño
             // aprobado por separado, "planeacion_activa como fuente de
@@ -3409,6 +3419,8 @@ PRIORIZACIÓN DE FUENTES — decide antes de responder cualquier consulta inform
 2. Fuente interna de la escuela: si la pregunta hace referencia explícita a la escuela del maestro (reglamento, manual de convivencia propio, circulares, oficios, acuerdos internos) y existe un documento institucional relevante (ver INFORMACION DE DOCUMENTOS INSTITUCIONALES arriba), básate en ese documento real, nunca en la SEP.
 3. Datos de la app: si la pregunta es sobre un alumno, el grupo o la escuela del maestro, usa exclusivamente los DATOS DEL MAESTRO/CONTEXTO REAL ya inyectados arriba — nunca inventes cifras ni nombres. Si el dato que piden no está disponible ahí, dilo con honestidad en vez de adivinar. Si el dato SÍ está ahí, úsalo exactamente como viene — nunca lo redondees, estimes ni aproximes, y tienes PROHIBIDO usar frases como "aproximadamente", "creo que", "probablemente", "debe haber", "alrededor de" sobre un dato que ya tienes con exactitud: di la cifra o el nombre real, tal cual, con seguridad.
 Si tu respuesta combinó más de una fuente, dilo.
+${esTurnoFichaDescriptiva ? `
+FICHA DESCRIPTIVA — FUENTE FACTUAL CERRADA: para ESTE turno, PRIORIZACIÓN DE FUENTES no autoriza complementar la ficha con conocimiento externo. Para toda afirmación académica, pedagógica, conductual, curricular o documental sobre el alumno, el proyecto o la escuela, usa únicamente la evidencia explícitamente recuperada para este turno, especialmente los bloques A/B/C/D de "CONTEXTO REAL DEL ALUMNO PARA LA FICHA DESCRIPTIVA". Los demás datos canónicos de identificación o contexto ya proporcionados explícitamente por la app pueden utilizarse como tales, sin inferir ni completar información nueva. NUNCA agregues desde conocimiento general datos curriculares, hechos, reglamentos, protocolos, lineamientos, acuerdos, manuales, artículos ni contenido de documentos institucionales/oficiales que no hayan sido proporcionados explícitamente en la evidencia de este turno. Puedes formular recomendaciones pedagógicas razonables derivadas de la evidencia disponible, pero nunca presentarlas como hechos ni atribuirlas a una fuente, artículo o documento que no recibiste.` : ''}
 
 CITAR LA FUENTE — solo cuando la respuesta se apoyó en información oficial o en un documento (nunca la agregues para conversación general ni para acciones dentro de la app):
 Al final de tu respuesta, separado por una línea en blanco, agrega discretamente un bloque así (una sola fuente):
