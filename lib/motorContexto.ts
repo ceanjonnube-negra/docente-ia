@@ -633,6 +633,8 @@ export type ResultadoProyectoConfirmado = {
   observacion: string | null
   proyectos_seguimiento: {
     nombre: string
+    grupo_id: string
+    ciclo_escolar_id: string
     periodo_evaluacion_id: string | null
     origen_resultados: string | null
     confirmado_en: string
@@ -671,13 +673,16 @@ export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: str
       observacion,
       proyectos_seguimiento!inner (
         nombre,
+        grupo_id,
+        ciclo_escolar_id,
         periodo_evaluacion_id,
         origen_resultados,
         confirmado_en
       )
     `)
     .eq('alumno_id', alumnoId)
-    .not('proyectos_seguimiento.confirmado_en', 'is', null);
+    .not('proyectos_seguimiento.confirmado_en', 'is', null)
+    .order('confirmado_en', { ascending: false, referencedTable: 'proyectos_seguimiento' });
   if (error) throw error;
   return (data || []) as unknown as ResultadoProyectoConfirmado[];
 }
@@ -716,7 +721,8 @@ export type ContextoPedagogicoAlumno = {
 export async function contextoPedagogicoAlumno(
   sb: SupabaseClient,
   alumnoId: string,
-  cicloEscolarId: string
+  cicloEscolarId: string,
+  grupoActivoId: string
 ): Promise<ContextoPedagogicoAlumno> {
   const [contexto, resultadosProyectos, asistencia, incidencias] = await Promise.all([
     contextoAlumno(sb, alumnoId, cicloEscolarId),
@@ -724,7 +730,20 @@ export async function contextoPedagogicoAlumno(
     consultarAsistenciaAlumno(sb, alumnoId, cicloEscolarId),
     incidenciasAlumno(sb, alumnoId),
   ]);
-  return { contextoAlumno: contexto, resultadosProyectos, asistencia, incidencias };
+  // resultadosProyectoAlumno() sigue siendo la lectura canónica
+  // ACUMULATIVA (todo el historial longitudinal del alumno, de
+  // cualquier grupo/ciclo) — el filtro al grupo/ciclo activos ocurre
+  // aquí, en memoria, exclusivamente para el contexto pedagógico
+  // ordinario (ficha_descriptiva hoy). No modifica ni descarta el
+  // historial ya persistido: una llamada futura que quiera el
+  // historial longitudinal completo sigue pudiendo llamar
+  // resultadosProyectoAlumno() directamente, sin este filtro.
+  const resultadosDelGrupoActivo = resultadosProyectos.filter(
+    r =>
+      r.proyectos_seguimiento?.grupo_id === grupoActivoId &&
+      r.proyectos_seguimiento?.ciclo_escolar_id === cicloEscolarId
+  )
+  return { contextoAlumno: contexto, resultadosProyectos: resultadosDelGrupoActivo, asistencia, incidencias };
 }
 
 // Único origen de verdad para el grado/grupo que usa TODO el pipeline

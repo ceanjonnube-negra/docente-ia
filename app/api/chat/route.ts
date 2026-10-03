@@ -2500,7 +2500,7 @@ export async function POST(req: NextRequest) {
       // lib/asistente/herramientasModulo.ts).
       if ((clasificacion.nivel_ejecucion === 4 && clasificacion.requiere_contexto_memoria) || esComparacionVisualDeAlumno) {
         try {
-          if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
+          if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id && sesion.grupo_activo_id) {
             // FD-3 — una sola entrada lógica al contexto pedagógico
             // (contextoPedagogicoAlumno, lib/motorContexto.ts): compone
             // las 4 fuentes ya existentes (contextoAlumno,
@@ -2528,18 +2528,40 @@ export async function POST(req: NextRequest) {
             // compartido de más abajo, sin cambios.
             let ctxPedagogico: Awaited<ReturnType<typeof contextoPedagogicoAlumno>>
             try {
-              ctxPedagogico = await contextoPedagogicoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
+              ctxPedagogico = await contextoPedagogicoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id, sesion.grupo_activo_id)
             } catch (errorContextoFicha) {
               console.error('[FICHA_DESCRIPTIVA] Error recuperando contexto pedagógico del alumno:', errorContextoFicha)
               return respuestaTexto('No pude recuperar de forma segura la información necesaria para elaborar la ficha descriptiva. Inténtalo de nuevo en un momento.')
             }
+            // Reducción semántica — grupo_id/ciclo_escolar_id son
+            // exclusivamente UUIDs de control server-side (ya usados
+            // arriba por contextoPedagogicoAlumno() para filtrar al
+            // grupo/ciclo activos) y nunca deben llegar al texto que lee
+            // Sonnet; periodo_evaluacion_id se conserva porque ya
+            // formaba parte del payload anterior.
+            const resultadosParaFicha = ctxPedagogico.resultadosProyectos.map(r => ({
+              proyecto_id: r.proyecto_id,
+              indicador_numero: r.indicador_numero,
+              indicador_especifico: r.indicador_especifico,
+              aspecto_general: r.aspecto_general,
+              nivel: r.nivel,
+              confianza: r.confianza,
+              corregido_manualmente: r.corregido_manualmente,
+              observacion: r.observacion,
+              proyectos_seguimiento: r.proyectos_seguimiento ? {
+                nombre: r.proyectos_seguimiento.nombre,
+                periodo_evaluacion_id: r.proyectos_seguimiento.periodo_evaluacion_id,
+                origen_resultados: r.proyectos_seguimiento.origen_resultados,
+                confirmado_en: r.proyectos_seguimiento.confirmado_en,
+              } : null,
+            }))
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO PARA LA FICHA DESCRIPTIVA (usa exclusivamente estos datos, no inventes otros; cada bloque es una fuente distinta, nunca los mezcles):
 
 A) CONTEXTO BASE DEL ALUMNO:
 ${JSON.stringify(ctxPedagogico.contextoAlumno)}
 
 B) RESULTADOS ACADÉMICOS CONFIRMADOS (evidencia canónica ya confirmada por el flujo de Seguimiento; [] significa que no hay resultados confirmados disponibles, nunca "buen" ni "bajo" desempeño):
-${JSON.stringify(ctxPedagogico.resultadosProyectos)}
+${JSON.stringify(resultadosParaFicha)}
 
 C) ASISTENCIA (resumen canónico; preséntala como dato observado, nunca como patrón estable si el número de días registrados es bajo):
 ${JSON.stringify(ctxPedagogico.asistencia)}
@@ -2721,6 +2743,20 @@ ${JSON.stringify(ctxPedagogico.incidencias)}`
             const valorRegistradoComparar = datosPersonalesComparar[clasificacion.campo_alumno_corregir!] ?? null
             contextoEnriquecido += `\n\nCOMPARACIÓN DE DATO PERSONAL DE ALUMNO CONTRA UNA IMAGEN ADJUNTA (ver "ajuste mínimo de clasificación para imagen adjunta"):\nEl maestro adjuntó una imagen para comparar el campo "${clasificacion.campo_alumno_corregir}" del alumno "${clasificacion.entidades_resueltas.alumno_nombre_detectado}".\nValor REAL ya registrado en la aplicación para ese campo (no lo inventes, es el dato real): ${valorRegistradoComparar ?? '(no hay ningún valor registrado todavía para este campo)'}.\nAunque la Lista de alumnos general de arriba no muestre este dato personal (se omite ahí a propósito, por privacidad — nunca expone CURP/sexo/fecha de nacimiento de todo el grupo en cada turno), eso NO significa que el dato no esté registrado: para ESTA comparación específica, el valor de arriba es el valor real y completo consultado directamente para este alumno, y tiene prioridad total sobre la ausencia de ese campo en la lista general. Si el valor de arriba no es "(no hay ningún valor registrado todavía para este campo)", úsalo como fuente de verdad para comparar — nunca digas que no tienes ese dato o que no está registrado.\nLee el valor real que aparece en la imagen adjunta y compáralo EXACTAMENTE, carácter por carácter, contra el valor registrado de arriba. Responde ÚNICAMENTE con: el valor que leíste en la imagen, el valor registrado, y si coinciden o no. Esto es EXCLUSIVAMENTE de solo lectura: bajo ninguna circunstancia propongas, apliques, confirmes ni des a entender que ya aplicaste ninguna corrección en este turno — ni siquiera si el maestro pide corregirlo explícitamente en este mismo mensaje; en ese caso dile que puede pedir la corrección por separado, dándote el valor correcto en un mensaje aparte, una vez que confirmen juntos cuál es.`
             console.log(`[NIVEL4][corregir_dato_alumno][comparar+imagen] alumno_id=${clasificacion.entidades_resueltas.alumno_id} campo=${clasificacion.campo_alumno_corregir} valorRegistradoPresente=${valorRegistradoComparar !== null}`)
+          } else if (
+            clasificacion.intencion_principal === 'ficha_descriptiva' &&
+            clasificacion.entidades_resueltas.alumno_id
+          ) {
+            // Fail-closed: si llegamos aquí, alumno_id existe pero la rama
+            // completa de ficha_descriptiva no pudo ejecutarse porque falta
+            // ciclo_escolar_id o grupo_activo_id. Nunca degradar una ficha al
+            // flujo conversacional general sin contexto pedagógico aislado.
+            console.log(
+              `[NIVEL4][FICHA_DESCRIPTIVA] precondición insuficiente — ciclo_escolar_id=${sesion.ciclo_escolar_id ?? 'null'} grupo_activo_id=${sesion.grupo_activo_id ?? 'null'}`
+            )
+            return respuestaTexto(
+              'No pude recuperar de forma segura la información necesaria para elaborar la ficha descriptiva. Inténtalo de nuevo en un momento.'
+            )
           } else {
             // Diagnóstico obligatorio (ver "Corrección de arquitectura —
             // lectura real del módulo de Asistencias"): antes, si la
