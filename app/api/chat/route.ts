@@ -4387,6 +4387,7 @@ Grado: [grado] | Grupo: [grupo]
                 url: urlWord,
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
+                esVistaPrevia: true,
               }
               archivoWordParaMensajeAsistente = archivoWord
               const marcadorWord = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`
@@ -4407,6 +4408,7 @@ Grado: [grado] | Grupo: [grupo]
                 urlVer: urlVerDocumento,
                 tipoDocumento: 'planeacion' as const,
                 descripcion: descripcionPlaneacion,
+                esVistaPrevia: true,
               }
               archivoDocumentoParaMensajeAsistente = archivoDocumento
               const marcadorDocumento = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoDocumento), 'utf-8').toString('base64')}]]`
@@ -4464,6 +4466,7 @@ Grado: [grado] | Grupo: [grupo]
                 urlVer,
                 tipoDocumento: 'hoja_evaluacion' as const,
                 descripcion: `${sesion.alumnos_del_grupo_activo.length} alumno${sesion.alumnos_del_grupo_activo.length === 1 ? '' : 's'} · ${resumenBorrador.indicadores.length} indicador${resumenBorrador.indicadores.length === 1 ? '' : 'es'}`,
+                esVistaPrevia: true,
               }
               archivoEvaluacionParaMensajeAsistente = archivo
               const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`

@@ -372,8 +372,8 @@ function TarjetaDescarga({
               </>
             )}
           </p>
-          <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : 'text-green-600'}`}>
-            {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
+          <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : principal.esVistaPrevia ? 'text-blue-600' : 'text-green-600'}`}>
+            {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : principal.esVistaPrevia ? 'Vista previa' : 'Listo'}
           </p>
         </div>
       </div>

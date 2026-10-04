@@ -64,6 +64,16 @@ export type ArchivoGeneradoInfo = {
   // este cambio (ya persistida en una conversación existente) no lo
   // trae — se restaura igual, solo sin esa acción nueva, nunca rompe.
   proyectoSeguimientoId?: string
+  // Señal semántica explícita (nunca inferida del nombre de archivo en
+  // el frontend) — true ÚNICAMENTE en los 3 artefactos de vista previa
+  // que produce planeacion_generar ANTES de la aprobación (Word/PDF de
+  // la planeación, PDF de la hoja de evaluación; ver app/api/chat/
+  // route.ts, bloque esTurnoDeBorradorPlaneacion). Los documentos
+  // definitivos que produce aprobarBorradorPlaneacion() nunca lo
+  // establecen — quedan undefined, que TarjetaDescarga trata igual que
+  // false. Campo aditivo: una tarjeta ya persistida antes de este
+  // cambio no lo trae y se sigue mostrando como "Listo", sin romper.
+  esVistaPrevia?: boolean
 }
 
 // Botón de acción sobre un mensaje del asistente (ver "Mejora del flujo
