@@ -31,6 +31,7 @@ import { useAsistente } from '@/lib/asistente/hooks'
 import { supabase } from '@/lib/supabaseClient'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
+import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
 
 type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
 
@@ -114,6 +115,12 @@ export default function EvaluacionPage() {
   const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
   const [seleccionado, setSeleccionado] = useState<string | null>(null)
   const [cargandoUrl, setCargandoUrl] = useState<string | null>(null)
+  // Panel de solo lectura de resultados ya confirmados — independiente
+  // de `seleccionado` (que alterna CapturaHoja, exclusivo de captura):
+  // un proyecto puede, en teoría, tener ambos paneles en estados
+  // distintos sin interferir entre sí. Vive solo en memoria del
+  // componente — se vuelve a pedir el dato real cada vez que se abre.
+  const [verResultadosDe, setVerResultadosDe] = useState<string | null>(null)
 
   // Única fuente del estado de cada tarjeta: se consulta UNA vez por
   // proyecto al cargar la lista. CapturaHoja, al expandirse, hace su
@@ -257,6 +264,10 @@ export default function EvaluacionPage() {
     setSeleccionado((actual) => (actual === proyectoId ? null : proyectoId))
   }
 
+  const alternarVerResultados = (proyectoId: string) => {
+    setVerResultadosDe((actual) => (actual === proyectoId ? null : proyectoId))
+  }
+
   if (cargando) {
     return (
       <div className="flex flex-col h-screen bg-gray-50">
@@ -325,6 +336,22 @@ export default function EvaluacionPage() {
                     {expandido ? 'Cerrar' : `${ICONO_ACCION[estado!]} ${accion}`}
                   </button>
                 )}
+                {/* "Ver resultados" — única acción nueva de esta fase.
+                    Solo aparece cuando ya existen resultados reales
+                    confirmados (mismo estado terminal que hoy solo
+                    mostraba "Resultados registrados" sin ninguna
+                    acción). Independiente del botón de captura de
+                    arriba (que para este estado ya no se renderiza,
+                    ver accion=null). */}
+                {estado === 'confirmado' && (
+                  <button
+                    type="button"
+                    onClick={() => alternarVerResultados(proyecto.id)}
+                    className="flex-1 border border-teal-200 text-teal-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-teal-50"
+                  >
+                    {verResultadosDe === proyecto.id ? 'Cerrar' : '📊 Ver resultados'}
+                  </button>
+                )}
               </div>
 
               {expandido && (
@@ -333,6 +360,12 @@ export default function EvaluacionPage() {
                     proyectoId={proyecto.id}
                     onEstadoCambiado={(nuevoEstado) => setEstados((prev) => ({ ...prev, [proyecto.id]: nuevoEstado }))}
                   />
+                </div>
+              )}
+
+              {verResultadosDe === proyecto.id && (
+                <div className="border-t border-gray-50">
+                  <ResultadosConfirmados proyectoId={proyecto.id} />
                 </div>
               )}
             </div>
