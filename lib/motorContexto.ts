@@ -687,6 +687,101 @@ export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: str
   return (data || []) as unknown as ResultadoProyectoConfirmado[];
 }
 
+// Misma fuente/filosofía que ResultadoProyectoConfirmado (ver arriba) —
+// tipo paralelo, no una sustitución: esta fila necesita alumno_id e
+// inscripcion_id explícitos porque el filtro ya no es por un alumno
+// (resultadosProyectoAlumno los conoce de antemano por el parámetro,
+// nunca los selecciona), sino por grupo+ciclo — sin estos dos campos
+// sería imposible saber a qué alumno pertenece cada fila una vez que
+// el conjunto mezcla a todo el grupo.
+export type ResultadoProyectoGrupo = {
+  proyecto_id: string
+  alumno_id: string
+  inscripcion_id: string
+  indicador_numero: number
+  indicador_especifico: string
+  aspecto_general: AspectoGeneral
+  nivel: NivelTextoCanonico
+  confianza: number
+  corregido_manualmente: boolean
+  observacion: string | null
+  proyectos_seguimiento: {
+    nombre: string
+    grupo_id: string
+    ciclo_escolar_id: string
+    periodo_evaluacion_id: string | null
+    origen_resultados: string | null
+    confirmado_en: string
+  } | null
+}
+
+// Lectura server-side CANÓNICA de los resultados confirmados de TODO un
+// grupo en un ciclo escolar — ver auditoría "lectura canónica de
+// resultados confirmados del grupo" (fase previa a un futuro
+// concentrado). Por diseño:
+// - Mismo patrón exacto que resultadosProyectoAlumno(): !inner +
+//   not-is-null sobre proyectos_seguimiento.confirmado_en excluyen
+//   cualquier proyecto que no haya pasado por confirmar-hoja/route.ts
+//   (la ÚNICA fase que escribe seguimiento_resultados) — nunca
+//   captura_pendiente ni OCR sin confirmar. Un error de Supabase se
+//   relanza (throw), nunca se convierte en [].
+// - Filtra por proyectos_seguimiento.grupo_id y .ciclo_escolar_id
+//   (mismo patrón .eq() sobre columna embebida ya usado en
+//   lib/sesionContexto.ts con ciclos_escolares.activo) — DELIBERADAMENTE
+//   sin filtro de periodo_evaluacion_id: esta función devuelve el
+//   historial completo del grupo en el ciclo, conservando el periodo de
+//   cada fila, para que una capa consumidora futura (concentrado,
+//   reporte de evaluación) pueda filtrar/agrupar por periodo sin volver
+//   a consultar alumno por alumno.
+// - 1 sola query, 0 llamadas IA. El orden server-side por
+//   confirmado_en ya está validado en producción por
+//   resultadosProyectoAlumno(); el resto del orden determinista
+//   (proyecto → alumno → indicador) se resuelve aquí mismo con un
+//   .sort() en memoria (nunca otra query) porque la precedencia exacta
+//   de PostgREST al combinar un order de la tabla embebida con un order
+//   de la tabla principal no es verificable desde este repo — un sort
+//   puro en JS sobre datos ya recuperados elimina esa ambigüedad sin
+//   costo adicional. No se agrupa, no se promedia, no se interpreta
+//   ningún dato aquí — eso es responsabilidad de una capa posterior.
+export async function resultadosProyectoGrupo(sb: SupabaseClient, grupoId: string, cicloEscolarId: string): Promise<ResultadoProyectoGrupo[]> {
+  const { data, error } = await sb
+    .from('seguimiento_resultados')
+    .select(`
+      proyecto_id,
+      alumno_id,
+      inscripcion_id,
+      indicador_numero,
+      indicador_especifico,
+      aspecto_general,
+      nivel,
+      confianza,
+      corregido_manualmente,
+      observacion,
+      proyectos_seguimiento!inner (
+        nombre,
+        grupo_id,
+        ciclo_escolar_id,
+        periodo_evaluacion_id,
+        origen_resultados,
+        confirmado_en
+      )
+    `)
+    .eq('proyectos_seguimiento.grupo_id', grupoId)
+    .eq('proyectos_seguimiento.ciclo_escolar_id', cicloEscolarId)
+    .not('proyectos_seguimiento.confirmado_en', 'is', null)
+    .order('confirmado_en', { ascending: false, referencedTable: 'proyectos_seguimiento' });
+  if (error) throw error;
+  const resultados = (data || []) as unknown as ResultadoProyectoGrupo[];
+  return resultados.slice().sort((a, b) => {
+    const confirmadoA = a.proyectos_seguimiento?.confirmado_en ?? '';
+    const confirmadoB = b.proyectos_seguimiento?.confirmado_en ?? '';
+    if (confirmadoA !== confirmadoB) return confirmadoB.localeCompare(confirmadoA);
+    if (a.proyecto_id !== b.proyecto_id) return a.proyecto_id.localeCompare(b.proyecto_id);
+    if (a.alumno_id !== b.alumno_id) return a.alumno_id.localeCompare(b.alumno_id);
+    return a.indicador_numero - b.indicador_numero;
+  });
+}
+
 // Agregador server-side DETERMINISTA del contexto pedagógico de un
 // alumno — compone exclusivamente los 4 wrappers ya existentes de este
 // mismo archivo (contextoAlumno, resultadosProyectoAlumno,
