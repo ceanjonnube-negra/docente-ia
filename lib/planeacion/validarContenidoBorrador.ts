@@ -9,6 +9,9 @@
 // borrador incompleto.
 
 import type { ResumenBorrador } from './extraerBorrador'
+import { ASPECTOS_GENERALES, CANTIDAD_INDICADORES_HOJA } from '../seguimiento/tipos'
+
+const ASPECTOS_GENERALES_VALIDOS = new Set(ASPECTOS_GENERALES.map((a) => a.valor))
 
 export type ResultadoValidacionBorrador =
   | { ok: true }
@@ -37,7 +40,27 @@ const REGLAS: ReglaCampo[] = [
   },
   { etiqueta: 'recursos', cumple: (r) => Array.isArray(r.recursos) && r.recursos.length > 0 },
   { etiqueta: 'evidencias', cumple: (r) => Array.isArray(r.evidencias) && r.evidencias.length > 0 },
-  { etiqueta: 'indicadores de evaluación', cumple: (r) => Array.isArray(r.indicadores) && r.indicadores.length > 0 },
+  // instruccionesPlaneacionGenerar.ts exige SIEMPRE exactamente
+  // CANTIDAD_INDICADORES_HOJA (5) indicadores, ni más ni menos — esta
+  // regla hace cumplir ese contrato de forma determinista, nunca solo
+  // > 0 (eso permitía silenciosamente 6, 7... indicadores y dejaba que
+  // el .slice() de construirIndicadoresSeguimiento() ocultara el
+  // exceso en vez de rechazarlo).
+  { etiqueta: 'indicadores de evaluación', cumple: (r) => Array.isArray(r.indicadores) && r.indicadores.length === CANTIDAD_INDICADORES_HOJA },
+  // Correspondencia posicional 1:1 estricta contra los 5 indicadores
+  // exigidos arriba: ni menos (clasificación incompleta) ni más
+  // (desalineación silenciosa) — exactamente CANTIDAD_INDICADORES_HOJA
+  // valores, y cada uno perteneciente al enum real de AspectoGeneral.
+  // NUNCA se recorta una entrada inválida para volverla válida: el
+  // .slice() en construirIndicadoresSeguimiento() es solo una defensa
+  // interna redundante, no el mecanismo que normaliza este contrato.
+  {
+    etiqueta: 'aspectos generales de los indicadores',
+    cumple: (r) => {
+      if (!Array.isArray(r.aspectosGenerales) || r.aspectosGenerales.length !== CANTIDAD_INDICADORES_HOJA) return false
+      return r.aspectosGenerales.every((valor) => ASPECTOS_GENERALES_VALIDOS.has(valor as (typeof ASPECTOS_GENERALES)[number]['valor']))
+    },
+  },
   // Fechas y duración resueltas: extraerResumenBorrador ya garantiza
   // fechaInicio/fechaFin en formato YYYY-MM-DD (si no, devuelve null
   // antes de llegar aquí) — aquí se valida además que la duración

@@ -80,9 +80,18 @@ Secuencia didáctica: [Día 1: resumen breve de ese día; Día 2: resumen breve 
 Recursos: [recurso1; recurso2]
 Evidencias: [evidencia1; evidencia2]
 Indicadores de evaluación: [indicador1; indicador2; indicador3; indicador4; indicador5]
+Aspectos generales de los indicadores: [aspecto1; aspecto2; aspecto3; aspecto4; aspecto5]
 PROGRAMA_ANALITICO_ITEMS: [id1; id2] (los ids reales que elegiste de contextoCurricularPlaneacion según la regla de arriba — déjalo vacío, "PROGRAMA_ANALITICO_ITEMS: ", si contextoCurricularPlaneacion es null o si no elegiste ninguno; nunca inventes un id, nunca repitas aquí un texto de contenido en vez de un id)
 
 "Indicadores de evaluación" debe traer SIEMPRE exactamente 5 elementos, ni más ni menos — la hoja de evaluación final tiene una sola columna por indicador y solo caben 5. Cada uno debe ser: breve (una oración), específico y observable (algo que se pueda ver en la evidencia real del alumno, no una intención abstracta), evaluable con la escala 4/3/2/1 de la hoja, distinto de los otros cuatro (nunca dos indicadores que midan lo mismo con otras palabras), y coherente con las actividades/PDA/producto final que ya describiste arriba. Si al redactar el borrador identificaste más de 5 criterios posibles, NO los pongas todos aquí: analízalos, agrupa los que evalúan un mismo aprendizaje o proceso relacionado, y redacta 5 indicadores que integren entre todos el contenido evaluable completo — el detalle adicional queda conservado en el resto del borrador (contenidos, PDA, evidencias), esta línea es solo el resumen de 5 para la hoja. Nunca completes hasta 5 con un indicador genérico que no corresponda a este proyecto.
+
+"Aspectos generales de los indicadores" — EXACTAMENTE un aspecto por cada indicador de la línea anterior, en el MISMO orden (el aspecto en la posición N clasifica al indicador en la posición N, nunca los reordenes). Los únicos 5 valores permitidos, tal cual, sin inventar ninguno distinto: logro_aprendizaje, aplicacion_aprendizajes, participacion_colaboracion, producto_evidencia, autonomia.
+- logro_aprendizaje: el indicador valora comprensión, identificación, reconocimiento, explicación o adquisición del contenido/PDA.
+- aplicacion_aprendizajes: el indicador valora el uso o la transferencia de lo aprendido para resolver, relacionar, argumentar, explicar una situación o tomar decisiones.
+- participacion_colaboracion: el indicador valora participación, diálogo, escucha, cooperación, acuerdos o construcción junto con otras personas.
+- producto_evidencia: el foco principal del indicador es la elaboración, el cumplimiento, la calidad o las características observables de un producto/evidencia.
+- autonomia: el indicador valora independencia, iniciativa, organización, autorregulación o la realización del trabajo con menor apoyo.
+Clasifica cada indicador por su PROPÓSITO pedagógico real, nunca por la simple coincidencia de una palabra clave. Exactamente un aspecto principal por indicador — nunca dos a la vez ni ninguno. No es obligatorio usar las cinco categorías en el mismo proyecto: puede haber varios indicadores del mismo aspecto cuando pedagógicamente corresponda. Nunca inventes una categoría distinta de las 5 permitidas.
 
 Este bloque es lo único que el sistema usa para guardar la planeación cuando el maestro apruebe — si "conflicto" es true y no generaste un borrador completo, NO incluyas este bloque.
 

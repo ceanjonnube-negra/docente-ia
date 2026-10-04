@@ -221,6 +221,7 @@ function resumenFixture(): ResumenBorrador {
     recursos: ['x'],
     evidencias: ['x'],
     indicadores: ['i1', 'i2', 'i3', 'i4', 'i5'],
+    aspectosGenerales: ['logro_aprendizaje', 'aplicacion_aprendizajes', 'participacion_colaboracion', 'producto_evidencia', 'autonomia'],
     programaAnaliticoItemIdsPropuestos: [],
   }
 }

@@ -57,6 +57,15 @@ export type ResumenBorrador = {
   recursos: string[]
   evidencias: string[]
   indicadores: string[]
+  // Correspondencia posicional 1:1 con `indicadores` — aspectosGenerales[i]
+  // clasifica a indicadores[i]. Se mantiene como string[] crudo aquí
+  // (igual criterio que `indicadores` mismo): la validación semántica de
+  // que cada valor pertenezca al enum AspectoGeneral real y de que la
+  // longitud corresponda al número de indicadores que realmente se
+  // congelarán vive en lib/planeacion/validarContenidoBorrador.ts, nunca
+  // en este parser puramente sintáctico. [] cuando la etiqueta viene
+  // vacía o ausente (borradores redactados antes de esta instrucción).
+  aspectosGenerales: string[]
   // PLN-1C — ids de programa_analitico_item que Claude propuso en la
   // línea PROGRAMA_ANALITICO_ITEMS, CRUDOS tal como los escribió —
   // NUNCA validados todavía en este punto (el parser es determinista
@@ -156,6 +165,7 @@ export function extraerResumenBorrador(historial: { role: string; content: strin
     recursos: extraerLista(bloque, 'Recursos'),
     evidencias: extraerLista(bloque, 'Evidencias'),
     indicadores: extraerLista(bloque, 'Indicadores de evaluación'),
+    aspectosGenerales: extraerLista(bloque, 'Aspectos generales de los indicadores'),
     programaAnaliticoItemIdsPropuestos: extraerLista(bloque, 'PROGRAMA_ANALITICO_ITEMS'),
   }
 }

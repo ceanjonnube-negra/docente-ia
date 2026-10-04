@@ -40,7 +40,7 @@ import { extraerResumenBorrador, extraerTextoCompletoBorrador, tieneBloqueResume
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
-import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
+import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type AspectoGeneral, type IndicadorProyecto } from '../seguimiento/tipos'
 import { esPlaneacionActivaValida, type TrazabilidadCurricularPlaneacion } from './planeacionActiva'
 // COMPOSICIÓN CANÓNICA — "Planeación + hoja de evaluación al final del
 // mismo archivo" (Fase 4.5, ver más abajo). generarPdfBuffer/
@@ -145,10 +145,15 @@ function construirProyecto(resumen: ResumenBorrador, planeacionId: string): Dato
 const CAMPOS_FORMATIVOS_VALIDOS = new Set<string>(CAMPOS_FORMATIVOS)
 
 function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorProyecto[] {
-  // Los indicadores del borrador son texto libre, sin aspecto general
-  // clasificado — 'logro_aprendizaje' es el valor por defecto más
-  // aplicable de los 5 reales (ver lib/seguimiento/tipos.ts), nunca un
-  // valor inventado fuera del enum.
+  // aspecto_general viene de la clasificación pedagógica real que
+  // Claude ya produjo en la MISMA llamada de generación del borrador
+  // (línea "Aspectos generales de los indicadores", ver
+  // lib/asistente/instruccionesPlaneacionGenerar.ts), con correspondencia
+  // posicional 1:1 contra resumen.indicadores — nunca un valor fijo ni
+  // un fallback: validarContenidoBorrador() (llamado antes, más arriba
+  // en aprobarBorrador) ya garantizó que exista una clasificación válida
+  // para cada indicador que se congela aquí, así que este punto puede
+  // confiar en el índice sin volver a comprobarlo.
   //
   // Tope defensivo a CANTIDAD_INDICADORES_HOJA (5): las instrucciones
   // del asistente (lib/asistente/instruccionesPlaneacionGenerar.ts) ya
@@ -158,7 +163,10 @@ function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorPro
   // llegaran menos de 5 — se usan los que realmente hay.
   return resumen.indicadores
     .slice(0, CANTIDAD_INDICADORES_HOJA)
-    .map((texto) => ({ indicador_especifico: texto, aspecto_general: 'logro_aprendizaje' }))
+    .map((texto, index) => ({
+      indicador_especifico: texto,
+      aspecto_general: resumen.aspectosGenerales[index] as AspectoGeneral,
+    }))
 }
 
 type FilaHuella = { id: string; version: number }

@@ -55,6 +55,7 @@ function resumenBorradorFixture(idsPropuestos: string[]): ResumenBorrador {
     recursos: ['Recurso 1'],
     evidencias: ['Evidencia 1'],
     indicadores: ['Ind1', 'Ind2', 'Ind3', 'Ind4', 'Ind5'],
+    aspectosGenerales: ['logro_aprendizaje', 'aplicacion_aprendizajes', 'participacion_colaboracion', 'producto_evidencia', 'autonomia'],
     programaAnaliticoItemIdsPropuestos: idsPropuestos,
   }
 }
