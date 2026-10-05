@@ -32,6 +32,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
+import ConcentradoGrupo from '@/components/ConcentradoGrupo'
 
 type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
 
@@ -110,6 +111,12 @@ export default function EvaluacionPage() {
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [nombreGrupo, setNombreGrupo] = useState('')
+  // EVAL-1L — único dato nuevo que page.tsx necesitaba exponer como
+  // estado (antes vivía solo dentro del closure de cargar()): el
+  // concentrado grupal necesita el mismo grupo_id ya resuelto aquí,
+  // nunca uno nuevo ni aceptado de otra fuente.
+  const [grupoId, setGrupoId] = useState<string | null>(null)
+  const [concentradoAbierto, setConcentradoAbierto] = useState(false)
   const [proyectos, setProyectos] = useState<Proyecto[]>([])
   const [estados, setEstados] = useState<Record<string, EstadoCapturaHoja>>({})
   const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
@@ -208,6 +215,7 @@ export default function EvaluacionPage() {
       grupoActivo = grupos[0] as unknown as GrupoActivo
     }
     setNombreGrupo(grupoActivo.nombre_grupo)
+    setGrupoId(grupoActivo.id)
 
     const res = await fetch(`/api/proyectos-seguimiento?grupo_id=${grupoActivo.id}`, {
       headers: { Authorization: `Bearer ${session.access_token}` },
@@ -283,6 +291,45 @@ export default function EvaluacionPage() {
 
       <div className="flex-1 px-4 py-4 space-y-3 max-w-2xl mx-auto w-full">
         {error && <p className="text-sm text-red-600">{error}</p>}
+
+        {/* EVAL-1L — control discreto, cerrado por defecto. El
+            concentrado solo se monta (y por tanto solo hace su fetch)
+            cuando se abre — nunca antes, nunca junto con la carga de
+            la lista de proyectos. Depende ÚNICAMENTE del grupo activo
+            (grupoId) — NUNCA de `proyectos.length`: esa lista es el
+            resultado de GET /api/proyectos-seguimiento (sin filtro de
+            ciclo_escolar_id ni estado, solo grupo_id) ya recortado
+            client-side a hoja_id truthy — una regla de presentación
+            de ESTA pantalla, sin ninguna relación de contrato con lo
+            que resultadosProyectoGrupo()/historial-grupo (EVAL-1K)
+            realmente cuenta (grupo+ciclo+confirmado_en). Coinciden
+            hoy por coincidencia de negocio (un proyecto confirmado
+            siempre tiene hoja_id), nunca por garantía estructural —
+            un cambio futuro en cualquiera de las dos consultas podría
+            desalinearlas en silencio. EVAL-1K decide, al abrirse, si
+            hay o no historial (ConcentradoGrupo ya maneja el caso
+            vacío) — una sola fuente de verdad, nunca una inferencia
+            desde `proyectos`. */}
+        {!error && grupoId && (
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setConcentradoAbierto((actual) => !actual)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left"
+            >
+              <span className="text-sm font-bold text-gray-900">📊 Concentrado del grupo</span>
+              <span className="text-xs text-teal-700 font-semibold">{concentradoAbierto ? 'Cerrar' : 'Ver'}</span>
+            </button>
+            {concentradoAbierto && (
+              <div className="border-t border-gray-50">
+                <ConcentradoGrupo
+                  grupoId={grupoId}
+                  titulosPorProyecto={Object.fromEntries(proyectos.map((p) => [p.id, p.nombre]))}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {!error && proyectos.length === 0 && (
           <div className="text-center py-12">
