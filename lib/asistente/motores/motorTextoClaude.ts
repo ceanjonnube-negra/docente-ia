@@ -898,6 +898,19 @@ export class MotorTextoClaude implements MotorConversacional {
       const claves = Object.keys(obj)
       return claves.length === clavesPermitidas.length && clavesPermitidas.every((clave) => Object.prototype.hasOwnProperty.call(obj, clave))
     }
+    // V1-D1 — mismo criterio que lib/listaOficial/propuestaFirmada.ts
+    // (tieneClavesRequeridasYOpcionales), duplicado aquí localmente por
+    // el mismo motivo ya documentado en la cabecera de esta función
+    // (este archivo corre en el navegador, no puede importar ese
+    // módulo server-only): claves requeridas siempre presentes,
+    // cualquier clave adicional debe pertenecer al conjunto opcional —
+    // nunca se acepta una clave fuera de ambos conjuntos.
+    const tieneClavesRequeridasYOpcionales = (obj: Record<string, unknown>, requeridas: readonly string[], opcionales: readonly string[]): boolean => {
+      const claves = Object.keys(obj)
+      const permitidas = new Set<string>([...requeridas, ...opcionales])
+      if (!claves.every((clave) => permitidas.has(clave))) return false
+      return requeridas.every((clave) => Object.prototype.hasOwnProperty.call(obj, clave))
+    }
 
     if (typeof valor !== 'object' || valor === null) return false
     const sobre = valor as Record<string, unknown>
@@ -906,10 +919,14 @@ export class MotorTextoClaude implements MotorConversacional {
     if (typeof sobre.payload !== 'object' || sobre.payload === null) return false
 
     const payload = sobre.payload as Record<string, unknown>
-    if (!tieneExactamenteLasClaves(payload, ['docenteId', 'conversacionId', 'generadoEn', 'propuesta'])) return false
+    if (!tieneClavesRequeridasYOpcionales(payload, ['docenteId', 'conversacionId', 'generadoEn', 'propuesta'], ['rosterFingerprint'])) return false
     if (typeof payload.docenteId !== 'string' || !payload.docenteId) return false
     if (typeof payload.conversacionId !== 'string' || !payload.conversacionId) return false
     if (typeof payload.generadoEn !== 'string' || !payload.generadoEn) return false
+    // V1-D1 — opcional/aditivo (ver tipos.ts): ausente nunca invalida
+    // el sobre; presente debe ser un string no vacío, fail-closed ante
+    // cualquier otro tipo o cadena vacía.
+    if ('rosterFingerprint' in payload && !(typeof payload.rosterFingerprint === 'string' && payload.rosterFingerprint.length > 0)) return false
     if (!Array.isArray(payload.propuesta) || payload.propuesta.length === 0) return false
 
     return payload.propuesta.every((c) => {

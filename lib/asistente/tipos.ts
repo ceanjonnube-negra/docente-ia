@@ -183,6 +183,17 @@ export type PayloadPropuestaListaOficial = {
   conversacionId: string
   generadoEn: string
   propuesta: CambioListaOficialFirmable[]
+  // V1-D1 — huella determinista del roster activo usado para construir
+  // la propuesta (ver lib/listaOficial/rosterFingerprint.ts), para que
+  // una fase posterior (aplicación real) pueda rechazar una propuesta
+  // generada contra un roster que ya cambió. Opcional/aditivo a
+  // propósito: un llamador existente que no la calcule (como la
+  // integración read-only actual en app/api/chat/route.ts) sigue
+  // firmando/verificando exactamente igual que antes — su ausencia
+  // nunca invalida un sobre ya válido. Cuando SÍ está presente, queda
+  // cubierta por la firma HMAC (ver construirPayloadCanonico) — nunca
+  // viaja fuera de lo firmado.
+  rosterFingerprint?: string
 }
 
 export type PropuestaListaOficialFirmada = {

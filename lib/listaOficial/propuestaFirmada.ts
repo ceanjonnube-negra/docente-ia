@@ -32,8 +32,28 @@ function tieneExactamenteLasClaves(obj: Record<string, unknown>, clavesPermitida
   return clavesPermitidas.every((clave) => Object.prototype.hasOwnProperty.call(obj, clave))
 }
 
+// V1-D1 — mismo criterio de whitelist EXACTA de siempre, pero
+// admitiendo un conjunto de claves OPCIONALES (hoy solo
+// rosterFingerprint): las claves requeridas deben estar TODAS
+// presentes, y cualquier clave adicional en el objeto debe pertenecer
+// al conjunto opcional — una clave fuera de ambos conjuntos sigue
+// rechazando el objeto completo, igual que antes. Nunca se usa para
+// CLAVES_CAMBIO ni CLAVES_SOBRE (ningún campo opcional nuevo en esos
+// niveles en esta fase) — tieneExactamenteLasClaves sigue siendo
+// correcta y sin cambios para esos dos casos.
+function tieneClavesRequeridasYOpcionales(obj: Record<string, unknown>, clavesRequeridas: readonly string[], clavesOpcionales: readonly string[]): boolean {
+  const claves = Object.keys(obj)
+  const permitidas = new Set<string>([...clavesRequeridas, ...clavesOpcionales])
+  if (!claves.every((clave) => permitidas.has(clave))) return false
+  return clavesRequeridas.every((clave) => Object.prototype.hasOwnProperty.call(obj, clave))
+}
+
 const CLAVES_CAMBIO = ['alumnoId', 'campo', 'valorPropuesto'] as const
 const CLAVES_PAYLOAD = ['docenteId', 'conversacionId', 'generadoEn', 'propuesta'] as const
+// V1-D1 — única clave opcional reconocida hoy a nivel payload. Lista
+// separada (nunca mezclada dentro de CLAVES_PAYLOAD) para que quede
+// explícito cuál conjunto es requerido y cuál opcional.
+const CLAVES_PAYLOAD_OPCIONALES = ['rosterFingerprint'] as const
 const CLAVES_SOBRE = ['payload', 'firma'] as const
 
 // Validación estructural pura — nunca decide autorización, solo forma.
@@ -54,16 +74,27 @@ export function esCambioListaOficialValido(valor: unknown): valor is CambioLista
 export function esPayloadPropuestaListaOficialValido(valor: unknown): valor is PayloadPropuestaListaOficial {
   if (typeof valor !== 'object' || valor === null) return false
   const o = valor as Record<string, unknown>
-  if (!tieneExactamenteLasClaves(o, CLAVES_PAYLOAD)) return false
-  return (
-    typeof o.docenteId === 'string' && o.docenteId.length > 0 &&
-    typeof o.conversacionId === 'string' && o.conversacionId.length > 0 &&
-    typeof o.generadoEn === 'string' && o.generadoEn.length > 0 &&
-    // Una propuesta firmada solo existe cuando V1-C encontró al menos
-    // un resultado accionable — propuesta=[] nunca debe poder firmarse
-    // ni verificarse como válida (ver diseño aprobado V1-C2.1).
-    Array.isArray(o.propuesta) && o.propuesta.length >= 1 && o.propuesta.every(esCambioListaOficialValido)
-  )
+  if (!tieneClavesRequeridasYOpcionales(o, CLAVES_PAYLOAD, CLAVES_PAYLOAD_OPCIONALES)) return false
+  if (
+    !(
+      typeof o.docenteId === 'string' && o.docenteId.length > 0 &&
+      typeof o.conversacionId === 'string' && o.conversacionId.length > 0 &&
+      typeof o.generadoEn === 'string' && o.generadoEn.length > 0 &&
+      // Una propuesta firmada solo existe cuando V1-C encontró al menos
+      // un resultado accionable — propuesta=[] nunca debe poder firmarse
+      // ni verificarse como válida (ver diseño aprobado V1-C2.1).
+      Array.isArray(o.propuesta) && o.propuesta.length >= 1 && o.propuesta.every(esCambioListaOficialValido)
+    )
+  ) return false
+  // V1-D1 — fail-closed SOLO sobre el valor, nunca sobre la ausencia:
+  // rosterFingerprint es opcional (ver CLAVES_PAYLOAD_OPCIONALES), así
+  // que si la clave no está presente en o, esto nunca se evalúa (no
+  // hay 'in o') y el payload sigue siendo válido exactamente como
+  // antes de esta fase. Si SÍ está presente, debe ser un string no
+  // vacío — nunca se acepta null, número, objeto u otro tipo, y nunca
+  // se "normaliza" un valor dudoso a uno vacío/aproximado.
+  if ('rosterFingerprint' in o && !(typeof o.rosterFingerprint === 'string' && o.rosterFingerprint.length > 0)) return false
+  return true
 }
 
 // Reconstruye el objeto canónico EXPLÍCITAMENTE (nunca firma el objeto
@@ -74,12 +105,20 @@ export function esPayloadPropuestaListaOficialValido(valor: unknown): valor is P
 // conjunto"). Cualquier propiedad adicional presente en runtime queda
 // fuera de la representación canónica sin excepción.
 function construirPayloadCanonico(payload: PayloadPropuestaListaOficial): PayloadPropuestaListaOficial {
-  return {
+  const base: PayloadPropuestaListaOficial = {
     docenteId: payload.docenteId,
     conversacionId: payload.conversacionId,
     generadoEn: payload.generadoEn,
     propuesta: payload.propuesta.map((c) => ({ alumnoId: c.alumnoId, campo: c.campo, valorPropuesto: c.valorPropuesto })),
   }
+  // V1-D1 — incluida en la representación canónica (y por lo tanto
+  // CUBIERTA por el HMAC) únicamente cuando el payload la trae. La
+  // propiedad se omite por completo (nunca null, nunca cadena vacía)
+  // cuando está ausente, así que JSON.stringify produce exactamente
+  // la misma cadena de 4 claves que antes de esta fase — un payload
+  // sin rosterFingerprint canonicaliza y firma/verifica idéntico a
+  // como lo hacía antes de que este campo existiera.
+  return payload.rosterFingerprint !== undefined ? { ...base, rosterFingerprint: payload.rosterFingerprint } : base
 }
 
 function canonicalizar(payload: PayloadPropuestaListaOficial): string {
