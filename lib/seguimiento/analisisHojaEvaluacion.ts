@@ -422,6 +422,20 @@ function validarFila(f: unknown, posicionesMaximas: number): FilaHojaEvaluacion 
   return { posicion, celdas: celdasValidas.sort((a, b) => a.numeroIndicador - b.numeroIndicador) }
 }
 
+// Señal tipada y discriminable (nunca comparación frágil de texto del
+// mensaje) para el ÚNICO caso que debe habilitar una recaptura real —
+// ver auditoría "hoja ilegible deja al docente sin forma de volver a
+// fotografiar": el propio modelo, tras responder sin fallo técnico,
+// reportó hojaLegible !== true — la fotografía en sí no tenía
+// contenido suficiente para transcribir nada, nunca un problema de
+// red/API ni de estructura/parseo. Deliberadamente NO se usa para
+// ningún otro motivo de rechazo de validarResultadoExtraccionHoja
+// (JSON con forma inesperada, filas vacías, estructura de fila
+// inválida, posiciones duplicadas) — esos conservan sin cambios el
+// comportamiento de error genérico ya existente; ampliarlo a esos
+// casos queda fuera de esta corrección a propósito.
+export class ErrorHojaIlegible extends Error {}
+
 // Punto de entrada puro y determinista de validación — exportado para
 // poder probarlo aislado, sin credenciales de Anthropic (mismo
 // criterio que validarRegistroExtraido en analisisListaOficial.ts).
@@ -436,7 +450,7 @@ export function validarResultadoExtraccionHoja(parseado: unknown, posicionesMaxi
   const obj = parseado as Record<string, unknown>
 
   if (obj.hojaLegible !== true) {
-    throw new Error('La fotografía no es suficientemente legible para transcribir la hoja. Intenta con mejor luz o encuadre.')
+    throw new ErrorHojaIlegible('La fotografía no es suficientemente legible para transcribir la hoja. Intenta con mejor luz o encuadre.')
   }
 
   if (!Array.isArray(obj.filas)) {
