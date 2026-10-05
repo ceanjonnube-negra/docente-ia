@@ -80,6 +80,13 @@ export default function CapturaHoja({
   const [estado, setEstado] = useState<EstadoCapturaHoja | null>(null)
   const [paginasEsperadas, setPaginasEsperadas] = useState(0)
   const [paginasCargadas, setPaginasCargadas] = useState(0)
+  // Motivo real persistido (captura_pendiente.validacionIdentidad.razon,
+  // ver estado-captura/route.ts) — SOLO tiene sentido cuando
+  // estado==='identidad_no_valida'. Se obtiene siempre de la respuesta
+  // de GET estado-captura (nunca de un mensaje temporal guardado tras
+  // la llamada a analizar-hoja), para que el mensaje correcto
+  // sobreviva un remontaje/recarga real, no solo la sesión en curso.
+  const [razonRechazo, setRazonRechazo] = useState<string | undefined>(undefined)
   const [totalAlumnos, setTotalAlumnos] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [abriendoHoja, setAbriendoHoja] = useState(false)
@@ -204,6 +211,11 @@ export default function CapturaHoja({
       setEstado(json.estado)
       setPaginasEsperadas(json.paginasEsperadas)
       setPaginasCargadas(json.paginasCargadas)
+      // Solo relevante para estado==='identidad_no_valida' — en
+      // cualquier otro estado json.razonRechazo simplemente no viene
+      // (ver estadoCapturaHoja.ts), y undefined aquí es exactamente
+      // correcto (nunca se inventa un motivo).
+      setRazonRechazo(json.razonRechazo)
 
       // Caso de reanudación: todas las páginas ya estaban cargadas pero
       // el análisis no llegó a dispararse (ej. el docente cerró la app
@@ -439,7 +451,17 @@ export default function CapturaHoja({
 
       {fase !== 'error' && !EN_CURSO.includes(fase) && estado === 'identidad_no_valida' && (
         <>
-          <p className="text-[11px] text-amber-700">Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.</p>
+          {/* Mismo estado técnico, 2 motivos reales distinguibles (ver
+              razonRechazo arriba) — "hoja_ilegible" es el ÚNICO caso
+              con mensaje distinto; cualquier otro valor, incluida su
+              ausencia (capturas históricas sin razon persistido),
+              conserva el mensaje de identidad ya existente — nunca se
+              inventa un motivo nuevo. */}
+          <p className="text-[11px] text-amber-700">
+            {razonRechazo === 'hoja_ilegible'
+              ? 'La fotografía no es suficientemente legible para transcribir la hoja. Intenta con mejor luz o encuadre.'
+              : 'Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.'}
+          </p>
           <div className="flex gap-1.5">
             <button type="button" onClick={verHoja} disabled={abriendoHoja} className={claseBoton('secundario')}>
               👁️ {abriendoHoja ? 'Abriendo…' : 'Ver hoja'}

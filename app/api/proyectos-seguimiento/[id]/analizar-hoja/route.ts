@@ -7,6 +7,7 @@ import {
   analizarImagenesHojaEvaluacion,
   normalizarImagenesHojaParaVision,
   extraerFotosCapturaPendiente,
+  ErrorHojaIlegible,
 } from '@/lib/seguimiento/analisisHojaEvaluacion'
 import { normalizarIdentificadorHoja, esIdentificadorHojaValido } from '@/lib/identificadorHoja'
 
@@ -216,9 +217,50 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         rosterCongelado.length
       )
     } catch (e) {
-      // Fail-closed: ningún error de extracción toca captura_pendiente
-      // ni el estado del proyecto — la fotografía y el estado previo
-      // quedan intactos para un reintento.
+      // Caso EXPLÍCITO y único distinguido aquí (ver auditoría "hoja
+      // ilegible deja al docente sin forma de volver a fotografiar"):
+      // el modelo respondió sin fallo técnico, pero reportó
+      // hojaLegible !== true — ErrorHojaIlegible (señal tipada, nunca
+      // comparación de texto del mensaje, ver analisisHojaEvaluacion.ts)
+      // es la ÚNICA condición que entra aquí. Reutiliza EXACTAMENTE el
+      // mismo mecanismo técnico que el rechazo de identidad de abajo
+      // (mismo campo validacionIdentidad.estado='rechazada', mismo
+      // estado técnico 'identidad_no_valida' que determinarEstadoCapturaHoja
+      // ya deriva de ese booleano, mismo botón "Volver a fotografiar")
+      // — nunca un segundo mecanismo paralelo. El MOTIVO persistido
+      // SÍ se distingue (razon='hoja_ilegible', nunca
+      // 'identidad_no_valida') — esa es la fuente canónica real que
+      // estado-captura/route.ts lee después para que CapturaHoja.tsx
+      // muestre el mensaje correcto incluso tras recargar (ver
+      // estadoCapturaHoja.ts/estado-captura/route.ts). La RESPUESTA
+      // INMEDIATA de este request sigue devolviendo exactamente
+      // razon='identidad_no_valida' (sin cambios): es únicamente la
+      // señal que CapturaHoja.tsx ya reconoce para llamar
+      // cargarEstado() y entrar al flujo técnico existente — nunca la
+      // fuente del motivo mostrado, que siempre se vuelve a leer del
+      // valor ya persistido.
+      if (e instanceof ErrorHojaIlegible) {
+        const { error: errorRechazoIlegible } = await supabase
+          .from('proyectos_seguimiento')
+          .update({
+            captura_pendiente: {
+              ...capturaPendiente,
+              validacionIdentidad: { estado: 'rechazada', razon: 'hoja_ilegible', validadaEn: new Date().toISOString() },
+            },
+            actualizado_en: new Date().toISOString(),
+          })
+          .eq('id', proyectoId)
+        if (errorRechazoIlegible) {
+          return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+        }
+        return NextResponse.json({ error: e.message, razon: 'identidad_no_valida' }, { status: 409 })
+      }
+      // Cualquier otro error (red/API/timeout/estructura/parseo
+      // inesperado) conserva EXACTAMENTE el comportamiento previo:
+      // fail-closed sin tocar captura_pendiente ni el estado del
+      // proyecto — la fotografía y el estado previo quedan intactos
+      // para un reintento normal (nunca se activa reiniciarCaptura
+      // para estos casos).
       return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo analizar la fotografía.' }, { status: 422 })
     }
 

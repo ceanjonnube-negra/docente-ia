@@ -46,6 +46,16 @@ export type ResultadoEstadoCapturaHoja = {
   // 'revision_pendiente' o 'lista_para_confirmar' — en cualquier otro
   // estado todavía no existe ninguna transcripción que contar.
   totalBloqueantes?: number
+  // Motivo real persistido en captura_pendiente.validacionIdentidad.razon
+  // (ver analizar-hoja/route.ts) — transportado tal cual, SOLO cuando
+  // estado==='identidad_no_valida', para que CapturaHoja.tsx pueda
+  // elegir el mensaje correcto (identidad vs. ilegibilidad) sin
+  // depender de un error temporal de React que se perdería al
+  // recargar. Opcional/aditivo a propósito: ausente (captura histórica
+  // sin razon persistido) nunca rompe nada — el consumidor debe tratar
+  // su ausencia como el caso de identidad (comportamiento ya
+  // existente), nunca inventar un motivo.
+  razonRechazo?: string
 }
 
 // Mismos 4 valores ya usados en el resto de esta familia de rutas
@@ -67,6 +77,12 @@ export function determinarEstadoCapturaHoja(params: {
   // equivale a false, así cualquier llamador que todavía no lo pase
   // conserva el comportamiento exacto de siempre.
   identidadRechazada?: boolean
+  // Motivo real ya persistido (captura_pendiente.validacionIdentidad.razon),
+  // leído tal cual por el llamador — esta función NUNCA lo valida ni
+  // lo usa para decidir si hay rechazo (eso sigue dependiendo
+  // EXCLUSIVAMENTE de identidadRechazada arriba); solo lo transporta
+  // sin tocarlo cuando el estado resultante ya es 'identidad_no_valida'.
+  razonRechazo?: string
 }): ResultadoEstadoCapturaHoja {
   const base = { paginasEsperadas: params.paginasEsperadas, paginasCargadas: params.paginasCargadas }
 
@@ -81,7 +97,7 @@ export function determinarEstadoCapturaHoja(params: {
     // se analizó (caso normal, 'lista_para_analizar'), o bien SÍ se
     // analizó y el servidor rechazó la fotografía por identidad —
     // nunca se confunden entre sí.
-    if (params.identidadRechazada) return { estado: 'identidad_no_valida', ...base }
+    if (params.identidadRechazada) return { estado: 'identidad_no_valida', ...base, razonRechazo: params.razonRechazo }
     // paginasCargadas >= paginasEsperadas (nunca debería ser mayor —
     // foto-hoja ya rechaza pagina > paginasEsperadas al subir — pero
     // >= es la comparación defensiva correcta, nunca ===).

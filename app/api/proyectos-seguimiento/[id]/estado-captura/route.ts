@@ -21,7 +21,7 @@ export const runtime = 'nodejs'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-type CapturaPendiente = { extraidoBruto?: unknown; validacionIdentidad?: { estado?: unknown } } | null
+type CapturaPendiente = { extraidoBruto?: unknown; validacionIdentidad?: { estado?: unknown; razon?: unknown } } | null
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: proyectoId } = await params
@@ -83,6 +83,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     // extraidoBruto por sí sola, que también es el estado normal
     // "todavía no se ha analizado nada".
     const identidadRechazada = capturaPendiente?.validacionIdentidad?.estado === 'rechazada'
+    // Motivo real, leído de forma segura: solo se acepta si realmente
+    // es un string (nunca se asume que el campo existe — una captura
+    // histórica rechazada antes de que existiera `razon` simplemente
+    // no lo trae, y eso es válido). determinarEstadoCapturaHoja() solo
+    // lo transporta, nunca lo usa para decidir si hay rechazo.
+    const razonRechazoBruta = capturaPendiente?.validacionIdentidad?.razon
+    const razonRechazo = typeof razonRechazoBruta === 'string' ? razonRechazoBruta : undefined
 
     const resultado = determinarEstadoCapturaHoja({
       estadoProyecto: proyecto.estado,
@@ -92,6 +99,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       rosterCongelado,
       indicadoresCongelados,
       identidadRechazada,
+      razonRechazo,
     })
 
     return NextResponse.json(resultado)

@@ -185,8 +185,13 @@ function main() {
   // 9. "Volver a fotografiar" existe en revision_pendiente e
   // identidad_no_valida, ambos vía la misma función que arma la señal.
   // ============================================================
+  // Ventana ampliada de 700 a 1200 (EVAL "hoja ilegible"): el bloque de
+  // identidad_no_valida ahora incluye además el mensaje distinguible
+  // por razonRechazo (hoja_ilegible vs. identidad) antes del botón —
+  // crecimiento real y deliberado del JSX, no el síntoma de que
+  // volverAFotografiar haya dejado de ser el disparador.
   verificar(
-    /estado === 'identidad_no_valida'[\s\S]{0,700}onClick=\{volverAFotografiar\}[\s\S]{0,80}Volver a fotografiar/.test(capturaHoja),
+    /estado === 'identidad_no_valida'[\s\S]{0,1200}onClick=\{volverAFotografiar\}[\s\S]{0,80}Volver a fotografiar/.test(capturaHoja),
     '9a. identidad_no_valida ofrece "Volver a fotografiar" mediante volverAFotografiar (no un abrirSelector plano)'
   )
   verificar(
