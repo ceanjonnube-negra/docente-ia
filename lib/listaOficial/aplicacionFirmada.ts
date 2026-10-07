@@ -32,14 +32,24 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 // ============================================================
 // Tipos — unión discriminada, nunca una estructura permisiva con
 // propiedades opcionales por variante (ver diseño aprobado, sección 4).
-// Cada variante corresponde EXACTAMENTE a una de las 3 categorías de
-// PlanDeActualizacionLista que de verdad pueden escribirse — ver
-// lib/listaOficial/planActualizacionLista.ts. SIN_CAMBIOS nunca
-// necesita firmarse (0 escritura); REQUIERE_CONFIRMACION y
-// CONFLICTO_BLOQUEANTE son estructuralmente IRREPRESENTABLES aquí: no
+// SIN_CAMBIOS nunca necesita firmarse (0 escritura); REQUIERE_CONFIRMACION
+// y CONFLICTO_BLOQUEANTE son estructuralmente IRREPRESENTABLES aquí: no
 // existe ningún valor de `tipo` para ellos en esta unión, así que
 // TypeScript rechaza en tiempo de compilación cualquier intento de
 // construir uno (ver prueba de tipo en el script de verificación).
+//
+// V1-D2A2 — ver auditoría de diseño aprobada "persona vs. inscripción":
+// 'alta' se divide en 2 operaciones estructuralmente distintas porque
+// representan 2 actos administrativos distintos — crear una PERSONA
+// nueva (alta_persona) nunca es lo mismo que crear una INSCRIPCIÓN
+// nueva para una persona que YA EXISTE y ya fue identificada con
+// certeza (alta_inscripcion). Fusionarlas en un solo tipo con campos
+// opcionales habría vuelto ambiguo cuál caso aplica en cada sobre —
+// exactamente el tipo de ambigüedad que esta unión discriminada existe
+// para prevenir. 'alta' como valor de `tipo` DEJA DE EXISTIR por
+// completo: 0 consumidores productivos de este contrato hoy (ver
+// auditoría previa), así que no hay ninguna razón para mantener un
+// alias de compatibilidad con un protocolo que nadie usa todavía.
 // ============================================================
 
 // Único campo soportado hoy (mismo alcance real que
@@ -75,16 +85,38 @@ export type OperacionActualizarDatoAplicable = {
 // obligatorio y nunca null: una alta sin nombre legible no es una
 // operación accionable con sentido (V1-B puede producir NUEVO_POSIBLE
 // incluso con nombreLeido null — esa fila nunca debe convertirse en
-// una operación 'alta' firmable; esa decisión corresponde a la fase
-// que construya estas operaciones a partir del plan, no a este
+// una operación alta_persona firmable; esa decisión corresponde a la
+// fase que construya estas operaciones a partir del plan, no a este
 // contrato). `curp` sí puede ser null — V1-A soporta explícitamente
 // "CURP no legible/ausente" como una lectura real y válida.
 // Deliberadamente SIN alumnoId/inscripcionId (ver diseño aprobado
-// sección 7): una alta NUNCA reutiliza ni fusiona historial.
-export type OperacionAltaAplicable = {
-  tipo: 'alta'
+// V1-D2A sección 7, reconfirmado en V1-D2A2): alta_persona NUNCA
+// reutiliza ni fusiona historial — crea SIEMPRE una persona nueva.
+// Reutilizar una persona ya existente es, estructuralmente, otra
+// operación (alta_inscripcion, ver abajo), nunca esta.
+export type OperacionAltaPersonaAplicable = {
+  tipo: 'alta_persona'
   nombre: string
   curp: string | null
+}
+
+// V1-D2A2 — crea ÚNICAMENTE una inscripción nueva para una persona que
+// YA EXISTE y cuya identidad ya fue resuelta con certeza (CURP exacta
+// única, o confirmación humana explícita — ver auditoría de diseño
+// aprobada "persona vs. inscripción", secciones F/G). Deliberadamente
+// SIN nombre/curp/inscripcionId/grupoId/expectedState: alumnoId es el
+// ÚNICO anchor necesario porque (a) grupoId ya viaja firmado en
+// PayloadAplicacionListaOficial — nunca se repite dentro de la
+// operación, y (b) la ausencia de una inscripción activa equivalente
+// se revalida server-side/transaccionalmente en la futura RPC
+// (SELECT...FOR UPDATE + EXISTS), nunca mediante un valor firmado
+// adicional — agregar un "estado esperado" aquí no protegería nada que
+// esa revalidación no cubra ya. Jamás lleva nombre/curp: esta
+// operación NUNCA decide identidad, solo ejecuta una decisión de
+// identidad ya tomada antes de firmar.
+export type OperacionAltaInscripcionAplicable = {
+  tipo: 'alta_inscripcion'
+  alumnoId: string
 }
 
 // Solo los IDs ya resueltos — nunca nombre, posición/numero_lista, ni
@@ -101,7 +133,11 @@ export type OperacionBajaAplicable = {
 }
 
 // Unión discriminada real — ver cabecera del archivo.
-export type OperacionAplicableListaOficial = OperacionActualizarDatoAplicable | OperacionAltaAplicable | OperacionBajaAplicable
+export type OperacionAplicableListaOficial =
+  | OperacionActualizarDatoAplicable
+  | OperacionAltaPersonaAplicable
+  | OperacionAltaInscripcionAplicable
+  | OperacionBajaAplicable
 
 // Exactamente lo que la firma HMAC protege — ver
 // construirPayloadCanonicoAplicacion más abajo. A diferencia de
@@ -139,7 +175,8 @@ function tieneExactamenteLasClaves(obj: Record<string, unknown>, clavesPermitida
 }
 
 const CLAVES_OPERACION_ACTUALIZAR_DATO = ['tipo', 'alumnoId', 'campo', 'valorActual', 'valorPropuesto'] as const
-const CLAVES_OPERACION_ALTA = ['tipo', 'nombre', 'curp'] as const
+const CLAVES_OPERACION_ALTA_PERSONA = ['tipo', 'nombre', 'curp'] as const
+const CLAVES_OPERACION_ALTA_INSCRIPCION = ['tipo', 'alumnoId'] as const
 const CLAVES_OPERACION_BAJA = ['tipo', 'alumnoId', 'inscripcionId'] as const
 const CLAVES_PAYLOAD_APLICACION = ['docenteId', 'conversacionId', 'grupoId', 'generadoEn', 'rosterFingerprint', 'operaciones'] as const
 const CLAVES_SOBRE_APLICACION = ['payload', 'firma'] as const
@@ -170,12 +207,17 @@ export function esOperacionAplicableListaOficialValida(valor: unknown): valor is
     )
   }
 
-  if (o.tipo === 'alta') {
-    if (!tieneExactamenteLasClaves(o, CLAVES_OPERACION_ALTA)) return false
+  if (o.tipo === 'alta_persona') {
+    if (!tieneExactamenteLasClaves(o, CLAVES_OPERACION_ALTA_PERSONA)) return false
     return (
       typeof o.nombre === 'string' && o.nombre.trim().length > 0 &&
       (o.curp === null || (typeof o.curp === 'string' && o.curp.trim().length > 0))
     )
+  }
+
+  if (o.tipo === 'alta_inscripcion') {
+    if (!tieneExactamenteLasClaves(o, CLAVES_OPERACION_ALTA_INSCRIPCION)) return false
+    return typeof o.alumnoId === 'string' && o.alumnoId.trim().length > 0
   }
 
   if (o.tipo === 'baja') {
@@ -223,8 +265,11 @@ function canonicalizarOperacion(op: OperacionAplicableListaOficial): OperacionAp
   if (op.tipo === 'actualizar_dato') {
     return { tipo: 'actualizar_dato', alumnoId: op.alumnoId, campo: op.campo, valorActual: op.valorActual, valorPropuesto: op.valorPropuesto }
   }
-  if (op.tipo === 'alta') {
-    return { tipo: 'alta', nombre: op.nombre, curp: op.curp }
+  if (op.tipo === 'alta_persona') {
+    return { tipo: 'alta_persona', nombre: op.nombre, curp: op.curp }
+  }
+  if (op.tipo === 'alta_inscripcion') {
+    return { tipo: 'alta_inscripcion', alumnoId: op.alumnoId }
   }
   return { tipo: 'baja', alumnoId: op.alumnoId, inscripcionId: op.inscripcionId }
 }
