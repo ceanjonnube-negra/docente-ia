@@ -29,6 +29,7 @@
 
 import type { ResultadoComparacionListaOficial, ResultadoMatchRegistro } from './matchingListaOficial'
 import type { ResultadoPropuestasReparacionCurpPublico, CandidatoReparacionCurp } from './propuestasReparacionCurp'
+import type { ConfianzaLecturaLista } from './analisisListaOficial'
 
 // Señal tipada y discriminable (nunca comparación frágil de texto del
 // mensaje) — ver auditoría "revisión técnica final V1-D1, hallazgo
@@ -57,6 +58,32 @@ export type CategoriaOperacionPlanLista =
 // soporte nombre/sexo/fecha_nacimiento ampliaría esta unión sin
 // romper ningún consumidor de las operaciones ya existentes.
 export type CampoActualizablePlanLista = 'curp'
+
+// Presente ÚNICAMENTE en operaciones ALUMNO_NUEVO — evidencia
+// documental cruda del registro que V1-B no pudo asociar con
+// seguridad a ningún alumno del roster activo (categoriaDiff==
+// 'NUEVO_POSIBLE'). Subconjunto mínimo de RegistroExtraidoListaOficial
+// (ver auditoría V1-D2C1-A): deliberadamente NO incluye nombreConfianza
+// ni observacion (útiles solo para UX/explicación, no para resolver
+// identidad — pueden agregarse en una fase posterior si una necesidad
+// de UX concreta lo justifica, nunca copiados aquí "porque existían").
+//
+// Esta evidencia NUNCA prueba identidad por sí sola:
+// - nombreLeido es evidencia visual/documental, no autoriza reutilizar
+//   alumnos.id, no autoriza transferir historial, no autoriza
+//   alta_inscripcion — misma regla ya cerrada para nombre/fuzzy en
+//   todo el diseño V1-D (ver encabezado de este archivo).
+// - curpLeida tampoco es identidad confirmada solo por estar presente
+//   — una fase posterior debe evaluarla junto con curpLegible y
+//   curpConfianza (misma composición que curpUtilizable en
+//   matchingListaOficial.ts) para distinguir CURP ausente, ilegible,
+//   de confianza insuficiente, o candidata usable.
+export type EvidenciaDocumentoAlumnoNuevo = {
+  nombreLeido: string | null
+  curpLeida: string | null
+  curpLegible: boolean
+  curpConfianza: ConfianzaLecturaLista
+}
 
 export type OperacionPlanLista = {
   categoria: CategoriaOperacionPlanLista
@@ -87,6 +114,10 @@ export type OperacionPlanLista = {
   // de decisión para quien consuma el plan (esa decisión ya está
   // tomada en `categoria`).
   origenMatch?: ResultadoMatchRegistro['origenMatch']
+  // Presente ÚNICAMENTE en categoría ALUMNO_NUEVO — ver
+  // EvidenciaDocumentoAlumnoNuevo. Ausente en las demás 5 categorías
+  // (no se construye, no es undefined "por accidente").
+  evidenciaDocumento?: EvidenciaDocumentoAlumnoNuevo
 }
 
 export type PlanDeActualizacionLista = {
@@ -121,7 +152,15 @@ function categorizarResultado(
   // matchingListaOficial.ts) — candidato de alta, siempre con
   // confirmación humana en una fase posterior.
   if (r.categoriaDiff === 'NUEVO_POSIBLE') {
-    return { categoria: 'ALUMNO_NUEVO' }
+    return {
+      categoria: 'ALUMNO_NUEVO',
+      evidenciaDocumento: {
+        nombreLeido: r.registro.nombreLeido,
+        curpLeida: r.registro.curpLeida,
+        curpLegible: r.registro.curpLegible,
+        curpConfianza: r.registro.curpConfianza,
+      },
+    }
   }
 
   // A partir de aquí, categoriaDiff es SIN_CAMBIO | CURP_FALTANTE_EN_DB

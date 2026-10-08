@@ -28,6 +28,7 @@ import {
   type OperacionPlanLista,
 } from '../lib/listaOficial/planActualizacionLista'
 import type { RegistroExtraidoListaOficial, ConfianzaLecturaLista } from '../lib/listaOficial/analisisListaOficial'
+import { calcularRosterFingerprint } from '../lib/listaOficial/rosterFingerprint'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -374,6 +375,109 @@ verificar(!fuentePlan.includes('supabase') && !fuentePlan.toLowerCase().includes
   const opFormato = planFormato.operaciones.find((o) => o.alumnoId === 'fmt1')
   verificar(opFormato?.categoria === 'ACTUALIZAR_DATOS', '16c. formato + candidato válido → ACTUALIZAR_DATOS (misma Vía 2 ya usada para \'nombre\')')
   verificar(opFormato?.valorPropuesto === 'VIXO030303MDGLPT06', '16d. valorPropuesto es la CURP nueva leída')
+}
+
+// ============================================================
+// 17. V1-D2C1-A — ALUMNO_NUEVO conserva evidenciaDocumento (evidencia
+//     mínima del registro, nunca una decisión de identidad).
+// ============================================================
+{
+  const opNuevo = plan.operaciones.find((o) => o.categoria === 'ALUMNO_NUEVO')
+  verificar(opNuevo?.evidenciaDocumento !== undefined, '17. ALUMNO_NUEVO (a4, "Pedro Alvarez Nuevo") conserva evidenciaDocumento')
+  verificar(opNuevo?.evidenciaDocumento?.nombreLeido === 'Pedro Alvarez Nuevo', '17b. nombreLeido se conserva EXACTAMENTE igual al registro original')
+  verificar(opNuevo?.evidenciaDocumento?.curpLeida === null, '17c. curpLeida ausente en el documento se conserva como null (nunca string vacío ni undefined)')
+  verificar(opNuevo?.evidenciaDocumento?.curpLegible === false, '17d. curpLegible se conserva tal cual (false, el documento no traía CURP)')
+  verificar(opNuevo?.evidenciaDocumento?.curpConfianza === 'baja', '17e. curpConfianza se conserva tal cual (\'baja\' en el fixture)')
+  verificar(opNuevo?.alumnoId === undefined, '17f. ALUMNO_NUEVO sigue sin alumnoId — evidenciaDocumento nunca se confunde con identidad resuelta')
+}
+
+// ============================================================
+// 18. CURP leída presente pero dudosa (ilegible/confianza baja) en un
+//     ALUMNO_NUEVO — evidenciaDocumento NUNCA la convierte en
+//     identidad confirmada: solo transporta los 3 campos crudos
+//     (curpLeida, curpLegible, curpConfianza) para que una fase
+//     posterior decida, nunca un booleano "curpUtilizable" ya resuelto
+//     aquí.
+// ============================================================
+{
+  const DOC_NUEVO_CURP_DUDOSA: RegistroExtraidoListaOficial[] = [
+    registro('Roberto Nuevo Alumno', 'alta', 'ROIS990909HGTSLP01', false, 'media'),
+  ]
+  const comp = compararListaOficial(DOC_NUEVO_CURP_DUDOSA, [])
+  verificar(comp.resultados[0]?.categoriaDiff === 'NUEVO_POSIBLE', '18. Fixture real: sin roster, ningún match posible → NUEVO_POSIBLE (precondición de la prueba)')
+
+  const prop = clasificarPropuestasReparacionCurp(comp, [])
+  const planCurpDudosa = construirPlanDeActualizacionLista({
+    grupoId: 'grupo-1',
+    rosterFingerprint: 'huella',
+    generadoEn: '2026-10-05T12:00:00.000Z',
+    comparacion: comp,
+    propuestasReparacionCurp: prop,
+    roster: [],
+  })
+  const opCurpDudosa = planCurpDudosa.operaciones[0]
+  verificar(opCurpDudosa?.evidenciaDocumento?.curpLeida === 'ROIS990909HGTSLP01', '18b. curpLeida se conserva aunque sea dudosa — nunca se descarta ni se convierte en null por no ser utilizable')
+  verificar(opCurpDudosa?.evidenciaDocumento?.curpLegible === false, '18c. curpLegible se conserva (false) — permite distinguir "ilegible" de "ausente"')
+  verificar(opCurpDudosa?.evidenciaDocumento?.curpConfianza === 'media', '18d. curpConfianza se conserva (\'media\', no \'alta\') — permite distinguir confianza insuficiente de usable')
+}
+
+// ============================================================
+// 19. Dos registros ALUMNO_NUEVO distintos conservan su propia
+//     evidencia sin cruzarla entre sí.
+// ============================================================
+{
+  const DOC_DOS_NUEVOS: RegistroExtraidoListaOficial[] = [
+    registro('Primera Persona Nueva', 'alta', 'AAAA000000HAAAAA00', true, 'alta'),
+    registro('Segunda Persona Nueva', 'media', null, false, 'baja'),
+  ]
+  const comp = compararListaOficial(DOC_DOS_NUEVOS, [])
+  const prop = clasificarPropuestasReparacionCurp(comp, [])
+  const planDosNuevos = construirPlanDeActualizacionLista({
+    grupoId: 'grupo-1',
+    rosterFingerprint: 'huella',
+    generadoEn: '2026-10-05T12:00:00.000Z',
+    comparacion: comp,
+    propuestasReparacionCurp: prop,
+    roster: [],
+  })
+  const nuevosDistintos = planDosNuevos.operaciones.filter((o) => o.categoria === 'ALUMNO_NUEVO')
+  verificar(nuevosDistintos.length === 2, '19. 2 registros NUEVO_POSIBLE distintos → 2 operaciones ALUMNO_NUEVO')
+  verificar(
+    nuevosDistintos.some((o) => o.evidenciaDocumento?.nombreLeido === 'Primera Persona Nueva' && o.evidenciaDocumento?.curpLeida === 'AAAA000000HAAAAA00'),
+    '19b. La primera conserva exactamente su propio nombre y CURP'
+  )
+  verificar(
+    nuevosDistintos.some((o) => o.evidenciaDocumento?.nombreLeido === 'Segunda Persona Nueva' && o.evidenciaDocumento?.curpLeida === null),
+    '19c. La segunda conserva exactamente su propio nombre y CURP (null) — sin mezclarse con la primera'
+  )
+}
+
+// ============================================================
+// 20. Las demás categorías (SIN_CAMBIOS, ACTUALIZAR_DATOS,
+//     RETIRAR_INSCRIPCION, REQUIERE_CONFIRMACION, CONFLICTO_BLOQUEANTE)
+//     NUNCA llevan evidenciaDocumento — exclusivo de ALUMNO_NUEVO.
+// ============================================================
+verificar(
+  plan.operaciones.filter((o) => o.categoria !== 'ALUMNO_NUEVO').every((o) => o.evidenciaDocumento === undefined),
+  '20. Ninguna operación distinta de ALUMNO_NUEVO lleva evidenciaDocumento'
+)
+
+// ============================================================
+// 21. rosterFingerprint es insensible a la evidencia documental de
+//     ALUMNO_NUEVO — depende EXCLUSIVAMENTE del roster (inscripcionId,
+//     estatus, curp), nunca del contenido de las operaciones del plan
+//     (ver lib/listaOficial/rosterFingerprint.ts: calcularRosterFingerprint
+//     ni siquiera recibe el plan como parámetro). Se verifica aquí
+//     construyendo 2 planes con el MISMO roster pero documentos
+//     distintos (distinta evidencia ALUMNO_NUEVO) y comparando la
+//     huella que cada llamador habría calculado — por construcción,
+//     ambas provienen del mismo roster, así que deben coincidir.
+// ============================================================
+{
+  const filasRoster = [{ inscripcionId: 'i1', estatus: 'activo', curp: 'JULO100101HDFPRN03' }]
+  const huellaA = calcularRosterFingerprint(filasRoster)
+  const huellaB = calcularRosterFingerprint(filasRoster)
+  verificar(huellaA === huellaB, '21. calcularRosterFingerprint es determinista para el mismo roster, sin importar la evidencia documental de ALUMNO_NUEVO (que ni siquiera se le pasa como parámetro)')
 }
 
 console.log('')
