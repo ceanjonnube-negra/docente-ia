@@ -226,7 +226,15 @@ export async function POST(req: NextRequest) {
     const idsActualizarDato = operaciones.filter((o) => o.tipo === 'actualizar_dato').map((o) => o.alumnoId)
     const idsAltaInscripcion = operaciones.filter((o) => o.tipo === 'alta_inscripcion').map((o) => o.alumnoId)
     const idsBaja = operaciones.filter((o) => o.tipo === 'baja').map((o) => o.inscripcionId)
-    const idsAlumnosRelevantes = Array.from(new Set([...idsActualizarDato, ...idsAltaInscripcion]))
+    // V1-D2C1-B4B — traslado referencia un alumnoId (igual que
+    // actualizar_dato/alta_inscripcion) Y una inscripcionIdOrigen
+    // (igual que baja referencia inscripcionId) — se unen a los
+    // conjuntos ya existentes, nunca una consulta separada por tipo de
+    // operación.
+    const idsTraslado = operaciones.filter((o) => o.tipo === 'traslado').map((o) => o.alumnoId)
+    const idsInscripcionOrigenTraslado = operaciones.filter((o) => o.tipo === 'traslado').map((o) => o.inscripcionIdOrigen)
+    const idsAlumnosRelevantes = Array.from(new Set([...idsActualizarDato, ...idsAltaInscripcion, ...idsTraslado]))
+    const idsInscripcionesRelevantes = Array.from(new Set([...idsBaja, ...idsInscripcionOrigenTraslado]))
     const curpsACotejar = operaciones
       .flatMap((o) => (o.tipo === 'actualizar_dato' ? [o.valorPropuesto] : o.tipo === 'alta_persona' && o.curp !== null ? [o.curp] : []))
       .map((c) => c.trim().toUpperCase())
@@ -246,18 +254,81 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ciclo_escolar_id agregado (V1-D2C1-B4B) — necesario para que
+    // 'traslado' compare el ciclo real de la inscripción de ORIGEN
+    // contra el ciclo del grupo DESTINO. idsInscripcionesRelevantes une
+    // baja + el origen de traslado en UNA sola consulta batch, nunca
+    // una por tipo de operación.
+    // *** CORRECCIÓN DE SEGURIDAD (revisión focalizada previa al commit
+    // de V1-D2C1-B4B) ***
+    // inscripciones.docente_id se ESTAMPA UNA SOLA VEZ al crear la fila
+    // (ver importar_alumnos_a_grupo.sql) y NUNCA se actualiza después —
+    // ninguna función del proyecto lo toca tras la inserción. Por
+    // tanto NO refleja con certeza quién es el propietario ACTUAL del
+    // grupo de esa inscripción: si la propiedad de un grupo alguna vez
+    // cambiara (grupos.docente_id es el ÚNICO dato en vivo), el
+    // estampado histórico seguiría apuntando al docente ANTERIOR para
+    // siempre. Filtrar aquí por `.eq('docente_id', auth.user.id)` —
+    // como hacía esta consulta antes de esta corrección — comprobaba
+    // ese estampado histórico, nunca la propiedad real y actual.
+    //
+    // Tampoco basta con la visibilidad bajo RLS: la policy real de
+    // `inscripciones` también autoriza vía `docente_grupos`, y el
+    // trigger que sincroniza esa tabla (fn_sync_docente_grupo) SOLO
+    // AGREGA una fila 'titular' al cambiar grupos.docente_id — nunca
+    // retira la fila del propietario anterior. Una inscripción podría
+    // seguir siendo "visible" bajo RLS para un docente que ya perdió
+    // la propiedad real del grupo.
+    //
+    // Corrección: la propiedad del grupo de ORIGEN se confirma aparte,
+    // de forma explícita, contra grupos.docente_id (el único dato en
+    // vivo) — EXACTAMENTE el mismo criterio que ya usan
+    // dar_de_baja_inscripcion/importar_alumnos_a_grupo en SQL real
+    // (JOIN/WHERE contra grupos.docente_id, nunca contra un estampado
+    // ni únicamente RLS). Una sola consulta batch adicional — nunca
+    // una por operación ni por inscripción.
     const inscripcionesCargadas = new Map<string, InscripcionActualCargada>()
-    if (idsBaja.length > 0) {
+    if (idsInscripcionesRelevantes.length > 0) {
       const { data: inscripciones, error: errorInscripciones } = await auth.supabase
         .from('inscripciones')
-        .select('id, alumno_id, grupo_id, estatus')
-        .in('id', idsBaja)
-        .eq('docente_id', auth.user.id)
+        .select('id, alumno_id, grupo_id, ciclo_escolar_id, estatus')
+        .in('id', idsInscripcionesRelevantes)
       if (errorInscripciones) {
         return respuestaError('OWNERSHIP_MISMATCH')
       }
+
+      const idsGruposDeOrigenReferenciados = Array.from(new Set((inscripciones ?? []).map((i) => i.grupo_id as string)))
+      const gruposPropiosAhora = new Set<string>()
+      if (idsGruposDeOrigenReferenciados.length > 0) {
+        const { data: gruposPropios, error: errorGruposPropios } = await auth.supabase
+          .from('grupos')
+          .select('id')
+          .in('id', idsGruposDeOrigenReferenciados)
+          .eq('docente_id', auth.user.id)
+        if (errorGruposPropios) {
+          return respuestaError('OWNERSHIP_MISMATCH')
+        }
+        for (const g of gruposPropios ?? []) {
+          gruposPropiosAhora.add(g.id as string)
+        }
+      }
+
       for (const i of inscripciones ?? []) {
-        inscripcionesCargadas.set(i.id as string, { alumnoId: i.alumno_id as string, grupoId: i.grupo_id as string, estatus: i.estatus as string })
+        // Fail-closed: una inscripción cuyo grupo NO está, AHORA MISMO,
+        // entre los propios del docente autenticado NUNCA se incorpora
+        // al contexto — queda ausente de inscripcionesCargadas, lo que
+        // prevalidarBaja/prevalidarTraslado ya tratan como
+        // OWNERSHIP_MISMATCH (mismo comportamiento que "nunca se
+        // cargó").
+        if (!gruposPropiosAhora.has(i.grupo_id as string)) {
+          continue
+        }
+        inscripcionesCargadas.set(i.id as string, {
+          alumnoId: i.alumno_id as string,
+          grupoId: i.grupo_id as string,
+          cicloEscolarId: i.ciclo_escolar_id as string,
+          estatus: i.estatus as string,
+        })
       }
     }
 
@@ -341,6 +412,10 @@ export async function POST(req: NextRequest) {
     const contexto: ContextoPrevalidacion = {
       grupoId: payload.grupoId,
       institucionId: grupo.institucion_id as string,
+      // V1-D2C1-B4B — ciclo real del grupo DESTINO, ya derivado arriba
+      // del grupo validado (nunca del cliente) — usado exclusivamente
+      // por 'traslado'.
+      cicloEscolarId: grupo.ciclo_escolar_id as string,
       alumnoIdsEnRosterActivo,
       alumnoIdsActivosEnOtroGrupoMismoCiclo: alumnoIdsActivosEnOtroGrupoBuilder,
       alumnosCargados,

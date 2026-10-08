@@ -113,6 +113,13 @@ export type AlumnoActualCargado = {
 export type InscripcionActualCargada = {
   alumnoId: string
   grupoId: string
+  // V1-D2C1-B4B — ciclo escolar REAL de esta inscripción (derivado de
+  // la fila real, nunca recalculado) — necesario para que 'traslado'
+  // pueda comparar el ciclo de la inscripción de ORIGEN contra el
+  // ciclo del grupo DESTINO (ctx.cicloEscolarId). Las demás
+  // operaciones (baja) nunca lo usan — campo adicional inofensivo para
+  // ellas, no un cambio de su comportamiento.
+  cicloEscolarId: string
   estatus: string
 }
 
@@ -123,6 +130,12 @@ export type ContextoPrevalidacion = {
   // el alcance de curpsVisiblesDocente quede documentado sin
   // ambigüedad.
   institucionId: string
+  // V1-D2C1-B4B — ciclo escolar REAL del grupo DESTINO (grupoId),
+  // derivado server-side del grupo ya validado (nunca aceptado del
+  // cliente) — mismo patrón que institucionId. Usado exclusivamente
+  // por 'traslado' para comparar contra el ciclo real de la
+  // inscripción de origen; ninguna otra operación lo necesita.
+  cicloEscolarId: string
   // alumnoId -> true si tiene una inscripción ACTIVA en grupoId (ya
   // resuelto por el llamador vía el mismo roster usado para el
   // fingerprint — nunca una segunda fuente de verdad del roster).
@@ -340,14 +353,15 @@ function prevalidarAltaInscripcion(
   // grupo del mismo ciclo (dato ya cargado por el llamador, read-only,
   // nunca una segunda decisión de identidad): esto nunca se resuelve
   // como un alta_inscripcion simple — requeriría cerrar la inscripción
-  // anterior primero, una operación distinta ('traslado') que todavía
-  // no existe en este contrato. Rechazar aquí con un código estable y
-  // específico es más seguro que dejar que la futura escritura real
-  // choque contra el índice parcial de unicidad
-  // (inscripciones_alumno_ciclo_activo_uk) con un error crudo — ese
-  // índice sigue siendo la barrera DEFINITIVA hasta que exista la RPC
-  // transaccional de aplicación; esta prevalidación solo adelanta el
-  // mismo resultado con un mensaje claro.
+  // anterior primero, usando la operación distinta 'traslado' (ver
+  // prevalidarTraslado más abajo, V1-D2C1-B4B) — alta_inscripcion NUNCA
+  // hace ese cierre por su cuenta, ni sugiere ni ejecuta un traslado
+  // automáticamente. Rechazar aquí con un código estable y específico
+  // es más seguro que dejar que la futura escritura real choque contra
+  // el índice parcial de unicidad (inscripciones_alumno_ciclo_activo_uk)
+  // con un error crudo — ese índice sigue siendo la barrera DEFINITIVA
+  // hasta que exista la RPC transaccional de aplicación; esta
+  // prevalidación solo adelanta el mismo resultado con un mensaje claro.
   if (ctx.alumnoIdsActivosEnOtroGrupoMismoCiclo.has(op.alumnoId)) {
     return error(op, 'ACTIVE_ENROLLMENT_IN_OTHER_GROUP')
   }
@@ -373,6 +387,79 @@ function prevalidarBaja(
   return exito(op)
 }
 
+// V1-D2C1-B4B — traslado: cierra una inscripción ACTIVA de ORIGEN
+// (inscripcionIdOrigen, en un grupo distinto del destino) y, en una
+// fase posterior (la futura RPC transaccional, todavía inexistente),
+// abre una inscripción nueva en el grupo DESTINO ya firmado
+// (ctx.grupoId). Esta función NUNCA decide identidad ni decide
+// automáticamente que un traslado es procedente — el alumnoId y la
+// inscripcionIdOrigen ya llegan resueltos e inequívocos desde antes de
+// firmar (misma regla que alta_inscripcion/baja). Reutiliza
+// EXCLUSIVAMENTE códigos de error ya existentes (OWNERSHIP_MISMATCH,
+// STALE_CURRENT_VALUE, INVALID_OPERATION, ACTIVE_ENROLLMENT_EXISTS) —
+// 0 código nuevo, porque cada fallo de traslado es, en esencia, el
+// mismo tipo de fallo que ya existe para baja/alta_inscripcion,
+// aplicado a la inscripción de origen o al grupo destino.
+function prevalidarTraslado(
+  op: Extract<OperacionAplicableListaOficial, { tipo: 'traslado' }>,
+  ctx: ContextoPrevalidacion
+): ResultadoPrevalidacionOperacion {
+  // Alumno — existente, visible, autorizado, misma institución que el
+  // grupo destino (mismo criterio que actualizar_dato/alta_inscripcion).
+  const alumno = ctx.alumnosCargados.get(op.alumnoId)
+  if (!alumno) {
+    return error(op, 'OWNERSHIP_MISMATCH')
+  }
+  if (alumno.institucionId !== ctx.institucionId) {
+    return error(op, 'OWNERSHIP_MISMATCH')
+  }
+
+  // Inscripción de ORIGEN — existente, visible (ya cargada por el
+  // llamador con ownership confirmado, mismo criterio que
+  // prevalidarBaja) y correspondiente EXACTAMENTE al alumnoId firmado
+  // — nunca se confía en inscripcionIdOrigen por sí solo.
+  const origen = ctx.inscripcionesCargadas.get(op.inscripcionIdOrigen)
+  if (!origen || origen.alumnoId !== op.alumnoId) {
+    return error(op, 'OWNERSHIP_MISMATCH')
+  }
+
+  // Forma de la solicitud — un traslado real exige que el grupo de
+  // ORIGEN sea DISTINTO del grupo DESTINO firmado (si coincidieran, no
+  // hay ningún traslado real que ejecutar — esto no es una baja ni una
+  // reactivación) y que ambos pertenezcan al MISMO ciclo escolar (un
+  // traslado entre ciclos distintos queda fuera de alcance de esta
+  // operación, por diseño — ver auditoría V1-D2C1-B4). Ambas
+  // condiciones son sobre la FORMA de la solicitud, independientes de
+  // si la inscripción de origen sigue activa en este instante — se
+  // comprueban antes del estado mutable, igual que primero se confirma
+  // identidad antes de comprobar un CAS.
+  if (origen.grupoId === ctx.grupoId) {
+    return error(op, 'INVALID_OPERATION')
+  }
+  if (origen.cicloEscolarId !== ctx.cicloEscolarId) {
+    return error(op, 'INVALID_OPERATION')
+  }
+
+  // Estado — la inscripción de origen debe seguir activa AHORA (fail-
+  // closed ante reintentos/concurrencia, mismo criterio que
+  // prevalidarBaja: una inscripción ya dada de baja nunca se
+  // reprocesa en silencio).
+  if (origen.estatus !== 'activo') {
+    return error(op, 'STALE_CURRENT_VALUE')
+  }
+
+  // Destino — igual que alta_inscripcion: ctx.alumnoIdsEnRosterActivo
+  // ya es, por construcción, el conjunto de alumnoId con una
+  // inscripción ACTIVA real en ESTE grupo (el destino). Su presencia
+  // aquí significa que ya existe una inscripción activa equivalente en
+  // destino — un traslado nunca debe crear una segunda.
+  if (ctx.alumnoIdsEnRosterActivo.has(op.alumnoId)) {
+    return error(op, 'ACTIVE_ENROLLMENT_EXISTS')
+  }
+
+  return exito(op)
+}
+
 // Punto único de entrada — recorre TODAS las operaciones y se detiene
 // en la PRIMERA que falle (mismo principio "TODO o NADA" que regirá la
 // futura RPC transaccional: no tiene sentido reportar qué otras
@@ -393,11 +480,13 @@ export function prevalidarOperaciones(
       resultados.push(prevalidarAltaInscripcion(op, ctx))
     } else if (op.tipo === 'baja') {
       resultados.push(prevalidarBaja(op, ctx))
+    } else if (op.tipo === 'traslado') {
+      resultados.push(prevalidarTraslado(op, ctx))
     } else {
       // Inalcanzable: OperacionAplicableListaOficial es una unión
-      // discriminada exhaustiva de solo 4 variantes (ver
+      // discriminada exhaustiva de solo 5 variantes (ver
       // aplicacionFirmada.ts) — este chequeo de tipo (nunca ejecutado
-      // en runtime real) hace que agregar una 5ª variante sin manejarla
+      // en runtime real) hace que agregar una 6ª variante sin manejarla
       // aquí falle en `npx tsc`, no solo en una prueba.
       const _exhaustivo: never = op
       resultados.push(error(_exhaustivo, 'INVALID_OPERATION'))

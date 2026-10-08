@@ -24,6 +24,7 @@ import {
   type OperacionAltaPersonaAplicable,
   type OperacionAltaInscripcionAplicable,
   type OperacionBajaAplicable,
+  type OperacionTrasladoAplicable,
 } from '../lib/listaOficial/aplicacionFirmada'
 import { firmarConSecreto, verificarConSecreto } from '../lib/listaOficial/propuestaFirmada'
 import type { PayloadPropuestaListaOficial } from '../lib/asistente/tipos'
@@ -51,6 +52,7 @@ const OP_ACTUALIZAR: OperacionActualizarDatoAplicable = {
 const OP_ALTA_PERSONA: OperacionAltaPersonaAplicable = { tipo: 'alta_persona', nombre: 'Fernanda Castillo Ruiz', curp: null }
 const OP_ALTA_INSCRIPCION: OperacionAltaInscripcionAplicable = { tipo: 'alta_inscripcion', alumnoId: 'a2' }
 const OP_BAJA: OperacionBajaAplicable = { tipo: 'baja', alumnoId: 'a5', inscripcionId: 'i5' }
+const OP_TRASLADO: OperacionTrasladoAplicable = { tipo: 'traslado', alumnoId: 'a6', inscripcionIdOrigen: 'i-origen-6' }
 
 function payloadBase(operaciones: OperacionAplicableListaOficial[]): PayloadAplicacionListaOficial {
   return {
@@ -434,6 +436,109 @@ function payloadBase(operaciones: OperacionAplicableListaOficial[]): PayloadApli
     firma: sobre.firma,
   }
   verificar(!verificarAplicacionConSecreto(sobreAlterado, SECRETO), 'G4. Alterar una sola operación (alta_inscripcion) dentro de un lote mixto invalida la firma de TODO el sobre')
+}
+
+// ============================================================
+// H. traslado — V1-D2C1-B4B, variante NUEVA. Único anchor adicional:
+//    inscripcionIdOrigen (alumnoId ya existía como defensa en
+//    profundidad, mismo criterio que baja). El grupo DESTINO sigue
+//    siendo ÚNICAMENTE el grupoId ya firmado a nivel de payload —
+//    nunca un segundo grupoId dentro de la operación.
+// ============================================================
+{
+  const sobre = firmarAplicacionConSecreto(payloadBase([OP_TRASLADO]), SECRETO)
+  verificar(verificarAplicacionConSecreto(sobre, SECRETO), 'H1. Contrato válido de traslado (alumnoId + inscripcionIdOrigen) firma y verifica correctamente')
+
+  verificar(
+    !esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, nombre: 'no-deberia-existir' }),
+    'H2. traslado con nombre se rechaza — identidad ya fue resuelta antes de firmar, nunca decide por similitud'
+  )
+  verificar(
+    !esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, curp: 'no-deberia-existir' }),
+    'H3. traslado con curp se rechaza — mismo criterio, esta operación nunca examina CURP'
+  )
+  verificar(
+    !esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, grupoIdDestino: 'no-deberia-existir' }),
+    'H4. traslado con un grupoIdDestino propio se rechaza — el destino SIEMPRE es el grupoId ya firmado a nivel de payload, nunca repetido dentro de la operación'
+  )
+  verificar(
+    !esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, inscripcionId: 'no-deberia-existir' }),
+    'H5. traslado con inscripcionId (en vez de inscripcionIdOrigen) se rechaza — el nombre del campo es exacto, no intercambiable'
+  )
+}
+
+// ============================================================
+// I. traslado — strings de solo espacios SIEMPRE rechazadas (mismo
+//    criterio fail-closed ya aplicado a las demás operaciones).
+// ============================================================
+{
+  verificar(!esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, alumnoId: '   ' }), 'I1. traslado.alumnoId de solo espacios se rechaza')
+  verificar(!esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, alumnoId: '' }), 'I2. traslado.alumnoId vacío (\'\') se rechaza')
+  verificar(!esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, inscripcionIdOrigen: '   ' }), 'I3. traslado.inscripcionIdOrigen de solo espacios se rechaza')
+  verificar(!esOperacionAplicableListaOficialValida({ ...OP_TRASLADO, inscripcionIdOrigen: '' }), 'I4. traslado.inscripcionIdOrigen vacío (\'\') se rechaza')
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructuring deliberado para omitir alumnoId
+  const { alumnoId: _omitidaTraslado, ...trasladoSinAlumnoId } = OP_TRASLADO
+  verificar(!esOperacionAplicableListaOficialValida(trasladoSinAlumnoId), 'I5. traslado sin alumnoId se rechaza')
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructuring deliberado para omitir inscripcionIdOrigen
+  const { inscripcionIdOrigen: _omitidaOrigen, ...trasladoSinOrigen } = OP_TRASLADO
+  verificar(!esOperacionAplicableListaOficialValida(trasladoSinOrigen), 'I6. traslado sin inscripcionIdOrigen se rechaza')
+  verificar(!esOperacionAplicableListaOficialValida({ tipo: 'traslado' } as unknown as Record<string, unknown>), 'I7. traslado sin ninguna clave adicional (solo tipo) se rechaza')
+}
+
+// ============================================================
+// J. HMAC específico de traslado — mismo criterio que la sección F
+//    (alta_inscripcion): el discriminador `tipo` y cada campo quedan
+//    cubiertos por la firma, nunca solo transportados.
+// ============================================================
+{
+  const sobre = firmarAplicacionConSecreto(payloadBase([OP_TRASLADO]), SECRETO)
+  verificar(verificarAplicacionConSecreto(sobre, SECRETO), 'J1. firmar/verificar traslado funciona correctamente')
+
+  const sobreAlumnoIdAlterado = { payload: { ...sobre.payload, operaciones: [{ ...OP_TRASLADO, alumnoId: 'otro-alumno' }] }, firma: sobre.firma }
+  verificar(!verificarAplicacionConSecreto(sobreAlumnoIdAlterado, SECRETO), 'J2. Alterar alumnoId de traslado después de firmar invalida la verificación')
+
+  const sobreOrigenAlterado = { payload: { ...sobre.payload, operaciones: [{ ...OP_TRASLADO, inscripcionIdOrigen: 'otra-inscripcion' }] }, firma: sobre.firma }
+  verificar(!verificarAplicacionConSecreto(sobreOrigenAlterado, SECRETO), 'J3. Alterar inscripcionIdOrigen de traslado después de firmar invalida la verificación')
+
+  // J4 — convertir traslado en baja CONSERVANDO la firma original
+  // debe fallar: cambia `tipo` y la forma canónica completa
+  // (inscripcionIdOrigen vs. inscripcionId), así que la firma esperada
+  // ya no coincide.
+  const sobreConvertidoABaja = {
+    payload: { ...sobre.payload, operaciones: [{ tipo: 'baja', alumnoId: OP_TRASLADO.alumnoId, inscripcionId: OP_TRASLADO.inscripcionIdOrigen }] },
+    firma: sobre.firma,
+  }
+  verificar(!verificarAplicacionConSecreto(sobreConvertidoABaja, SECRETO), 'J4. Convertir traslado en baja conservando la firma original invalida la verificación (aunque reutilice el mismo valor de ID)')
+
+  const sobreConCampoExtra = { payload: { ...sobre.payload, operaciones: [{ ...OP_TRASLADO, extra: 'no deberia existir' }] }, firma: sobre.firma }
+  verificar(!verificarAplicacionConSecreto(sobreConCampoExtra, SECRETO), 'J5. Agregar un campo extra a traslado después de firmar falla (rechazado por forma, nunca llega a comparar el HMAC)')
+
+  const sobreSinCampos = { payload: { ...sobre.payload, operaciones: [{ tipo: 'traslado' }] }, firma: sobre.firma }
+  verificar(!verificarAplicacionConSecreto(sobreSinCampos, SECRETO), 'J6. Eliminar ambos campos de traslado después de firmar falla (rechazado por forma)')
+}
+
+// ============================================================
+// K. Lote mixto — las 5 variantes conviviendo en un mismo sobre
+//    (extiende la sección G con 'traslado', sin modificarla).
+// ============================================================
+{
+  const sobre = firmarAplicacionConSecreto(payloadBase([OP_ACTUALIZAR, OP_ALTA_PERSONA, OP_ALTA_INSCRIPCION, OP_BAJA, OP_TRASLADO]), SECRETO)
+  verificar(verificarAplicacionConSecreto(sobre, SECRETO), 'K1. Un lote mixto de 5 operaciones (incluyendo traslado) firma y verifica correctamente')
+  verificar(sobre.payload.operaciones.length === 5, 'K2. Las 5 operaciones del lote mixto se preservan tal cual, sin perder ninguna')
+  verificar(
+    sobre.payload.operaciones.map((o) => o.tipo).join(',') === 'actualizar_dato,alta_persona,alta_inscripcion,baja,traslado',
+    'K3. El orden de las 5 operaciones del lote mixto se preserva exactamente (nunca se reordena)'
+  )
+
+  const sobreAlterado = {
+    payload: {
+      ...sobre.payload,
+      operaciones: [sobre.payload.operaciones[0], sobre.payload.operaciones[1], sobre.payload.operaciones[2], sobre.payload.operaciones[3], { ...OP_TRASLADO, alumnoId: 'otro' }],
+    },
+    firma: sobre.firma,
+  }
+  verificar(!verificarAplicacionConSecreto(sobreAlterado, SECRETO), 'K4. Alterar únicamente la operación traslado (5ª del lote) invalida la firma de TODO el sobre')
 }
 
 console.log('')

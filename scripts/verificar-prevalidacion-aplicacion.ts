@@ -28,6 +28,7 @@ import type {
   OperacionAltaPersonaAplicable,
   OperacionAltaInscripcionAplicable,
   OperacionBajaAplicable,
+  OperacionTrasladoAplicable,
 } from '../lib/listaOficial/aplicacionFirmada'
 
 let fallos = 0
@@ -55,15 +56,17 @@ verificar(!valoresCurpCoincidenRaw(' JULO100101HDFPRN03', 'JULO100101HDFPRN03'),
 // ============================================================
 const GRUPO_ID = 'grupo-1'
 const INSTITUCION_ID = 'institucion-1'
+const CICLO_ID = 'ciclo-2026'
 
 function contextoBase(overrides: Partial<ContextoPrevalidacion> = {}): ContextoPrevalidacion {
   return {
     grupoId: GRUPO_ID,
     institucionId: INSTITUCION_ID,
+    cicloEscolarId: CICLO_ID,
     alumnoIdsEnRosterActivo: new Set(['a1']),
     alumnoIdsActivosEnOtroGrupoMismoCiclo: new Set(),
     alumnosCargados: new Map<string, AlumnoActualCargado>([['a1', { curpActual: 'JULO100101HDFPRN03', institucionId: INSTITUCION_ID }]]),
-    inscripcionesCargadas: new Map<string, InscripcionActualCargada>([['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, estatus: 'activo' }]]),
+    inscripcionesCargadas: new Map<string, InscripcionActualCargada>([['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, cicloEscolarId: CICLO_ID, estatus: 'activo' }]]),
     curpsVisiblesDocente: new Map<string, readonly string[]>(),
     ...overrides,
   }
@@ -79,6 +82,7 @@ const OP_ACTUALIZAR: OperacionActualizarDatoAplicable = {
 const OP_ALTA_PERSONA: OperacionAltaPersonaAplicable = { tipo: 'alta_persona', nombre: 'Fernanda Castillo Ruiz', curp: null }
 const OP_ALTA_INSCRIPCION: OperacionAltaInscripcionAplicable = { tipo: 'alta_inscripcion', alumnoId: 'a2' }
 const OP_BAJA: OperacionBajaAplicable = { tipo: 'baja', alumnoId: 'a1', inscripcionId: 'i1' }
+const OP_TRASLADO: OperacionTrasladoAplicable = { tipo: 'traslado', alumnoId: 'a3', inscripcionIdOrigen: 'i-origen' }
 
 function unicoResultado(operaciones: OperacionAplicableListaOficial[], ctx: ContextoPrevalidacion) {
   return prevalidarOperaciones(operaciones, ctx)[0]
@@ -220,7 +224,7 @@ function unicoResultado(operaciones: OperacionAplicableListaOficial[], ctx: Cont
   // demostrar que nunca se confunde con "ya activa".
   const ctxConSoloHistorica = contextoBase({
     alumnosCargados: new Map<string, AlumnoActualCargado>([['a2', { curpActual: null, institucionId: INSTITUCION_ID }]]),
-    inscripcionesCargadas: new Map<string, InscripcionActualCargada>([['i-vieja', { alumnoId: 'a2', grupoId: GRUPO_ID, estatus: 'baja' }]]),
+    inscripcionesCargadas: new Map<string, InscripcionActualCargada>([['i-vieja', { alumnoId: 'a2', grupoId: GRUPO_ID, cicloEscolarId: CICLO_ID, estatus: 'baja' }]]),
   })
   const rSoloHistorica = unicoResultado([OP_ALTA_INSCRIPCION], ctxConSoloHistorica)
   verificar(rSoloHistorica.ok === true, '20. alta_inscripcion de un alumno con ÚNICAMENTE inscripciones históricas/baja en este grupo → sigue siendo válida (nunca se reactiva, la futura escritura crea una fila nueva)')
@@ -347,13 +351,13 @@ function unicoResultado(operaciones: OperacionAplicableListaOficial[], ctx: Cont
 
   const rGrupoIncorrecto = unicoResultado(
     [OP_BAJA],
-    contextoBase({ inscripcionesCargadas: new Map([['i1', { alumnoId: 'a1', grupoId: 'otro-grupo', estatus: 'activo' }]]) })
+    contextoBase({ inscripcionesCargadas: new Map([['i1', { alumnoId: 'a1', grupoId: 'otro-grupo', cicloEscolarId: CICLO_ID, estatus: 'activo' }]]) })
   )
   verificar(!rGrupoIncorrecto.ok && rGrupoIncorrecto.codigo === 'OWNERSHIP_MISMATCH', '28. baja cuya inscripción pertenece a OTRO grupo distinto del firmado → OWNERSHIP_MISMATCH')
 
   const rYaInactiva = unicoResultado(
     [OP_BAJA],
-    contextoBase({ inscripcionesCargadas: new Map([['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, estatus: 'baja' }]]) })
+    contextoBase({ inscripcionesCargadas: new Map([['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, cicloEscolarId: CICLO_ID, estatus: 'baja' }]]) })
   )
   verificar(!rYaInactiva.ok && rYaInactiva.codigo === 'STALE_CURRENT_VALUE', '29. baja cuya inscripción YA no está activa → STALE_CURRENT_VALUE (nunca se reaplica en silencio)')
 
@@ -418,6 +422,128 @@ function unicoResultado(operaciones: OperacionAplicableListaOficial[], ctx: Cont
   verificar(
     primerFallo(resultadosMixtosConFallo)?.operacion.tipo === 'alta_inscripcion',
     '36. primerFallo localiza exactamente la operación fallida dentro del lote mixto (fail-closed: 0 operaciones se consideran aplicables si una falla, y esta fase no escribe ninguna de todas formas)'
+  )
+}
+
+// ============================================================
+// traslado — V1-D2C1-B4B. Cierra una inscripción ACTIVA de ORIGEN (en
+// un grupo distinto del destino, mismo ciclo) — la futura escritura
+// real (RPC transaccional, todavía inexistente) abriría la nueva en el
+// grupo destino ya firmado. Reutiliza EXCLUSIVAMENTE códigos de error
+// ya existentes.
+// ============================================================
+{
+  const GRUPO_ORIGEN = 'grupo-origen'
+
+  function ctxTraslado(overrides: { origen?: Partial<InscripcionActualCargada>; alumnoId?: string } = {}) {
+    const alumnoId = overrides.alumnoId ?? 'a3'
+    return contextoBase({
+      alumnosCargados: new Map<string, AlumnoActualCargado>([[alumnoId, { curpActual: null, institucionId: INSTITUCION_ID }]]),
+      inscripcionesCargadas: new Map<string, InscripcionActualCargada>([
+        ['i-origen', { alumnoId: 'a3', grupoId: GRUPO_ORIGEN, cicloEscolarId: CICLO_ID, estatus: 'activo', ...overrides.origen }],
+      ]),
+    })
+  }
+
+  // 37. Traslado válido: origen activo, grupo distinto, mismo ciclo,
+  //     sin inscripción activa en destino → ok.
+  const rValido = unicoResultado([OP_TRASLADO], ctxTraslado())
+  verificar(rValido.ok === true, '37. Traslado válido (origen activo en grupo distinto, mismo ciclo, sin actividad en destino) → ok')
+
+  // 38. Origen inexistente (inscripcionIdOrigen nunca se cargó) → OWNERSHIP_MISMATCH.
+  const rOrigenInexistente = unicoResultado(
+    [OP_TRASLADO],
+    contextoBase({
+      alumnosCargados: new Map<string, AlumnoActualCargado>([['a3', { curpActual: null, institucionId: INSTITUCION_ID }]]),
+      inscripcionesCargadas: new Map(),
+    })
+  )
+  verificar(!rOrigenInexistente.ok && rOrigenInexistente.codigo === 'OWNERSHIP_MISMATCH', '38. Traslado cuya inscripcionIdOrigen nunca se cargó (no visible/no autorizada) → OWNERSHIP_MISMATCH')
+
+  // 39. Origen inactivo (ya dado de baja) → STALE_CURRENT_VALUE.
+  const rOrigenInactivo = unicoResultado([OP_TRASLADO], ctxTraslado({ origen: { estatus: 'baja' } }))
+  verificar(!rOrigenInactivo.ok && rOrigenInactivo.codigo === 'STALE_CURRENT_VALUE', '39. Traslado cuya inscripción de origen YA no está activa → STALE_CURRENT_VALUE (nunca se reprocesa en silencio)')
+
+  // 40. Alumno incorrecto: inscripcionIdOrigen pertenece a OTRO alumno
+  //     distinto del firmado → OWNERSHIP_MISMATCH.
+  const rAlumnoIncorrecto = unicoResultado([OP_TRASLADO], ctxTraslado({ origen: { alumnoId: 'otro-alumno-distinto' } }))
+  verificar(!rAlumnoIncorrecto.ok && rAlumnoIncorrecto.codigo === 'OWNERSHIP_MISMATCH', '40. Traslado cuya inscripcionIdOrigen pertenece a OTRO alumno distinto del firmado → OWNERSHIP_MISMATCH')
+
+  // 41. Mismo grupo (origen === destino) → INVALID_OPERATION, nunca un traslado real.
+  const rMismoGrupo = unicoResultado([OP_TRASLADO], ctxTraslado({ origen: { grupoId: GRUPO_ID } }))
+  verificar(!rMismoGrupo.ok && rMismoGrupo.codigo === 'INVALID_OPERATION', '41. Traslado cuyo grupo de origen coincide con el destino → INVALID_OPERATION (no es un traslado real)')
+
+  // 42. Ciclo escolar distinto → INVALID_OPERATION, fuera de alcance de esta operación.
+  const rCicloDistinto = unicoResultado([OP_TRASLADO], ctxTraslado({ origen: { cicloEscolarId: 'ciclo-2024' } }))
+  verificar(!rCicloDistinto.ok && rCicloDistinto.codigo === 'INVALID_OPERATION', '42. Traslado entre ciclos escolares distintos → INVALID_OPERATION (un traslado real es siempre dentro del mismo ciclo)')
+
+  // 43. Alumno de OTRA institución (destino no autorizado para este
+  //     alumno) → OWNERSHIP_MISMATCH, mismo criterio que las demás operaciones.
+  const rOtraInstitucion = unicoResultado(
+    [OP_TRASLADO],
+    contextoBase({
+      alumnosCargados: new Map<string, AlumnoActualCargado>([['a3', { curpActual: null, institucionId: 'otra-institucion' }]]),
+      inscripcionesCargadas: new Map<string, InscripcionActualCargada>([
+        ['i-origen', { alumnoId: 'a3', grupoId: GRUPO_ORIGEN, cicloEscolarId: CICLO_ID, estatus: 'activo' }],
+      ]),
+    })
+  )
+  verificar(!rOtraInstitucion.ok && rOtraInstitucion.codigo === 'OWNERSHIP_MISMATCH', '43. Traslado de un alumno de OTRA institución distinta del grupo destino → OWNERSHIP_MISMATCH (destino no autorizado para este alumno)')
+
+  // 44. Alumno inexistente/no autorizado (nunca cargado) → OWNERSHIP_MISMATCH.
+  const rAlumnoInexistente = unicoResultado(
+    [OP_TRASLADO],
+    contextoBase({
+      alumnosCargados: new Map(),
+      inscripcionesCargadas: new Map<string, InscripcionActualCargada>([
+        ['i-origen', { alumnoId: 'a3', grupoId: GRUPO_ORIGEN, cicloEscolarId: CICLO_ID, estatus: 'activo' }],
+      ]),
+    })
+  )
+  verificar(!rAlumnoInexistente.ok && rAlumnoInexistente.codigo === 'OWNERSHIP_MISMATCH', '44. Traslado de un alumno nunca cargado (no pertenece al docente) → OWNERSHIP_MISMATCH')
+
+  // 45. Inscripción ACTIVA ya existente en el DESTINO → ACTIVE_ENROLLMENT_EXISTS
+  //     (mismo código que alta_inscripcion para "ya está aquí").
+  const rActivaEnDestino = unicoResultado(
+    [OP_TRASLADO],
+    contextoBase({
+      alumnoIdsEnRosterActivo: new Set(['a3']),
+      alumnosCargados: new Map<string, AlumnoActualCargado>([['a3', { curpActual: null, institucionId: INSTITUCION_ID }]]),
+      inscripcionesCargadas: new Map<string, InscripcionActualCargada>([
+        ['i-origen', { alumnoId: 'a3', grupoId: GRUPO_ORIGEN, cicloEscolarId: CICLO_ID, estatus: 'activo' }],
+      ]),
+    })
+  )
+  verificar(!rActivaEnDestino.ok && rActivaEnDestino.codigo === 'ACTIVE_ENROLLMENT_EXISTS', '45. Traslado cuyo alumno YA tiene una inscripción activa en el grupo DESTINO → ACTIVE_ENROLLMENT_EXISTS')
+
+  // 46. 'traslado' nunca examina nombre ni similitud — no existe ningún
+  //     campo de nombre en OperacionTrasladoAplicable ni en el contexto
+  //     que pueda influir en la decisión; esto se confirma
+  //     estructuralmente (TypeScript) y en runtime con el caso válido
+  //     ya probado en 37, que nunca referenció ningún nombre.
+  verificar(
+    Object.keys(OP_TRASLADO).sort().join(',') === 'alumnoId,inscripcionIdOrigen,tipo',
+    "46. OperacionTrasladoAplicable solo tiene {tipo, alumnoId, inscripcionIdOrigen} — estructuralmente no puede llevar nombre ni ninguna señal de similitud"
+  )
+
+  // 47. Lote mixto incluyendo 'traslado' junto con las 4 operaciones
+  //     previas, todas válidas → las 5 se resuelven independientemente
+  //     (operaciones anteriores sin regresión).
+  const ctxMixtoConTraslado = contextoBase({
+    alumnosCargados: new Map<string, AlumnoActualCargado>([
+      ['a1', { curpActual: 'JULO100101HDFPRN03', institucionId: INSTITUCION_ID }],
+      ['a2', { curpActual: null, institucionId: INSTITUCION_ID }],
+      ['a3', { curpActual: null, institucionId: INSTITUCION_ID }],
+    ]),
+    inscripcionesCargadas: new Map<string, InscripcionActualCargada>([
+      ['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, cicloEscolarId: CICLO_ID, estatus: 'activo' }],
+      ['i-origen', { alumnoId: 'a3', grupoId: GRUPO_ORIGEN, cicloEscolarId: CICLO_ID, estatus: 'activo' }],
+    ]),
+  })
+  const resultadosMixtosConTraslado = prevalidarOperaciones([OP_ACTUALIZAR, OP_ALTA_PERSONA, OP_ALTA_INSCRIPCION, OP_BAJA, OP_TRASLADO], ctxMixtoConTraslado)
+  verificar(
+    resultadosMixtosConTraslado.length === 5 && resultadosMixtosConTraslado.every((r) => r.ok === true),
+    "47. Lote mixto de 5 operaciones (incluyendo 'traslado') todas válidas, resueltas independientemente — 0 regresión en actualizar_dato/alta_persona/alta_inscripcion/baja"
   )
 }
 

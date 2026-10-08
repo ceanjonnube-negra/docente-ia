@@ -132,12 +132,34 @@ export type OperacionBajaAplicable = {
   inscripcionId: string
 }
 
+// V1-D2C1-B4B — cierra una inscripción ACTIVA existente en un grupo de
+// ORIGEN (inscripcionIdOrigen) y abre una inscripción nueva en el grupo
+// DESTINO, que sigue siendo ÚNICAMENTE el grupoId ya firmado en
+// PayloadAplicacionListaOficial — nunca un segundo grupoId dentro de la
+// operación (mismo criterio que alta_inscripcion: el destino siempre
+// viaja a nivel de payload, nunca repetido por operación). alumnoId
+// viaja como defensa en profundidad (igual que en 'baja'): la futura
+// RPC transaccional debe reconfirmar que inscripcionIdOrigen de verdad
+// pertenece a ese alumno, nunca confiar únicamente en el ID. Esta
+// operación NUNCA decide identidad ni decide automáticamente que un
+// traslado es procedente por similitud de nombre — solo ejecuta una
+// decisión ya tomada e inequívoca antes de firmar (misma regla que
+// alta_inscripcion). Deliberadamente SIN grupoIdDestino,
+// cicloEscolarId ni ningún otro campo: todo lo demás se deriva
+// server-side a partir de inscripcionIdOrigen y del payload ya firmado.
+export type OperacionTrasladoAplicable = {
+  tipo: 'traslado'
+  alumnoId: string
+  inscripcionIdOrigen: string
+}
+
 // Unión discriminada real — ver cabecera del archivo.
 export type OperacionAplicableListaOficial =
   | OperacionActualizarDatoAplicable
   | OperacionAltaPersonaAplicable
   | OperacionAltaInscripcionAplicable
   | OperacionBajaAplicable
+  | OperacionTrasladoAplicable
 
 // Exactamente lo que la firma HMAC protege — ver
 // construirPayloadCanonicoAplicacion más abajo. A diferencia de
@@ -178,6 +200,7 @@ const CLAVES_OPERACION_ACTUALIZAR_DATO = ['tipo', 'alumnoId', 'campo', 'valorAct
 const CLAVES_OPERACION_ALTA_PERSONA = ['tipo', 'nombre', 'curp'] as const
 const CLAVES_OPERACION_ALTA_INSCRIPCION = ['tipo', 'alumnoId'] as const
 const CLAVES_OPERACION_BAJA = ['tipo', 'alumnoId', 'inscripcionId'] as const
+const CLAVES_OPERACION_TRASLADO = ['tipo', 'alumnoId', 'inscripcionIdOrigen'] as const
 const CLAVES_PAYLOAD_APLICACION = ['docenteId', 'conversacionId', 'grupoId', 'generadoEn', 'rosterFingerprint', 'operaciones'] as const
 const CLAVES_SOBRE_APLICACION = ['payload', 'firma'] as const
 
@@ -228,6 +251,14 @@ export function esOperacionAplicableListaOficialValida(valor: unknown): valor is
     )
   }
 
+  if (o.tipo === 'traslado') {
+    if (!tieneExactamenteLasClaves(o, CLAVES_OPERACION_TRASLADO)) return false
+    return (
+      typeof o.alumnoId === 'string' && o.alumnoId.trim().length > 0 &&
+      typeof o.inscripcionIdOrigen === 'string' && o.inscripcionIdOrigen.trim().length > 0
+    )
+  }
+
   // Cualquier otro valor de `tipo` — incluidos 'requiere_confirmacion'
   // o 'conflicto' si algún llamador en runtime intentara construirlos
   // a mano sin pasar por el tipo (bypasseando TypeScript con `as`) — se
@@ -270,6 +301,9 @@ function canonicalizarOperacion(op: OperacionAplicableListaOficial): OperacionAp
   }
   if (op.tipo === 'alta_inscripcion') {
     return { tipo: 'alta_inscripcion', alumnoId: op.alumnoId }
+  }
+  if (op.tipo === 'traslado') {
+    return { tipo: 'traslado', alumnoId: op.alumnoId, inscripcionIdOrigen: op.inscripcionIdOrigen }
   }
   return { tipo: 'baja', alumnoId: op.alumnoId, inscripcionId: op.inscripcionId }
 }
