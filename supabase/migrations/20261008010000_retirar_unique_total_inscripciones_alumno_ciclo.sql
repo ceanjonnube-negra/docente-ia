@@ -1,0 +1,57 @@
+-- Retira EXCLUSIVAMENTE el UNIQUE total (alumno_id, ciclo_escolar_id)
+-- de `inscripciones` — ver auditoría READ-ONLY "V1-D2C1-B2 — auditoría
+-- estructural de inscripciones" y su validación focalizada posterior
+-- (hallazgo confirmado por catálogo: el UNIQUE total impedía
+-- físicamente conservar más de una fila de `inscripciones` por
+-- (alumno_id, ciclo_escolar_id), incluso cuando esa segunda fila fuera
+-- puramente histórica — bloqueando los escenarios "cambio de grupo
+-- durante el mismo ciclo" y "baja + reinscripción en el mismo ciclo"
+-- sin violar el principio ya cerrado "nunca sobrescribir una
+-- inscripción histórica, siempre nueva fila").
+--
+-- Objetivo único de esta migración: permitir que un mismo alumno
+-- conserve MÚLTIPLES inscripciones históricas (estatus <> 'activo')
+-- dentro del mismo ciclo escolar, preservando intactos sus
+-- inscripciones.id existentes y todo el historial ya anclado a ellos
+-- (asistencia_registro, incidencias, evaluaciones, evidencias,
+-- necesidades_apoyo, fichas_descriptivas, seguimiento_resultados —
+-- las 7 tablas con FK a inscripciones(id), confirmadas por catálogo).
+--
+-- Lo que esta migración NO hace, deliberadamente:
+--   - NO toca el índice parcial `inscripciones_alumno_ciclo_activo_uk`
+--     (UNIQUE (alumno_id, ciclo_escolar_id) WHERE estatus='activo') —
+--     ese es el único que debe seguir impidiendo 2 inscripciones
+--     ACTIVAS del mismo alumno en el mismo ciclo, y sigue vigente sin
+--     cambio alguno.
+--   - NO modifica ninguna FK, CHECK, policy RLS ni GRANT/REVOKE.
+--   - NO modifica ninguna función SQL (contexto_alumno ya fue
+--     corregida por separado, migración 20261008000000, para dejar de
+--     depender implícitamente de la unicidad total antes de llegar a
+--     esta fase).
+--   - NO inserta, actualiza ni elimina ninguna fila de datos reales.
+--   - NO implementa todavía el futuro "traslado"/"reinscripción" — esta
+--     migración solo habilita la posibilidad a nivel de esquema; la
+--     escritura real queda para una fase posterior, explícitamente
+--     fuera de alcance aquí.
+--
+-- Compatibilidad con datos existentes: GARANTIZADA por construcción.
+-- El UNIQUE total que se retira es estrictamente MÁS ESTRICTO que el
+-- parcial que se conserva — por tanto toda fila que hoy satisface el
+-- total también satisface el parcial, y ningún dato existente puede
+-- quedar en un estado inconsistente al retirar únicamente el total.
+-- Un DROP CONSTRAINT sobre un UNIQUE respaldado por índice es una
+-- operación de catálogo (no reescribe la tabla).
+--
+-- Riesgo de rollback, documentado explícitamente (ver auditoría
+-- V1-D2C1-B2, sección H): revertir esta migración (recrear el mismo
+-- UNIQUE total) es trivial y seguro MIENTRAS NO exista todavía ningún
+-- alumno real con 2+ inscripciones en el mismo ciclo. En cuanto una
+-- fase posterior aproveche esta capacidad y se cree el primer caso
+-- real de ese tipo, el rollback deja de ser trivial: `ALTER TABLE ...
+-- ADD CONSTRAINT ... UNIQUE (alumno_id, ciclo_escolar_id)` fallaría
+-- hasta resolver manualmente esos registros. Esta ventana de
+-- no-retorno práctica debe tenerse presente antes de empezar a usar la
+-- capacidad habilitada aquí, no solo antes de aplicar esta migración.
+
+alter table public.inscripciones
+  drop constraint inscripciones_alumno_id_ciclo_escolar_id_key;
