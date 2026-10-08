@@ -49,11 +49,24 @@ import { validarEstructuraCurp } from '../motorContexto'
 // (duplicado real, CAS obsoleto, estructura inválida, ownership), cada
 // uno con su propio código ya existente — ninguno necesita una
 // semántica adicional de "conflicto de identidad".
+// V1-D2C1-B4A — ACTIVE_ENROLLMENT_IN_OTHER_GROUP es DELIBERADAMENTE
+// distinto de ACTIVE_ENROLLMENT_EXISTS: el primero significa "ya activo
+// en el grupo DESTINO firmado" (alta_inscripcion no tiene sentido ahí);
+// el segundo significa "activo en OTRO grupo del mismo ciclo" (un
+// traslado real, no una alta_inscripcion simple). Nunca se fusionan en
+// un solo código — un futuro consumidor (UI/Chat IA) necesita poder
+// distinguir "ya está aquí" de "está en otro grupo, usa traslado" sin
+// adivinar a partir de un mensaje de texto. Esta fase NUNCA convierte
+// automáticamente este caso en una operación de traslado — solo
+// rechaza con un código estable; la variante 'traslado' todavía no
+// existe en el contrato (ver auditoría V1-D2C1-B4, fuera de alcance
+// aquí).
 export type CodigoErrorPrevalidacion =
   | 'OWNERSHIP_MISMATCH'
   | 'STALE_CURRENT_VALUE'
   | 'DUPLICATE_CURP'
   | 'ACTIVE_ENROLLMENT_EXISTS'
+  | 'ACTIVE_ENROLLMENT_IN_OTHER_GROUP'
   | 'INVALID_OPERATION'
 
 export type ResultadoPrevalidacionOperacion =
@@ -119,6 +132,30 @@ export type ContextoPrevalidacion = {
   // introduce una segunda estructura ni una segunda consulta para
   // decir lo mismo dos veces.
   alumnoIdsEnRosterActivo: ReadonlySet<string>
+  // V1-D2C1-B4A — alumnoId -> true si tiene una inscripción ACTIVA real
+  // en un grupo DISTINTO de grupoId (el destino firmado), dentro del
+  // MISMO ciclo escolar que ese grupo destino. Calculado por el
+  // llamador con una consulta batch separada (nunca mezclada con
+  // alumnoIdsEnRosterActivo, que es estrictamente "activo en ESTE
+  // grupo"). Solo tiene sentido consultarlo para alumnoId referenciados
+  // por alta_inscripcion — el llamador puede omitir alumnoId que no
+  // aparezcan en ninguna operación de ese tipo.
+  //
+  // LÍMITE DE VISIBILIDAD RLS, documentado explícitamente (igual que
+  // curpsVisiblesDocente abajo): esta señal se calcula con auth.supabase
+  // (cliente RLS-scoped) — la política real de `inscripciones` solo
+  // expone filas de grupos que pertenecen (o están compartidos vía
+  // docente_grupos) al docente autenticado. Por tanto, la AUSENCIA de
+  // un alumnoId en este conjunto NUNCA demuestra que esa persona no
+  // tenga una inscripción activa en un grupo de OTRO docente, incluso
+  // de la MISMA institución — solo que, entre lo visible para ESTE
+  // docente, no se encontró ninguna. Esta prevalidación nunca presenta
+  // esa ausencia como una garantía global; es exclusivamente una señal
+  // fast-fail dentro de lo observable hoy. La garantía institucional
+  // completa (cross-docente) sigue pendiente de la futura RPC/mecanismo
+  // ya identificado en auditorías previas (V1-D2C1-B0), fuera de
+  // alcance de esta corrección.
+  alumnoIdsActivosEnOtroGrupoMismoCiclo: ReadonlySet<string>
   // alumnoId -> datos reales ya cargados, para TODO alumnoId
   // referenciado por una operación actualizar_dato O alta_inscripcion
   // (unión precargada en una sola consulta batch por el llamador) —
@@ -267,6 +304,15 @@ function prevalidarAltaPersona(
 // del grupo al crearla, nunca diverge — así que comprobar por grupo_id
 // ya es equivalente a comprobar por grupo_id+ciclo_escolar_id, sin
 // necesitar ese campo por separado).
+//
+// V1-D2C1-B4A — además, nunca debe resultar en una SEGUNDA inscripción
+// activa del mismo alumno en el MISMO ciclo escolar pero OTRO grupo
+// (el índice parcial real inscripciones_alumno_ciclo_activo_uk lo
+// impediría en la escritura real de todas formas — ver auditoría
+// V1-D2C1-B2/B3 — pero esta prevalidación lo adelanta con un código
+// claro, nunca dejando que ese choque ocurra como un error crudo de
+// base de datos). Nunca convierte este caso en un traslado automático
+// — solo rechaza; esa operación todavía no existe en este contrato.
 function prevalidarAltaInscripcion(
   op: Extract<OperacionAplicableListaOficial, { tipo: 'alta_inscripcion' }>,
   ctx: ContextoPrevalidacion
@@ -289,6 +335,21 @@ function prevalidarAltaInscripcion(
   // fila nueva).
   if (ctx.alumnoIdsEnRosterActivo.has(op.alumnoId)) {
     return error(op, 'ACTIVE_ENROLLMENT_EXISTS')
+  }
+  // V1-D2C1-B4A — ya no está activo en ESTE grupo, pero SÍ en otro
+  // grupo del mismo ciclo (dato ya cargado por el llamador, read-only,
+  // nunca una segunda decisión de identidad): esto nunca se resuelve
+  // como un alta_inscripcion simple — requeriría cerrar la inscripción
+  // anterior primero, una operación distinta ('traslado') que todavía
+  // no existe en este contrato. Rechazar aquí con un código estable y
+  // específico es más seguro que dejar que la futura escritura real
+  // choque contra el índice parcial de unicidad
+  // (inscripciones_alumno_ciclo_activo_uk) con un error crudo — ese
+  // índice sigue siendo la barrera DEFINITIVA hasta que exista la RPC
+  // transaccional de aplicación; esta prevalidación solo adelanta el
+  // mismo resultado con un mensaje claro.
+  if (ctx.alumnoIdsActivosEnOtroGrupoMismoCiclo.has(op.alumnoId)) {
+    return error(op, 'ACTIVE_ENROLLMENT_IN_OTHER_GROUP')
   }
   return exito(op)
 }

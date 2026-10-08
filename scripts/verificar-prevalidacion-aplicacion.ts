@@ -61,6 +61,7 @@ function contextoBase(overrides: Partial<ContextoPrevalidacion> = {}): ContextoP
     grupoId: GRUPO_ID,
     institucionId: INSTITUCION_ID,
     alumnoIdsEnRosterActivo: new Set(['a1']),
+    alumnoIdsActivosEnOtroGrupoMismoCiclo: new Set(),
     alumnosCargados: new Map<string, AlumnoActualCargado>([['a1', { curpActual: 'JULO100101HDFPRN03', institucionId: INSTITUCION_ID }]]),
     inscripcionesCargadas: new Map<string, InscripcionActualCargada>([['i1', { alumnoId: 'a1', grupoId: GRUPO_ID, estatus: 'activo' }]]),
     curpsVisiblesDocente: new Map<string, readonly string[]>(),
@@ -265,6 +266,72 @@ function unicoResultado(operaciones: OperacionAplicableListaOficial[], ctx: Cont
   verificar(
     resultadosOrdenB[0].ok === false && resultadosOrdenB[0].codigo === 'ACTIVE_ENROLLMENT_EXISTS' && resultadosOrdenB[1].ok === true,
     '25. El mismo lote en orden INVERSO (orden B: a1 primero) produce EXACTAMENTE los mismos resultados por operación — ninguna depende de la posición ni del orden de llegada'
+  )
+}
+
+// ============================================================
+// alta_inscripcion — V1-D2C1-B4A: detección de actividad ACTIVA en
+// OTRO grupo del mismo ciclo escolar (distinta de ACTIVE_ENROLLMENT_EXISTS,
+// que es "ya activo en ESTE grupo destino"). Nunca se confunde con
+// traslado automático ni con coincidencia de nombre.
+// ============================================================
+{
+  // Activo en OTRO grupo del mismo ciclo (nunca en el destino) →
+  // ACTIVE_ENROLLMENT_IN_OTHER_GROUP, código distinto y específico.
+  const ctxActivoEnOtroGrupo = contextoBase({
+    alumnosCargados: new Map<string, AlumnoActualCargado>([['a2', { curpActual: null, institucionId: INSTITUCION_ID }]]),
+    alumnoIdsActivosEnOtroGrupoMismoCiclo: new Set(['a2']),
+  })
+  const rActivoOtroGrupo = unicoResultado([OP_ALTA_INSCRIPCION], ctxActivoEnOtroGrupo)
+  verificar(
+    !rActivoOtroGrupo.ok && rActivoOtroGrupo.codigo === 'ACTIVE_ENROLLMENT_IN_OTHER_GROUP',
+    '25b. alta_inscripcion de un alumno con inscripción ACTIVA real en OTRO grupo del mismo ciclo → ACTIVE_ENROLLMENT_IN_OTHER_GROUP (nunca confundido con ACTIVE_ENROLLMENT_EXISTS)'
+  )
+
+  // El código es ESTABLE y DISTINTO del de "activo en este grupo" —
+  // nunca se fusionan ni se devuelve el mismo código para ambos casos.
+  verificar(
+    !rActivoOtroGrupo.ok && rActivoOtroGrupo.codigo !== 'ACTIVE_ENROLLMENT_EXISTS',
+    '25c. ACTIVE_ENROLLMENT_IN_OTHER_GROUP es un código distinto de ACTIVE_ENROLLMENT_EXISTS — nunca el mismo valor para "aquí" y "en otro grupo"'
+  )
+
+  // Activo en ESTE grupo (alumnoIdsEnRosterActivo) tiene PRIORIDAD
+  // sobre "activo en otro grupo" si, por anomalía de datos, ambos
+  // conjuntos llegaran a incluir al mismo alumno — el caso real nunca
+  // debería darse (un alumno no puede estar activo en 2 grupos del
+  // mismo ciclo, el índice parcial lo impide), pero el orden de
+  // chequeo queda probado explícitamente, sin asumir esa invariante.
+  const ctxAmbosConjuntos = contextoBase({
+    alumnoIdsEnRosterActivo: new Set(['a1']),
+    alumnoIdsActivosEnOtroGrupoMismoCiclo: new Set(['a1']),
+  })
+  const rAmbos = unicoResultado([{ tipo: 'alta_inscripcion', alumnoId: 'a1' }], ctxAmbosConjuntos)
+  verificar(
+    !rAmbos.ok && rAmbos.codigo === 'ACTIVE_ENROLLMENT_EXISTS',
+    '25d. Si (por anomalía) un alumno apareciera en ambos conjuntos, ACTIVE_ENROLLMENT_EXISTS (este grupo) se comprueba primero — orden de chequeo explícito, no asumido'
+  )
+
+  // Ausencia TOTAL en ambos conjuntos (ningún dato visible de
+  // actividad) → sigue siendo válida — la ausencia bajo RLS nunca se
+  // trata como bloqueo, solo como "no se encontró evidencia visible".
+  const ctxSinNingunaSenal = contextoBase({
+    alumnosCargados: new Map<string, AlumnoActualCargado>([['a2', { curpActual: null, institucionId: INSTITUCION_ID }]]),
+    alumnoIdsEnRosterActivo: new Set(),
+    alumnoIdsActivosEnOtroGrupoMismoCiclo: new Set(),
+  })
+  const rSinSenal = unicoResultado([OP_ALTA_INSCRIPCION], ctxSinNingunaSenal)
+  verificar(
+    rSinSenal.ok === true,
+    '25e. Sin ninguna señal visible de actividad (ni en este grupo ni en otro) → válida — la ausencia bajo RLS nunca se interpreta como bloqueo adicional'
+  )
+
+  // El rechazo NUNCA se convierte automáticamente en una operación de
+  // traslado — el resultado sigue siendo exactamente la MISMA operación
+  // alta_inscripcion original, marcada como fallida, nunca sustituida
+  // por otro tipo de operación.
+  verificar(
+    rActivoOtroGrupo.operacion.tipo === 'alta_inscripcion',
+    '25f. El rechazo conserva la operación original (tipo alta_inscripcion) — nunca se sustituye ni se reinterpreta automáticamente como traslado'
   )
 }
 

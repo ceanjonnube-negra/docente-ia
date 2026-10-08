@@ -70,6 +70,12 @@ const INFO_ERROR: Record<CodigoErrorEndpoint, { status: number; mensaje: string 
   // se emite después de comprobar read-only una inscripción ACTIVA
   // real para alta_inscripcion — nunca por coincidencia de nombre.
   ACTIVE_ENROLLMENT_EXISTS: { status: 409, mensaje: 'Este alumno ya tiene una inscripción activa en este grupo.' },
+  // V1-D2C1-B4A — distinto de ACTIVE_ENROLLMENT_EXISTS: aquí la
+  // inscripción activa real está en OTRO grupo del mismo ciclo, no en
+  // el grupo destino. Mensaje deliberadamente distinto para que el
+  // docente entienda que el caso es "ya está en otro grupo", nunca
+  // confundido con "ya está aquí".
+  ACTIVE_ENROLLMENT_IN_OTHER_GROUP: { status: 409, mensaje: 'Este alumno ya tiene una inscripción activa en otro grupo durante este ciclo escolar.' },
   INVALID_OPERATION: { status: 400, mensaje: 'Una de las operaciones de la propuesta no es válida.' },
 }
 
@@ -139,9 +145,13 @@ export async function POST(req: NextRequest) {
     // institucion_id (usado más abajo para acotar la consulta de CURP a
     // esta institución — ver advertencia junto a curpsVisiblesDocenteBuilder
     // sobre lo que esa consulta realmente puede observar bajo RLS).
+    // ciclo_escolar_id agregado (V1-D2C1-B4A) — necesario para detectar,
+    // más abajo, inscripciones activas del alumno en OTRO grupo del
+    // MISMO ciclo. Siempre derivado del grupo ya validado, nunca
+    // aceptado del cliente.
     const { data: grupo, error: errorGrupo } = await auth.supabase
       .from('grupos')
-      .select('id, institucion_id')
+      .select('id, institucion_id, ciclo_escolar_id')
       .eq('id', payload.grupoId)
       .eq('docente_id', auth.user.id)
       .maybeSingle()
@@ -297,10 +307,42 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // V1-D2C1-B4A — alumnos con alta_inscripcion que YA tienen una
+    // inscripción ACTIVA en OTRO grupo del MISMO ciclo escolar que el
+    // destino. Consulta batch única, acotada EXCLUSIVAMENTE a los
+    // alumnoId referenciados por alta_inscripcion (nunca por
+    // actualizar_dato, que no la necesita) — 0 consulta por operación.
+    //
+    // LÍMITE DE VISIBILIDAD RLS (ver comentario completo en
+    // ContextoPrevalidacion, prevalidacionAplicacion.ts): esta consulta
+    // corre bajo auth.supabase — la policy real de `inscripciones`
+    // ("inscripciones_select") solo expone filas de grupos propios (o
+    // compartidos vía docente_grupos) del docente autenticado. 0 fila
+    // visible aquí NUNCA demuestra que el alumno no tenga una
+    // inscripción activa en un grupo de OTRO docente — solo que, entre
+    // lo visible para ESTE docente, no se encontró ninguna.
+    const alumnoIdsActivosEnOtroGrupoBuilder = new Set<string>()
+    if (idsAltaInscripcion.length > 0) {
+      const { data: activasEnOtroGrupo, error: errorActivasEnOtroGrupo } = await auth.supabase
+        .from('inscripciones')
+        .select('alumno_id')
+        .in('alumno_id', idsAltaInscripcion)
+        .eq('ciclo_escolar_id', grupo.ciclo_escolar_id)
+        .eq('estatus', 'activo')
+        .neq('grupo_id', payload.grupoId)
+      if (errorActivasEnOtroGrupo) {
+        return respuestaError('OWNERSHIP_MISMATCH')
+      }
+      for (const i of activasEnOtroGrupo ?? []) {
+        alumnoIdsActivosEnOtroGrupoBuilder.add(i.alumno_id as string)
+      }
+    }
+
     const contexto: ContextoPrevalidacion = {
       grupoId: payload.grupoId,
       institucionId: grupo.institucion_id as string,
       alumnoIdsEnRosterActivo,
+      alumnoIdsActivosEnOtroGrupoMismoCiclo: alumnoIdsActivosEnOtroGrupoBuilder,
       alumnosCargados,
       inscripcionesCargadas,
       curpsVisiblesDocente: curpsVisiblesDocenteBuilder,
