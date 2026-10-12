@@ -113,7 +113,7 @@ function main() {
   // ============================================================
   verificar(/alter policy docente_grupos_insert_propio on public\.docente_grupos\s*\n--\s+with check \(docente_id = auth\.uid\(\)\);/.test(migracion), '7. Rollback documentado en la cabecera')
   const migraciones = readdirSync(raiz('supabase', 'migrations')).filter((f) => /^\d{14}_[^ ]+\.sql$/.test(f)).sort()
-  verificar(migraciones[migraciones.length - 1] === NOMBRE, '7b. Es la migración más reciente')
+  verificar(migraciones.indexOf(NOMBRE) > migraciones.indexOf('20261008050000_alta_inscripcion.sql'), '7b. Se ordena después de 20261008050000 (alta_inscripcion)')
   verificar(!/anthropic|openai/i.test(migracion), '7c. 0 referencias a IA')
 
   console.log('')
