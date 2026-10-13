@@ -64,7 +64,7 @@ const INFO_ERROR: Record<CodigoErrorEndpoint, { status: number; mensaje: string 
   UNEXPECTED_ERROR: { status: 500, mensaje: 'No fue posible prevalidar la propuesta. Intenta de nuevo.' },
   OWNERSHIP_MISMATCH: { status: 403, mensaje: 'No fue posible verificar uno o más datos de esta propuesta.' },
   STALE_CURRENT_VALUE: { status: 409, mensaje: 'Un dato cambió desde que se generó esta propuesta. Vuelve a compararla.' },
-  DUPLICATE_CURP: { status: 409, mensaje: 'Esa CURP ya está registrada en otro alumno.' },
+  DUPLICATE_CURP: { status: 409, mensaje: 'Esa CURP ya está registrada en otro de tus alumnos.' },
   // V1-D2B2 — reemplaza DUPLICATE_ACTIVE_ENROLLMENT (ver auditoría
   // aprobada "persona vs. inscripción", sección 11): este código SOLO
   // se emite después de comprobar read-only una inscripción ACTIVA

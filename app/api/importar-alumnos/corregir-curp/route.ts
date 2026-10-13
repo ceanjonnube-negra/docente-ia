@@ -76,7 +76,7 @@ const MENSAJES_ERROR: Record<string, { status: number; codigo: string; mensaje: 
   NEW_CURP_DUPLICATE: {
     status: 409,
     codigo: 'NEW_CURP_DUPLICATE',
-    mensaje: 'La CURP propuesta ya está registrada en otro alumno.',
+    mensaje: 'La CURP propuesta ya está registrada en otro de tus alumnos.',
   },
 }
 
