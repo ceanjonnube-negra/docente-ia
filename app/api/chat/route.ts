@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import type { ReferenteContextualMetadata } from '@/lib/asistente/contextoConversacional'
@@ -71,7 +71,14 @@ const supabaseRAG = createClient(
 )
 const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-async function buscarContextoRAG(pregunta: string, institucionId: string | null): Promise<string> {
+// Contención de documentos (auditoría RAG): la búsqueda corre SIEMPRE
+// con el cliente autenticado del docente (sb = supabaseUser), nunca con
+// supabaseRAG/service_role. buscar_chunks_similares es SECURITY INVOKER,
+// así que la RLS de documentos_institucionales/documento_chunks
+// (user_id = auth.uid()) limita el resultado a los documentos propios:
+// institucionId solo puede RESTRINGIR (filtro funcional de la RPC),
+// nunca ampliar el acceso, y un documento sin dueño nunca se sirve.
+async function buscarContextoRAG(sb: SupabaseClient, pregunta: string, institucionId: string | null): Promise<string> {
   try {
     // Sin timeout explícito, esta llamada podía quedarse esperando
     // indefinidamente (ver TIMEOUT_NIVEL0_MS en lib/clasificadorNivel0.ts
@@ -87,7 +94,7 @@ async function buscarContextoRAG(pregunta: string, institucionId: string | null)
     )
     const queryEmbedding = embeddingResponse.data[0].embedding
 
-    const { data, error } = await supabaseRAG.rpc('buscar_chunks_similares', {
+    const { data, error } = await sb.rpc('buscar_chunks_similares', {
       query_embedding: queryEmbedding,
       cantidad: 4,
       p_institucion_id: institucionId,
@@ -1328,8 +1335,8 @@ export async function POST(req: NextRequest) {
   // sin aproximar — el costo es que RAG ya no se solapa con las
   // consultas de sesión (antes si), solo con lo que venga después.
   // `mensaje.trim()` conserva exactamente el mismo atajo de siempre.
-  const contextoRAGPromise = mensaje.trim() && sesion?.institucion_id
-    ? buscarContextoRAG(mensaje, sesion.institucion_id)
+  const contextoRAGPromise = mensaje.trim() && sesion?.institucion_id && supabaseUser
+    ? buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)
     : Promise.resolve('')
 
   // Indicadores seguros de diagnóstico — mismo criterio que el log
