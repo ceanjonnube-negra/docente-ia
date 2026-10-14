@@ -12,7 +12,7 @@
 // real del alumno antes de escribir nada.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { autenticarRequestApi } from '@/lib/server/authApi'
 import { aplicarCorreccionAlumno, validarValorCampoAlumno } from '@/lib/motorContexto'
 import type { CampoAlumnoCorregible } from '@/lib/asistente/tipos'
 
@@ -23,9 +23,12 @@ const FUENTES_VALIDAS = ['texto', 'imagen', 'documento', 'voz', 'manual'] as con
 
 export async function POST(req: NextRequest) {
   try {
-    const { alumnoId, campo, valorNuevo, fuente, conversacionId, userId, accessToken } = await req.json()
-
-    if (!userId || !accessToken) {
+    const cuerpo = await req.json()
+    const { alumnoId, campo, valorNuevo, fuente, conversacionId, accessToken } = cuerpo
+    // Identidad SIEMPRE del JWT verificado (getUser), nunca del userId
+    // que mande el cliente — ese campo, si llega, se ignora.
+    const auth = await autenticarRequestApi(typeof accessToken === 'string' ? accessToken : null)
+    if (!auth.ok) {
       return NextResponse.json({ error: 'Sesión no válida. Vuelve a iniciar sesión e intenta de nuevo.' }, { status: 401 })
     }
     if (typeof alumnoId !== 'string' || !alumnoId) {
@@ -53,28 +56,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Ese valor ya no tiene un formato válido: ${validacion.motivo}.` }, { status: 400 })
     }
 
-    const supabaseUser = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
-    })
+    // CURP: solo se ejecuta la propuesta ORIGINAL — su valor anterior
+    // exacto (compare-and-set de actualizar_curp_alumno) y la misma
+    // conversación en la que el servidor la generó. Si falta cualquiera
+    // de los dos, no se ejecuta y se pide una propuesta nueva.
+    let valorEsperado: string | null | undefined
+    if (campo === 'curp') {
+      const traeValorAnterior = Object.prototype.hasOwnProperty.call(cuerpo, 'valorAnterior') && (typeof cuerpo.valorAnterior === 'string' || cuerpo.valorAnterior === null)
+      const mismaConversacion = typeof conversacionId === 'string' && conversacionId.length > 0 && cuerpo.propuestaConversacionId === conversacionId
+      if (!traeValorAnterior || !mismaConversacion) {
+        return NextResponse.json({ exito: false, error: 'No pude vincular esta corrección con su propuesta original. Pídeme de nuevo la corrección para mostrarte el dato actual.', definitivo: true }, { status: 200 })
+      }
+      valorEsperado = cuerpo.valorAnterior as string | null
+    }
 
-    // aplicarCorreccionAlumno vuelve a comprobar propiedad real
-    // (.eq('docente_id', userId)) en cada lectura/escritura, relee el
-    // valor actual REAL (nunca el que mande el cliente), y verifica el
-    // valor guardado después del UPDATE antes de reportar éxito — ver
+    // aplicarCorreccionAlumno: CURP vía la RPC canónica (atómica, con
+    // trazabilidad incluida); sexo/fecha_nacimiento con su flujo de
+    // siempre (propiedad real, relectura y verificación) — ver
     // lib/motorContexto.ts.
-    const resultado = await aplicarCorreccionAlumno(supabaseUser, userId, alumnoId, campo as CampoAlumnoCorregible, validacion.valorNormalizado, {
+    const resultado = await aplicarCorreccionAlumno(auth.supabase, auth.user.id, alumnoId, campo as CampoAlumnoCorregible, validacion.valorNormalizado, {
       tipo: fuenteTipo as 'texto' | 'imagen' | 'documento' | 'voz' | 'manual',
       conversacionId: typeof conversacionId === 'string' ? conversacionId : null,
       mensajeId: null,
-    })
+    }, valorEsperado)
 
     if (!resultado.exito) {
-      return NextResponse.json({ exito: false, error: resultado.error }, { status: 200 })
+      return NextResponse.json({ exito: false, error: resultado.error, codigo: resultado.codigo, definitivo: resultado.definitivo === true }, { status: 200 })
     }
     if (resultado.sinCambios) {
-      return NextResponse.json({ exito: true, texto: 'Ese valor ya coincidía con el registrado — no hice ningún cambio.' })
+      return NextResponse.json({ exito: true, estado: 'sin_cambios', texto: 'Ese valor ya coincidía con el registrado — no hice ningún cambio.' })
     }
-    return NextResponse.json({ exito: true, texto: `Listo. Corregí el dato: ahora es ${resultado.valorNuevo}.` })
+    return NextResponse.json({ exito: true, estado: 'aplicada', texto: `Listo. Corregí el dato: ahora es ${resultado.valorNuevo}.` })
   } catch (error) {
     console.error('[alumnos/aplicar-correccion] Error:', error)
     const mensajeError = error instanceof Error ? error.message : 'No pude aplicar la corrección. Intenta de nuevo.'

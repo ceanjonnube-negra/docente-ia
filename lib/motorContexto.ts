@@ -447,7 +447,65 @@ export function validarValorCampoAlumno(campo: CampoAlumnoCorregible, valorCrudo
 
 export type ResultadoCorreccionAlumno =
   | { exito: true; sinCambios: boolean; valorAnterior: string | null; valorNuevo: string }
-  | { exito: false; error: string }
+  // codigo/definitivo solo los llena la rama de CURP (RPC canónica):
+  // definitivo=true significa que la propuesta ya no puede ejecutarse
+  // tal cual (cambió el dato, duplicado, alumno ajeno…) y debe pedirse
+  // una nueva; false/ausente = fallo transitorio, puede reintentarse.
+  | { exito: false; error: string; codigo?: string; definitivo?: boolean }
+
+// Códigos estables de public.actualizar_curp_alumno (migración
+// 20261014000000) → mensaje claro para el docente y si cierran la
+// propuesta. Cualquier otro error se trata como transitorio.
+const ERRORES_ACTUALIZAR_CURP: Record<string, { mensaje: string; definitivo: boolean }> = {
+  STALE_CURRENT_VALUE: { mensaje: 'La CURP de este alumno cambió desde que te mostré la propuesta. Revisa el dato actual y vuelve a pedir la corrección antes de confirmarla', definitivo: true },
+  NEW_CURP_DUPLICATE: { mensaje: 'Ya tienes otro alumno registrado con esa CURP, así que no hice el cambio', definitivo: true },
+  STUDENT_NOT_AUTHORIZED: { mensaje: 'Ese alumno no existe o no te pertenece', definitivo: true },
+  NEW_CURP_INVALID: { mensaje: 'La CURP propuesta no tiene un formato válido', definitivo: true },
+  INVALID_SOURCE: { mensaje: 'No pude registrar el origen de la corrección', definitivo: true },
+  CONVERSATION_NOT_AUTHORIZED: { mensaje: 'No pude vincular la corrección con esta conversación. Vuelve a pedir la corrección', definitivo: true },
+  AUTH_REQUIRED: { mensaje: 'Tu sesión ya no es válida. Vuelve a iniciar sesión e intenta de nuevo', definitivo: false },
+}
+
+type RespuestaActualizarCurp =
+  | { resultado: 'actualizado'; alumno_id: string; curp_anterior: string | null; curp_nueva: string; correccion_id: string }
+  | { resultado: 'sin_cambios'; alumno_id: string; curp: string }
+
+// CURP: SIEMPRE vía public.actualizar_curp_alumno (SECURITY INVOKER,
+// bajo la sesión del docente). La RPC hace en UNA transacción el
+// compare-and-set contra el valor de la propuesta, la validación SQL,
+// el cotejo de duplicados propios, el advisory lock y la trazabilidad
+// en correcciones_alumno — aquí no se relee nada ni se inserta nada.
+async function aplicarCorreccionCurp(
+  sb: SupabaseClient,
+  alumnoId: string,
+  valorNuevo: string,
+  fuente: FuenteCorreccionAlumno,
+  valorEsperado: string | null
+): Promise<ResultadoCorreccionAlumno> {
+  const { data, error } = await sb.rpc('actualizar_curp_alumno', {
+    p_alumno_id: alumnoId,
+    p_curp_esperada_actual: valorEsperado,
+    p_curp_nueva: valorNuevo,
+    p_fuente: fuente.tipo,
+    p_conversacion_id: fuente.conversacionId ?? null,
+  })
+  if (error) {
+    const conocido = ERRORES_ACTUALIZAR_CURP[error.message]
+    if (!conocido) console.error('[CORRECCION_ALUMNO] actualizar_curp_alumno falló:', error)
+    return conocido
+      ? { exito: false, error: conocido.mensaje, codigo: error.message, definitivo: conocido.definitivo }
+      : { exito: false, error: 'No fue posible actualizar el dato', definitivo: false }
+  }
+  const respuesta = data as RespuestaActualizarCurp | null
+  if (respuesta?.resultado === 'sin_cambios') {
+    return { exito: true, sinCambios: true, valorAnterior: respuesta.curp, valorNuevo: respuesta.curp }
+  }
+  if (respuesta?.resultado === 'actualizado') {
+    return { exito: true, sinCambios: false, valorAnterior: respuesta.curp_anterior, valorNuevo: respuesta.curp_nueva }
+  }
+  console.error('[CORRECCION_ALUMNO] Respuesta inesperada de actualizar_curp_alumno:', data)
+  return { exito: false, error: 'No se pudo confirmar que el dato quedó guardado correctamente', definitivo: false }
+}
 
 export type FuenteCorreccionAlumno = {
   tipo: 'texto' | 'imagen' | 'documento' | 'voz' | 'manual'
@@ -469,8 +527,20 @@ export async function aplicarCorreccionAlumno(
   alumnoId: string,
   campo: CampoAlumnoCorregible,
   valorNuevo: string,
-  fuente: FuenteCorreccionAlumno
+  fuente: FuenteCorreccionAlumno,
+  // Solo CURP: valor anterior EXACTO de la propuesta original que vio el
+  // docente (compare-and-set de la RPC). undefined = no hay propuesta
+  // original → no se ejecuta; nunca se reconstruye desde la base.
+  valorEsperado?: string | null
 ): Promise<ResultadoCorreccionAlumno> {
+  if (campo === 'curp') {
+    if (valorEsperado === undefined) {
+      return { exito: false, error: 'No encontré la propuesta original de esta corrección. Pídeme de nuevo la corrección para mostrarte el dato actual', definitivo: true }
+    }
+    return aplicarCorreccionCurp(sb, alumnoId, valorNuevo, fuente, valorEsperado)
+  }
+
+  // sexo / fecha_nacimiento: comportamiento sin cambios.
   // 1. Releer el valor REAL actual — nunca el que haya dicho el cliente.
   const { data: filaActual, error: errorLectura } = await sb
     .from('alumnos')

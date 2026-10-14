@@ -41,7 +41,7 @@ import { construirPlaneacionActivaCreada, construirPlaneacionActivaAjustada, gua
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
-import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA, ArchivoGeneradoInfo, PropuestaCorreccionPendiente } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -486,7 +486,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId, propuestaCorreccionPendiente: propuestaCorreccionPendienteCliente } = await req.json()
   // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
   // estructural top-level, NUNCA transportada dentro de `contexto`
   // (ese sigue siendo el string de construirInstrucciones, nunca un
@@ -496,6 +496,31 @@ export async function POST(req: NextRequest) {
   // resuelve más abajo, y solo cuando de verdad hace falta (ver
   // obtenerConversacionIdAutorizada).
   const conversacionIdSolicitada = typeof conversacionId === 'string' && conversacionId.trim() ? conversacionId.trim() : null
+  // Propuesta de corrección de dato de alumno pendiente que el cliente
+  // adjunta mientras su último mensaje del asistente es esa propuesta
+  // (ver PropuestaCorreccionPendiente en lib/asistente/tipos.ts). Solo se
+  // acepta con forma exacta; cualquier otra cosa se descarta (null) y,
+  // para CURP, una confirmación sin propuesta nunca se ejecuta. Su sola
+  // presencia NUNCA autoriza nada: la herramienta corregir_dato_alumno
+  // solo la usa ante una confirmación/cancelación explícita.
+  const propuestaCorreccionPendiente: PropuestaCorreccionPendiente | null = (() => {
+    const p = propuestaCorreccionPendienteCliente as Record<string, unknown> | null | undefined
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+    const texto = (v: unknown) => typeof v === 'string' && v.trim().length > 0
+    if (!texto(p.mensajeId) || !texto(p.alumnoId) || !texto(p.alumnoNombre) || !texto(p.valorNuevo)) return null
+    if (p.campo !== 'curp' && p.campo !== 'sexo' && p.campo !== 'fecha_nacimiento') return null
+    if (!(p.valorActual === null || typeof p.valorActual === 'string')) return null
+    if (!(p.conversacionId === null || texto(p.conversacionId))) return null
+    return {
+      mensajeId: p.mensajeId as string,
+      conversacionId: (p.conversacionId as string | null) ?? null,
+      alumnoId: p.alumnoId as string,
+      alumnoNombre: p.alumnoNombre as string,
+      campo: p.campo,
+      valorActual: p.valorActual as string | null,
+      valorNuevo: p.valorNuevo as string,
+    }
+  })()
   // PERSISTENCIA DURABLE DE ADJUNTOS VISUALES (V2) — mismo criterio
   // exacto que conversacionIdSolicitada: metadata estructural top-level,
   // nunca dentro de `contexto`/prompt/historial/referentes. Solo se
@@ -1985,16 +2010,17 @@ export async function POST(req: NextRequest) {
             userId,
             zonaHoraria,
             canal: channel === 'voice' ? 'voice' : 'text',
-            // ALCANCE V1-C: este dispatcher (correcciones_alumno) nunca
-            // llega a guardarAssetVisual — V1-C solo vincula assets
-            // visuales, no amplía qué conversacionId reciben otros
-            // consumos históricos. Semántica efectiva idéntica a la de
-            // antes de este cambio (contexto?.conversacionId, un string
-            // que siempre daba undefined → null). Una corrección real de
-            // trazabilidad para correcciones_alumno, si algún día hace
-            // falta, es una fase aparte con su propia semántica de
-            // ownership — no se adelanta aquí.
-            conversacionId: null,
+            // ALCANCE V1-C: este dispatcher nunca llega a
+            // guardarAssetVisual. Solo corregir_dato_alumno recibe la
+            // conversación, y SIEMPRE la ya autorizada (ownership
+            // demostrado contra conversaciones_chat por
+            // obtenerConversacionIdAutorizada): sella las propuestas de
+            // CURP, vincula su confirmación a la misma conversación y la
+            // enlaza en correcciones_alumno vía actualizar_curp_alumno
+            // (que vuelve a comprobar ownership). El resto de
+            // herramientas sigue recibiendo null, sin consulta adicional.
+            conversacionId: clasificacion.intencion_principal === 'corregir_dato_alumno' ? await obtenerConversacionIdAutorizada() : null,
+            propuestaCorreccionPendiente: clasificacion.intencion_principal === 'corregir_dato_alumno' ? propuestaCorreccionPendiente : null,
           })
       marcarTelemetria('tool:execution_finished')
       if (diagnosticoCurpActivo) {

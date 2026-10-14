@@ -208,12 +208,40 @@ function main() {
   verificar(difValidez === 0, `10b. Validez TS idéntica a SQL en todo el corpus (diferencias: ${difValidez})`)
   verificar(difNorma === 0, `10c. Forma normalizada TS idéntica a SQL (diferencias: ${difNorma})`)
 
-  // 11. Orden de migraciones; ningún consumidor todavía.
+  // 11. Orden de migraciones; consumidores: el Chat ya usa la primitiva,
+  // la ficha individual todavía no (fase posterior).
   const migraciones = readdirSync(raiz('supabase', 'migrations')).filter((f) => /^\d{14}_[^ ]+\.sql$/.test(f)).sort()
   verificar(migraciones.indexOf(NOMBRE) > migraciones.indexOf('20261013000000_cotejo_curp_por_docente.sql'), '11. Se ordena después de T0 (20261013000000)')
   const motor = readFileSync(raiz('lib', 'motorContexto.ts'), 'utf-8')
   const ficha = readFileSync(raiz('app', 'dashboard', 'lista', '[alumnoId]', 'page.tsx'), 'utf-8')
-  verificar(!motor.includes('actualizar_curp_alumno') && !ficha.includes('actualizar_curp_alumno'), '11b. Chat y ficha individual todavía NO usan la primitiva (fase posterior)')
+  const herramientas = readFileSync(raiz('lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
+  const rutaCorreccion = readFileSync(raiz('app', 'api', 'alumnos', 'aplicar-correccion', 'route.ts'), 'utf-8')
+  // Cuerpo de una función (desde su declaración hasta la llave que la cierra).
+  const cuerpoFuncion = (fuente: string, declaracion: string) => {
+    const inicio = fuente.indexOf(declaracion)
+    if (inicio < 0) return ''
+    const abre = fuente.indexOf('{', fuente.indexOf(')', fuente.indexOf('(', inicio + declaracion.length - 1)))
+    let profundidad = 0
+    for (let i = abre; i < fuente.length; i++) {
+      if (fuente[i] === '{') profundidad++
+      else if (fuente[i] === '}' && --profundidad === 0) return fuente.slice(abre, i + 1)
+    }
+    return ''
+  }
+  const fnCurp = cuerpoFuncion(motor, 'async function aplicarCorreccionCurp(')
+  const fnAplicar = cuerpoFuncion(motor, 'export async function aplicarCorreccionAlumno(')
+  const ramaCurp = fnAplicar.match(/^\{\s*if \(campo === 'curp'\) \{\s*if \(valorEsperado === undefined\) \{\s*return \{ exito: false,[^}]*\}\s*\}\s*return aplicarCorreccionCurp\(sb, alumnoId, valorNuevo, fuente, valorEsperado\)\s*\}/)
+  const chequeos11b: [boolean, string][] = [
+    [/sb\.rpc\('actualizar_curp_alumno', \{/.test(fnCurp), 'el Chat corrige CURP con sb.rpc(actualizar_curp_alumno)'],
+    [!/\.update\(|\.insert\(|\.upsert\(|\.from\(/.test(fnCurp), 'la rama CURP no hace UPDATE/INSERT/lecturas propias'],
+    [!!ramaCurp, 'aplicarCorreccionAlumno resuelve CURP (y retorna) antes de cualquier otra sentencia'],
+    [fnAplicar.indexOf('.update(') > (ramaCurp?.[0].length ?? Infinity) && fnAplicar.indexOf("from('correcciones_alumno')") > (ramaCurp?.[0].length ?? Infinity), 'el UPDATE directo y el INSERT de trazabilidad quedan solo para sexo/fecha_nacimiento'],
+    [(motor.match(/from\('correcciones_alumno'\)/g) ?? []).length === 1, 'un solo INSERT de trazabilidad en motorContexto (el de sexo/fecha); CURP lo hace la RPC'],
+    [[herramientas, rutaCorreccion].every((f) => !/\.from\('(alumnos|correcciones_alumno)'\)/.test(f) && !/\.rpc\(/.test(f)), 'herramienta y endpoint del Chat no escriben alumnos ni trazabilidad por su cuenta'],
+    [!ficha.includes('actualizar_curp_alumno'), 'la ficha individual todavía NO usa la primitiva (fase posterior)'],
+  ]
+  const fallidos11b = chequeos11b.filter(([ok]) => !ok).map(([, m]) => m)
+  verificar(fallidos11b.length === 0, `11b. Chat usa actualizar_curp_alumno sin UPDATE directo de CURP ni INSERT duplicado; ficha individual aún no${fallidos11b.length ? ` — FALLA: ${fallidos11b.join('; ')}` : ''}`)
 
   console.log('')
   if (fallos > 0) {

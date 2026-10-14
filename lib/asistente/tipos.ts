@@ -154,6 +154,37 @@ export type DiferenciaAlumno = {
   valorActual: string | null
   valorNuevo: string
   fuente: 'texto'
+  // Conversación (ya autorizada server-side) en la que el servidor
+  // generó esta propuesta. La confirmación —por botón o por texto— solo
+  // se ejecuta en esa misma conversación. Opcional: propuestas antiguas
+  // no lo traen y, para CURP, no se ejecutan (se pide una nueva).
+  conversacionId?: string | null
+}
+
+// Propuesta de corrección PENDIENTE que el cliente adjunta al turno de
+// texto mientras el último mensaje del asistente es esa propuesta (ver
+// tieneCorreccionAlumnoPendiente en AsistenteService). Es exactamente
+// la misma DiferenciaAlumno que usa el botón "Corregir", más el id del
+// mensaje que la contiene. Su sola presencia NUNCA autoriza ejecutarla:
+// solo se usa cuando el clasificador reconoce una confirmación
+// explícita (accion_correccion_alumno='confirmar').
+export type PropuestaCorreccionPendiente = {
+  mensajeId: string
+  conversacionId: string | null
+  alumnoId: string
+  alumnoNombre: string
+  campo: CampoAlumnoCorregible
+  valorActual: string | null
+  valorNuevo: string
+}
+
+// Resultado de una propuesta resuelta por texto (confirmación o
+// cancelación), para que el cliente marque accionElegida en el mensaje
+// exacto de la propuesta. 'aplicada'/'sin_cambios'/'cancelada'/
+// 'rechazada' la cierran; un fallo transitorio no la resuelve.
+export type ResolucionCorreccionAlumno = {
+  mensajeId: string
+  estado: 'aplicada' | 'sin_cambios' | 'cancelada' | 'rechazada'
 }
 
 // V1-C2 (ver diseño aprobado "contrato HMAC + transporte + persistencia
@@ -414,7 +445,7 @@ export type EventoMotor =
   // texto siempre '' en ese caso — AsistenteService intercepta esto
   // ANTES de crear/persistir cualquier burbuja (mismo criterio que
   // shortCircuitOrquestador) y arranca el polling del trabajo real.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; correccionAlumnoResuelta?: ResolucionCorreccionAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
@@ -604,7 +635,7 @@ export interface MotorConversacional {
   // que este turno es "regenerar la imagen activa con este prompt ya
   // combinado", acción mecánica que nunca pasa por Claude (mismo
   // criterio que finalizarArchivo).
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null): Promise<void>
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

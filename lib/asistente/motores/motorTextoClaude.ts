@@ -24,7 +24,9 @@ import type {
   FinalizarArchivoInfo,
   Herramienta,
   MotorConversacional,
+  PropuestaCorreccionPendiente,
   PropuestaListaOficialFirmada,
+  ResolucionCorreccionAlumno,
   TrazaDiagnosticoCurp,
 } from '../tipos'
 
@@ -267,7 +269,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -494,6 +496,11 @@ export class MotorTextoClaude implements MotorConversacional {
           // servidor demuestra ownership antes de usarlo — ver
           // obtenerConversacionIdAutorizada en app/api/chat/route.ts.
           conversacionId: conversacionId || null,
+          // Propuesta de corrección pendiente (ver
+          // PropuestaCorreccionPendiente en tipos.ts) — metadata
+          // estructural top-level, solo presente mientras el último
+          // mensaje del asistente es esa propuesta sin resolver.
+          propuestaCorreccionPendiente: propuestaCorreccionPendiente ?? undefined,
           // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/
           // ajuste de planeación, ver auditoría aprobada por separado)
           // — mismo criterio exacto que mensajeUsuarioId: metadata
@@ -608,7 +615,8 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
-      const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionAlumno)
+      const { texto: sinCorreccionResuelta, correccionAlumnoResuelta } = this.procesarMarcadorDeCorreccionAlumnoResuelta(sinCorreccionAlumno)
+      const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionResuelta)
       const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinPropuestaListaOficial)
       // SEÑAL SERVER-SIDE (ver "evitar sobrescritura cliente tras
       // persistencia server") — mismo patrón exacto que los demás
@@ -632,6 +640,7 @@ export class MotorTextoClaude implements MotorConversacional {
         contenidoOriginal,
         accionNavegacion,
         datosAccionAlumno,
+        correccionAlumnoResuelta,
         propuestaListaOficialFirmada,
         perfilActualizado,
         decisionOrquestador: decisionOrquestador ?? undefined,
@@ -868,6 +877,30 @@ export class MotorTextoClaude implements MotorConversacional {
       return { texto: respuesta.replace(match[0], '').trim(), datosAccionAlumno }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico de una propuesta de corrección de alumno RESUELTA
+  // por texto (ver conResolucion en corregir_dato_alumno,
+  // lib/asistente/herramientasModulo.ts) — mismo patrón que
+  // procesarMarcadorDeCorreccionAlumno: el docente nunca lo ve. Solo se
+  // acepta con forma exacta; si no, se descarta y la propuesta sigue
+  // pendiente.
+  private procesarMarcadorDeCorreccionAlumnoResuelta(respuesta: string): { texto: string; correccionAlumnoResuelta?: ResolucionCorreccionAlumno } {
+    const match = respuesta.match(/\[\[CORRECCION_ALUMNO_RESUELTA:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    const texto = respuesta.replace(match[0], '').trim()
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const r = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as Record<string, unknown>
+      const estados = ['aplicada', 'sin_cambios', 'cancelada', 'rechazada']
+      if (typeof r.mensajeId === 'string' && r.mensajeId && typeof r.estado === 'string' && estados.includes(r.estado)) {
+        return { texto, correccionAlumnoResuelta: { mensajeId: r.mensajeId, estado: r.estado as ResolucionCorreccionAlumno['estado'] } }
+      }
+      return { texto }
+    } catch {
+      return { texto }
     }
   }
 
