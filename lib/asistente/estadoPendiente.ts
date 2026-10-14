@@ -234,7 +234,12 @@ export function fusionarConPendiente(c: ClasificacionNivel0, e: EstadoPendienteV
       c.entidades_resueltas = { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: true, opciones_alumno_ambiguo: e.candidatos.map((a) => a.nombre_completo) }
     }
   }
-  const campo = campoExplicito(c) ?? e.campo
+  // El campo de un estado de CONSULTA nunca se hereda como objetivo de una
+  // corrección nueva: aportar un valor sin nombrar el campo después de
+  // consultar exige el campo explícito (si no, se pregunta). Comparar es
+  // solo lectura y sí lo hereda.
+  const campoHeredable = intencion === 'consultar_dato_alumno' || e.intencion === 'corregir_dato_alumno' || op === 'comparar'
+  const campo = campoExplicito(c) ?? (campoHeredable ? e.campo : null)
 
   c.intencion_principal = intencion
   const faltan = new Set(c.datos_faltantes)

@@ -2124,12 +2124,19 @@ export async function POST(req: NextRequest) {
             trazaDebug.herramientaEjecutada = clasificacion.intencion_principal
           }
           // Tras mostrar un dato registrado, la respuesta conserva el
-          // contexto para "¿y su fecha?" o, si venía de una corrección
-          // pendiente, para recibir el valor nuevo (solo propuesta).
+          // contexto para "¿y su fecha?". La corrección pendiente solo se
+          // conserva si lo consultado es EXACTAMENTE su mismo campo y su
+          // mismo alumno; consultar otro campo u otro alumno nunca lo
+          // vuelve objetivo de corrección: queda solo el contexto de
+          // consulta (la corrección anterior se descarta).
+          const correccionPendiente = estadoPendienteVigente?.intencion === 'corregir_dato_alumno' ? estadoPendienteVigente : null
+          const mismaCorreccion = !!correccionPendiente &&
+            correccionPendiente.campo === clasificacion.campo_alumno_solicitado &&
+            !!correccionPendiente.alumno && correccionPendiente.alumno.alumno_id === clasificacion.entidades_resueltas.alumno_id
           const tras = !faltanteHerramienta && clasificacion.intencion_principal === 'consultar_dato_alumno' && clasificacion.entidades_resueltas.alumno_id
-            ? (estadoPendienteVigente?.intencion === 'corregir_dato_alumno'
+            ? (mismaCorreccion
                 ? conEstadoPendiente(respuestaDeModulo, 'valor', { intencion: 'corregir_dato_alumno' })
-                : conEstadoPendiente(respuestaDeModulo, 'campo'))
+                : conEstadoPendiente(respuestaDeModulo, 'campo', { intencion: 'consultar_dato_alumno' }))
             : null
           return respuestaTexto(conDiagnostico(faltanteHerramienta ? conEstadoPendiente(respuestaDeModulo, faltanteHerramienta) : (tras ?? respuestaDeModulo)))
         }
