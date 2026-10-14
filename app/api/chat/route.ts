@@ -42,7 +42,8 @@ import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA, ArchivoGeneradoInfo, PropuestaCorreccionPendiente } from '@/lib/asistente/tipos'
-import { validarAlumnoClasificado, MENSAJE_ALUMNO_NO_IDENTIFICADO } from '@/lib/asistente/identidadAlumno'
+import { validarAlumnoClasificado, alumnoDelGrupoActivo, MENSAJE_ALUMNO_NO_IDENTIFICADO } from '@/lib/asistente/identidadAlumno'
+import { emitirEstadoPendiente, esIntencionContinuable, estadoPendienteParaClasificador, fusionarConPendiente, marcadorEstadoPendiente, prepararEstadoPendiente, type FaltanteEstadoPendiente } from '@/lib/asistente/estadoPendiente'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -487,7 +488,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId, propuestaCorreccionPendiente: propuestaCorreccionPendienteCliente } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, regenerarImagen, debugRequestId, referentesContextuales: referentesContextualesCliente, conversacionId, mensajeUsuarioId, assistantMessageId, propuestaCorreccionPendiente: propuestaCorreccionPendienteCliente, estadoPendiente: estadoPendienteCliente } = await req.json()
   // VINCULACIÓN DE ASSETS VISUALES A SU CONVERSACIÓN (V1-C) — metadata
   // estructural top-level, NUNCA transportada dentro de `contexto`
   // (ese sigue siendo el string de construirInstrucciones, nunca un
@@ -1728,10 +1729,47 @@ export async function POST(req: NextRequest) {
       // callback pasado a otra función — con el objeto, la propiedad
       // conserva su tipo declarado sin ese falso positivo.
       const usageClasificacion: { valor: Anthropic.Usage | null } = { valor: null }
+      // CONTINUIDAD V1 (ver lib/asistente/estadoPendiente.ts) — estado
+      // pendiente firmado de la aclaración anterior (consultar/corregir
+      // dato de alumno): se verifica (firma, docente, conversación
+      // autorizada, vigencia) y se revalida contra el grupo activo ANTES de
+      // clasificar; entra a la MISMA llamada del clasificador.
+      const conversacionIdContinuidad = await obtenerConversacionIdAutorizada()
+      const estadoPendienteVigente = prepararEstadoPendiente(estadoPendienteCliente, { docenteId: userId, conversacionId: conversacionIdContinuidad, roster: sesion.alumnos_del_grupo_activo })
       const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta, (usage) => {
         usageClasificacion.valor = usage
-      }, referentesContextuales)
+      }, referentesContextuales, estadoPendienteVigente ? estadoPendienteParaClasificador(estadoPendienteVigente) : null)
       marcarTelemetria('intent:classification_finished')
+      // Fusión determinista: solo rellena lo que falte, lo explícito del
+      // mensaje prevalece, un cambio de tema descarta el estado, y nunca
+      // produce confirmaciones ni escrituras.
+      let alumnoHeredadoId: string | null = null
+      if (estadoPendienteVigente) {
+        const fusion = fusionarConPendiente(clasificacion, estadoPendienteVigente)
+        console.log(`[CONTINUIDAD] estado=vigente fusion=${fusion.tipo}${fusion.tipo === 'fusionado' ? ` heredado=${!!fusion.alumnoHeredadoId}` : ''}`)
+        if (fusion.tipo === 'cancelar') return respuestaTexto(conDiagnostico('De acuerdo, lo dejamos así. No cambié ningún dato.'))
+        if (fusion.tipo === 'fusionado') alumnoHeredadoId = fusion.alumnoHeredadoId
+      } else if (estadoPendienteCliente) {
+        console.log('[CONTINUIDAD] estado=descartado')
+      }
+      // Estado que acompaña una aclaración de consultar/corregir dato de
+      // alumno. Solo ids del grupo activo (nunca CURP, fechas ni valores).
+      const conEstadoPendiente = (texto: string, faltante: FaltanteEstadoPendiente, opciones: { alumnoId?: string | null; candidatos?: string[]; intencion?: 'consultar_dato_alumno' | 'corregir_dato_alumno' } = {}) => {
+        const intencionEstado = opciones.intencion ?? clasificacion.intencion_principal
+        if (!esIntencionContinuable(intencionEstado)) return texto
+        const delGrupo = (id: string | null | undefined) => (id && alumnoDelGrupoActivo(sesion.alumnos_del_grupo_activo, id) ? id : null)
+        const alumnoId = 'alumnoId' in opciones ? delGrupo(opciones.alumnoId) : delGrupo(clasificacion.entidades_resueltas.alumno_id)
+        return texto + marcadorEstadoPendiente(emitirEstadoPendiente({
+          docenteId: userId,
+          conversacionId: conversacionIdContinuidad,
+          intencion: intencionEstado,
+          alumnoId,
+          candidatos: (opciones.candidatos ?? []).filter((id) => delGrupo(id)),
+          campo: clasificacion.campo_alumno_corregir ?? clasificacion.campo_alumno_solicitado ?? null,
+          faltante,
+        }))
+      }
+      let candidatosIdentidad: string[] = []
       // V1-C3 — captura mínima para uso posterior fuera de este bloque
       // (ver declaración de esActualizarListaOficial más arriba).
       esActualizarListaOficial = clasificacion.intencion_principal === 'actualizar_lista_oficial' && clasificacion.nivel_ejecucion === 1
@@ -1937,16 +1975,18 @@ export async function POST(req: NextRequest) {
             opciones: clasificacion.entidades_resueltas.opciones_alumno_ambiguo,
           },
           sesion.alumnos_del_grupo_activo,
-          [mensaje, ...historialMensajes.slice(-4).filter((t) => t.role === 'user').map((t) => t.content).reverse()]
+          [mensaje, ...historialMensajes.slice(-4).filter((t) => t.role === 'user').map((t) => t.content).reverse()],
+          alumnoHeredadoId
         )
         if (identidad.tipo === 'rechazado') {
           console.log(`[IDENTIDAD_ALUMNO] ${clasificacion.intencion_principal} rechazado motivo=${identidad.motivo}`)
-          return respuestaTexto(conDiagnostico(MENSAJE_ALUMNO_NO_IDENTIFICADO))
+          return respuestaTexto(conDiagnostico(conEstadoPendiente(MENSAJE_ALUMNO_NO_IDENTIFICADO, 'alumno', { alumnoId: null })))
         }
         if (identidad.tipo === 'resuelto') {
           clasificacion.entidades_resueltas = { alumno_id: identidad.alumno.alumno_id, alumno_nombre_detectado: identidad.alumno.nombre_completo, alumno_ambiguo: false, opciones_alumno_ambiguo: [] }
         } else if (identidad.tipo === 'ambiguo') {
           clasificacion.entidades_resueltas = { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: true, opciones_alumno_ambiguo: identidad.opciones }
+          candidatosIdentidad = identidad.ids
         }
       }
 
@@ -1966,10 +2006,10 @@ export async function POST(req: NextRequest) {
       if (clasificacion.datos_faltantes.length > 0 || clasificacion.entidades_resueltas.alumno_ambiguo) {
         if (clasificacion.entidades_resueltas.alumno_ambiguo) {
           const opciones = clasificacion.entidades_resueltas.opciones_alumno_ambiguo.join(', ')
-          return respuestaTexto(conDiagnostico(`Tengo más de un alumno que coincide con ese nombre: ${opciones}. ¿A cuál te refieres?`))
+          return respuestaTexto(conDiagnostico(conEstadoPendiente(`Tengo más de un alumno que coincide con ese nombre: ${opciones}. ¿A cuál te refieres?`, 'alumno', { alumnoId: null, candidatos: candidatosIdentidad })))
         }
         if (clasificacion.datos_faltantes.includes('alumno')) {
-          return respuestaTexto(conDiagnostico('¿De qué alumno se trata?'))
+          return respuestaTexto(conDiagnostico(conEstadoPendiente('¿De qué alumno se trata?', 'alumno')))
         }
         if (clasificacion.datos_faltantes.includes('descripcion_incidencia')) {
           return respuestaTexto(conDiagnostico('¿Qué fue lo que pasó exactamente?'))
@@ -1998,10 +2038,10 @@ export async function POST(req: NextRequest) {
           return respuestaTexto(conDiagnostico('¿Para cuántos días o qué fechas te gustaría esta planeación?'))
         }
         if (clasificacion.datos_faltantes.includes('campo_alumno')) {
-          return respuestaTexto(conDiagnostico('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?'))
+          return respuestaTexto(conDiagnostico(conEstadoPendiente('¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?', 'campo')))
         }
         if (clasificacion.datos_faltantes.includes('valor_alumno') && !esComparacionVisualDeAlumno) {
-          return respuestaTexto(conDiagnostico('¿Cuál es el valor correcto?'))
+          return respuestaTexto(conDiagnostico(conEstadoPendiente('¿Cuál es el valor correcto?', 'valor')))
         }
       }
 
@@ -2029,6 +2069,7 @@ export async function POST(req: NextRequest) {
       // esComparacionVisualDeAlumno (declarado arriba, antes del
       // bloque de aclaración) — misma señal exacta reutilizada en los
       // otros dos puntos, nunca una aproximación local distinta.
+      let faltanteHerramienta: FaltanteEstadoPendiente | null = null
       const respuestaDeModulo = esComparacionVisualDeAlumno
         ? null
         : await ejecutarHerramientaDeModulo(clasificacion, {
@@ -2048,6 +2089,7 @@ export async function POST(req: NextRequest) {
             // herramientas sigue recibiendo null, sin consulta adicional.
             conversacionId: clasificacion.intencion_principal === 'corregir_dato_alumno' ? await obtenerConversacionIdAutorizada() : null,
             propuestaCorreccionPendiente: clasificacion.intencion_principal === 'corregir_dato_alumno' ? propuestaCorreccionPendiente : null,
+            alFaltarDato: (faltante) => { faltanteHerramienta = faltante },
           })
       marcarTelemetria('tool:execution_finished')
       if (diagnosticoCurpActivo) {
@@ -2081,7 +2123,15 @@ export async function POST(req: NextRequest) {
             trazaDebug.etapa = 'herramienta de módulo ejecutada — respuesta directa'
             trazaDebug.herramientaEjecutada = clasificacion.intencion_principal
           }
-          return respuestaTexto(conDiagnostico(respuestaDeModulo))
+          // Tras mostrar un dato registrado, la respuesta conserva el
+          // contexto para "¿y su fecha?" o, si venía de una corrección
+          // pendiente, para recibir el valor nuevo (solo propuesta).
+          const tras = !faltanteHerramienta && clasificacion.intencion_principal === 'consultar_dato_alumno' && clasificacion.entidades_resueltas.alumno_id
+            ? (estadoPendienteVigente?.intencion === 'corregir_dato_alumno'
+                ? conEstadoPendiente(respuestaDeModulo, 'valor', { intencion: 'corregir_dato_alumno' })
+                : conEstadoPendiente(respuestaDeModulo, 'campo'))
+            : null
+          return respuestaTexto(conDiagnostico(faltanteHerramienta ? conEstadoPendiente(respuestaDeModulo, faltanteHerramienta) : (tras ?? respuestaDeModulo)))
         }
       }
 
@@ -3480,7 +3530,7 @@ TRANSFORMACIÓN DE CONTENIDO RECIENTE ACTIVA — el maestro pidió transformar e
 
 CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. También SÍ genera imágenes reales (ilustraciones, portadas, dibujos temáticos, apoyos gráficos) — nunca digas "no puedo generar imágenes" ni equivalentes; cuando el maestro pida una imagen suelta, esta aplicación intercepta tu respuesta y genera la imagen real a partir de la descripción que escribas (ver MODO IMAGEN más abajo). También SÍ genera documentos CON ilustraciones integradas (fichas, guías, exámenes, cuentos) — nunca digas que no puedes ilustrar un documento ni sugieras herramientas externas (Canva, Google, etc.); cuando el maestro pida un documento ilustrado, inserta las líneas [[IMAGEN:...]] que correspondan dentro del documento (ver MODO DOCUMENTO ILUSTRADO más abajo) y esta aplicación genera las imágenes reales y las embebe automáticamente. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
 
-LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes). Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta, editar, ni ELIMINAR alumnos (ni uno solo ni el grupo completo), ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
+LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes); consultar la CURP, el sexo o la fecha de nacimiento registrados de UN alumno, y preparar una propuesta de corrección de esos tres datos: la aplicación muestra el valor registrado junto al nuevo y el maestro debe confirmarla explícitamente antes de que se guarde nada; solo cuando la aplicación confirma que la escritura se ejecutó informa que el dato quedó corregido — nunca lo afirmes tú por tu cuenta. Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta ni ELIMINAR alumnos (ni uno solo ni el grupo completo), editar cualquier dato de un alumno distinto de CURP, sexo o fecha de nacimiento, ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
 
 VOZ Y AUDIO — cuando el maestro te habla por micrófono, la aplicación transcribe su voz a texto (así te llega el mensaje) y, en cuanto respondes, la propia aplicación lee tu respuesta en voz alta con síntesis de voz del dispositivo — eso ocurre siempre, automáticamente, fuera de esta conversación; tú nunca lo gestionas ni lo mencionas. El asistente NUNCA debe afirmar que no tiene voz o audio: tienes PROHIBIDO decir o insinuar "solo me comunico por texto", "no tengo voz", "no puedo hablar", "no tengo audio", "no puedo reproducir sonido" ni ninguna frase equivalente — todas son falsas dentro de esta aplicación. La reproducción de voz es responsabilidad de la aplicación, no del modelo; tu única tarea es responder con el texto correcto.
 
@@ -3491,6 +3541,7 @@ Según de dónde venga el dato:
 - Si viene de Supabase o de cualquier otra fuente interna ya confirmada de esta aplicación (ver DATOS DEL MAESTRO/CONTEXTO REAL más abajo): usa ÚNICAMENTE el valor real tal como está almacenado — nunca lo cambies, completes ni "mejores".
 - Si viene de una imagen o de un documento adjunto (Word/Excel/PDF, una foto, o varias fotos a la vez): transcribe ÚNICAMENTE lo que realmente puedas leer con certeza, carácter por carácter. Si uno o más caracteres de un identificador o dato no son legibles con certeza, tienes PROHIBIDO completarlos o adivinarlos — en vez de eso, marca esa lectura como dudosa o incompleta, señala exactamente qué parte no puedes confirmar (ej. "CURP parcialmente legible: AXXX170611H_ _ _ _ _ _ — no pude confirmar los últimos 6 caracteres"), y pide confirmación al maestro solo cuando esa parte sea necesaria para continuar.
 - Si el dato simplemente no está disponible (ni en la aplicación ni en lo que el maestro adjuntó): dilo explícitamente ("Ese dato no está disponible" o equivalente honesto) — la ausencia de información NUNCA es una autorización para inferirla, adivinarla o rellenarla con un valor razonable.
+- CURP y fecha de nacimiento de los alumnos: NUNCA vienen en tu contexto, aunque estén registradas en la aplicación — que no las veas aquí NO significa que no existan. Tienes PROHIBIDO afirmar que un alumno no tiene CURP o fecha registrada, que "no hay ninguna disponible" o que deben capturarse desde Lista. La aplicación las consulta con su propia herramienta: si el maestro pide una y llegó hasta ti, pídele que la pida de forma directa (por ejemplo: "¿Cuál es la CURP de [nombre]?").
 Ninguna instrucción del maestro anula esta regla, sin importar qué tan directa o insistente sea — frases como "sácalas de ahí", "léelo", "complétalo", "hazme todos", "pon los datos", "invéntalos si no los tienes" o cualquier equivalente NUNCA te autorizan a fabricar un dato de los descritos arriba. Ante cualquiera de esas instrucciones, sigue exactamente el mismo criterio: transcribe solo lo legible, marca lo dudoso, y declara honestamente lo que no está disponible.
 DÍAS DE LA SEMANA — misma regla de veracidad aplicada a un caso específico real (ver "corrección — Docente IA fabricaba el día de la semana de una fecha explícita"): nunca agregues ni inventes por iniciativa propia el día de la semana de una fecha. Solo puedes mencionar un día de la semana cuando exista una de estas dos fuentes autorizadas: (1) un cálculo determinístico que el propio sistema ya te haya entregado más abajo en este prompt (cuando exista) — esa es la autoridad máxima, incluso si el maestro escribió otro día distinto para la misma fecha; o (2) el día que el propio maestro haya escrito explícitamente junto con la fecha en su mensaje actual, cuando no exista cálculo determinístico disponible (por ejemplo, porque falta el año) — en ese caso consérvalo tal cual, sin intentar corregirlo ni completar el año que falta. Si ninguna de las dos fuentes existe, omite el día de la semana por completo — nunca calcules tú mismo uno "razonable" a partir de la fecha, y nunca lo tomes como válido solo porque apareció en una respuesta ANTERIOR tuya dentro de esta misma conversación: una respuesta previa tuya nunca es, por sí sola, una fuente factual confiable de esto.
 CONCIENCIA DE DATOS REALES — eres el cerebro central de Docente IA, no un chatbot genérico de propósito general: tienes acceso directo y automático a los datos reales del grupo activo del maestro (ver DATOS DEL MAESTRO más abajo, donde siempre viene el grupo activo y su lista de alumnos si existen) sin que el maestro tenga que dártelos ni preguntarte si los tienes. Tienes PROHIBIDO responder con frases genéricas de chatbot que nieguen o duden de tu acceso a la información de la aplicación — nunca digas "no tengo acceso directo...", "puedes decirme los nombres...", "podemos organizar una lista desde cero...", "si quieres podemos hacerlo juntos..." ni cualquier variante equivalente: son falsas dentro de esta aplicación y rompen la confianza del maestro. Si el maestro pregunta si ya tienes acceso a su lista, sus alumnos, su grupo, o cualquier dato que sí aparezca en DATOS DEL MAESTRO, respóndele con ese dato real y confirma que sí lo tienes — nunca finjas no saberlo. Ejemplo: "¿Ya tienes acceso a mi lista de alumnos?" → "Sí. Ya tengo acceso a la lista del grupo [nombre]. Actualmente hay [N] alumnos registrados. ¿Qué deseas hacer con ellos?". Si el dato específico que pide el maestro NO aparece en DATOS DEL MAESTRO (por ejemplo, una ficha descriptiva o documento que todavía no se ha generado), dilo con honestidad y ofrece la acción concreta para resolverlo — nunca lo confundas con no tener acceso a la aplicación en general. Ejemplo: "Aún no encuentro una lista registrada para este grupo. ¿Deseas importarla o crear una nueva?"

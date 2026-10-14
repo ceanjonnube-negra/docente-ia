@@ -84,7 +84,7 @@ export function alumnoDelGrupoActivo(lista: AlumnoLigero[], alumnoId: string | n
 export type ResultadoIdentidadAlumno =
   | { tipo: 'sin_alumno' }
   | { tipo: 'resuelto'; alumno: AlumnoLigero }
-  | { tipo: 'ambiguo'; opciones: string[] }
+  | { tipo: 'ambiguo'; opciones: string[]; ids: string[] }
   | { tipo: 'rechazado'; motivo: 'fuera_de_grupo' | 'discrepancia' | 'ambiguedad_sin_opciones' | 'sin_evidencia' }
 
 export function validarAlumnoClasificado(
@@ -92,12 +92,16 @@ export function validarAlumnoClasificado(
   lista: AlumnoLigero[],
   // Texto del docente, del más reciente al más antiguo (mensaje actual
   // y sus turnos previos). Se usa el primero que mencione a algún alumno.
-  textosDocente: string[]
+  textosDocente: string[],
+  // Continuidad V1: alumno heredado de un estado pendiente FIRMADO por el
+  // servidor y revalidado contra el grupo (ver estadoPendiente.ts). Es
+  // evidencia de confianza solo cuando el texto no menciona a nadie.
+  alumnoHeredadoId: string | null = null
 ): ResultadoIdentidadAlumno {
   const mejores = mejoresCandidatos(lista, textosDocente)
 
   if (propuesta.ambiguo) {
-    if (mejores.length > 1) return { tipo: 'ambiguo', opciones: mejores.map((a) => a.nombre_completo) }
+    if (mejores.length > 1) return { tipo: 'ambiguo', opciones: mejores.map((a) => a.nombre_completo), ids: mejores.map((a) => a.alumno_id) }
     const desdeOpciones = lista.filter((a) =>
       propuesta.opciones.some((o) => {
         const t = tokens(o)
@@ -105,7 +109,7 @@ export function validarAlumnoClasificado(
         return t.length > 0 && t.every((x) => delAlumno.some((y) => coincide(x, y)))
       })
     )
-    if (desdeOpciones.length > 1) return { tipo: 'ambiguo', opciones: desdeOpciones.map((a) => a.nombre_completo) }
+    if (desdeOpciones.length > 1) return { tipo: 'ambiguo', opciones: desdeOpciones.map((a) => a.nombre_completo), ids: desdeOpciones.map((a) => a.alumno_id) }
     return { tipo: 'rechazado', motivo: 'ambiguedad_sin_opciones' }
   }
 
@@ -124,9 +128,11 @@ export function validarAlumnoClasificado(
 
   // Sin ninguna mención reconocible del docente, la identidad dependería
   // solo del LLM: se pide aclaración.
-  if (mejores.length === 0) return { tipo: 'rechazado', motivo: 'sin_evidencia' }
+  if (mejores.length === 0) {
+    return alumnoHeredadoId && alumno.alumno_id === alumnoHeredadoId ? { tipo: 'resuelto', alumno } : { tipo: 'rechazado', motivo: 'sin_evidencia' }
+  }
   if (!mejores.some((a) => a.alumno_id === alumno.alumno_id)) return { tipo: 'rechazado', motivo: 'discrepancia' }
-  if (mejores.length > 1) return { tipo: 'ambiguo', opciones: mejores.map((a) => a.nombre_completo) }
+  if (mejores.length > 1) return { tipo: 'ambiguo', opciones: mejores.map((a) => a.nombre_completo), ids: mejores.map((a) => a.alumno_id) }
 
   return { tipo: 'resuelto', alumno }
 }

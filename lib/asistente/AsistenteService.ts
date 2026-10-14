@@ -64,6 +64,7 @@ import type {
   MotorConversacional,
   PropuestaCorreccionPendiente,
   ResolucionCorreccionAlumno,
+  SobreEstadoPendiente,
   TrazaDiagnosticoCurp,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
@@ -396,6 +397,21 @@ class AsistenteServiceImpl {
     const diferencia = ultimo.datosAccionAlumno
     if (!diferencia || this.correccionesAlumnoEnCurso.has(ultimo.id)) return null
     return { mensajeId: ultimo.id, sobre: diferencia.sobre ?? null }
+  }
+
+  // Continuidad V1 — el último mensaje del asistente es una aclaración (o
+  // un dato mostrado) con estado pendiente firmado por el servidor.
+  private tieneEstadoPendiente(): boolean {
+    const ultimo = this.mensajes[this.mensajes.length - 1]
+    return !!ultimo && ultimo.rol === 'asistente' && !!ultimo.estadoPendiente && !ultimo.datosAccionAlumno
+  }
+
+  // El mismo estado, tal cual lo firmó el servidor, para el siguiente turno.
+  // Solo mientras ese mensaje sea el último (cualquier mensaje intermedio
+  // lo descarta).
+  private capturarEstadoPendiente(): SobreEstadoPendiente | null {
+    if (!this.tieneEstadoPendiente()) return null
+    return this.mensajes[this.mensajes.length - 1].estadoPendiente ?? null
   }
 
   // El servidor resolvió (por confirmación o cancelación textual) la
@@ -1649,6 +1665,10 @@ class AsistenteServiceImpl {
           }
         }
         if (evento.correccionAlumnoResuelta) this.aplicarResolucionCorreccionAlumno(evento.correccionAlumnoResuelta)
+        if (evento.estadoPendiente && this.turnoAbierto) {
+          const i = this.mensajes.findIndex((m) => m.id === this.turnoAbierto)
+          if (i !== -1) this.mensajes = [...this.mensajes.slice(0, i), { ...this.mensajes[i], estadoPendiente: evento.estadoPendiente }, ...this.mensajes.slice(i + 1)]
+        }
         // PASO 3 — el turno del asistente ya quedó en su estado final
         // (todas las mutaciones de arriba, incluida resultadoEmbebido,
         // ya se aplicaron a this.mensajes): se relee fresco por id y
@@ -1893,7 +1913,7 @@ class AsistenteServiceImpl {
     // donde clasificarNivel0 lo resuelve como consultar_dato_alumno/
     // corregir_dato_alumno — nunca se envía al generador de imágenes ni
     // se trata como edición del documento activo.
-    const esOperacionSobreDatoPersonalAlumno = this.tieneCorreccionAlumnoPendiente() || pareceOperacionSobreDatoPersonalAlumno(limpio)
+    const esOperacionSobreDatoPersonalAlumno = this.tieneCorreccionAlumnoPendiente() || this.tieneEstadoPendiente() || pareceOperacionSobreDatoPersonalAlumno(limpio)
 
     // COPIAR TEXTO RECIENTE (ver "copiar texto reciente sin que
     // documentoActivo viejo secuestre la continuación") — se evalúa
@@ -2028,6 +2048,7 @@ class AsistenteServiceImpl {
     // Se captura ANTES de empujar el mensaje del docente (después, el
     // último mensaje ya no es la propuesta).
     const propuestaCorreccionPendiente = this.capturarPropuestaCorreccionPendiente()
+    const estadoPendiente = this.capturarEstadoPendiente()
     if (propuestaCorreccionPendiente) this.correccionesAlumnoEnCurso.add(propuestaCorreccionPendiente.mensajeId)
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }
     this.mensajes = [...this.mensajes, mensajeUsuario]
@@ -2090,7 +2111,7 @@ class AsistenteServiceImpl {
       // referentesContextuales/conversacionId/mensajeUsuarioId/
       // assistantMessageId como parámetros opcionales al final (ver
       // tipos.ts) — ya no hace falta ningún cast para pasarlos.
-      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId, mensajeUsuarioIdConfirmado, idMensajeAsistente, propuestaCorreccionPendiente)
+      await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug, undefined, debugRequestId, referentesContextuales, this.conversacionActivaId, mensajeUsuarioIdConfirmado, idMensajeAsistente, propuestaCorreccionPendiente, estadoPendiente)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     } finally {

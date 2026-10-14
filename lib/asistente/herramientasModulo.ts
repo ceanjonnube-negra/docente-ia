@@ -78,9 +78,12 @@ export type ContextoEjecucionHerramienta = {
   // Su presencia NUNCA autoriza ejecutarla: solo se usa si el
   // clasificador reconoce una confirmación/cancelación explícita.
   propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null
+  // Continuidad V1: cuando la herramienta pide una aclaración, avisa qué
+  // dato falta para que /api/chat adjunte el estado pendiente firmado.
+  alFaltarDato?: (faltante: 'alumno' | 'campo' | 'valor') => void
 }
 
-type DisponibilidadHerramienta = { listo: true } | { listo: false; mensaje: string }
+type DisponibilidadHerramienta = { listo: true } | { listo: false; mensaje: string; faltante?: 'alumno' | 'campo' | 'valor' }
 
 export type DefinicionHerramientaModulo<TDatos> = {
   intent: string
@@ -509,9 +512,9 @@ type CampoAlumnoConsultable = 'curp' | 'sexo' | 'fecha_nacimiento'
 const herramientaConsultarDatoAlumno = definir({
   intent: 'consultar_dato_alumno',
   puedeEjecutar: (clasificacion, ctx) => {
-    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
-    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO }
-    if (!clasificacion.campo_alumno_solicitado) return { listo: false, mensaje: '¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?' }
+    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?', faltante: 'alumno' }
+    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO, faltante: 'alumno' }
+    if (!clasificacion.campo_alumno_solicitado) return { listo: false, mensaje: '¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?', faltante: 'campo' }
     if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para consultar ese dato.' }
     return { listo: true }
   },
@@ -605,11 +608,11 @@ const herramientaCorregirDatoAlumno = definir({
       if (!ctx.userId) return { listo: false, mensaje: 'No pude identificar tu sesión para hacer esta corrección.' }
       return { listo: true }
     }
-    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
-    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO }
+    if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?', faltante: 'alumno' }
+    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO, faltante: 'alumno' }
     if (clasificacion.accion_correccion_alumno === 'cancelar') return { listo: true }
-    if (!clasificacion.campo_alumno_corregir) return { listo: false, mensaje: '¿Qué dato necesitas corregir — CURP, sexo o fecha de nacimiento?' }
-    if (!clasificacion.valor_alumno_propuesto) return { listo: false, mensaje: '¿Cuál es el valor correcto?' }
+    if (!clasificacion.campo_alumno_corregir) return { listo: false, mensaje: '¿Qué dato necesitas corregir — CURP, sexo o fecha de nacimiento?', faltante: 'campo' }
+    if (!clasificacion.valor_alumno_propuesto) return { listo: false, mensaje: '¿Cuál es el valor correcto?', faltante: 'valor' }
     if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para hacer esta corrección.' }
     return { listo: true }
   },
@@ -871,6 +874,7 @@ export async function ejecutarHerramientaDeModulo(
   const disponibilidad = definicion.puedeEjecutar(clasificacion, ctx)
   if (!disponibilidad.listo) {
     console.log(`[HERRAMIENTA] ${definicion.intent} — no se pudo ejecutar: ${disponibilidad.mensaje}`)
+    if (disponibilidad.faltante) ctx.alFaltarDato?.(disponibilidad.faltante)
     return disponibilidad.mensaje
   }
 

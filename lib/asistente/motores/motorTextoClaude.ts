@@ -27,6 +27,7 @@ import type {
   PropuestaCorreccionPendiente,
   PropuestaListaOficialFirmada,
   ResolucionCorreccionAlumno,
+  SobreEstadoPendiente,
   TrazaDiagnosticoCurp,
 } from '../tipos'
 
@@ -269,7 +270,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null, estadoPendiente?: SobreEstadoPendiente | null) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
     // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — referencia para msTotalCliente
@@ -501,6 +502,7 @@ export class MotorTextoClaude implements MotorConversacional {
           // estructural top-level, solo presente mientras el último
           // mensaje del asistente es esa propuesta sin resolver.
           propuestaCorreccionPendiente: propuestaCorreccionPendiente ?? undefined,
+          estadoPendiente: estadoPendiente ?? undefined,
           // PERSISTENCIA SERVER-OWNED DEL MENSAJE ASISTENTE (creación/
           // ajuste de planeación, ver auditoría aprobada por separado)
           // — mismo criterio exacto que mensajeUsuarioId: metadata
@@ -616,7 +618,8 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinCorreccionAlumno, datosAccionAlumno } = this.procesarMarcadorDeCorreccionAlumno(sinNavegacion)
       const { texto: sinCorreccionResuelta, correccionAlumnoResuelta } = this.procesarMarcadorDeCorreccionAlumnoResuelta(sinCorreccionAlumno)
-      const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinCorreccionResuelta)
+      const { texto: sinEstadoPendiente, estadoPendiente: estadoPendienteRecibido } = this.procesarMarcadorDeEstadoPendiente(sinCorreccionResuelta)
+      const { texto: sinPropuestaListaOficial, propuestaListaOficialFirmada } = this.procesarMarcadorDePropuestaListaOficial(sinEstadoPendiente)
       const { texto: sinPerfilActualizado, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinPropuestaListaOficial)
       // SEÑAL SERVER-SIDE (ver "evitar sobrescritura cliente tras
       // persistencia server") — mismo patrón exacto que los demás
@@ -641,6 +644,7 @@ export class MotorTextoClaude implements MotorConversacional {
         accionNavegacion,
         datosAccionAlumno,
         correccionAlumnoResuelta,
+        estadoPendiente: estadoPendienteRecibido,
         propuestaListaOficialFirmada,
         perfilActualizado,
         decisionOrquestador: decisionOrquestador ?? undefined,
@@ -877,6 +881,27 @@ export class MotorTextoClaude implements MotorConversacional {
       return { texto: respuesta.replace(match[0], '').trim(), datosAccionAlumno }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Marcador técnico del ESTADO PENDIENTE de una aclaración (continuidad
+  // V1, ver lib/asistente/estadoPendiente.ts) — el docente nunca lo ve.
+  // El cliente no puede verificar la firma (es del servidor): solo valida
+  // la forma y lo devuelve tal cual en el siguiente turno.
+  private procesarMarcadorDeEstadoPendiente(respuesta: string): { texto: string; estadoPendiente?: SobreEstadoPendiente } {
+    const match = respuesta.match(/\[\[ESTADO_PENDIENTE:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    const texto = respuesta.replace(match[0], '').trim()
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const sobre = JSON.parse(new TextDecoder('utf-8').decode(bytes)) as Record<string, unknown>
+      if (sobre && typeof sobre === 'object' && typeof sobre.firma === 'string' && sobre.payload && typeof sobre.payload === 'object') {
+        return { texto, estadoPendiente: sobre as unknown as SobreEstadoPendiente }
+      }
+      return { texto }
+    } catch {
+      return { texto }
     }
   }
 

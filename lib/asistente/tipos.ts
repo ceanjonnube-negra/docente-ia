@@ -186,6 +186,27 @@ export type SobreCorreccionAlumno = {
   firma: string
 }
 
+// Continuidad conversacional V1 (ver lib/asistente/estadoPendiente.ts):
+// estado estructurado y firmado de una solicitud de dato de alumno que
+// quedó a medias por una aclaración. Sin CURP, fechas ni valores
+// personales: solo ids, campo y lo que falta.
+export type PayloadEstadoPendiente = {
+  v: 1
+  docenteId: string
+  conversacionId: string
+  intencion: 'consultar_dato_alumno' | 'corregir_dato_alumno'
+  alumnoId: string | null
+  candidatos: string[]
+  campo: CampoAlumnoCorregible | null
+  faltante: 'alumno' | 'campo' | 'valor'
+  generadoEn: string
+}
+
+export type SobreEstadoPendiente = {
+  payload: PayloadEstadoPendiente
+  firma: string
+}
+
 // Propuesta de corrección PENDIENTE que el cliente adjunta al turno de
 // texto mientras el último mensaje del asistente es esa propuesta (ver
 // tieneCorreccionAlumnoPendiente en AsistenteService): el id del mensaje
@@ -327,6 +348,9 @@ export type MensajeConversacion = {
   // AsistenteService.ts).
   acciones?: AccionMensaje[]
   accionElegida?: string
+  // Continuidad V1: estado firmado de la aclaración que hizo este mensaje
+  // (ver SobreEstadoPendiente). Solo se reenvía mientras sea el último.
+  estadoPendiente?: SobreEstadoPendiente
   // Diferencias de calendario pendientes de confirmar, calculadas por
   // /api/calendario/analizar — viajan pegadas al mensaje (no a un
   // "proceso activo" en el servidor) para no interferir con el
@@ -466,7 +490,7 @@ export type EventoMotor =
   // texto siempre '' en ese caso — AsistenteService intercepta esto
   // ANTES de crear/persistir cualquier burbuja (mismo criterio que
   // shortCircuitOrquestador) y arranca el polling del trabajo real.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; correccionAlumnoResuelta?: ResolucionCorreccionAlumno; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; datosAccionAlumno?: DiferenciaAlumno; correccionAlumnoResuelta?: ResolucionCorreccionAlumno; estadoPendiente?: SobreEstadoPendiente; propuestaListaOficialFirmada?: PropuestaListaOficialFirmada; perfilActualizado?: boolean; decisionOrquestador?: DecisionOrquestador; shortCircuitOrquestador?: boolean; assistantMessageIdPersistidoServer?: string; trabajoProgramaAnaliticoId?: string }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
@@ -656,7 +680,7 @@ export interface MotorConversacional {
   // que este turno es "regenerar la imagen activa con este prompt ya
   // combinado", acción mecánica que nunca pasa por Claude (mismo
   // criterio que finalizarArchivo).
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null): Promise<void>
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, regenerarImagen?: { assetIdAnterior: string }, debugRequestId?: string, referentesContextuales?: ReferenteContextualMetadata[], conversacionId?: string | null, mensajeUsuarioId?: string | null, assistantMessageId?: string | null, propuestaCorreccionPendiente?: PropuestaCorreccionPendiente | null, estadoPendiente?: SobreEstadoPendiente | null): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

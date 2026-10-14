@@ -116,6 +116,14 @@ export type ClasificacionNivel0 = {
   // 'confirmar'/'cancelar', el mismo valor ya extraído del turno
   // anterior del asistente.
   valor_alumno_propuesto: string | null;
+  // Continuidad V1 (regla 27, ver lib/asistente/estadoPendiente.ts) —
+  // solo cuando el contexto trae una SOLICITUD PENDIENTE: si el mensaje
+  // continúa esa solicitud y con qué operación. false/null en cualquier
+  // otro caso; /api/chat hace la fusión determinista.
+  // Opcionales en el tipo para no romper a quien construye clasificaciones
+  // a mano (verificadores); ausentes equivalen a false/null.
+  continua_pendiente?: boolean;
+  operacion_pendiente?: 'consultar_registrado' | 'cambiar_campo' | 'aportar_valor' | 'comparar' | 'confirmar_candidato' | 'cancelar' | null;
   // Solo relevante cuando nivel_detalle_asistencia_grupo es 'cantidad'
   // o 'nombres' — a qué categoría se refiere ("¿cuántos retardos?" →
   // "retardos"). null en 'resumen'/'completo' (cubren las 4 a la vez)
@@ -260,6 +268,8 @@ type ClasificacionModeloNivel0 = {
   modo_operacion_alumno?: NonNullable<ClasificacionNivel0['modo_operacion_alumno']>;
   campo_alumno_corregir?: NonNullable<ClasificacionNivel0['campo_alumno_corregir']>;
   valor_alumno_propuesto?: string;
+  continua_pendiente?: boolean;
+  operacion_pendiente?: string;
   grado_solicitado?: NonNullable<ClasificacionNivel0['grado_solicitado']>;
   grupo_solicitado?: NonNullable<ClasificacionNivel0['grupo_solicitado']>;
   tipo_incidencia?: string;
@@ -352,6 +362,8 @@ const FALLBACK: ClasificacionNivel0 = {
   campo_alumno_solicitado: null,
   accion_correccion_alumno: null,
   modo_operacion_alumno: null,
+  continua_pendiente: false,
+  operacion_pendiente: null,
   campo_alumno_corregir: null,
   valor_alumno_propuesto: null,
   pestana_lista: null,
@@ -501,6 +513,8 @@ Además de esas 4 claves siempre presentes, incluye ÚNICAMENTE las claves opcio
 "modo_operacion_alumno": "corregir" | "comparar" — solo en corregir_dato_alumno.
 "campo_alumno_corregir": "curp" | "sexo" | "fecha_nacimiento" — solo en corregir_dato_alumno.
 "valor_alumno_propuesto": string — solo en corregir_dato_alumno, y solo cuando el docente dio un valor explícito (si no, omítela — nunca la rellenes con un valor inventado).
+"continua_pendiente": boolean — solo cuando el contexto dinámico trae la sección SOLICITUD PENDIENTE (ver regla 27).
+"operacion_pendiente": "consultar_registrado" | "cambiar_campo" | "aportar_valor" | "comparar" | "confirmar_candidato" | "cancelar" — solo cuando continua_pendiente es true (ver regla 27).
 "grado_solicitado": "1°" | "2°" | "3°" | "4°" | "5°" | "6°" — solo en actualizar_perfil_docente, y solo si se mencionó el grado.
 "grupo_solicitado": "A" | "B" | "C" | "D" | "E" — solo en actualizar_perfil_docente, y solo si se mencionó el grupo.
 "tipo_incidencia": string — solo en registrar_incidencia.
@@ -602,24 +616,38 @@ DISTINGUE esto de la regla 21 (consultar_dato_alumno): la 21 es cuando el docent
    - "confirmar": el mensaje es una respuesta breve de aprobación final ("sí", "está bien", "así déjalo", "confírmalo", "guárdalo", "ya quedó", "perfecto", "ok") Y el turno inmediato anterior del asistente presentó un resumen de propuesta del Programa Analítico y cerró preguntando si se confirma/publica — mismo criterio exacto que accion_planeacion_generar="aprobar" (regla 4): nunca la uses "por si acaso"; si hay cualquier duda o el turno anterior no es inequívocamente ese cierre, usa "gestionar" en su lugar, nunca "confirmar" por defecto, porque dispara una publicación real.
    - "consultar": el mensaje es una pregunta de SOLO LECTURA sobre el Programa Analítico ya existente, sin pedir ningún cambio.
    - "gestionar": cualquier otro caso — iniciar, aportar contexto pedagógico (características/necesidades/situaciones del grupo o comunidad), o pedir un ajuste (excluir, restaurar, contextualizar, agregar/quitar un contenido local). El código determinista del servidor decide qué de esto corresponde según el estado real guardado en base de datos (si ya existe una propuesta pendiente o no) — nunca lo decidas tú ni asumas que existe o no existe una propuesta pendiente.
-   CONTINUACIÓN (mismo criterio que la regla 4 y regla 20): si el mensaje actual no menciona explícitamente "Programa Analítico" pero el turno inmediato anterior del asistente preguntó por contexto pedagógico para el Programa Analítico, presentó un resumen de propuesta, o mostró contenidos del Programa Analítico, y el mensaje actual responde/continúa naturalmente esa conversación, sigue siendo intencion_principal="programa_analitico" con la accion_programa_analitico que corresponda. Si el turno anterior del asistente no tiene relación clara con el Programa Analítico, NUNCA fuerces esta intención solo porque el mensaje sea corto o ambiguo — usa "conversacion_general".`;
+   CONTINUACIÓN (mismo criterio que la regla 4 y regla 20): si el mensaje actual no menciona explícitamente "Programa Analítico" pero el turno inmediato anterior del asistente preguntó por contexto pedagógico para el Programa Analítico, presentó un resumen de propuesta, o mostró contenidos del Programa Analítico, y el mensaje actual responde/continúa naturalmente esa conversación, sigue siendo intencion_principal="programa_analitico" con la accion_programa_analitico que corresponda. Si el turno anterior del asistente no tiene relación clara con el Programa Analítico, NUNCA fuerces esta intención solo porque el mensaje sea corto o ambiguo — usa "conversacion_general".
+27. CONTINUACIÓN DE UNA SOLICITUD PENDIENTE DE DATO DE ALUMNO — SOLO cuando el contexto dinámico trae la sección "SOLICITUD PENDIENTE" (el asistente acaba de hacer una pregunta para completar una consulta o una corrección de CURP, sexo o fecha de nacimiento de un alumno, o acaba de mostrar uno de esos datos registrados). Decide si el mensaje actual CONTINÚA esa solicitud:
+   - Si la continúa → "continua_pendiente": true y resuelve "operacion_pendiente":
+     · "consultar_registrado": pide ver el dato que la aplicación YA tiene registrado ("dame el que tienes", "dame primero el que tienes registrado", "muéstramelo", "¿cuál tienes?", "¿qué dice la ficha?") → intencion_principal="consultar_dato_alumno". Es SOLO LECTURA: nunca la conviertas en corrección.
+     · "cambiar_campo": pide OTRO de esos tres datos del mismo alumno ("¿y su fecha?", "¿y el sexo?") → consultar_dato_alumno si pregunta por el dato, o la intención en curso si sigue corrigiendo; resuelve el campo nuevo (campo_alumno_solicitado o campo_alumno_corregir).
+     · "aportar_valor": da el valor que se le pidió (una CURP, H/M, una fecha) → intencion_principal="corregir_dato_alumno", accion_correccion_alumno="proponer", valor_alumno_propuesto EXACTO con el mismo criterio de la regla 22.
+     · "comparar": pide comparar el dato registrado contra un valor ("compáralo", "compáralo con esta") → corregir_dato_alumno, accion_correccion_alumno="proponer", modo_operacion_alumno="comparar"; valor_alumno_propuesto solo si el mensaje trae el valor literal.
+     · "confirmar_candidato": elige o confirma a uno de los alumnos candidatos que ofreció el asistente ("sí, ese alumno", "sí, ella", "el primero") → la intención en curso.
+     · "cancelar": desiste ("olvídalo", "ya no", "déjalo así").
+     No repitas alumno ni campo si el mensaje no los menciona: la aplicación los conserva. Si el mensaje SÍ nombra a un alumno o un campo, resuélvelos normalmente (prevalecen sobre los de la solicitud) y no agregues a datos_faltantes lo que la solicitud ya tiene.
+   - Si es otra petición distinta (otro tema, otra herramienta, o un alumno distinto para otra cosa) → "continua_pendiente": false, clasifica normalmente y omite "operacion_pendiente".
+   Nunca uses esta regla para confirmar o cancelar una PROPUESTA de corrección ya presentada (eso es la regla 22.1).`;
 
 // Contexto de sesión + últimos turnos — la parte que sí cambia en
 // cada request (grupo, alumnos, señal de imagen, historial
 // reciente). Mismo texto/etiquetas exactos que ya usaba
 // construirPrompt(), sin cambios.
-function construirContextoDinamico(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean, referentesContextuales: ReferenteContextualMetadata[]): string {
+function construirContextoDinamico(sesion: SesionContexto, historialReciente: TurnoReciente[], tieneImagenAdjunta: boolean, referentesContextuales: ReferenteContextualMetadata[], solicitudPendiente: string | null = null): string {
   return `CONTEXTO DE SESIÓN (dato, no lo inventes, úsalo tal cual):
 grupo_activo_id: ${sesion.grupo_activo_id ?? 'ninguno'}
 ciclo_escolar_id: ${sesion.ciclo_escolar_id ?? 'ninguno'}
 alumnos_del_grupo_activo: ${JSON.stringify(sesion.alumnos_del_grupo_activo)}
 imagen_adjunta_a_este_mensaje: ${tieneImagenAdjunta ? 'sí' : 'no'}
 
-ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver regla 13 — no lo uses para nada más):
+ÚLTIMOS TURNOS DE LA CONVERSACIÓN (solo para resolver confirmaciones de seguimiento, ver reglas 13, 22.1 y 27 — no lo uses para nada más):
 ${historialReciente.length > 0 ? historialReciente.map((t) => compactarTurnoParaNivel0(t)).map((t) => `${t.role === 'user' ? 'MAESTRO' : 'ASISTENTE'}: ${t.content}`).join('\n') : '(sin turnos previos)'}
 
 REFERENTES CONTEXTUALES DISPONIBLES (ver regla 24 — SOLO relevantes si intencion_principal="conversacion_general"; metadata breve, nunca el contenido real):
-${referentesContextuales.length > 0 ? referentesContextuales.map((r) => `- id=${r.id} tipo=${r.tipo} origen=${r.origen}${r.formato ? ` formato=${r.formato}` : ''}`).join('\n') : '(ninguno disponible en este turno)'}`;
+${referentesContextuales.length > 0 ? referentesContextuales.map((r) => `- id=${r.id} tipo=${r.tipo} origen=${r.origen}${r.formato ? ` formato=${r.formato}` : ''}`).join('\n') : '(ninguno disponible en este turno)'}${solicitudPendiente ? `
+
+SOLICITUD PENDIENTE (ver regla 27 — lo que el asistente ya sabe de la solicitud que quedó a medias; estado verificado por la aplicación):
+${solicitudPendiente}` : ''}`;
 }
 
 // Reconstruye el contrato completo (ClasificacionNivel0) que
@@ -629,7 +657,37 @@ ${referentesContextuales.length > 0 ? referentesContextuales.map((r) => `- id=${
 // la aplicación". Ningún consumidor existente cambia: reciben
 // exactamente los mismos nulls/false/arrays vacíos que antes cuando un
 // campo no aplica, y los mismos valores reales cuando sí aplica.
+// Normalización CERRADA de datos_faltantes: el modelo a veces emite el
+// nombre del campo de salida en lugar del token del contrato (p. ej.
+// "campo_alumno_corregir" en vez de "campo_alumno"), y el bloque de
+// aclaración de /api/chat solo reconoce los tokens del contrato. Solo se
+// traducen variantes conocidas; cualquier otro token queda igual.
+const TOKENS_DATOS_FALTANTES: Record<string, string> = {
+  campo_alumno_corregir: 'campo_alumno',
+  campo_alumno_solicitado: 'campo_alumno',
+  campo: 'campo_alumno',
+  valor_alumno_propuesto: 'valor_alumno',
+  valor: 'valor_alumno',
+  valor_nuevo: 'valor_alumno',
+  alumno_id: 'alumno',
+  nombre_alumno: 'alumno',
+  alumno_nombre: 'alumno',
+  estado_asistencia_solicitado: 'estado_asistencia',
+}
+export function normalizarDatosFaltantes(tokens: unknown): string[] {
+  if (!Array.isArray(tokens)) return []
+  const salida: string[] = []
+  for (const t of tokens) {
+    if (typeof t !== 'string') continue
+    const canon = TOKENS_DATOS_FALTANTES[t] ?? t
+    if (!salida.includes(canon)) salida.push(canon)
+  }
+  return salida
+}
+const OPERACIONES_PENDIENTE = ['consultar_registrado', 'cambiar_campo', 'aportar_valor', 'comparar', 'confirmar_candidato', 'cancelar'] as const
+
 function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneImagenAdjunta: boolean, referentesContextuales: ReferenteContextualMetadata[] = []): ClasificacionNivel0 {
+  modelo = { ...modelo, datos_faltantes: normalizarDatosFaltantes(modelo.datos_faltantes) }
   const nivelEjecucion = NIVEL_EJECUCION_POR_INTENCION[modelo.intencion_principal]
   // Verificado contra las 23 reglas: requiere_contexto_memoria siempre
   // coincide exactamente con nivel_ejecucion===4 (nunca hay un caso
@@ -737,6 +795,10 @@ function normalizarClasificacionNivel0(modelo: ClasificacionModeloNivel0, tieneI
     modo_operacion_alumno: modelo.modo_operacion_alumno ?? null,
     campo_alumno_corregir: modelo.campo_alumno_corregir ?? null,
     valor_alumno_propuesto: modelo.valor_alumno_propuesto ?? null,
+    continua_pendiente: modelo.continua_pendiente === true,
+    operacion_pendiente: modelo.continua_pendiente === true && (OPERACIONES_PENDIENTE as readonly string[]).includes(modelo.operacion_pendiente ?? '')
+      ? (modelo.operacion_pendiente as ClasificacionNivel0['operacion_pendiente'])
+      : null,
     categoria_asistencia_grupo: modelo.categoria_asistencia_grupo ?? null,
     grado_solicitado: modelo.grado_solicitado ?? null,
     grupo_solicitado: modelo.grupo_solicitado ?? null,
@@ -967,7 +1029,11 @@ export async function clasificarNivel0(
   // []: cualquier llamada existente que no lo pase conserva el
   // comportamiento exacto de siempre (sin candidatos → capacidad_
   // contextual siempre null, ver normalizarClasificacionNivel0).
-  referentesContextuales: ReferenteContextualMetadata[] = []
+  referentesContextuales: ReferenteContextualMetadata[] = [],
+  // Continuidad V1 — texto estructurado del estado pendiente YA verificado
+  // por /api/chat (ver estadoPendienteParaClasificador). null = sin
+  // solicitud pendiente: comportamiento exacto de siempre.
+  solicitudPendiente: string | null = null
 ): Promise<ClasificacionNivel0> {
   // BYPASS — imagen(es) sin texto (ver auditoría "imagen sin texto" +
   // pruebas runtime): Anthropic RECHAZA con 400 "user messages must
@@ -1017,7 +1083,7 @@ export async function clasificarNivel0(
         // orden lógico de ninguna regla, solo cómo se transmite.
         system: [
           { type: 'text', text: PROMPT_NIVEL0_ESTATICO, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: construirContextoDinamico(sesion, historialReciente, tieneImagenAdjunta, referentesContextuales) },
+          { type: 'text', text: construirContextoDinamico(sesion, historialReciente, tieneImagenAdjunta, referentesContextuales, solicitudPendiente) },
         ],
         messages: [{ role: 'user', content: mensaje }],
       },
