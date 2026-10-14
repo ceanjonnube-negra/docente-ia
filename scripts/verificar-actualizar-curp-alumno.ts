@@ -208,14 +208,16 @@ function main() {
   verificar(difValidez === 0, `10b. Validez TS idéntica a SQL en todo el corpus (diferencias: ${difValidez})`)
   verificar(difNorma === 0, `10c. Forma normalizada TS idéntica a SQL (diferencias: ${difNorma})`)
 
-  // 11. Orden de migraciones; consumidores: el Chat ya usa la primitiva,
-  // la ficha individual todavía no (fase posterior).
+  // 11. Orden de migraciones; consumidores: el Chat usa la primitiva a
+  // través de confirmar_correccion_alumno (C4, 20261015000000), la ficha
+  // individual todavía no (fase posterior).
   const migraciones = readdirSync(raiz('supabase', 'migrations')).filter((f) => /^\d{14}_[^ ]+\.sql$/.test(f)).sort()
   verificar(migraciones.indexOf(NOMBRE) > migraciones.indexOf('20261013000000_cotejo_curp_por_docente.sql'), '11. Se ordena después de T0 (20261013000000)')
   const motor = readFileSync(raiz('lib', 'motorContexto.ts'), 'utf-8')
   const ficha = readFileSync(raiz('app', 'dashboard', 'lista', '[alumnoId]', 'page.tsx'), 'utf-8')
   const herramientas = readFileSync(raiz('lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
   const rutaCorreccion = readFileSync(raiz('app', 'api', 'alumnos', 'aplicar-correccion', 'route.ts'), 'utf-8')
+  const migracionC4 = readFileSync(raiz('supabase', 'migrations', '20261015000000_confirmar_correccion_alumno.sql'), 'utf-8')
   // Cuerpo de una función (desde su declaración hasta la llave que la cierra).
   const cuerpoFuncion = (fuente: string, declaracion: string) => {
     const inicio = fuente.indexOf(declaracion)
@@ -228,20 +230,19 @@ function main() {
     }
     return ''
   }
-  const fnCurp = cuerpoFuncion(motor, 'async function aplicarCorreccionCurp(')
   const fnAplicar = cuerpoFuncion(motor, 'export async function aplicarCorreccionAlumno(')
-  const ramaCurp = fnAplicar.match(/^\{\s*if \(campo === 'curp'\) \{\s*if \(valorEsperado === undefined\) \{\s*return \{ exito: false,[^}]*\}\s*\}\s*return aplicarCorreccionCurp\(sb, alumnoId, valorNuevo, fuente, valorEsperado\)\s*\}/)
+  // Rama CURP de confirmar_correccion_alumno: desde "if p_campo = 'curp'" hasta "elsif".
+  const ramaCurpSql = migracionC4.slice(migracionC4.indexOf("if p_campo = 'curp' then"), migracionC4.indexOf("elsif p_campo = 'sexo' then"))
   const chequeos11b: [boolean, string][] = [
-    [/sb\.rpc\('actualizar_curp_alumno', \{/.test(fnCurp), 'el Chat corrige CURP con sb.rpc(actualizar_curp_alumno)'],
-    [!/\.update\(|\.insert\(|\.upsert\(|\.from\(/.test(fnCurp), 'la rama CURP no hace UPDATE/INSERT/lecturas propias'],
-    [!!ramaCurp, 'aplicarCorreccionAlumno resuelve CURP (y retorna) antes de cualquier otra sentencia'],
-    [fnAplicar.indexOf('.update(') > (ramaCurp?.[0].length ?? Infinity) && fnAplicar.indexOf("from('correcciones_alumno')") > (ramaCurp?.[0].length ?? Infinity), 'el UPDATE directo y el INSERT de trazabilidad quedan solo para sexo/fecha_nacimiento'],
-    [(motor.match(/from\('correcciones_alumno'\)/g) ?? []).length === 1, 'un solo INSERT de trazabilidad en motorContexto (el de sexo/fecha); CURP lo hace la RPC'],
+    [(fnAplicar.match(/sb\.rpc\(/g) ?? []).length === 1 && /sb\.rpc\('confirmar_correccion_alumno', \{/.test(fnAplicar), 'el Chat escribe con UNA sola llamada: sb.rpc(confirmar_correccion_alumno)'],
+    [/v_resultado := public\.actualizar_curp_alumno\(p_alumno_id, p_valor_esperado, p_valor_nuevo, p_fuente, p_conversacion_id\)/.test(ramaCurpSql), 'para CURP, confirmar_correccion_alumno reutiliza actualizar_curp_alumno'],
+    [!/update public\.alumnos|insert into public\.correcciones_alumno/i.test(ramaCurpSql), 'la rama CURP no hace UPDATE ni INSERT de trazabilidad propios (los hace la primitiva)'],
+    [!/\.update\(|\.insert\(|\.upsert\(|\.from\(/.test(fnAplicar) && !/from\('correcciones_alumno'\)/.test(motor) && !/actualizar_curp_alumno'/.test(motor), 'motorContexto no hace UPDATE directo, INSERT de trazabilidad ni llamada directa a actualizar_curp_alumno'],
     [[herramientas, rutaCorreccion].every((f) => !/\.from\('(alumnos|correcciones_alumno)'\)/.test(f) && !/\.rpc\(/.test(f)), 'herramienta y endpoint del Chat no escriben alumnos ni trazabilidad por su cuenta'],
-    [!ficha.includes('actualizar_curp_alumno'), 'la ficha individual todavía NO usa la primitiva (fase posterior)'],
+    [!ficha.includes('actualizar_curp_alumno') && !ficha.includes('confirmar_correccion_alumno'), 'la ficha individual todavía NO usa la primitiva (fase posterior)'],
   ]
   const fallidos11b = chequeos11b.filter(([ok]) => !ok).map(([, m]) => m)
-  verificar(fallidos11b.length === 0, `11b. Chat usa actualizar_curp_alumno sin UPDATE directo de CURP ni INSERT duplicado; ficha individual aún no${fallidos11b.length ? ` — FALLA: ${fallidos11b.join('; ')}` : ''}`)
+  verificar(fallidos11b.length === 0, `11b. Chat usa actualizar_curp_alumno (vía confirmar_correccion_alumno) sin UPDATE directo de CURP ni INSERT duplicado; ficha individual aún no${fallidos11b.length ? ` — FALLA: ${fallidos11b.join('; ')}` : ''}`)
 
   console.log('')
   if (fallos > 0) {

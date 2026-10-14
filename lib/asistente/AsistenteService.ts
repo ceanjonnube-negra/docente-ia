@@ -395,15 +395,7 @@ class AsistenteServiceImpl {
     const ultimo = this.mensajes[this.mensajes.length - 1]
     const diferencia = ultimo.datosAccionAlumno
     if (!diferencia || this.correccionesAlumnoEnCurso.has(ultimo.id)) return null
-    return {
-      mensajeId: ultimo.id,
-      conversacionId: diferencia.conversacionId ?? null,
-      alumnoId: diferencia.alumnoId,
-      alumnoNombre: diferencia.alumnoNombre,
-      campo: diferencia.campo,
-      valorActual: diferencia.valorActual,
-      valorNuevo: diferencia.valorNuevo,
-    }
+    return { mensajeId: ultimo.id, sobre: diferencia.sobre ?? null }
   }
 
   // El servidor resolvió (por confirmación o cancelación textual) la
@@ -2323,23 +2315,24 @@ class AsistenteServiceImpl {
   // manejarEventoMotor, caso 'respuesta-final' con datosAccionAlumno)
   // — mismo patrón que confirmarAccionCalendario: la escritura real
   // ocurre en un endpoint dedicado que vuelve a verificar todo del lado
-  // servidor. CURP: el endpoint usa la RPC canónica con compare-and-set
-  // contra el valor EXACTO que mostró la propuesta (valorAnterior), y
-  // accionElegida se marca solo al conocer el resultado (un fallo
-  // transitorio deja la propuesta disponible para reintentar; uno
-  // definitivo la cierra como rechazada). Sexo/fecha: accionElegida se
-  // marca de inmediato, como siempre.
+  // servidor: solo ejecuta la propuesta FIRMADA (C4) con la RPC
+  // transaccional (compare-and-set contra el valor anterior firmado, uso
+  // único). Para CURP, sexo y fecha, accionElegida se marca solo al
+  // conocer el resultado (un fallo transitorio deja la propuesta
+  // disponible para reintentar; uno definitivo la cierra como rechazada).
   async confirmarCorreccionAlumno(mensajeId: string, accionId: string) {
     const mensaje = this.mensajes.find((m) => m.id === mensajeId)
     if (!mensaje || mensaje.accionElegida || this.generando || this.correccionesAlumnoEnCurso.has(mensajeId)) return
 
-    const esCurp = accionId === 'corregir_alumno' && mensaje.datosAccionAlumno?.campo === 'curp'
-    // Si el docente cambia de conversación mientras la corrección de
-    // CURP está en vuelo, su resultado se registra en la conversación de
+    // Confirmación de corrección (CURP, sexo o fecha): accionElegida se
+    // marca solo al conocer el resultado. Cancelar se marca de inmediato.
+    const esConfirmacion = accionId === 'corregir_alumno'
+    // Si el docente cambia de conversación mientras la corrección está
+    // en vuelo, su resultado se registra en la conversación de
     // ORIGEN (nunca en la que quedó abierta), para que la propuesta no
     // reaparezca pendiente sin su resultado.
     const conversacionOrigen = this.conversacionActivaId
-    const fueraDeOrigen = () => esCurp && !!conversacionOrigen && this.conversacionActivaId !== conversacionOrigen
+    const fueraDeOrigen = () => esConfirmacion && !!conversacionOrigen && this.conversacionActivaId !== conversacionOrigen
     const guardarEnOrigen = (m: MensajeConversacion) =>
       guardarMensajeRemoto(conversacionOrigen!, m).catch((e) => console.error('[CORRECCION_ALUMNO] No se pudo guardar el resultado en su conversación de origen:', e))
     const agregarResultado = (m: MensajeConversacion) => {
@@ -2357,7 +2350,7 @@ class AsistenteServiceImpl {
       this.persistirConversacion()
       this.persistirMensajeAsegurandoConversacion(mensajeConAccion)
     }
-    if (!esCurp) marcarAccion(accionId)
+    if (!esConfirmacion) marcarAccion(accionId)
 
     if (accionId === 'cancelar') {
       const mensajeCancelado: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no hice ningún cambio.', creadoEn: Date.now() }
@@ -2371,10 +2364,11 @@ class AsistenteServiceImpl {
     if (accionId !== 'corregir_alumno') return
 
     const diferencia = mensaje.datosAccionAlumno
-    // CURP: la propuesta debe pertenecer a la conversación activa. Una
+    // La propuesta debe pertenecer a la conversación activa (el servidor
+    // lo vuelve a exigir con la firma). Una
     // propuesta sin conversación (anterior a este contrato) o de otra
     // conversación no se ejecuta: se pide una nueva.
-    if (esCurp && (!diferencia?.conversacionId || diferencia.conversacionId !== this.conversacionActivaId)) {
+    if (esConfirmacion && (!diferencia?.conversacionId || diferencia.conversacionId !== this.conversacionActivaId)) {
       marcarAccion('corregir_alumno_rechazada')
       const mensajeNoVinculada: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'No apliqué la corrección: no pude vincularla con certeza a su propuesta original. Vuelve a solicitarla.', creadoEn: Date.now() }
       this.mensajes = [...this.mensajes, mensajeNoVinculada]
@@ -2412,12 +2406,10 @@ class AsistenteServiceImpl {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          alumnoId: diferencia.alumnoId,
-          campo: diferencia.campo,
-          valorNuevo: diferencia.valorNuevo,
-          fuente: diferencia.fuente,
+          // Solo la propuesta firmada por el servidor (C4); alumno,
+          // campo y valores salen de ella, nunca de campos sueltos.
+          sobre: diferencia.sobre ?? null,
           conversacionId: this.conversacionActivaId,
-          ...(esCurp ? { valorAnterior: diferencia.valorActual, propuestaConversacionId: diferencia.conversacionId } : {}),
           accessToken: session?.access_token || null,
         }),
         signal: controlador.signal,
@@ -2425,11 +2417,11 @@ class AsistenteServiceImpl {
 
       const cuerpo = await res.json().catch(() => null)
       if (!res.ok || !cuerpo || typeof cuerpo.error === 'string') {
-        if (esCurp && cuerpo?.definitivo === true) marcarAccion('corregir_alumno_rechazada')
+        if (esConfirmacion && cuerpo?.definitivo === true) marcarAccion('corregir_alumno_rechazada')
         throw new Error(cuerpo?.error || 'No pude aplicar la corrección. Intenta de nuevo.')
       }
 
-      if (esCurp) marcarAccion('corregir_alumno')
+      if (esConfirmacion) marcarAccion('corregir_alumno')
       const mensajeExito: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || 'Listo. Corregí el dato.', creadoEn: Date.now() }
       agregarResultado(mensajeExito)
     } catch (err) {
@@ -2438,7 +2430,7 @@ class AsistenteServiceImpl {
       // que no ocurrió. Un reintento no duplica (compare-and-set).
       const sinRespuesta = err instanceof Error && (err.name === 'AbortError' || err.name === 'TypeError')
       const mensajeErrorTexto =
-        esCurp && sinRespuesta
+        esConfirmacion && sinRespuesta
           ? 'No recibí la confirmación de esta corrección (se perdió la conexión o tardó demasiado), así que no la doy por aplicada. Revisa la CURP actual del alumno antes de volver a intentarlo; si ya se había aplicado, un reintento no la duplicará.'
           : err instanceof Error && err.name === 'AbortError'
             ? 'La corrección tardó demasiado. Intenta de nuevo.'

@@ -7,7 +7,7 @@
 // para que auth.uid() funcione dentro de las RPC con SECURITY DEFINER).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { CampoAlumnoCorregible, DiferenciaCalendario } from './asistente/tipos';
+import type { CampoAlumnoCorregible, DiferenciaCalendario, PayloadCorreccionAlumno } from './asistente/tipos';
 import type { AspectoGeneral } from './seguimiento/tipos';
 import type { NivelTextoCanonico } from './seguimiento/conversionCalificacion';
 
@@ -447,181 +447,73 @@ export function validarValorCampoAlumno(campo: CampoAlumnoCorregible, valorCrudo
 
 export type ResultadoCorreccionAlumno =
   | { exito: true; sinCambios: boolean; valorAnterior: string | null; valorNuevo: string }
-  // codigo/definitivo solo los llena la rama de CURP (RPC canónica):
   // definitivo=true significa que la propuesta ya no puede ejecutarse
-  // tal cual (cambió el dato, duplicado, alumno ajeno…) y debe pedirse
-  // una nueva; false/ausente = fallo transitorio, puede reintentarse.
+  // tal cual (cambió el dato, ya se usó, duplicado, alumno ajeno…) y debe
+  // pedirse una nueva; false/ausente = fallo transitorio, puede reintentarse.
   | { exito: false; error: string; codigo?: string; definitivo?: boolean }
 
-// Códigos estables de public.actualizar_curp_alumno (migración
-// 20261014000000) → mensaje claro para el docente y si cierran la
+// Códigos estables de public.confirmar_correccion_alumno (migración
+// 20261015000000) y, para CURP, de public.actualizar_curp_alumno
+// (20261014000000) → mensaje claro para el docente y si cierran la
 // propuesta. Cualquier otro error se trata como transitorio.
-const ERRORES_ACTUALIZAR_CURP: Record<string, { mensaje: string; definitivo: boolean }> = {
-  STALE_CURRENT_VALUE: { mensaje: 'La CURP de este alumno cambió desde que te mostré la propuesta. Revisa el dato actual y vuelve a pedir la corrección antes de confirmarla', definitivo: true },
+const ERRORES_CORRECCION_ALUMNO: Record<string, { mensaje: string; definitivo: boolean }> = {
+  STALE_CURRENT_VALUE: { mensaje: 'El dato de este alumno cambió desde que te mostré la propuesta. Revisa el dato actual y vuelve a pedir la corrección antes de confirmarla', definitivo: true },
+  PROPOSAL_ALREADY_USED: { mensaje: 'Esta propuesta ya se aplicó antes, así que no la volví a aplicar', definitivo: true },
   NEW_CURP_DUPLICATE: { mensaje: 'Ya tienes otro alumno registrado con esa CURP, así que no hice el cambio', definitivo: true },
   STUDENT_NOT_AUTHORIZED: { mensaje: 'Ese alumno no existe o no te pertenece', definitivo: true },
+  STUDENT_NOT_IN_GROUP: { mensaje: 'Ese alumno ya no pertenece al grupo de esta conversación, así que no hice el cambio', definitivo: true },
   NEW_CURP_INVALID: { mensaje: 'La CURP propuesta no tiene un formato válido', definitivo: true },
+  NEW_VALUE_INVALID: { mensaje: 'El valor propuesto no tiene un formato válido', definitivo: true },
+  INVALID_PROPOSAL: { mensaje: 'La propuesta no es válida', definitivo: true },
+  INVALID_FIELD: { mensaje: 'Ese dato no se puede corregir desde aquí', definitivo: true },
   INVALID_SOURCE: { mensaje: 'No pude registrar el origen de la corrección', definitivo: true },
   CONVERSATION_NOT_AUTHORIZED: { mensaje: 'No pude vincular la corrección con esta conversación. Vuelve a pedir la corrección', definitivo: true },
   AUTH_REQUIRED: { mensaje: 'Tu sesión ya no es válida. Vuelve a iniciar sesión e intenta de nuevo', definitivo: false },
 }
 
-type RespuestaActualizarCurp =
-  | { resultado: 'actualizado'; alumno_id: string; curp_anterior: string | null; curp_nueva: string; correccion_id: string }
-  | { resultado: 'sin_cambios'; alumno_id: string; curp: string }
+type RespuestaConfirmarCorreccion =
+  | { resultado: 'actualizado'; alumno_id: string; campo: CampoAlumnoCorregible; valor_anterior: string | null; valor_nuevo: string; correccion_id: string; propuesta_id: string }
+  | { resultado: 'sin_cambios'; alumno_id: string; campo: CampoAlumnoCorregible; valor: string }
 
-// CURP: SIEMPRE vía public.actualizar_curp_alumno (SECURITY INVOKER,
-// bajo la sesión del docente). La RPC hace en UNA transacción el
-// compare-and-set contra el valor de la propuesta, la validación SQL,
-// el cotejo de duplicados propios, el advisory lock y la trazabilidad
-// en correcciones_alumno — aquí no se relee nada ni se inserta nada.
-async function aplicarCorreccionCurp(
+// Único camino de escritura de correcciones del Chat (CURP, sexo y fecha
+// de nacimiento): public.confirmar_correccion_alumno, bajo la sesión del
+// docente (SECURITY INVOKER). Recibe EXCLUSIVAMENTE una propuesta firmada
+// ya verificada por el llamador (ver verificarPropuestaCorreccion). La RPC
+// hace en UNA transacción: propiedad del alumno, grupo de la conversación,
+// compare-and-set contra el valor anterior firmado, la escritura (CURP vía
+// actualizar_curp_alumno, intacta), la trazabilidad y el registro de uso
+// único de la propuesta — aquí no se relee, no se actualiza ni se inserta
+// nada por separado.
+export async function aplicarCorreccionAlumno(
   sb: SupabaseClient,
-  alumnoId: string,
-  valorNuevo: string,
-  fuente: FuenteCorreccionAlumno,
-  valorEsperado: string | null
+  propuesta: PayloadCorreccionAlumno,
+  fuente: 'texto' | 'imagen' | 'documento' | 'voz' | 'manual'
 ): Promise<ResultadoCorreccionAlumno> {
-  const { data, error } = await sb.rpc('actualizar_curp_alumno', {
-    p_alumno_id: alumnoId,
-    p_curp_esperada_actual: valorEsperado,
-    p_curp_nueva: valorNuevo,
-    p_fuente: fuente.tipo,
-    p_conversacion_id: fuente.conversacionId ?? null,
+  const { data, error } = await sb.rpc('confirmar_correccion_alumno', {
+    p_propuesta_id: propuesta.propuestaId,
+    p_alumno_id: propuesta.alumnoId,
+    p_campo: propuesta.campo,
+    p_valor_esperado: propuesta.valorAnterior,
+    p_valor_nuevo: propuesta.valorNuevo,
+    p_fuente: fuente,
+    p_conversacion_id: propuesta.conversacionId,
   })
   if (error) {
-    const conocido = ERRORES_ACTUALIZAR_CURP[error.message]
-    if (!conocido) console.error('[CORRECCION_ALUMNO] actualizar_curp_alumno falló:', error)
+    const conocido = ERRORES_CORRECCION_ALUMNO[error.message]
+    if (!conocido) console.error('[CORRECCION_ALUMNO] confirmar_correccion_alumno falló:', error)
     return conocido
       ? { exito: false, error: conocido.mensaje, codigo: error.message, definitivo: conocido.definitivo }
       : { exito: false, error: 'No fue posible actualizar el dato', definitivo: false }
   }
-  const respuesta = data as RespuestaActualizarCurp | null
+  const respuesta = data as RespuestaConfirmarCorreccion | null
   if (respuesta?.resultado === 'sin_cambios') {
-    return { exito: true, sinCambios: true, valorAnterior: respuesta.curp, valorNuevo: respuesta.curp }
+    return { exito: true, sinCambios: true, valorAnterior: respuesta.valor, valorNuevo: respuesta.valor }
   }
-  if (respuesta?.resultado === 'actualizado') {
-    return { exito: true, sinCambios: false, valorAnterior: respuesta.curp_anterior, valorNuevo: respuesta.curp_nueva }
+  if (respuesta?.resultado === 'actualizado' && respuesta.propuesta_id === propuesta.propuestaId) {
+    return { exito: true, sinCambios: false, valorAnterior: respuesta.valor_anterior, valorNuevo: respuesta.valor_nuevo }
   }
-  console.error('[CORRECCION_ALUMNO] Respuesta inesperada de actualizar_curp_alumno:', data)
+  console.error('[CORRECCION_ALUMNO] Respuesta inesperada de confirmar_correccion_alumno:', data)
   return { exito: false, error: 'No se pudo confirmar que el dato quedó guardado correctamente', definitivo: false }
-}
-
-export type FuenteCorreccionAlumno = {
-  tipo: 'texto' | 'imagen' | 'documento' | 'voz' | 'manual'
-  detalle?: Record<string, unknown>
-  conversacionId?: string | null
-  mensajeId?: string | null
-}
-
-// Escribe ÚNICAMENTE el campo autorizado de UN alumno, con
-// verificación real antes y después — nunca confía en un
-// "valor anterior" que le hayan mandado, siempre lo relee. Mismo
-// criterio ya probado en aplicarCorreccionesCalendario: cada escritura
-// lleva su propio filtro de propiedad (.eq('docente_id', docenteId))
-// y se cuenta solo lo que Supabase realmente confirmó — "nunca
-// confirmar sin verificar".
-export async function aplicarCorreccionAlumno(
-  sb: SupabaseClient,
-  docenteId: string,
-  alumnoId: string,
-  campo: CampoAlumnoCorregible,
-  valorNuevo: string,
-  fuente: FuenteCorreccionAlumno,
-  // Solo CURP: valor anterior EXACTO de la propuesta original que vio el
-  // docente (compare-and-set de la RPC). undefined = no hay propuesta
-  // original → no se ejecuta; nunca se reconstruye desde la base.
-  valorEsperado?: string | null
-): Promise<ResultadoCorreccionAlumno> {
-  if (campo === 'curp') {
-    if (valorEsperado === undefined) {
-      return { exito: false, error: 'No encontré la propuesta original de esta corrección. Pídeme de nuevo la corrección para mostrarte el dato actual', definitivo: true }
-    }
-    return aplicarCorreccionCurp(sb, alumnoId, valorNuevo, fuente, valorEsperado)
-  }
-
-  // sexo / fecha_nacimiento: comportamiento sin cambios.
-  // 1. Releer el valor REAL actual — nunca el que haya dicho el cliente.
-  const { data: filaActual, error: errorLectura } = await sb
-    .from('alumnos')
-    .select(campo)
-    .eq('id', alumnoId)
-    .eq('docente_id', docenteId)
-    .maybeSingle()
-  if (errorLectura) {
-    console.error('[CORRECCION_ALUMNO] Fallo leyendo el valor actual:', errorLectura)
-    return { exito: false, error: 'No fue posible consultar el dato actual del alumno' }
-  }
-  if (!filaActual) return { exito: false, error: 'Ese alumno no existe o no te pertenece' }
-  const valorAnteriorReal = (filaActual as Record<CampoAlumnoCorregible, string | null>)[campo]
-
-  // 2. Si ya coincide con lo propuesto, no se escribe nada — el
-  // llamador decide el mensaje ("ese valor ya coincide"), aquí solo se
-  // reporta que no hubo cambio real, para que tampoco se inserte
-  // trazabilidad innecesaria.
-  if (valorAnteriorReal === valorNuevo) {
-    return { exito: true, sinCambios: true, valorAnterior: valorAnteriorReal, valorNuevo }
-  }
-
-  // 3. UPDATE — únicamente el campo autorizado, únicamente esa fila,
-  // únicamente si de verdad pertenece a este docente.
-  const { data: filaActualizada, error: errorUpdate } = await sb
-    .from('alumnos')
-    .update({ [campo]: valorNuevo })
-    .eq('id', alumnoId)
-    .eq('docente_id', docenteId)
-    .select(campo)
-    .maybeSingle()
-  if (errorUpdate) {
-    console.error('[CORRECCION_ALUMNO] Fallo en el UPDATE:', errorUpdate)
-    return { exito: false, error: 'No fue posible actualizar el dato' }
-  }
-  if (!filaActualizada) {
-    return { exito: false, error: 'La actualización no afectó ninguna fila — verifica que el alumno te pertenezca' }
-  }
-
-  // 4. VERIFICACIÓN real — una lectura SEPARADA del propio UPDATE
-  // (nunca solo el eco que Supabase regresa del mismo statement),
-  // confirmando que el valor guardado coincide EXACTAMENTE con el
-  // propuesto. Si no coincide, nunca se reporta éxito.
-  const { data: filaVerificada, error: errorVerificacion } = await sb
-    .from('alumnos')
-    .select(campo)
-    .eq('id', alumnoId)
-    .maybeSingle()
-  const valorVerificado = filaVerificada ? (filaVerificada as Record<CampoAlumnoCorregible, string | null>)[campo] : null
-  if (errorVerificacion || valorVerificado !== valorNuevo) {
-    console.error('[CORRECCION_ALUMNO] El valor releído no coincide con el propuesto tras el UPDATE:', { errorVerificacion, valorVerificado, valorNuevo })
-    return { exito: false, error: 'No se pudo confirmar que el dato quedó guardado correctamente' }
-  }
-
-  // 5. Trazabilidad — SOLO después de comprobar el UPDATE real (ver
-  // paso 4). Si esto falla, el dato del alumno YA se corrigió y YA se
-  // verificó — nunca se revierte solo porque falló el registro de
-  // auditoría (revertir aquí sería una segunda escritura no pedida ni
-  // verificada, con su propio riesgo). Se registra con la máxima
-  // visibilidad posible para investigarlo después — nunca se oculta.
-  const { error: errorTrazabilidad } = await sb.from('correcciones_alumno').insert({
-    alumno_id: alumnoId,
-    docente_id: docenteId,
-    campo,
-    valor_anterior: valorAnteriorReal,
-    valor_nuevo: valorNuevo,
-    fuente: fuente.tipo,
-    fuente_detalle: fuente.detalle ?? null,
-    conversacion_id: fuente.conversacionId ?? null,
-    mensaje_id: fuente.mensajeId ?? null,
-    accion: 'correccion',
-    correccion_original_id: null,
-  })
-  if (errorTrazabilidad) {
-    console.error(
-      `[CORRECCION_ALUMNO] INCONSISTENCIA A INVESTIGAR: el UPDATE de alumno=${alumnoId} campo=${campo} se aplicó y se verificó correctamente, pero la trazabilidad NO se pudo insertar:`,
-      errorTrazabilidad
-    )
-  }
-
-  return { exito: true, sinCambios: false, valorAnterior: valorAnteriorReal, valorNuevo }
 }
 
 export async function contextoGrupo(sb: SupabaseClient, grupoId: string) {

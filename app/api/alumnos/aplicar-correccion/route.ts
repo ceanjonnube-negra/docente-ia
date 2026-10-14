@@ -7,78 +7,83 @@
 // patrón de autenticación y estructura que
 // app/api/calendario/aplicar/route.ts: nunca decide QUÉ corregir
 // (eso ya se decidió y se mostró al docente antes), solo ejecuta lo
-// ya confirmado — y NUNCA confía ciegamente en lo que el cliente
-// mande: revalida campo permitido, formato del valor, y propiedad
-// real del alumno antes de escribir nada.
+// ya confirmado — y NUNCA confía en lo que el cliente mande: solo
+// ejecuta la propuesta firmada por el servidor (C4), verificada antes de
+// escribir, sobre un alumno que sigue en el grupo autorizado; la RPC
+// confirmar_correccion_alumno revalida propiedad, grupo, valor anterior y
+// uso único en la misma transacción.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi } from '@/lib/server/authApi'
-import { aplicarCorreccionAlumno, validarValorCampoAlumno } from '@/lib/motorContexto'
-import type { CampoAlumnoCorregible } from '@/lib/asistente/tipos'
+import { aplicarCorreccionAlumno } from '@/lib/motorContexto'
+import { MENSAJE_PROPUESTA_NO_VALIDA, verificarPropuestaCorreccion } from '@/lib/asistente/propuestaCorreccionFirmada'
+import { obtenerSesionContexto, type OpcionesSesionContexto } from '@/lib/sesionContexto'
+import { alumnoDelGrupoActivo } from '@/lib/asistente/identidadAlumno'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const runtime = 'nodejs'
 
-const CAMPOS_VALIDOS: CampoAlumnoCorregible[] = ['curp', 'sexo', 'fecha_nacimiento']
-const FUENTES_VALIDAS = ['texto', 'imagen', 'documento', 'voz', 'manual'] as const
+
+// Grupo autorizado para esta confirmación — mismo criterio de solo
+// lectura que /api/chat (MG-B): la conversación debe ser del docente
+// (RLS); si ya tiene grupo fijado (grupo_contexto_version=1), ese es el
+// grupo; si es anterior a los snapshots, el grupo activo del docente.
+// Nunca se acepta un grupo enviado por el cliente, y aquí nunca se fija
+// el snapshot (eso solo ocurre al conversar). null = no autorizado.
+async function opcionesGrupoAutorizado(sb: SupabaseClient, conversacionId: unknown): Promise<OpcionesSesionContexto | undefined | null> {
+  if (typeof conversacionId !== 'string' || !conversacionId) return undefined
+  const { data, error } = await sb
+    .from('conversaciones_chat')
+    .select('id, grupo_contexto_version, grupo_id')
+    .eq('id', conversacionId)
+    .maybeSingle()
+  if (error || !data) return null
+  if (data.grupo_contexto_version !== 1) return undefined
+  return data.grupo_id ? { modo: 'snapshot', grupoIdForzado: data.grupo_id as string } : null
+}
 
 export async function POST(req: NextRequest) {
   try {
     const cuerpo = await req.json()
-    const { alumnoId, campo, valorNuevo, fuente, conversacionId, accessToken } = cuerpo
-    // Identidad SIEMPRE del JWT verificado (getUser), nunca del userId
+    const { sobre, conversacionId, accessToken } = cuerpo
+    // Identidad SIEMPRE del JWT verificado (getUser), nunca de un userId
     // que mande el cliente — ese campo, si llega, se ignora.
     const auth = await autenticarRequestApi(typeof accessToken === 'string' ? accessToken : null)
     if (!auth.ok) {
       return NextResponse.json({ error: 'Sesión no válida. Vuelve a iniciar sesión e intenta de nuevo.' }, { status: 401 })
     }
-    if (typeof alumnoId !== 'string' || !alumnoId) {
-      return NextResponse.json({ error: 'Falta el alumno a corregir.' }, { status: 400 })
-    }
-    // Nunca confiar en un `campo` arbitrario que mande el cliente —
-    // aunque ya se validó del lado del clasificador/Herramienta al
-    // presentar la propuesta, este endpoint es una superficie
-    // autenticada independiente y revalida por su cuenta.
-    if (typeof campo !== 'string' || !CAMPOS_VALIDOS.includes(campo as CampoAlumnoCorregible)) {
-      return NextResponse.json({ error: 'Ese campo no está autorizado para corregirse desde aquí.' }, { status: 400 })
-    }
-    if (typeof valorNuevo !== 'string' || !valorNuevo.trim()) {
-      return NextResponse.json({ error: 'Falta el valor nuevo.' }, { status: 400 })
-    }
-    const fuenteTipo = typeof fuente === 'string' && (FUENTES_VALIDAS as readonly string[]).includes(fuente) ? fuente : 'manual'
-
-    // Revalidación de FORMATO — la misma función que ya se usó al
-    // presentar la propuesta (nunca una segunda regla paralela), pero
-    // vuelta a correr aquí: un payload que viaja de vuelta desde el
-    // cliente, aunque haya salido del propio servidor momentos antes,
-    // nunca se confía a ciegas.
-    const validacion = validarValorCampoAlumno(campo as CampoAlumnoCorregible, valorNuevo)
-    if (!validacion.valido) {
-      return NextResponse.json({ error: `Ese valor ya no tiene un formato válido: ${validacion.motivo}.` }, { status: 400 })
+    if (typeof conversacionId !== 'string' || !conversacionId) {
+      return NextResponse.json({ exito: false, error: `${MENSAJE_PROPUESTA_NO_VALIDA.OTRA_CONVERSACION}.`, codigo: 'OTRA_CONVERSACION', definitivo: true }, { status: 200 })
     }
 
-    // CURP: solo se ejecuta la propuesta ORIGINAL — su valor anterior
-    // exacto (compare-and-set de actualizar_curp_alumno) y la misma
-    // conversación en la que el servidor la generó. Si falta cualquiera
-    // de los dos, no se ejecuta y se pide una propuesta nueva.
-    let valorEsperado: string | null | undefined
-    if (campo === 'curp') {
-      const traeValorAnterior = Object.prototype.hasOwnProperty.call(cuerpo, 'valorAnterior') && (typeof cuerpo.valorAnterior === 'string' || cuerpo.valorAnterior === null)
-      const mismaConversacion = typeof conversacionId === 'string' && conversacionId.length > 0 && cuerpo.propuestaConversacionId === conversacionId
-      if (!traeValorAnterior || !mismaConversacion) {
-        return NextResponse.json({ exito: false, error: 'No pude vincular esta corrección con su propuesta original. Pídeme de nuevo la corrección para mostrarte el dato actual.', definitivo: true }, { status: 200 })
-      }
-      valorEsperado = cuerpo.valorAnterior as string | null
+    // Propuesta FIRMADA por el servidor (C4): se verifica ANTES de usar
+    // cualquier dato — firma, docente del JWT, conversación activa y
+    // vigencia. A partir de aquí solo se usan los valores firmados; nada
+    // de lo que mande el cliente (alumno, campo, valores) los sustituye.
+    const verificacion = verificarPropuestaCorreccion(sobre, { docenteId: auth.user.id, conversacionId })
+    if (!verificacion.ok) {
+      return NextResponse.json({ exito: false, error: `${MENSAJE_PROPUESTA_NO_VALIDA[verificacion.codigo]}.`, codigo: verificacion.codigo, definitivo: verificacion.codigo !== 'FIRMA_NO_DISPONIBLE' }, { status: 200 })
+    }
+    const firmada = verificacion.payload
+
+    // Pertenencia ACTUAL del alumno firmado al grupo autorizado de la
+    // conversación (ver opcionesGrupoAutorizado), con las mismas consultas
+    // que arman la sesión del Chat, y con el mismo nombre canónico que se
+    // le mostró al docente. Si no, no se escribe.
+    const opcionesGrupo = await opcionesGrupoAutorizado(auth.supabase, firmada.conversacionId)
+    const sesion = opcionesGrupo === null ? null : await obtenerSesionContexto(auth.supabase, auth.user.id, null, opcionesGrupo)
+    const alumno = sesion ? alumnoDelGrupoActivo(sesion.alumnos_del_grupo_activo, firmada.alumnoId) : null
+    if (!alumno) {
+      return NextResponse.json({ exito: false, error: 'Ese alumno ya no pertenece a tu grupo activo, así que no hice el cambio. Pídeme de nuevo la corrección.', codigo: 'ALUMNO_FUERA_DE_GRUPO', definitivo: true }, { status: 200 })
+    }
+    if (alumno.nombre_completo !== firmada.alumnoNombre) {
+      return NextResponse.json({ exito: false, error: 'El nombre registrado del alumno cambió desde la propuesta, así que no hice el cambio. Pídeme de nuevo la corrección.', codigo: 'NOMBRE_NO_COINCIDE', definitivo: true }, { status: 200 })
     }
 
-    // aplicarCorreccionAlumno: CURP vía la RPC canónica (atómica, con
-    // trazabilidad incluida); sexo/fecha_nacimiento con su flujo de
-    // siempre (propiedad real, relectura y verificación) — ver
+    // Única escritura: public.confirmar_correccion_alumno (compare-and-set,
+    // trazabilidad y uso único en una sola transacción) — ver
     // lib/motorContexto.ts.
-    const resultado = await aplicarCorreccionAlumno(auth.supabase, auth.user.id, alumnoId, campo as CampoAlumnoCorregible, validacion.valorNormalizado, {
-      tipo: fuenteTipo as 'texto' | 'imagen' | 'documento' | 'voz' | 'manual',
-      conversacionId: typeof conversacionId === 'string' ? conversacionId : null,
-      mensajeId: null,
-    }, valorEsperado)
+    const resultado = await aplicarCorreccionAlumno(auth.supabase, firmada, 'texto')
 
     if (!resultado.exito) {
       return NextResponse.json({ exito: false, error: resultado.error, codigo: resultado.codigo, definitivo: resultado.definitivo === true }, { status: 200 })

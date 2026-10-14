@@ -101,7 +101,7 @@ function main() {
   const ficha = readFileSync(raiz('app', 'dashboard', 'lista', '[alumnoId]', 'page.tsx'), 'utf-8')
   verificar(/\.from\('alumnos'\)\s*\n\s*\.update\(\{/.test(ficha), '5. Ficha individual: UPDATE directo bajo RLS (sin esta RPC)')
   const motor = readFileSync(raiz('lib', 'motorContexto.ts'), 'utf-8')
-  verificar(/\.from\('alumnos'\)\s*\n\s*\.update\(\{ \[campo\]: valorNuevo \}\)/.test(motor), '5b. Chat IA: corrección de campo con UPDATE directo bajo RLS (sin esta RPC)')
+  verificar(/sb\.rpc\('confirmar_correccion_alumno', \{/.test(motor) && !/actualizar_datos_alumno/.test(motor.replace(/export async function actualizarDatosAlumno\([\s\S]*?\n\}/, '')), '5b. Chat IA: corrección de campo vía confirmar_correccion_alumno (C4, sin esta RPC)')
   const corregirCurp = readFileSync(raiz('app', 'api', 'importar-alumnos', 'corregir-curp', 'route.ts'), 'utf-8')
   verificar(/rpc\('reparar_curp_desde_lista_oficial'/.test(corregirCurp), '5c. Lista oficial: reparar_curp_desde_lista_oficial (sin esta RPC)')
 

@@ -42,6 +42,7 @@ import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, detectarFormatosExplicitosMultiples, esDocumentoFormal, pareceNuevoDocumento, quiereIlustracion, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion, TrazaDiagnosticoCurp, LlamadaIA, ArchivoGeneradoInfo, PropuestaCorreccionPendiente } from '@/lib/asistente/tipos'
+import { validarAlumnoClasificado, MENSAJE_ALUMNO_NO_IDENTIFICADO } from '@/lib/asistente/identidadAlumno'
 import { ejecutarHerramientaDocumento, generarImagenesParaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO, MAX_IMAGENES_POR_DOCUMENTO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
@@ -498,28 +499,20 @@ export async function POST(req: NextRequest) {
   const conversacionIdSolicitada = typeof conversacionId === 'string' && conversacionId.trim() ? conversacionId.trim() : null
   // Propuesta de corrección de dato de alumno pendiente que el cliente
   // adjunta mientras su último mensaje del asistente es esa propuesta
-  // (ver PropuestaCorreccionPendiente en lib/asistente/tipos.ts). Solo se
-  // acepta con forma exacta; cualquier otra cosa se descarta (null) y,
-  // para CURP, una confirmación sin propuesta nunca se ejecuta. Su sola
-  // presencia NUNCA autoriza nada: la herramienta corregir_dato_alumno
-  // solo la usa ante una confirmación/cancelación explícita.
+  // (ver PropuestaCorreccionPendiente en lib/asistente/tipos.ts): solo el
+  // id del mensaje (para cerrar sus botones) y el sobre FIRMADO por el
+  // servidor, que corregir_dato_alumno verifica (firma, docente,
+  // conversación, vigencia) antes de cualquier escritura. Forma exacta o
+  // null. Su sola presencia NUNCA autoriza nada: solo se usa ante una
+  // confirmación/cancelación explícita.
   const propuestaCorreccionPendiente: PropuestaCorreccionPendiente | null = (() => {
     const p = propuestaCorreccionPendienteCliente as Record<string, unknown> | null | undefined
     if (!p || typeof p !== 'object' || Array.isArray(p)) return null
-    const texto = (v: unknown) => typeof v === 'string' && v.trim().length > 0
-    if (!texto(p.mensajeId) || !texto(p.alumnoId) || !texto(p.alumnoNombre) || !texto(p.valorNuevo)) return null
-    if (p.campo !== 'curp' && p.campo !== 'sexo' && p.campo !== 'fecha_nacimiento') return null
-    if (!(p.valorActual === null || typeof p.valorActual === 'string')) return null
-    if (!(p.conversacionId === null || texto(p.conversacionId))) return null
-    return {
-      mensajeId: p.mensajeId as string,
-      conversacionId: (p.conversacionId as string | null) ?? null,
-      alumnoId: p.alumnoId as string,
-      alumnoNombre: p.alumnoNombre as string,
-      campo: p.campo,
-      valorActual: p.valorActual as string | null,
-      valorNuevo: p.valorNuevo as string,
-    }
+    if (Object.keys(p).some((k) => k !== 'mensajeId' && k !== 'sobre')) return null
+    if (typeof p.mensajeId !== 'string' || p.mensajeId.trim().length === 0) return null
+    const sobre = p.sobre
+    if (!(sobre === null || sobre === undefined || (typeof sobre === 'object' && !Array.isArray(sobre)))) return null
+    return { mensajeId: p.mensajeId, sobre: (sobre ?? null) as PropuestaCorreccionPendiente['sobre'] }
   })()
   // PERSISTENCIA DURABLE DE ADJUNTOS VISUALES (V2) — mismo criterio
   // exacto que conversacionIdSolicitada: metadata estructural top-level,
@@ -1923,6 +1916,40 @@ export async function POST(req: NextRequest) {
       // aclaración de abajo, el bypass de la Herramienta determinista, y
       // la entrada al enriquecimiento de Nivel4 — nunca se recalcula ni
       // se aproxima de otra forma en ningún otro lugar.
+      // IDENTIDAD CANÓNICA DEL ALUMNO (datos personales) — el alumno_id
+      // del LLM solo se acepta si pertenece al grupo activo autorizado,
+      // coincide con el nombre detectado y es la única mejor coincidencia
+      // de lo que escribió el docente (ver lib/asistente/identidadAlumno.ts).
+      // Se aplica ANTES de los predicados y del bloque de aclaración de
+      // abajo, para que todo lo que sigue use el alumno validado. Las
+      // confirmaciones/cancelaciones resuelven el alumno contra la
+      // propuesta pendiente y se validan en corregir_dato_alumno.
+      if (
+        (clasificacion.intencion_principal === 'consultar_dato_alumno' || clasificacion.intencion_principal === 'corregir_dato_alumno') &&
+        clasificacion.accion_correccion_alumno !== 'confirmar' &&
+        clasificacion.accion_correccion_alumno !== 'cancelar'
+      ) {
+        const identidad = validarAlumnoClasificado(
+          {
+            alumnoId: clasificacion.entidades_resueltas.alumno_id,
+            nombreDetectado: clasificacion.entidades_resueltas.alumno_nombre_detectado,
+            ambiguo: clasificacion.entidades_resueltas.alumno_ambiguo,
+            opciones: clasificacion.entidades_resueltas.opciones_alumno_ambiguo,
+          },
+          sesion.alumnos_del_grupo_activo,
+          [mensaje, ...historialMensajes.slice(-4).filter((t) => t.role === 'user').map((t) => t.content).reverse()]
+        )
+        if (identidad.tipo === 'rechazado') {
+          console.log(`[IDENTIDAD_ALUMNO] ${clasificacion.intencion_principal} rechazado motivo=${identidad.motivo}`)
+          return respuestaTexto(conDiagnostico(MENSAJE_ALUMNO_NO_IDENTIFICADO))
+        }
+        if (identidad.tipo === 'resuelto') {
+          clasificacion.entidades_resueltas = { alumno_id: identidad.alumno.alumno_id, alumno_nombre_detectado: identidad.alumno.nombre_completo, alumno_ambiguo: false, opciones_alumno_ambiguo: [] }
+        } else if (identidad.tipo === 'ambiguo') {
+          clasificacion.entidades_resueltas = { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: true, opciones_alumno_ambiguo: identidad.opciones }
+        }
+      }
+
       const valorAlumnoPropuestoAusente =
         !clasificacion.valor_alumno_propuesto || clasificacion.valor_alumno_propuesto.trim() === ''
       const esComparacionVisualDeAlumno =

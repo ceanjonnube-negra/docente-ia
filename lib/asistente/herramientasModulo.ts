@@ -35,6 +35,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ClasificacionNivel0 } from '../clasificadorNivel0'
 import type { SesionContexto } from '../sesionContexto'
 import type { CampoAlumnoCorregible, DiferenciaAlumno, PropuestaCorreccionPendiente, ResolucionCorreccionAlumno } from './tipos'
+import { alumnoDelGrupoActivo, MENSAJE_ALUMNO_NO_IDENTIFICADO } from './identidadAlumno'
+import { construirPayloadCorreccion, firmarPropuestaCorreccion, MENSAJE_PROPUESTA_NO_VALIDA, verificarPropuestaCorreccion } from './propuestaCorreccionFirmada'
 import {
   aplicarCorreccionAlumno,
   asistenciaGrupoResumen,
@@ -495,13 +497,20 @@ const herramientaConsultarPlaneaciones = definir({
 // modelo grande: esta Herramienta nunca pasa por Claude (ver
 // ejecutarHerramientaDeModulo, más abajo), así que tampoco hay una
 // llamada adicional a la IA solo para redactar la respuesta.
-type DatosPersonalesAlumno = { curp?: string | null; sexo?: string | null; fecha_nacimiento?: string | null }
+type DatosPersonalesAlumno = { nombre?: string | null; curp?: string | null; sexo?: string | null; fecha_nacimiento?: string | null }
+
+// Nombre canónico (alumnos.nombre, leído de la base junto con el dato)
+// del alumno identificado; nunca el texto que escribió el LLM.
+function nombreCanonicoAlumno(datos: DatosPersonalesAlumno, respaldo: string | null | undefined): string {
+  return typeof datos.nombre === 'string' && datos.nombre.trim() ? datos.nombre : respaldo || 'ese alumno'
+}
 type CampoAlumnoConsultable = 'curp' | 'sexo' | 'fecha_nacimiento'
 
 const herramientaConsultarDatoAlumno = definir({
   intent: 'consultar_dato_alumno',
   puedeEjecutar: (clasificacion, ctx) => {
     if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
+    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO }
     if (!clasificacion.campo_alumno_solicitado) return { listo: false, mensaje: '¿Qué dato necesitas — CURP, sexo o fecha de nacimiento?' }
     if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para consultar ese dato.' }
     return { listo: true }
@@ -517,7 +526,7 @@ const herramientaConsultarDatoAlumno = definir({
     }
   },
   formatearRespuesta: (datos: DatosPersonalesAlumno, clasificacion, ctx) => {
-    const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+    const nombre = nombreCanonicoAlumno(datos, alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)?.nombre_completo)
     const campo = clasificacion.campo_alumno_solicitado as CampoAlumnoConsultable
     const valorCrudo = datos[campo]
 
@@ -578,90 +587,101 @@ type ResultadoCorregirDatoAlumno =
   | { tipo: 'cancelado'; nombre: string; resolucion?: ResolucionCorreccionAlumno }
   | { tipo: 'sin_propuesta' }
   | { tipo: 'no_coincide'; nombre: string }
+  // La propuesta firmada no pasó la verificación (sin firma, alterada,
+  // otro docente/conversación, caducada) o su alumno ya no es el mismo.
+  | { tipo: 'propuesta_no_valida'; mensaje: string; resolucion?: ResolucionCorreccionAlumno }
+  | { tipo: 'firma_no_disponible' }
   | { tipo: 'sin_conversacion' }
 
 const herramientaCorregirDatoAlumno = definir({
   intent: 'corregir_dato_alumno',
   puedeEjecutar: (clasificacion, ctx) => {
-    // CURP con propuesta pendiente (o confirmación de CURP sin ella): la
-    // ejecución usa SOLO la propuesta estructurada, nunca los valores que
-    // el clasificador reconstruya del texto — ver ejecutar más abajo.
-    const pendienteCurp = ctx.propuestaCorreccionPendiente?.campo === 'curp' ? ctx.propuestaCorreccionPendiente : null
-    if (clasificacion.accion_correccion_alumno === 'cancelar' && pendienteCurp) return { listo: true }
-    if (clasificacion.accion_correccion_alumno === 'confirmar' && (pendienteCurp || clasificacion.campo_alumno_corregir === 'curp')) {
+    // Confirmación (cualquier campo) o cancelación con propuesta
+    // pendiente: la ejecución usa SOLO la propuesta estructurada, nunca
+    // los valores que el clasificador reconstruya del texto — ver
+    // ejecutar más abajo.
+    if (clasificacion.accion_correccion_alumno === 'cancelar' && ctx.propuestaCorreccionPendiente) return { listo: true }
+    if (clasificacion.accion_correccion_alumno === 'confirmar') {
       if (!ctx.userId) return { listo: false, mensaje: 'No pude identificar tu sesión para hacer esta corrección.' }
       return { listo: true }
     }
     if (!clasificacion.entidades_resueltas.alumno_id) return { listo: false, mensaje: '¿De qué alumno se trata?' }
+    if (!alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, clasificacion.entidades_resueltas.alumno_id)) return { listo: false, mensaje: MENSAJE_ALUMNO_NO_IDENTIFICADO }
     if (clasificacion.accion_correccion_alumno === 'cancelar') return { listo: true }
     if (!clasificacion.campo_alumno_corregir) return { listo: false, mensaje: '¿Qué dato necesitas corregir — CURP, sexo o fecha de nacimiento?' }
     if (!clasificacion.valor_alumno_propuesto) return { listo: false, mensaje: '¿Cuál es el valor correcto?' }
     if (!ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un ciclo escolar activo configurado para hacer esta corrección.' }
-    if (clasificacion.accion_correccion_alumno === 'confirmar' && !ctx.userId) {
-      return { listo: false, mensaje: 'No pude identificar tu sesión para hacer esta corrección.' }
-    }
     return { listo: true }
   },
   ejecutar: async (clasificacion, ctx): Promise<ResultadoHerramientaModulo<ResultadoCorregirDatoAlumno>> => {
     const accion = clasificacion.accion_correccion_alumno
-    const pendienteCurp = ctx.propuestaCorreccionPendiente?.campo === 'curp' ? ctx.propuestaCorreccionPendiente : null
+    const pendiente = ctx.propuestaCorreccionPendiente ?? null
 
-    if (accion === 'cancelar' && pendienteCurp) {
-      return { exito: true, datos: { tipo: 'cancelado', nombre: pendienteCurp.alumnoNombre, resolucion: { mensajeId: pendienteCurp.mensajeId, estado: 'cancelada' } } }
+    if (accion === 'cancelar' && pendiente) {
+      // Cancelar nunca escribe; el nombre solo se muestra si la propuesta
+      // firmada es válida y su alumno sigue en el grupo.
+      const verificada = ctx.userId && ctx.conversacionId ? verificarPropuestaCorreccion(pendiente.sobre, { docenteId: ctx.userId, conversacionId: ctx.conversacionId }) : null
+      const nombreCancelado = (verificada?.ok && alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, verificada.payload.alumnoId)?.nombre_completo) || 'ese alumno'
+      return { exito: true, datos: { tipo: 'cancelado', nombre: nombreCancelado, resolucion: { mensajeId: pendiente.mensajeId, estado: 'cancelada' } } }
     }
 
-    // CONFIRMACIÓN DE CURP — exclusivamente la propuesta original
-    // (alumno, valor nuevo y valor anterior exacto) y la RPC canónica.
-    // Nunca se reconstruye nada desde el texto ni se relee la base: el
-    // compare-and-set de actualizar_curp_alumno decide si sigue vigente.
-    if (accion === 'confirmar' && (pendienteCurp || clasificacion.campo_alumno_corregir === 'curp')) {
-      if (!pendienteCurp) return { exito: true, datos: { tipo: 'sin_propuesta' } }
-      const alumnoClasificado = clasificacion.entidades_resueltas.alumno_id
-      const campoClasificado = clasificacion.campo_alumno_corregir
-      const valorClasificado = clasificacion.valor_alumno_propuesto
-      const validacionPendiente = validarValorCampoAlumno('curp', pendienteCurp.valorNuevo)
-      const vinculada =
-        clasificacion.modo_operacion_alumno !== 'comparar' &&
-        !!ctx.conversacionId &&
-        pendienteCurp.conversacionId === ctx.conversacionId &&
-        validacionPendiente.valido &&
-        validacionPendiente.valorNormalizado === pendienteCurp.valorNuevo
-      if (!vinculada) return { exito: true, datos: { tipo: 'sin_propuesta' } }
+    // CONFIRMACIÓN (CURP, sexo o fecha de nacimiento) — exclusivamente la
+    // propuesta FIRMADA por el servidor, verificada antes de cualquier
+    // escritura: docente (JWT), conversación autorizada, vigencia e
+    // integridad. Alumno, campo, valor anterior y valor nuevo salen solo
+    // del payload firmado; el clasificador solo aporta la intención de
+    // confirmar. Sin propuesta válida no se escribe. El uso único y el
+    // compare-and-set los garantiza la RPC en la misma transacción.
+    if (accion === 'confirmar') {
+      if (!pendiente || clasificacion.modo_operacion_alumno === 'comparar' || !ctx.conversacionId || !ctx.userId) {
+        return { exito: true, datos: { tipo: 'sin_propuesta' } }
+      }
+      const verificacion = verificarPropuestaCorreccion(pendiente.sobre, { docenteId: ctx.userId, conversacionId: ctx.conversacionId })
+      if (!verificacion.ok) {
+        const definitivo = verificacion.codigo !== 'FIRMA_NO_DISPONIBLE'
+        return { exito: true, datos: { tipo: 'propuesta_no_valida', mensaje: MENSAJE_PROPUESTA_NO_VALIDA[verificacion.codigo], resolucion: definitivo ? { mensajeId: pendiente.mensajeId, estado: 'rechazada' } : undefined } }
+      }
+      const firmada = verificacion.payload
+      // El alumno firmado debe seguir en el grupo activo autorizado, con
+      // el mismo nombre canónico que se le mostró al docente.
+      const alumnoPendiente = alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, firmada.alumnoId)
+      if (!alumnoPendiente || alumnoPendiente.nombre_completo !== firmada.alumnoNombre) {
+        return { exito: true, datos: { tipo: 'propuesta_no_valida', mensaje: !alumnoPendiente ? `No apliqué la corrección: ${MENSAJE_ALUMNO_NO_IDENTIFICADO}` : 'No apliqué la corrección: el nombre registrado del alumno cambió desde la propuesta. Pídeme de nuevo la corrección', resolucion: { mensajeId: pendiente.mensajeId, estado: 'rechazada' } } }
+      }
       // El clasificador nunca sustituye alumno, campo ni valor: si
       // entendió otro distinto al de la propuesta (p. ej. "sí, pero
       // ponle X"), la respuesta es ambigua y no se ejecuta nada; la
       // propuesta sigue pendiente.
-      const validacionClasificada = valorClasificado ? validarValorCampoAlumno('curp', valorClasificado) : null
+      const alumnoClasificado = clasificacion.entidades_resueltas.alumno_id
+      const campoClasificado = clasificacion.campo_alumno_corregir
+      const valorClasificado = clasificacion.valor_alumno_propuesto
+      const validacionClasificada = valorClasificado ? validarValorCampoAlumno(firmada.campo, valorClasificado) : null
       const coincide =
-        (!campoClasificado || campoClasificado === 'curp') &&
-        (!alumnoClasificado || alumnoClasificado === pendienteCurp.alumnoId) &&
-        (!validacionClasificada || (validacionClasificada.valido && validacionClasificada.valorNormalizado === pendienteCurp.valorNuevo))
-      if (!coincide) return { exito: true, datos: { tipo: 'no_coincide', nombre: pendienteCurp.alumnoNombre } }
-      const resultadoCurp = await aplicarCorreccionAlumno(ctx.sb, ctx.userId!, pendienteCurp.alumnoId, 'curp', pendienteCurp.valorNuevo, {
-        tipo: 'texto',
-        conversacionId: ctx.conversacionId,
-        mensajeId: null,
-      }, pendienteCurp.valorActual)
-      const nombreCurp = pendienteCurp.alumnoNombre
-      if (!resultadoCurp.exito) {
+        (!campoClasificado || campoClasificado === firmada.campo) &&
+        (!alumnoClasificado || alumnoClasificado === firmada.alumnoId) &&
+        (!validacionClasificada || (validacionClasificada.valido && validacionClasificada.valorNormalizado === firmada.valorNuevo))
+      if (!coincide) return { exito: true, datos: { tipo: 'no_coincide', nombre: alumnoPendiente.nombre_completo } }
+      const resultadoConfirmado = await aplicarCorreccionAlumno(ctx.sb, firmada, 'texto')
+      const nombreConfirmado = alumnoPendiente.nombre_completo
+      if (!resultadoConfirmado.exito) {
         return {
           exito: true,
           datos: {
             tipo: 'error_aplicar',
-            error: resultadoCurp.error,
-            definitivo: resultadoCurp.definitivo === true,
-            resolucion: resultadoCurp.definitivo ? { mensajeId: pendienteCurp.mensajeId, estado: 'rechazada' } : undefined,
+            error: resultadoConfirmado.error,
+            definitivo: resultadoConfirmado.definitivo === true,
+            resolucion: resultadoConfirmado.definitivo ? { mensajeId: pendiente.mensajeId, estado: 'rechazada' } : undefined,
           },
         }
       }
-      if (resultadoCurp.sinCambios) {
-        return { exito: true, datos: { tipo: 'sin_cambios', nombre: nombreCurp, campo: 'curp', valor: resultadoCurp.valorNuevo, resolucion: { mensajeId: pendienteCurp.mensajeId, estado: 'sin_cambios' } } }
+      if (resultadoConfirmado.sinCambios) {
+        return { exito: true, datos: { tipo: 'sin_cambios', nombre: nombreConfirmado, campo: firmada.campo, valor: resultadoConfirmado.valorNuevo, resolucion: { mensajeId: pendiente.mensajeId, estado: 'sin_cambios' } } }
       }
-      return { exito: true, datos: { tipo: 'aplicado', nombre: nombreCurp, campo: 'curp', valorNuevo: resultadoCurp.valorNuevo, resolucion: { mensajeId: pendienteCurp.mensajeId, estado: 'aplicada' } } }
+      return { exito: true, datos: { tipo: 'aplicado', nombre: nombreConfirmado, campo: firmada.campo, valorNuevo: resultadoConfirmado.valorNuevo, resolucion: { mensajeId: pendiente.mensajeId, estado: 'aplicada' } } }
     }
 
     const alumnoId = clasificacion.entidades_resueltas.alumno_id!
-    const nombre = clasificacion.entidades_resueltas.alumno_nombre_detectado || 'ese alumno'
+    const nombre = alumnoDelGrupoActivo(ctx.sesion.alumnos_del_grupo_activo, alumnoId)?.nombre_completo ?? 'ese alumno'
 
     if (accion === 'cancelar') {
       return { exito: true, datos: { tipo: 'cancelado', nombre } }
@@ -678,28 +698,6 @@ const herramientaCorregirDatoAlumno = definir({
       return { exito: true, datos: { tipo: 'invalido', motivo: validacion.motivo } }
     }
 
-    if (accion === 'confirmar') {
-      // Segunda barrera (nunca debería dispararse: regla 22.2 nunca
-      // genera un marcador confirmable, y regla 22.1 solo confirma
-      // sobre ESE marcador exacto) — pero nunca se confía únicamente en
-      // que el clasificador jamás combine 'confirmar' con modo
-      // 'comparar'; se bloquea también aquí, en el punto de escritura.
-      if (clasificacion.modo_operacion_alumno === 'comparar') {
-        return { exito: true, datos: { tipo: 'invalido', motivo: 'Esto era una comparación de solo lectura, no una corrección pendiente de confirmar' } }
-      }
-      // Escritura real — verificación antes/después y trazabilidad ya
-      // resueltas dentro de aplicarCorreccionAlumno; esta Herramienta
-      // nunca hace su propio UPDATE.
-      const resultado = await aplicarCorreccionAlumno(ctx.sb, ctx.userId!, alumnoId, campo, validacion.valorNormalizado, {
-        tipo: 'texto',
-        conversacionId: ctx.conversacionId ?? null,
-        mensajeId: null,
-      })
-      if (!resultado.exito) return { exito: true, datos: { tipo: 'error_aplicar', error: resultado.error } }
-      if (resultado.sinCambios) return { exito: true, datos: { tipo: 'sin_cambios', nombre, campo, valor: resultado.valorNuevo } }
-      return { exito: true, datos: { tipo: 'aplicado', nombre, campo, valorNuevo: resultado.valorNuevo } }
-    }
-
     // accion === 'proponer' — solo comparar y presentar, NUNCA escribir.
     let contextoReal: unknown
     try {
@@ -711,6 +709,8 @@ const herramientaCorregirDatoAlumno = definir({
     const datosPersonales = ((contextoReal as { datos_personales?: DatosPersonalesAlumno })?.datos_personales ?? {}) as DatosPersonalesAlumno
     const valorActualCrudo = datosPersonales[campo]
     const valorActual = typeof valorActualCrudo === 'string' && valorActualCrudo.trim() ? valorActualCrudo : null
+    // Nombre y valor actual salen de la MISMA fila leída de la base.
+    const nombreAlumno = nombreCanonicoAlumno(datosPersonales, nombre)
 
     // modo_operacion_alumno="comparar" (regla 22.2) — CONSULTAR →
     // VALIDAR → COMPARAR → INFORMAR, estrictamente. Corta aquí, ANTES
@@ -722,27 +722,43 @@ const herramientaCorregirDatoAlumno = definir({
     if (clasificacion.modo_operacion_alumno === 'comparar') {
       return {
         exito: true,
-        datos: { tipo: 'comparacion', nombre, campo, valorActual, valorProporcionado: validacion.valorNormalizado, coincide: valorActual === validacion.valorNormalizado },
+        datos: { tipo: 'comparacion', nombre: nombreAlumno, campo, valorActual, valorProporcionado: validacion.valorNormalizado, coincide: valorActual === validacion.valorNormalizado },
       }
     }
 
     if (valorActual === validacion.valorNormalizado) {
-      return { exito: true, datos: { tipo: 'sin_cambios', nombre, campo, valor: validacion.valorNormalizado } }
+      return { exito: true, datos: { tipo: 'sin_cambios', nombre: nombreAlumno, campo, valor: validacion.valorNormalizado } }
     }
 
-    // Una propuesta de CURP solo puede confirmarse en la conversación en
-    // la que se generó: si no hay conversación autorizada, no se ofrece.
-    if (campo === 'curp' && !ctx.conversacionId) {
+    // Una propuesta solo puede confirmarse en la conversación en la que se
+    // generó: si no hay conversación autorizada, no se ofrece.
+    if (!ctx.conversacionId || !ctx.userId) {
       return { exito: true, datos: { tipo: 'sin_conversacion' } }
+    }
+    // Firma de la propuesta EXACTA que se mostrará (C4). Sin clave del
+    // servidor no se ofrece (fail-closed): nunca una propuesta sin firma.
+    const sobre = firmarPropuestaCorreccion(construirPayloadCorreccion({
+      docenteId: ctx.userId,
+      conversacionId: ctx.conversacionId,
+      alumnoId,
+      alumnoNombre: nombreAlumno,
+      campo,
+      valorAnterior: valorActual,
+      valorNuevo: validacion.valorNormalizado,
+    }))
+    if (!sobre) {
+      console.error('[CORRECCION_ALUMNO] firma no disponible (CORRECCION_ALUMNO_HMAC_SECRET_KEY ausente) — no se ofrece la propuesta')
+      return { exito: true, datos: { tipo: 'firma_no_disponible' } }
     }
     const diferencia: DiferenciaAlumno = {
       alumnoId,
-      alumnoNombre: nombre,
+      alumnoNombre: nombreAlumno,
       campo,
       valorActual,
       valorNuevo: validacion.valorNormalizado,
       fuente: 'texto',
-      conversacionId: ctx.conversacionId ?? null,
+      conversacionId: ctx.conversacionId,
+      sobre,
     }
     return { exito: true, datos: { tipo: 'propuesta', diferencia } }
   },
@@ -754,6 +770,12 @@ const herramientaCorregirDatoAlumno = definir({
       resolucion ? `${texto}\n[[CORRECCION_ALUMNO_RESUELTA:${Buffer.from(JSON.stringify(resolucion), 'utf-8').toString('base64')}]]` : texto
     if (datos.tipo === 'sin_propuesta') {
       return 'No encontré una propuesta de corrección pendiente que pueda confirmar en esta conversación, así que no cambié nada. Pídeme de nuevo la corrección para mostrarte el dato actual.'
+    }
+    if (datos.tipo === 'propuesta_no_valida') {
+      return conResolucion(`${datos.mensaje}.`, datos.resolucion)
+    }
+    if (datos.tipo === 'firma_no_disponible') {
+      return 'No pude preparar la propuesta de corrección en este momento, así que no cambié nada. Intenta de nuevo más tarde.'
     }
     if (datos.tipo === 'no_coincide') {
       return `No apliqué ningún cambio: tu respuesta no coincide con la corrección pendiente de ${datos.nombre}. Si quieres aplicar exactamente esa propuesta, toca "Corregir" en ella; si quieres otro valor, pídeme la corrección de nuevo con el valor correcto.`

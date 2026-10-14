@@ -157,25 +157,46 @@ export type DiferenciaAlumno = {
   // Conversación (ya autorizada server-side) en la que el servidor
   // generó esta propuesta. La confirmación —por botón o por texto— solo
   // se ejecuta en esa misma conversación. Opcional: propuestas antiguas
-  // no lo traen y, para CURP, no se ejecutan (se pide una nueva).
+  // no lo traen y no se ejecutan (se pide una nueva).
   conversacionId?: string | null
+  // Propuesta firmada por el servidor (C4, ver
+  // lib/asistente/propuestaCorreccionFirmada.ts). Es lo ÚNICO que se usa
+  // para escribir al confirmar; los campos de arriba solo se muestran.
+  // Propuestas antiguas no la traen y se rechazan.
+  sobre?: SobreCorreccionAlumno
+}
+
+// Contenido firmado de una propuesta de corrección (C4). propuestaId es
+// el identificador de uso único que registra la base de datos al aplicarla.
+export type PayloadCorreccionAlumno = {
+  v: 1
+  propuestaId: string
+  docenteId: string
+  conversacionId: string
+  alumnoId: string
+  alumnoNombre: string
+  campo: CampoAlumnoCorregible
+  valorAnterior: string | null
+  valorNuevo: string
+  generadoEn: string
+}
+
+export type SobreCorreccionAlumno = {
+  payload: PayloadCorreccionAlumno
+  firma: string
 }
 
 // Propuesta de corrección PENDIENTE que el cliente adjunta al turno de
 // texto mientras el último mensaje del asistente es esa propuesta (ver
-// tieneCorreccionAlumnoPendiente en AsistenteService). Es exactamente
-// la misma DiferenciaAlumno que usa el botón "Corregir", más el id del
-// mensaje que la contiene. Su sola presencia NUNCA autoriza ejecutarla:
-// solo se usa cuando el clasificador reconoce una confirmación
-// explícita (accion_correccion_alumno='confirmar').
+// tieneCorreccionAlumnoPendiente en AsistenteService): el id del mensaje
+// que la contiene (solo para cerrar sus botones) y el MISMO sobre firmado
+// que usa el botón "Corregir" (null en propuestas antiguas, que se
+// rechazan). Su sola presencia NUNCA autoriza ejecutarla: solo se usa
+// cuando el clasificador reconoce una confirmación explícita, y el
+// servidor verifica la firma antes de cualquier escritura.
 export type PropuestaCorreccionPendiente = {
   mensajeId: string
-  conversacionId: string | null
-  alumnoId: string
-  alumnoNombre: string
-  campo: CampoAlumnoCorregible
-  valorActual: string | null
-  valorNuevo: string
+  sobre: SobreCorreccionAlumno | null
 }
 
 // Resultado de una propuesta resuelta por texto (confirmación o
