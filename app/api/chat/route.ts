@@ -1745,7 +1745,7 @@ export async function POST(req: NextRequest) {
       // produce confirmaciones ni escrituras.
       let alumnoHeredadoId: string | null = null
       if (estadoPendienteVigente) {
-        const fusion = fusionarConPendiente(clasificacion, estadoPendienteVigente)
+        const fusion = fusionarConPendiente(clasificacion, estadoPendienteVigente, mensaje)
         console.log(`[CONTINUIDAD] estado=vigente fusion=${fusion.tipo}${fusion.tipo === 'fusionado' ? ` heredado=${!!fusion.alumnoHeredadoId}` : ''}`)
         if (fusion.tipo === 'cancelar') return respuestaTexto(conDiagnostico('De acuerdo, lo dejamos así. No cambié ningún dato.'))
         if (fusion.tipo === 'fusionado') alumnoHeredadoId = fusion.alumnoHeredadoId

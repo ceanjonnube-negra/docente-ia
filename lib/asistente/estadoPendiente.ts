@@ -180,10 +180,16 @@ export function prepararEstadoPendiente(
 // Texto estructurado para el contexto dinámico del clasificador (sin CURP
 // ni fechas: solo intención, dato faltante, campo y nombres canónicos).
 export function estadoPendienteParaClasificador(e: EstadoPendienteVigente): string {
+  // El campo se presenta con su ROL: el de una consulta solo se consultó y
+  // nunca es objetivo de corrección; solo una corrección en curso tiene
+  // campo a corregir.
+  const consultado = e.intencion === 'consultar_dato_alumno' ? e.campo : null
+  const aCorregir = e.intencion === 'corregir_dato_alumno' ? e.campo : null
   return [
     `intencion_en_curso: ${e.intencion}`,
     `dato_que_pidio_el_asistente: ${e.faltante}`,
-    `campo_en_curso: ${e.campo ?? 'ninguno'}`,
+    `campo_consultado: ${consultado ?? 'ninguno'}`,
+    `campo_a_corregir: ${aCorregir ?? 'ninguno'}`,
     `alumno_en_curso: ${e.alumno ? e.alumno.nombre_completo : 'ninguno'}`,
     `alumnos_candidatos: ${e.candidatos.length ? e.candidatos.map((a) => a.nombre_completo).join(' | ') : 'ninguno'}`,
   ].join('\n')
@@ -197,11 +203,24 @@ export type ResultadoFusionPendiente =
 const campoExplicito = (c: ClasificacionNivel0): CampoAlumnoCorregible | null =>
   (c.campo_alumno_corregir ?? c.campo_alumno_solicitado ?? null) as CampoAlumnoCorregible | null
 
+// Lista CERRADA de palabras con las que el docente nombra cada campo
+// (texto sin acentos ni mayúsculas). Solo se usa para decidir si un campo
+// que coincide con el CONSULTADO fue pedido de verdad como corrección.
+const PALABRAS_CAMPO: Record<CampoAlumnoCorregible, RegExp> = {
+  curp: /\bcurp\b/,
+  sexo: /\b(sexo|genero)\b/,
+  fecha_nacimiento: /\b(fecha|nacimiento|nacio|naci|cumpleanos)\b/,
+}
+export function mencionaCampo(mensaje: string, campo: CampoAlumnoCorregible): boolean {
+  const normal = (typeof mensaje === 'string' ? mensaje : '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  return PALABRAS_CAMPO[campo].test(normal)
+}
+
 // Fusión DETERMINISTA tras la clasificación. Solo actúa si el clasificador
 // marcó continua_pendiente=true y el resultado pertenece a la familia de
 // datos de alumno. Lo explícito del mensaje nunca se sobrescribe. Muta la
 // clasificación recibida (mismo objeto que usa /api/chat).
-export function fusionarConPendiente(c: ClasificacionNivel0, e: EstadoPendienteVigente): ResultadoFusionPendiente {
+export function fusionarConPendiente(c: ClasificacionNivel0, e: EstadoPendienteVigente, mensaje = ''): ResultadoFusionPendiente {
   if (!c.continua_pendiente) return { tipo: 'sin_cambios' }
   // Confirmar/cancelar una PROPUESTA pertenece al flujo C2–C4 (propuesta
   // pendiente firmada), nunca a este estado.
@@ -222,7 +241,16 @@ export function fusionarConPendiente(c: ClasificacionNivel0, e: EstadoPendienteV
   }
 
   // Alumno: explícito > candidato confirmado (solo si era uno) > heredado.
+  // Si el clasificador eligió EXACTAMENTE al alumno del estado firmado y
+  // revalidado, ese alumno también es heredado (evidencia para C1 aunque su
+  // nombre ya no esté en los turnos recientes). Esto solo ocurre dentro de
+  // una continuación reconocida (continua_pendiente + misma familia), nunca
+  // para reactivar una operación abandonada; un alumno distinto sigue
+  // exigiendo la evidencia normal de C1.
   let alumnoHeredadoId: string | null = null
+  if (c.entidades_resueltas.alumno_id && !c.entidades_resueltas.alumno_ambiguo && e.alumno && c.entidades_resueltas.alumno_id === e.alumno.alumno_id) {
+    alumnoHeredadoId = e.alumno.alumno_id
+  }
   if (!c.entidades_resueltas.alumno_id && !c.entidades_resueltas.alumno_ambiguo) {
     const heredado = op === 'confirmar_candidato'
       ? (e.candidatos.length === 1 ? e.candidatos[0] : null)
@@ -239,7 +267,16 @@ export function fusionarConPendiente(c: ClasificacionNivel0, e: EstadoPendienteV
   // consultar exige el campo explícito (si no, se pregunta). Comparar es
   // solo lectura y sí lo hereda.
   const campoHeredable = intencion === 'consultar_dato_alumno' || e.intencion === 'corregir_dato_alumno' || op === 'comparar'
-  const campo = campoExplicito(c) ?? (campoHeredable ? e.campo : null)
+  // Guarda determinista: tras una CONSULTA, el clasificador no puede
+  // convertir el campo consultado en objetivo de corrección si el docente
+  // no lo nombra en su mensaje (p. ej. "la correcta es…" después de
+  // consultar la fecha) → se queda sin campo y se pregunta cuál.
+  let campoDelClasificador = campoExplicito(c)
+  if (e.intencion === 'consultar_dato_alumno' && intencion === 'corregir_dato_alumno' && op !== 'comparar' &&
+      campoDelClasificador && campoDelClasificador === e.campo && !mencionaCampo(mensaje, campoDelClasificador)) {
+    campoDelClasificador = null
+  }
+  const campo = campoDelClasificador ?? (campoHeredable ? e.campo : null)
 
   c.intencion_principal = intencion
   const faltan = new Set(c.datos_faltantes)
