@@ -768,8 +768,39 @@ export async function resultadosProyectoGrupo(sb: SupabaseClient, grupoId: strin
 // (incidencias: [], resultadosProyectos: []) representa exclusivamente
 // "se consultó correctamente y no hay registros" — nunca "no se pudo
 // consultar".
+// P0 — minimización de datos personales hacia los modelos de IA.
+// contexto_alumno (RPC) devuelve la fila completa de alumnos (CURP,
+// fecha de nacimiento, sexo, ids administrativos) y de inscripciones;
+// las herramientas autorizadas de consulta/corrección la siguen
+// leyendo cruda vía contextoAlumno(), sin cambios. Todo prompt de
+// ficha descriptiva usa EXCLUSIVAMENTE esta proyección: lista
+// explícita de campos permitidos (nunca lista de prohibidos), así que
+// cualquier campo nuevo o desconocido queda fuera por omisión. Texto
+// libre (observaciones, notas, perfil) queda fuera hasta que exista
+// una garantía de minimización para él.
+export type ContextoAlumnoParaIA = {
+  nombre: string | null
+  asistencia_resumen: { faltas: number; retardos: number; justificadas: number; dias_registrados: number } | null
+}
+
+const esConteo = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+
+export function proyectarContextoAlumnoParaIA(contexto: unknown): ContextoAlumnoParaIA {
+  const raiz = contexto && typeof contexto === 'object' ? (contexto as Record<string, unknown>) : {}
+  const datos = raiz.datos_personales && typeof raiz.datos_personales === 'object' ? (raiz.datos_personales as Record<string, unknown>) : {}
+  const nombre = typeof datos.nombre === 'string' && datos.nombre.trim() ? datos.nombre.trim() : null
+  const a = raiz.asistencia_resumen && typeof raiz.asistencia_resumen === 'object' ? (raiz.asistencia_resumen as Record<string, unknown>) : null
+  const asistencia_resumen = a && esConteo(a.faltas) && esConteo(a.retardos) && esConteo(a.justificadas) && esConteo(a.dias_registrados)
+    ? { faltas: a.faltas, retardos: a.retardos, justificadas: a.justificadas, dias_registrados: a.dias_registrados }
+    : null
+  return { nombre, asistencia_resumen }
+}
+
 export type ContextoPedagogicoAlumno = {
-  contextoAlumno: unknown
+  // Ya proyectado (ver proyectarContextoAlumnoParaIA): este agregador
+  // solo alimenta prompts de ficha, así que nunca expone el objeto
+  // crudo de contexto_alumno.
+  contextoAlumnoParaIA: ContextoAlumnoParaIA
   resultadosProyectos: ResultadoProyectoConfirmado[]
   asistencia: { faltas: number; retardos: number; justificadas: number; dias_registrados: number }
   incidencias: IncidenciasAlumnoResumen
@@ -800,7 +831,7 @@ export async function contextoPedagogicoAlumno(
       r.proyectos_seguimiento?.grupo_id === grupoActivoId &&
       r.proyectos_seguimiento?.ciclo_escolar_id === cicloEscolarId
   )
-  return { contextoAlumno: contexto, resultadosProyectos: resultadosDelGrupoActivo, asistencia, incidencias };
+  return { contextoAlumnoParaIA: proyectarContextoAlumnoParaIA(contexto), resultadosProyectos: resultadosDelGrupoActivo, asistencia, incidencias };
 }
 
 // Único origen de verdad para el grado/grupo que usa TODO el pipeline

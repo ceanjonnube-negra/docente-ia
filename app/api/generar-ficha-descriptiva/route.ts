@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
-import { contextoAlumno } from '@/lib/motorContexto';
+import { contextoAlumno, proyectarContextoAlumnoParaIA } from '@/lib/motorContexto';
 
 export const runtime = 'nodejs';
 
@@ -58,7 +58,9 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    const contexto = await contextoAlumno(supabase, alumno_id, ciclo_escolar_id);
+    // P0 — solo la proyección permitida llega al modelo (ver
+    // proyectarContextoAlumnoParaIA en lib/motorContexto.ts).
+    const contexto = proyectarContextoAlumnoParaIA(await contextoAlumno(supabase, alumno_id, ciclo_escolar_id));
 
     const respuesta = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',

@@ -2675,7 +2675,7 @@ export async function POST(req: NextRequest) {
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO PARA LA FICHA DESCRIPTIVA (usa exclusivamente estos datos, no inventes otros; cada bloque es una fuente distinta, nunca los mezcles):
 
 A) CONTEXTO BASE DEL ALUMNO:
-${JSON.stringify(ctxPedagogico.contextoAlumno)}
+${JSON.stringify(ctxPedagogico.contextoAlumnoParaIA)}
 
 B) RESULTADOS ACADÉMICOS CONFIRMADOS (evidencia canónica ya confirmada por el flujo de Seguimiento; [] significa que no hay resultados confirmados disponibles, nunca "buen" ni "bajo" desempeño):
 ${JSON.stringify(resultadosParaFicha)}
