@@ -512,7 +512,13 @@ export async function aplicarCorreccionAlumno(
   if (respuesta?.resultado === 'actualizado' && respuesta.propuesta_id === propuesta.propuestaId) {
     return { exito: true, sinCambios: false, valorAnterior: respuesta.valor_anterior, valorNuevo: respuesta.valor_nuevo }
   }
-  console.error('[CORRECCION_ALUMNO] Respuesta inesperada de confirmar_correccion_alumno:', data)
+  // Solo indicadores de lista cerrada — nunca el objeto de la RPC
+  // (puede traer valor / valor_anterior / valor_nuevo: CURP o fecha).
+  // ('sin_cambios' ya salió arriba; aquí solo puede llegar 'actualizado' con
+  // propuesta distinta, un resultado desconocido o ninguna respuesta.)
+  const resultadoSeguro = respuesta?.resultado === 'actualizado' ? 'actualizado' : respuesta ? 'desconocido' : 'ausente'
+  const propuestaCoincide = !!respuesta && respuesta.propuesta_id === propuesta.propuestaId
+  console.error(`[CORRECCION_ALUMNO] Respuesta inesperada de confirmar_correccion_alumno: resultado=${resultadoSeguro} propuesta_coincide=${propuestaCoincide}`)
   return { exito: false, error: 'No se pudo confirmar que el dato quedó guardado correctamente', definitivo: false }
 }
 

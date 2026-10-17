@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       console.log(`[VOZ][token-endpoint] 401 sesión inválida (${errorAuth?.message || 'sin usuario'}) · ${Date.now() - inicio}ms`)
       return NextResponse.json({ error: 'Sesión inválida.' }, { status: 401 })
     }
-    console.log(`[VOZ][token-endpoint] sesión válida (${user.email || user.id}) · modelo=${MODELO_REALTIME} voz=${typeof voz === 'string' ? voz : VOZ_DEFECTO} instrucciones=${typeof instrucciones === 'string' ? `${instrucciones.length} chars` : 'ninguna'}`)
+    console.log(`[VOZ][token-endpoint] sesión válida usuario=${user.id} · modelo=${MODELO_REALTIME} voz=${typeof voz === 'string' ? voz : VOZ_DEFECTO} instrucciones=${typeof instrucciones === 'string' ? `${instrucciones.length} chars` : 'ninguna'}`)
 
     // Garantía a nivel de arquitectura, no de convención (ver
     // "Rediseñar el modo voz como conversación continua"): Realtime
