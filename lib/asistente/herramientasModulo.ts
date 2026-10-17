@@ -568,7 +568,7 @@ const herramientaConsultarDatoAlumno = definir({
 // contextoAlumno/contexto_alumno (mismo RPC ya usado por
 // consultar_dato_alumno/ficha_descriptiva) y
 // validarValorCampoAlumno/aplicarCorreccionAlumno (lib/motorContexto.ts).
-const ETIQUETA_CAMPO_ALUMNO_CORREGIR: Record<CampoAlumnoCorregible, string> = {
+export const ETIQUETA_CAMPO_ALUMNO_CORREGIR: Record<CampoAlumnoCorregible, string> = {
   curp: 'CURP',
   sexo: 'sexo',
   fecha_nacimiento: 'fecha de nacimiento',

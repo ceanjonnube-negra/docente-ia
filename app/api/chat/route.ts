@@ -30,6 +30,7 @@ import { obtenerFechaHora, calcularDiasSemanaDeFechasExplicitas } from '@/lib/ti
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { INSTRUCCIONES_FICHA_DESCRIPTIVA } from '@/lib/asistente/instruccionesFichaDescriptiva'
+import { MARCADOR_OMISION, propuestaVigenteParaNivel0, proyectarHistorialParaModelo } from '@/lib/asistente/historialParaModelo'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
@@ -1736,7 +1737,15 @@ export async function POST(req: NextRequest) {
       // clasificar; entra a la MISMA llamada del clasificador.
       const conversacionIdContinuidad = await obtenerConversacionIdAutorizada()
       const estadoPendienteVigente = prepararEstadoPendiente(estadoPendienteCliente, { docenteId: userId, conversacionId: conversacionIdContinuidad, roster: sesion.alumnos_del_grupo_activo })
-      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4), tieneImagenAdjunta, (usage) => {
+      // P0-B — el clasificador recibe el historial protegido (ver
+      // lib/asistente/historialParaModelo.ts); la única excepción
+      // (Alumno/Campo/Nuevo de la propuesta del último turno) exige la
+      // propuesta pendiente verificada con las mismas piezas de C3/C4.
+      const proyeccionNivel0 = proyectarHistorialParaModelo(historialMensajes, {
+        propuestaVigente: propuestaVigenteParaNivel0(propuestaCorreccionPendiente, { docenteId: userId, conversacionId: conversacionIdContinuidad, roster: sesion.alumnos_del_grupo_activo }),
+      })
+      console.log(`[HISTORIAL_PROTEGIDO] destino=nivel0 turnos_enmascarados=${proyeccionNivel0.turnosEnmascarados} excepcion_propuesta=${proyeccionNivel0.excepcionPropuesta}`)
+      const clasificacion = await clasificarNivel0(mensaje, sesion, proyeccionNivel0.historial.slice(-4), tieneImagenAdjunta, (usage) => {
         usageClasificacion.valor = usage
       }, referentesContextuales, estadoPendienteVigente ? estadoPendienteParaClasificador(estadoPendienteVigente) : null)
       marcarTelemetria('intent:classification_finished')
@@ -1751,6 +1760,13 @@ export async function POST(req: NextRequest) {
         if (fusion.tipo === 'fusionado') alumnoHeredadoId = fusion.alumnoHeredadoId
       } else if (estadoPendienteCliente) {
         console.log('[CONTINUIDAD] estado=descartado')
+      }
+      // P0-B — sin la excepción verificada, una confirmación por texto
+      // nunca se apoya en un valor que el clasificador no pudo ver: se
+      // marca como omitido y la comprobación cruzada existente lo
+      // rechaza (no_coincide), igual que un valor que no coincide.
+      if (clasificacion.accion_correccion_alumno === 'confirmar' && !proyeccionNivel0.excepcionPropuesta) {
+        clasificacion.valor_alumno_propuesto = MARCADOR_OMISION.valor
       }
       // Estado que acompaña una aclaración de consultar/corregir dato de
       // alumno. Solo ids del grupo activo (nunca CURP, fechas ni valores).
@@ -3524,6 +3540,11 @@ TRANSFORMACIÓN DE CONTENIDO RECIENTE ACTIVA — el maestro pidió transformar e
   // normal (abajo) y por el CASO 3 de FINALIZAR ARCHIVO (crear+entregar
   // el archivo en un solo mensaje, ver más abajo) — el único que cambia
   // entre ambos es `stream`.
+  // P0-B — Sonnet principal recibe el historial protegido SIN ninguna
+  // excepción (incluidos los valores de propuestas); el historial
+  // original sigue disponible para los procesos deterministas.
+  const proyeccionSonnet = proyectarHistorialParaModelo(historialMensajes)
+  console.log(`[HISTORIAL_PROTEGIDO] destino=sonnet turnos_enmascarados=${proyeccionSonnet.turnosEnmascarados}`)
   const parametrosClaude = {
     model: 'claude-sonnet-4-6' as const,
     // Antes en 3000 — un documento largo real (una planeación de 10 días
@@ -3788,7 +3809,7 @@ Grado: [grado] | Grupo: [grupo]
         }
       : {}),
     messages: [
-      ...historialMensajes,
+      ...proyeccionSonnet.historial,
       {
         role: 'user' as const,
         // varias imágenes: un bloque 'image' por foto (Claude las lee
