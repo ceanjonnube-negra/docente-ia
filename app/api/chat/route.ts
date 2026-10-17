@@ -421,6 +421,19 @@ function debeReintentar(err: any, categoria: CategoriaErrorIA): boolean {
 // caso de créditos desperdician una llamada más. `etiqueta` identifica el
 // sitio de la llamada en los logs (hay 3: conversación normal, CASO 3 de
 // documento combinado, generación/subida del archivo).
+// Telemetría de costo (caché de prompt, Etapa 1): SOLO conteos
+// numéricos de tokens que Anthropic ya devuelve en la misma respuesta —
+// nunca prompt, contenido, datos personales ni credenciales.
+type UsoIA = { input_tokens?: number | null; output_tokens?: number | null; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null }
+function registrarUsoIA(destino: 'conversacion' | 'documento' | 'registro_escolar_continuacion', uso: UsoIA | null | undefined) {
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 'na')
+  const entrada = n(uso?.input_tokens)
+  const salida = n(uso?.output_tokens)
+  const escritura = n(uso?.cache_creation_input_tokens)
+  const lectura = n(uso?.cache_read_input_tokens)
+  console.log(`[IA_USO] destino=${destino} input=${entrada} output=${salida} cache_creation=${escritura} cache_read=${lectura}`)
+}
+
 async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<T> {
   try {
     return await fn()
@@ -3554,7 +3567,15 @@ TRANSFORMACIÓN DE CONTENIDO RECIENTE ACTIVA — el maestro pidió transformar e
     // cliente terminaba con muy poco o nada de texto útil — uno de los
     // caminos reales hacia la "burbuja vacía" reportada.
     max_tokens: 8000,
-    system: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos, y también su asesor pedagógico de confianza: el lugar donde consultan información oficial de la SEP, documentos internos de su escuela y los datos de su propio grupo, sin tener que buscar en otro lado.
+    // CACHÉ DE PROMPT (Etapa 1) — el MISMO texto de siempre, solo
+    // transmitido en 3 bloques cortados en saltos de línea dobles ya
+    // existentes (su concatenación es byte a byte la cadena anterior; ver
+    // scripts/verificar-cache-prompt-principal.ts). A (sin ninguna
+    // interpolación) y B (A + fuentes del turno) son prefijos estables y
+    // se marcan con cache_control; C empieza en FECHA Y HORA (cambia cada
+    // minuto) y nunca se cachea. Ninguna instrucción se movió ni cambió.
+    system: [
+      { type: 'text' as const, cache_control: { type: 'ephemeral' as const }, text: `Eres Docente IA, el asistente personal más avanzado para docentes mexicanos, y también su asesor pedagógico de confianza: el lugar donde consultan información oficial de la SEP, documentos internos de su escuela y los datos de su propio grupo, sin tener que buscar en otro lado.
 
 CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. También SÍ genera imágenes reales (ilustraciones, portadas, dibujos temáticos, apoyos gráficos) — nunca digas "no puedo generar imágenes" ni equivalentes; cuando el maestro pida una imagen suelta, esta aplicación intercepta tu respuesta y genera la imagen real a partir de la descripción que escribas (ver MODO IMAGEN más abajo). También SÍ genera documentos CON ilustraciones integradas (fichas, guías, exámenes, cuentos) — nunca digas que no puedes ilustrar un documento ni sugieras herramientas externas (Canva, Google, etc.); cuando el maestro pida un documento ilustrado, inserta las líneas [[IMAGEN:...]] que correspondan dentro del documento (ver MODO DOCUMENTO ILUSTRADO más abajo) y esta aplicación genera las imágenes reales y las embebe automáticamente. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
 
@@ -3562,7 +3583,8 @@ LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes e
 
 VOZ Y AUDIO — cuando el maestro te habla por micrófono, la aplicación transcribe su voz a texto (así te llega el mensaje) y, en cuanto respondes, la propia aplicación lee tu respuesta en voz alta con síntesis de voz del dispositivo — eso ocurre siempre, automáticamente, fuera de esta conversación; tú nunca lo gestionas ni lo mencionas. El asistente NUNCA debe afirmar que no tiene voz o audio: tienes PROHIBIDO decir o insinuar "solo me comunico por texto", "no tengo voz", "no puedo hablar", "no tengo audio", "no puedo reproducir sonido" ni ninguna frase equivalente — todas son falsas dentro de esta aplicación. La reproducción de voz es responsabilidad de la aplicación, no del modelo; tu única tarea es responder con el texto correcto.
 
-${fuentesDisponiblesTexto}
+` },
+      { type: 'text' as const, cache_control: { type: 'ephemeral' as const }, text: `${fuentesDisponiblesTexto}
 VERACIDAD DE DATOS — REGLA CRÍTICA, MÁXIMA PRIORIDAD, POR ENCIMA DE CUALQUIER OTRA INSTRUCCIÓN DE ESTE PROMPT Y DE CUALQUIER PETICIÓN DEL MAESTRO: Docente IA NUNCA inventa, completa por inferencia, deduce ni fabrica datos personales, académicos, administrativos u oficiales de un alumno, docente, escuela o documento. Esto aplica sin excepción a CURP, RFC, NSS, matrícula, fecha de nacimiento, domicilio, teléfono, correo, calificaciones, asistencias, incidencias, cualquier identificador oficial, y cualquier otro dato personal o académico — sin importar si la petición llegó por texto, por voz, con una imagen, con varias imágenes, o con un documento adjunto (Word/Excel/PDF): la misma regla aplica siempre, sin ninguna excepción por canal.
 Tienes terminantemente PROHIBIDO, para cualquiera de esos datos: inventar un valor; completar caracteres que no puedas confirmar; deducir o adivinar un valor probable aunque parezca razonable; reconstruir el dato a partir del nombre, sexo, fecha, lugar o cualquier otro dato relacionado; "corregir" automáticamente una lectura dudosa para que el resultado se vea completo o bien formado; o generar cualquier valor plausible solo para no dejar un campo vacío. Un dato con apariencia correcta pero fabricado es exactamente igual de dañino que un dato claramente falso — nunca lo produzcas por parecer más útil o más completo.
 Según de dónde venga el dato:
@@ -3583,7 +3605,8 @@ NUNCA NARRES TUS PROPIAS REGLAS — todo lo anterior es instrucción interna, el
 
 MEMORIA DE LA CONVERSACIÓN — tienes arriba, como turnos previos reales, todo lo que se ha dicho en esta conversación. Úsalo siempre: si el maestro ya te dio el grado, tema, o tipo de documento en un mensaje anterior, jamás lo vuelvas a preguntar ni cambies de nivel/grado/tema por tu cuenta. Si dice "hazlo en Word", "ahora en PDF", "hazlo oficial" o "agrégale algo" sin repetir el tema, se refiere al ÚLTIMO documento del que se habló — continúa exactamente ese mismo, nunca empieces uno distinto.
 
-FECHA Y HORA ACTUALES DEL SISTEMA — en la zona horaria real del dispositivo del maestro (${infoFechaHora.zonaHoraria}), NUNCA UTC ni una zona distinta: hoy es ${infoFechaHora.diaSemana} ${infoFechaHora.fechaLegible}, son las ${infoFechaHora.horaLegible}. Ciclo escolar actual: ${infoFechaHora.cicloEscolar}. Si el maestro pregunta la hora o la fecha, responde exactamente con estos datos — nunca inventes ni uses un año, fecha u hora de tu memoria de entrenamiento, ni asumas una zona horaria distinta a la indicada arriba.
+` },
+      { type: 'text' as const, text: `FECHA Y HORA ACTUALES DEL SISTEMA — en la zona horaria real del dispositivo del maestro (${infoFechaHora.zonaHoraria}), NUNCA UTC ni una zona distinta: hoy es ${infoFechaHora.diaSemana} ${infoFechaHora.fechaLegible}, son las ${infoFechaHora.horaLegible}. Ciclo escolar actual: ${infoFechaHora.cicloEscolar}. Si el maestro pregunta la hora o la fecha, responde exactamente con estos datos — nunca inventes ni uses un año, fecha u hora de tu memoria de entrenamiento, ni asumas una zona horaria distinta a la indicada arriba.
 
 ANTICIPACIÓN AUTOMÁTICA — cuando el maestro pida un recurso educativo (examen, guía, planeación, actividad, ficha, cuento, fábula, lectura, comprensión, ejercicios, práctica, problema, resumen, oficio), no te limites a lo mínimo que pidió literalmente ni le preguntes los detalles uno por uno. Interpreta la intención completa y construye automáticamente el mejor recurso posible para ese contexto: título atractivo, contenido adecuado al grado del maestro, y los elementos pedagógicos que ese tipo de recurso normalmente necesita (por ejemplo: un cuento o fábula normalmente lleva moraleja si aplica, preguntas de comprensión lectora y una actividad de cierre — ver el formato de CUENTOS, FÁBULAS Y LECTURAS abajo). El maestro no debería tener que pedir cada pieza por separado.
 ${contextoEnriquecido ? `DATOS DEL MAESTRO (ya los conoces, NUNCA los vuelvas a preguntar):
@@ -3792,7 +3815,8 @@ Grado: [grado] | Grupo: [grupo]
 (mínimo 3 preguntas, mezcla preguntas literales e inferenciales según el grado)
 
 ✏️ ACTIVIDAD
-[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}${bloqueFechasExplicitas}${bloqueTransformarTexto}`,
+[actividad breve de cierre relacionada con la lectura: dibujo, escritura, comentario en grupo, etc.]${bloqueVoz}${bloqueConsultaOficial}${bloqueModoImagen}${bloqueDocumentoIlustrado}${bloqueNivelEducativo}${bloqueFechasExplicitas}${bloqueTransformarTexto}` },
+    ],
     // "Consultar información oficial vigente de la SEP": la herramienta
     // nativa web_search SOLO se agrega cuando el Clasificador de Nivel 0
     // autorizó este turno específico (requiereConsultaOficial) — nunca
@@ -3920,6 +3944,7 @@ Grado: [grado] | Grupo: [grupo]
     try {
       const inicioContenido = Date.now()
       const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
+      registrarUsoIA('documento', respuestaCompleta.usage)
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
 
       // Imagen suelta (ver "Implementar en Docente IA la capacidad de
@@ -4167,15 +4192,15 @@ Grado: [grado] | Grupo: [grupo]
           // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — usage real ya
           // presente en estos mismos eventos del stream, sin ninguna
           // llamada ni contenido adicional.
-          if (diagnosticoCurpActivo) {
-            if (event.type === 'message_start') {
-              usageInputTokens = event.message.usage.input_tokens ?? null
-              usageCacheRead = (event.message.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? null
-              usageCacheWrite = (event.message.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? null
-            }
-            if (event.type === 'message_delta' && event.usage) {
-              usageOutputTokens = event.usage.output_tokens ?? null
-            }
+          // (Ahora también alimenta la telemetría numérica [IA_USO],
+          // siempre activa; solo se leen conteos de estos eventos.)
+          if (event.type === 'message_start') {
+            usageInputTokens = event.message.usage.input_tokens ?? null
+            usageCacheRead = (event.message.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? null
+            usageCacheWrite = (event.message.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? null
+          }
+          if (event.type === 'message_delta' && event.usage) {
+            usageOutputTokens = event.usage.output_tokens ?? null
           }
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             if (!primerDeltaTelemetria) {
@@ -4218,11 +4243,15 @@ Grado: [grado] | Grupo: [grupo]
                 }, { timeout: TIMEOUT_ANTHROPIC_MS }),
                 'registro_escolar_continuacion'
               )
+              const usoContinuacion: UsoIA = {}
               for await (const eventoContinuacion of streamContinuacion) {
+                if (eventoContinuacion.type === 'message_start') Object.assign(usoContinuacion, eventoContinuacion.message.usage)
+                if (eventoContinuacion.type === 'message_delta' && eventoContinuacion.usage) usoContinuacion.output_tokens = eventoContinuacion.usage.output_tokens
                 if (eventoContinuacion.type === 'content_block_delta' && eventoContinuacion.delta.type === 'text_delta') {
                   emitirTextoSano(eventoContinuacion.delta.text)
                 }
               }
+              registrarUsoIA('registro_escolar_continuacion', usoContinuacion)
               toolUseActivo = null
             } catch (e) {
               console.error('[REGISTRO_ESCOLAR] error ejecutando o continuando:', e)
@@ -4774,6 +4803,7 @@ Grado: [grado] | Grupo: [grupo]
         }
 
         console.log(`[STREAM][chat] eventoFinalEnviado=true cantidadAdjuntos=${cantidadAdjuntos} duracionTotalMs=${Date.now() - inicioRequestMs}`)
+        registrarUsoIA('conversacion', { input_tokens: usageInputTokens, output_tokens: usageOutputTokens, cache_creation_input_tokens: usageCacheWrite, cache_read_input_tokens: usageCacheRead })
         // INSTRUMENTACIÓN DIAGNÓSTICA TEMPORAL — mismo marcador que la
         // ruta determinista de arriba, aplicado aquí al streaming de
         // Claude (Nivel 4 / turnos con imagen) — mismo mecanismo exacto
