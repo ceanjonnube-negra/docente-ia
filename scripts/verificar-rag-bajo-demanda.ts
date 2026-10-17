@@ -1,0 +1,132 @@
+// scripts/verificar-rag-bajo-demanda.ts
+//
+// P0-C1 — RAG bajo demanda y exclusión de la ficha descriptiva. Sin red
+// ni llamadas facturables: comprueba sobre el código REAL de
+// app/api/chat/route.ts que
+// - el embedding + RPC solo se ejecuta desde un getter memoizado con un
+//   único consumidor, situado después de TODAS las salidas anticipadas
+//   (herramientas deterministas, aclaraciones, registros, lista oficial,
+//   conversión…) y antes de las llamadas a Sonnet;
+// - la ficha descriptiva nunca dispara el embedding;
+// - conversación general / documento: exactamente 1 ejecución;
+// - nunca más de 1 ejecución por petición; mismo contenido, errores y
+//   timeout de siempre.
+//
+// Ejecutar: npx tsx --tsconfig ./tsconfig.json scripts/verificar-rag-bajo-demanda.ts
+// Opcional: VERIFICAR_RUTA_CHAT (archivo a verificar), VERIFICAR_BASE_ARCHIVO
+// o VERIFICAR_BASE_REF (route.ts anterior, para comparar buscarContextoRAG).
+
+import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+
+let fallos = 0
+function verificar(condicion: boolean, mensaje: string) {
+  if (condicion) {
+    console.log(`✓ ${mensaje}`)
+  } else {
+    fallos++
+    console.error(`✗ ${mensaje}`)
+  }
+}
+
+const RAIZ = join(__dirname, '..')
+const RUTA = process.env.VERIFICAR_RUTA_CHAT || join(RAIZ, 'app/api/chat/route.ts')
+const BASE_REF = process.env.VERIFICAR_BASE_REF || '31257c2aebd5934d59f15bc591b54a00068f2a9f'
+
+function cuerpoFuncion(s: string, firma: string): string {
+  const i = s.indexOf(firma)
+  if (i < 0) return ''
+  let d = 0
+  for (let k = s.indexOf('{', i + firma.length - 1); k < s.length; k++) {
+    if (s[k] === '{') d++
+    else if (s[k] === '}') { d--; if (d === 0) return s.slice(i, k + 1) }
+  }
+  return ''
+}
+
+async function main() {
+  const fuente = readFileSync(RUTA, 'utf8')
+  let base = ''
+  try {
+    base = process.env.VERIFICAR_BASE_ARCHIVO ? readFileSync(process.env.VERIFICAR_BASE_ARCHIVO, 'utf8') : execFileSync('git', ['show', `${BASE_REF}:app/api/chat/route.ts`], { cwd: RAIZ, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  } catch {
+    base = ''
+  }
+
+  // ===== 1. Estructura: un solo camino y un solo consumidor =====
+  console.log('\n— 1. Estructura (código real) —')
+  const pGetter = fuente.indexOf('  const obtenerContextoRAGPromise = (): Promise<string> => {')
+  const finGetter = fuente.indexOf('\n  }\n', pGetter) + 4
+  const getter = fuente.slice(pGetter, finGetter)
+  const pDeclaracion = fuente.indexOf('  let contextoRAGPromise: Promise<string> | null = null')
+  verificar(pDeclaracion > 0 && pGetter > pDeclaracion && finGetter > pGetter, 'getter memoizado obtenerContextoRAGPromise() declarado (promesa en una variable de la petición)')
+  verificar(/if \(!contextoRAGPromise\) \{/.test(getter) && /return contextoRAGPromise/.test(getter), 'el getter reutiliza la promesa ya creada (memoización)')
+  const invocaciones = (fuente.match(/buscarContextoRAG\(supabaseUser/g) || []).length
+  verificar(invocaciones === 1 && getter.includes('buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)'), 'buscarContextoRAG solo se invoca dentro del getter, con los mismos argumentos de siempre')
+  const usos = [...fuente.matchAll(/obtenerContextoRAGPromise\(\)/g)].map((m) => m.index!)
+  verificar(usos.length === 1, `el getter tiene exactamente 1 consumidor (${usos.length})`)
+  const pConsumo = usos[0] ?? -1
+  const fueraDelGetter = fuente.slice(0, pDeclaracion) + fuente.slice(finGetter)
+  verificar(!/contextoRAGPromise(?!\))/.test(fueraDelGetter.replace(/\/\/.*$/gm, '').replace(/obtenerContextoRAGPromise/g, '')), 'la promesa no se usa fuera del getter (nadie la arranca por adelantado)')
+  const pParametros = fuente.indexOf('  const parametrosClaude = {')
+  const llamadasSonnet = [...fuente.matchAll(/client\.messages\.create\(\{ \.\.\.parametrosClaude|client\.messages\.create\(\{\n\s+\.\.\.parametrosClaude,/g)].map((m) => m.index!)
+  verificar(pConsumo > 0 && pConsumo < pParametros && llamadasSonnet.length === 3 && llamadasSonnet.every((p) => p > pConsumo), 'el consumidor está antes de armar el prompt y antes de las 3 llamadas a Sonnet (conversación, documento, continuación)')
+  const salidas = [...fuente.matchAll(/return (respuestaTexto|NextResponse\.json|new Response)\(/g)].map((m) => m.index!).filter((p) => p > finGetter && p < pParametros)
+  verificar(salidas.length >= 40 && salidas.every((p) => p < pConsumo), `las ${salidas.length} salidas anticipadas (herramientas, aclaraciones, registros, lista oficial, conversión…) quedan ANTES del consumidor: ninguna puede generar embedding`)
+  const pFicha = fuente.indexOf('esTurnoFichaDescriptiva = true')
+  verificar(pFicha > 0 && pFicha < pConsumo && (fuente.match(/esTurnoFichaDescriptiva = true/g) || []).length === 1, 'la marca de ficha descriptiva se decide antes del consumidor')
+
+  // ===== 2. Comportamiento con el código real del getter y del consumidor =====
+  console.log('\n— 2. Comportamiento (mocks, sin red) —')
+  const iniConsumo = fuente.lastIndexOf('  const rag = esTurnoFichaDescriptiva', pConsumo)
+  const finConsumo = fuente.indexOf('\n', fuente.indexOf(".catch(() => '')", pConsumo))
+  const consumo = fuente.slice(iniConsumo, finConsumo)
+  verificar(iniConsumo > 0 && /const contextoRAG = esTurnoFichaDescriptiva\n\s+\? ''\n\s+: await conLimiteDeTiempo\(obtenerContextoRAGPromise\(\), TIMEOUT_RAG_MS \+ 5_000, '[^']+'\)\.catch\(\(\) => ''\)/.test(consumo), 'consumidor: ficha → \'\'; resto → timeout + .catch(() => \'\') de siempre')
+  const ts = (await import('typescript')).default
+  const js = ts.transpileModule(`async function __tramo(env: any) { const { mensaje, sesion, supabaseUser, buscarContextoRAG, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, consumirDosVeces } = env\n${fuente.slice(pDeclaracion, finGetter)}\n if (consumirDosVeces) { void obtenerContextoRAGPromise() }\n${consumo}\n return { contextoRAG, rag } }`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
+  const tramo = new Function(`${js}; return __tramo`)() as (env: Record<string, unknown>) => Promise<{ contextoRAG: string; rag: string }>
+  const conLimiteDeTiempo = <T,>(p: Promise<T>, ms: number, msg: string) => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))])
+  const RECUPERADO = '\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES DISPONIBLES ...fragmento ficticio...'
+  const correr = async (extra: Record<string, unknown> = {}, buscar?: (...a: unknown[]) => Promise<string>) => {
+    const llamadas: unknown[][] = []
+    const logs: string[] = []
+    const env = {
+      mensaje: 'Pregunta ficticia sobre el reglamento escolar', sesion: { institucion_id: '00000000-0000-4000-8000-0000000000aa' }, supabaseUser: { cliente: 'ficticio' },
+      buscarContextoRAG: (...a: unknown[]) => { llamadas.push(a); return buscar ? buscar(...a) : Promise.resolve(RECUPERADO) },
+      conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: () => {} }, consumirDosVeces: false, ...extra,
+    }
+    const r = await tramo(env)
+    return { ...r, llamadas, logs, env }
+  }
+  const general = await correr()
+  verificar(general.llamadas.length === 1 && general.contextoRAG === RECUPERADO && general.rag === 'ejecutado', 'conversación general / documento: 1 ejecución y el contenido recuperado llega sin cambios')
+  verificar(JSON.stringify(general.llamadas[0]) === JSON.stringify([general.env.supabaseUser, general.env.mensaje, (general.env.sesion as { institucion_id: string }).institucion_id]), 'argumentos idénticos a los de siempre (cliente autenticado, mensaje, institución de la sesión)')
+  const ficha = await correr({ esTurnoFichaDescriptiva: true })
+  verificar(ficha.llamadas.length === 0 && ficha.contextoRAG === '' && ficha.rag === 'omitido_ficha', 'ficha descriptiva: 0 embeddings y sin documentos institucionales')
+  const doble = await correr({ consumirDosVeces: true })
+  verificar(doble.llamadas.length === 1 && doble.contextoRAG === RECUPERADO, 'dos consumos en la misma petición → 1 sola ejecución (memoizada)')
+  const noAplica = await Promise.all([correr({ mensaje: '   ' }), correr({ sesion: { institucion_id: null } }), correr({ sesion: null }), correr({ supabaseUser: null })])
+  verificar(noAplica.every((r) => r.llamadas.length === 0 && r.contextoRAG === '' && r.rag === 'no_aplica'), 'sin texto, sin institución, sin sesión o sin cliente autenticado → 0 embeddings y \'\' (falla segura de siempre)')
+  const conError = await correr({}, () => Promise.reject(new Error('fallo ficticio')))
+  const conTimeout = await correr({}, () => new Promise<string>(() => {}))
+  verificar(conError.contextoRAG === '' && conTimeout.contextoRAG === '' && conError.llamadas.length === 1, 'error o timeout del RAG → \'\' y el turno continúa (manejo de siempre)')
+  const estados = [general, ficha, ...noAplica].flatMap((r) => r.logs)
+  verificar(estados.every((l) => /^\[RAG_USO\] estado=(ejecutado|omitido_ficha|no_aplica)$/.test(l)), 'telemetría [RAG_USO]: solo un estado de lista cerrada (nunca mensaje, documentos ni ids)')
+
+  // ===== 3. Recuperación y protecciones intactas =====
+  console.log('\n— 3. Recuperación sin cambios —')
+  const fnActual = cuerpoFuncion(fuente, 'async function buscarContextoRAG(')
+  const fnBase = base ? cuerpoFuncion(base, 'async function buscarContextoRAG(') : ''
+  verificar(!!fnBase && fnActual === fnBase, `buscarContextoRAG idéntica byte a byte a la versión base (${BASE_REF.slice(0, 7)}): mismo embedding, misma RPC, mismo formato`)
+  verificar(/\$\{contextoEnriquecido\}` : ''\}\$\{contextoRAG\}\$\{contextoProceso\}/.test(fuente), 'el contenido recuperado se sigue insertando en el mismo punto del prompt (bloque C, sin caché)')
+  verificar(/messages: \[\n\s+\.\.\.proyeccionSonnet\.historial,/.test(fuente) && /clasificarNivel0\(mensaje, sesion, proyeccionNivel0\.historial\.slice\(-4\)/.test(fuente) && (fuente.match(/cache_control: /g) || []).length === 2, 'P0-B y caché de Sonnet intactos')
+
+  console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)
+  process.exit(fallos === 0 ? 0 : 1)
+}
+
+main().catch((e) => {
+  console.error('ERROR DEL VERIFICADOR:', e)
+  process.exit(1)
+})

@@ -107,8 +107,9 @@ function main() {
   // ============================================================
   verificar(/if \(error \|\| !data \|\| data\.length === 0\) return ''/.test(cuerpoFn), "5. Sin resultados (o con error de RLS/RPC) devuelve '' — sin contexto RAG")
   verificar(/\} catch \(e\) \{\s*\n\s*console\.error\('Error buscando contexto RAG:', e\)\s*\n\s*return ''/.test(cuerpoFn), "5b. Tratamiento seguro de errores conservado: cualquier excepción devuelve ''")
-  verificar(/: Promise\.resolve\(''\)/.test(chatCodigo.slice(chatCodigo.indexOf('const contextoRAGPromise'), chatCodigo.indexOf('const contextoRAGPromise') + 400)), "5c. Si no aplica la búsqueda, contextoRAGPromise resuelve ''")
-  verificar(/const contextoRAG = await conLimiteDeTiempo\(contextoRAGPromise, TIMEOUT_RAG_MS \+ 5_000, '[^']*'\)\.catch\(\(\) => ''\)/.test(chatCodigo), "5d. El turno nunca falla por el RAG (timeout + .catch(() => ''))")
+  // P0-C1: la búsqueda pasó a un getter memoizado (obtenerContextoRAGPromise); misma condición y mismo valor por defecto.
+  verificar(/: Promise\.resolve\(''\)/.test(chatCodigo.slice(chatCodigo.indexOf('const obtenerContextoRAGPromise'), chatCodigo.indexOf('const obtenerContextoRAGPromise') + 400)), "5c. Si no aplica la búsqueda, contextoRAGPromise resuelve ''")
+  verificar(/: await conLimiteDeTiempo\(obtenerContextoRAGPromise\(\), TIMEOUT_RAG_MS \+ 5_000, '[^']*'\)\.catch\(\(\) => ''\)/.test(chatCodigo), "5d. El turno nunca falla por el RAG (timeout + .catch(() => ''))")
 
   // ============================================================
   // 6. Sin llamadas nuevas de IA; otros usos de service_role intactos.

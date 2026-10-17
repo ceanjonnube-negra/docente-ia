@@ -1368,9 +1368,20 @@ export async function POST(req: NextRequest) {
   // sin aproximar — el costo es que RAG ya no se solapa con las
   // consultas de sesión (antes si), solo con lo que venga después.
   // `mensaje.trim()` conserva exactamente el mismo atajo de siempre.
-  const contextoRAGPromise = mensaje.trim() && sesion?.institucion_id && supabaseUser
-    ? buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)
-    : Promise.resolve('')
+  // P0-C1 — BAJO DEMANDA: la búsqueda (embedding + RPC) ya no arranca
+  // aquí, antes de conocer la intención; solo se ejecuta si el turno
+  // llega al único consumidor (justo antes de armar el prompt de
+  // Sonnet). Memoizada: como máximo una ejecución por petición. Misma
+  // condición, mismos argumentos y mismo manejo de errores/timeout.
+  let contextoRAGPromise: Promise<string> | null = null
+  const obtenerContextoRAGPromise = (): Promise<string> => {
+    if (!contextoRAGPromise) {
+      contextoRAGPromise = mensaje.trim() && sesion?.institucion_id && supabaseUser
+        ? buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)
+        : Promise.resolve('')
+    }
+    return contextoRAGPromise
+  }
 
   // Indicadores seguros de diagnóstico — mismo criterio que el log
   // [AUTH][chat] de arriba, nunca datos sensibles (ver "DIAGNÓSTICO
@@ -3387,7 +3398,13 @@ FUENTES QUE NO EXISTEN EN ESTA APLICACIÓN — no son "no disponibles ahora", so
   // llamada a OpenAI con timeout, pero la consulta RPC a Supabase que
   // sigue después (buscar_chunks_similares) no tiene uno propio — este
   // límite cubre esa parte también sin tener que tocar la función.
-  const contextoRAG = await conLimiteDeTiempo(contextoRAGPromise, TIMEOUT_RAG_MS + 5_000, 'Tiempo de espera agotado en la búsqueda de contexto RAG').catch(() => '')
+  // P0-C1 — la ficha descriptiva usa fuentes factuales cerradas (bloques
+  // A–D): nunca recibe documentos institucionales ni dispara el embedding.
+  const rag = esTurnoFichaDescriptiva ? 'omitido_ficha' : mensaje.trim() && sesion?.institucion_id && supabaseUser ? 'ejecutado' : 'no_aplica'
+  console.log(`[RAG_USO] estado=${rag}`)
+  const contextoRAG = esTurnoFichaDescriptiva
+    ? ''
+    : await conLimiteDeTiempo(obtenerContextoRAGPromise(), TIMEOUT_RAG_MS + 5_000, 'Tiempo de espera agotado en la búsqueda de contexto RAG').catch(() => '')
 
   // Fecha, hora y ciclo escolar reales — SIEMPRE en la zona horaria real
   // del dispositivo del maestro (mandada por el cliente, ver
