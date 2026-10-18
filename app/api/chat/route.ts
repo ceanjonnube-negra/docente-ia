@@ -741,7 +741,7 @@ export async function POST(req: NextRequest) {
       }
       mensajeConDocumento = `${mensaje}\n\n[Contenido del archivo adjunto "${nombreArchivo || 'documento'}"${truncado ? ' — se muestran solo los primeros caracteres, el archivo es más largo' : ''}]\n${texto}`
     } catch (err) {
-      console.error('[CHAT:adjunto-documento] Falló la extracción de texto:', err)
+      console.error(`[CHAT:adjunto-documento] Falló la extracción de texto: ${errorSeguro(err)}`)
       return NextResponse.json({ error: `No pude leer "${nombreArchivo || 'el archivo adjunto'}". Verifica que no esté dañado o protegido con contraseña.` }, { status: 502 })
     }
   }
@@ -1098,7 +1098,7 @@ export async function POST(req: NextRequest) {
       return respuestaTexto(`Imagen generada correctamente.\n${marcador}`)
     } catch (err) {
       const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : 'IMAGEN-GEN'
-      console.error(`[IMAGEN_EXPORT] Error regenerando la imagen [${codigo}]:`, err)
+      console.error(`[IMAGEN_EXPORT] Error regenerando la imagen [${codigo}]: ${errorSeguro(err)}`)
       return NextResponse.json({ error: 'No fue posible generar la imagen en este momento. Intenta de nuevo.' }, { status: 502 })
     }
   }
@@ -1227,7 +1227,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: err.message }, { status: 502 })
         }
         const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
-        console.error(`Error ejecutando herramienta de documento [${codigo}]:`, err)
+        console.error(`Error ejecutando herramienta de documento [${codigo}]: ${errorSeguro(err)}`)
         return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
       }
     }
@@ -1488,7 +1488,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: err.message }, { status: 502 })
         }
         const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
-        console.error(`[LISTA_ALUMNOS] Error generando el archivo [${codigo}]:`, err)
+        console.error(`[LISTA_ALUMNOS] Error generando el archivo [${codigo}]: ${errorSeguro(err)}`)
         return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
       }
     }
@@ -2558,7 +2558,7 @@ export async function POST(req: NextRequest) {
               grupo: grupoSolicitado ?? undefined,
             })
             if (!resultado.exito) {
-              console.error('[NIVEL0] actualizar_perfil_docente — Supabase rechazó la escritura:', resultado.error)
+              console.error(`[NIVEL0] actualizar_perfil_docente — Supabase rechazó la escritura: error=${typeof resultado.error === 'string' && resultado.error ? 'presente' : 'ausente'}`)
               return respuestaTexto('No fue posible actualizar tu grado o grupo en este momento. Intenta de nuevo en unos segundos.')
             }
             const gradoFinal = gradoSolicitado ?? resultado.anterior.grado
@@ -2574,7 +2574,7 @@ export async function POST(req: NextRequest) {
             // página.
             return respuestaTexto(`Listo. El grupo activo ahora es ${etiqueta}. A partir de este momento toda la información y los documentos se generarán utilizando ese grado.\n[[PERFIL_ACTUALIZADO]]`)
           } catch (e) {
-            console.error('[NIVEL0] actualizar_perfil_docente — excepción escribiendo:', e)
+            console.error(`[NIVEL0] actualizar_perfil_docente — excepción escribiendo: ${errorSeguro(e)}`)
             return respuestaTexto('No fue posible actualizar tu grado o grupo en este momento. Intenta de nuevo en unos segundos.')
           }
         }
@@ -3350,7 +3350,7 @@ ${JSON.stringify(ctxPedagogico.incidencias)}`
         console.log(`[CONVERTIR_DOCUMENTO] ejecutado=false motivo=formato_no_conectado formato=${formatoResuelto ?? 'null'}`)
       }
     } catch (err) {
-      console.error('[CONVERTIR_DOCUMENTO] Error recuperando/ejecutando la conversión — continuando flujo normal:', err)
+      console.error(`[CONVERTIR_DOCUMENTO] Error recuperando/ejecutando la conversión — continuando flujo normal: ${errorSeguro(err)}`)
     }
   }
 
@@ -4058,11 +4058,11 @@ Grado: [grado] | Grupo: [grupo]
       return respuestaTexto(texto || 'No entendí bien qué documento necesitas. ¿Puedes darme más detalles?')
     } catch (err) {
       if (err instanceof HerramientaNoDisponibleError) {
-        console.error('Herramienta no disponible:', err)
+        console.error(`Herramienta no disponible: ${errorSeguro(err)}`)
         return NextResponse.json({ error: err.message }, { status: 502 })
       }
       const codigo = err instanceof ErrorHerramientaDocumento ? err.codigo : `${ETIQUETA_MODULO[tipoHerramientaSolicitado]}-GEN`
-      console.error(`Error generando y finalizando documento en un solo paso [${codigo}]:`, err)
+      console.error(`Error generando y finalizando documento en un solo paso [${codigo}]: ${errorSeguro(err)}`)
       return NextResponse.json({ error: MENSAJE_ERROR_DOCUMENTO }, { status: 502 })
     }
   }

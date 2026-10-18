@@ -1,6 +1,6 @@
 // scripts/verificar-logs-sin-datos-personales.ts
 //
-// Privacidad de logs — Etapas A y B. Sin red ni llamadas facturables, con
+// Privacidad de logs — Etapas A, B y C. Sin red ni llamadas facturables, con
 // datos 100% ficticios. Comprueba que los logs del servidor no registran
 // nombres de alumnos, correos del docente ni respuestas completas de RPC,
 // conservando indicadores técnicos útiles:
@@ -10,6 +10,10 @@
 //    ficticios: solo indicadores (presente/ausente, candidatos=N, id).
 // 3. aplicarCorreccionAlumno REAL ante una respuesta inesperada de la RPC
 //    con valores ficticios: el log no contiene ningún valor.
+// 8. Etapa C: clasificarNivel0 REAL ante respuestas mal formadas (Anthropic
+//    simulado, sin red), errores de documentos/Storage con rutas ficticias,
+//    actualizar_perfil_docente y el trabajo asíncrono de documentos
+//    ejecutado con su código real.
 //
 // Ejecutar: npx tsx --tsconfig ./tsconfig.json scripts/verificar-logs-sin-datos-personales.ts
 // Opcional: VERIFICAR_RAIZ (raíz alternativa a verificar, p. ej. un índice exportado).
@@ -73,9 +77,8 @@ const PROHIBIDOS: [RegExp, string][] = [
   [/\$\{(?![^}]*(archivoSeguro|formatoArchivoSeguro)\()[^}]*(\bnombre\b|\.nombre\b|\bnombreArchivo\b)[^}]*\}/, 'nombre de archivo'],
   // Etapa B — texto libre de una incidencia/ilustración: solo presencia o longitud.
   [/\$\{\s*descripcion\s*\}|descripcion\.slice\(/, 'descripción en texto libre'],
-  // (resultado.error crudo se comprueba POR FLUJO en FLUJOS_ETAPA_B — una
-  // prohibición global marcaría sitios fuera del alcance auditado, p. ej.
-  // actualizar_perfil_docente, que queda para la revisión de la Etapa C.)
+  // (resultado.error crudo se comprueba POR FLUJO en FLUJOS_ETAPA_B/C — una
+  // prohibición global marcaría sitios fuera del alcance auditado.)
   // Etapa B — nunca message/details/hint de un error en el texto del log.
   [/\$\{[^}]*\b(e|err|error)\.(message|details|hint)\b[^}]*\}/, 'mensaje o detalle crudo de un error'],
 ]
@@ -95,6 +98,16 @@ const FLUJOS_ETAPA_B: [string, RegExp | null][] = [
   ['app/api/asistencia-guardar/route.ts', null],
   ['lib/emparejarAlumno.ts', null],
   ['app/api/generar-ficha-descriptiva/route.ts', null],
+]
+
+// Etapa C — logs que registraban crudo un SyntaxError de JSON.parse, la
+// cadena de error de Supabase de actualizar_perfil_docente, errores de
+// documentos/Storage ya protegidos en herramientas.ts y el trabajo
+// asíncrono de documentos. [archivo, filtro, número exacto de logs].
+const FLUJOS_ETAPA_C: [string, RegExp | null, number][] = [
+  ['lib/clasificadorNivel0.ts', /Clasificador de Nivel 0, usando fallback/, 1],
+  ['app/api/chat/route.ts', /actualizar_perfil_docente — (Supabase rechazó|excepción)|\[CHAT:adjunto-documento\] Falló|\[IMAGEN_EXPORT\] Error regenerando|Error ejecutando herramienta de documento|\[LISTA_ALUMNOS\] Error generando el archivo|\[CONVERTIR_DOCUMENTO\] Error recuperando|Herramienta no disponible|en un solo paso/, 9],
+  ['app/api/chat/trabajo-documento/route.ts', /\[TRABAJO_DOCUMENTO\] (Fallo creando|Falló el trabajo)/, 2],
 ]
 
 async function main() {
@@ -124,6 +137,14 @@ async function main() {
     const crudas = llamadas.filter((l) => /,\s*(e|err|error|resultado\.error)\s*\)$/.test(l.texto) || /^console\.\w+\(\s*(e|err|error)\s*\)$/.test(l.texto) || /\.(message|details|hint)\b/.test(l.texto))
     verificar(llamadas.length > 0 && crudas.length === 0, `${rel}: ${llamadas.length} log(s) del flujo sin objetos de error crudos ni message/details/hint${crudas.length ? ' → líneas ' + crudas.map((c) => c.linea).join(',') : ''}`)
   }
+
+  for (const [rel, filtro, esperados] of FLUJOS_ETAPA_C) {
+    const llamadas = llamadasConsole(readFileSync(join(RAIZ, rel), 'utf8')).filter((l) => !filtro || filtro.test(l.texto))
+    const crudas = llamadas.filter((l) => /,\s*(e|err|error|resultado\.error)\s*\)$/.test(l.texto) || /\.(message|details|hint)\b/.test(l.texto) || /\$\{[^}]*\b(detalle|mensajeError)\b[^}]*\}/.test(l.texto) || !/errorSeguro\(|error=\$\{typeof resultado\.error === 'string' && resultado\.error \? 'presente' : 'ausente'\}/.test(l.texto))
+    verificar(llamadas.length === esperados && crudas.length === 0, `Etapa C — ${rel}: ${llamadas.length}/${esperados} log(s) solo con errorSeguro() o error=presente|ausente${crudas.length ? ' → líneas ' + crudas.map((c) => c.linea).join(',') : ''}`)
+  }
+  const fuenteTrabajo = readFileSync(join(RAIZ, 'app/api/chat/trabajo-documento/route.ts'), 'utf8')
+  verificar(llamadasConsole(fuenteTrabajo).every((l) => !/\bdetalle\b|mensajeError/.test(l.texto)), 'trabajo-documento: ningún log interpola el cuerpo de la respuesta interna ni el mensaje persistido')
 
   // ===== 2. Plantillas reales evaluadas con datos ficticios =====
   console.log('\n— 2. Plantillas reales de los logs corregidos —')
@@ -294,6 +315,115 @@ async function main() {
   const cuerpoFicha = resFicha ? await resFicha.json() : null
   verificar(resFicha?.status === 500 && cuerpoFicha?.error === 'La IA no devolvió un formato válido. Intenta de nuevo.', 'respuesta HTTP y mensaje al docente sin cambios (500, mismo texto)')
   verificar(capt.join('\n') === 'Error en generar-ficha-descriptiva: tipo=SyntaxError' && !capt.join('').includes(NOMBRE.slice(0, 5)), 'el log del error de formato no contiene ningún fragmento de la ficha generada')
+
+
+  // ===== 8. Etapa C =====
+  console.log('\n— 8. Etapa C: clasificador, documentos/Storage, perfil y trabajo asíncrono —')
+  // 8a. clasificarNivel0 REAL con Anthropic simulado (fetch bloqueado para cualquier otra URL).
+  let respuestaModelo: () => Response = () => new Response('{}', { status: 500 })
+  let llamadasAnthropic = 0
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.startsWith('https://api.anthropic.com/')) { llamadasAnthropic++; return respuestaModelo() }
+    throw new Error('RED BLOQUEADA EN LA PRUEBA: ' + url)
+  }) as typeof fetch
+  const mensajeModelo = (texto: string) => () => new Response(JSON.stringify({ id: 'msg', type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: texto }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } })
+  const { clasificarNivel0 } = await import(join(RAIZ, 'lib/clasificadorNivel0.ts'))
+  const sesionFicticia = { docente_id: 'd1', institucion_id: 'i1', ciclo_escolar_id: 'c1', grupo_activo_id: 'g1', grado: '3', grupo: 'A', nivel_educativo: 'primaria', fecha_actual: '2026-01-15', alumnos_del_grupo_activo: [{ alumno_id: 'a1', inscripcion_id: 'i1', nombre_completo: NOMBRE }], periodo_evaluacion_actual: null } as never
+  const MENSAJE_DOCENTE = `¿Cómo va ${NOMBRE} en comprensión lectora este mes?`
+  const FALLBACK_REAL = await clasificarNivel0('   ', sesionFicticia)
+  const clasificarCapturando = async (respuesta: () => Response) => {
+    respuestaModelo = respuesta
+    const antes = llamadasAnthropic
+    const capturados: string[] = []
+    const origError = console.error, origLog = console.log
+    console.error = (...a: unknown[]) => { capturados.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')) }
+    console.log = () => {}
+    try {
+      const r = await clasificarNivel0(MENSAJE_DOCENTE, sesionFicticia)
+      return { r, capturados, llamadas: llamadasAnthropic - antes }
+    } finally { console.error = origError; console.log = origLog }
+  }
+  const PROSA = `${NOMBRE} necesita apoyo en lectura; no pude generar el JSON.`
+  let mensajeCrudo = ''
+  try { JSON.parse(PROSA) } catch (e) { mensajeCrudo = (e as Error).message }
+  const prosa = await clasificarCapturando(mensajeModelo(PROSA))
+  verificar(prosa.llamadas === 1 && mensajeCrudo.includes(NOMBRE.slice(0, 6)), `clasificador: la prueba llega al modelo simulado y el SyntaxError crudo SÍ contenía el fragmento («${mensajeCrudo.slice(0, 40)}…»)`)
+  verificar(prosa.capturados.length === 1 && prosa.capturados[0] === 'Error en Clasificador de Nivel 0, usando fallback: tipo=SyntaxError' && !prosa.capturados[0].includes(NOMBRE.slice(0, 6)), `clasificador ante prosa con nombre ficticio → log exacto «tipo=SyntaxError», sin fragmento (${prosa.capturados.join(' | ')})`)
+  verificar(prosa.r === FALLBACK_REAL, 'clasificador ante respuesta mal formada → el MISMO objeto FALLBACK de siempre')
+  const objetoRoto = await clasificarCapturando(mensajeModelo(`Claro: {"intencion_principal": "consultar_dato_alumno", "alumno": "${NOMBRE}" "x": 1}`))
+  verificar(objetoRoto.r === FALLBACK_REAL && objetoRoto.capturados.length === 1 && /^Error en Clasificador de Nivel 0, usando fallback: tipo=SyntaxError$/.test(objetoRoto.capturados[0]) && !objetoRoto.capturados[0].includes(NOMBRE.slice(0, 6)), 'clasificador ante objeto JSON embebido inválido (segundo intento de parseo) → FALLBACK y solo tipo=SyntaxError')
+  const api400 = await clasificarCapturando(() => new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `contenido inválido cerca de «${NOMBRE}»` } }), { status: 400, headers: { 'content-type': 'application/json' } }))
+  verificar(api400.r === FALLBACK_REAL && api400.capturados.length === 1 && /^Error en Clasificador de Nivel 0, usando fallback: tipo=(BadRequestError|Error) status=400$/.test(api400.capturados[0]) && !api400.capturados[0].includes(NOMBRE.slice(0, 6)), `clasificador ante error 400 del proveedor → FALLBACK; el log conserva tipo y status, sin el mensaje (${api400.capturados.join(' | ')})`)
+  const valido = await clasificarCapturando(mensajeModelo(JSON.stringify({ intencion_principal: 'conversacion_general', entidades_resueltas: { alumno_id: null, alumno_nombre_detectado: null, alumno_ambiguo: false, opciones_alumno_ambiguo: [] }, nivel_confianza: 0.9, datos_faltantes: [] })))
+  verificar(valido.r !== FALLBACK_REAL && valido.r.intencion_principal === 'conversacion_general' && valido.capturados.length === 0, 'clasificador con JSON válido → clasificación normal, sin logs de error (comportamiento intacto)')
+
+  // 8b. Documentos/Storage: las 7 plantillas reales con rutas ficticias.
+  const RUTA_FICTICIA = `00000000-0000-4000-8000-0000000000dd/1700000000000-Ficha_${NOMBRE.replace(/ /g, '_')}.docx`
+  const erroresDoc: [string, unknown, string][] = [
+    ['Error plano de almacenamiento', new Error(`Error subiendo archivo a Storage: Invalid key: ${RUTA_FICTICIA}`), 'tipo=Error'],
+    ['StorageApiError', Object.assign(new Error(`Invalid key: ${RUTA_FICTICIA}`), { name: 'StorageApiError', status: 400 }), 'tipo=StorageApiError status=400'],
+    ['URL firmada', new Error(`Error generando URL de descarga: Object not found ${RUTA_FICTICIA}`), 'tipo=Error'],
+  ]
+  const marcasDoc: [string, string | null][] = [
+    ['[CHAT:adjunto-documento] Falló la extracción de texto', null],
+    ['[IMAGEN_EXPORT] Error regenerando la imagen', 'IMAGEN-SUBIDA'],
+    ['Error ejecutando herramienta de documento [', 'DOCX-SUBIDA'],
+    ['[LISTA_ALUMNOS] Error generando el archivo', 'XLSX-URL'],
+    ['[CONVERTIR_DOCUMENTO] Error recuperando/ejecutando la conversión', null],
+    ['Herramienta no disponible: ${errorSeguro', null],
+    ['Error generando y finalizando documento en un solo paso', 'PDF-SUBIDA'],
+  ]
+  for (const [marca, codigo] of marcasDoc) {
+    const tpl = plantilla(chat, marca)
+    const lineas = erroresDoc.map(([, err]) => new Function('codigo', 'errorSeguro', 'err', `return ${tpl}`)(codigo, seg.errorSeguro, err) as string)
+    const ok = lineas.every((l, i) => l.endsWith(`: ${erroresDoc[i][2]}`) && !l.includes('Ficticia') && !l.includes('Invalid key') && !l.includes('00000000-0000-4000-8000-0000000000dd') && (!codigo || l.includes(`[${codigo}]`)))
+    verificar(tpl.length > 0 && ok, `documentos — «${marca.replace(': ${errorSeguro', '')}»: sin ruta ni nombre de archivo; ${codigo ? `conserva [${codigo}] y ` : ''}tipo/status (${lineas[1]})`)
+  }
+
+  // 8c. actualizar_perfil_docente.
+  const tplPerfilRechazo = plantilla(chat, 'actualizar_perfil_docente — Supabase rechazó la escritura')
+  const perfil = (err: unknown) => new Function('resultado', `return ${tplPerfilRechazo}`)({ exito: false, error: err, anterior: { grado: null, grupo: null } }) as string
+  const ERROR_PERFIL = `invalid input syntax for type integer: "${NOMBRE}"`
+  verificar(!perfil(ERROR_PERFIL).includes(NOMBRE) && !perfil(ERROR_PERFIL).includes('invalid input') && /escritura: error=presente$/.test(perfil(ERROR_PERFIL)) && /escritura: error=ausente$/.test(perfil(undefined)), 'actualizar_perfil_docente rechazado: error=presente|ausente, nunca la cadena de Supabase')
+  const tplPerfilExc = plantilla(chat, 'actualizar_perfil_docente — excepción escribiendo')
+  const perfilExc = new Function('errorSeguro', 'e', `return ${tplPerfilExc}`)(seg.errorSeguro, { code: '22P02', message: ERROR_PERFIL }) as string
+  verificar(/excepción escribiendo: tipo=objeto codigo=22P02 categoria=formato_invalido$/.test(perfilExc) && !perfilExc.includes(NOMBRE), 'actualizar_perfil_docente excepción → código y categoría, sin el valor')
+
+  // 8d. trabajo-documento: el callback REAL de after(), transpilado y ejecutado con dependencias simuladas.
+  const iniAfter = fuenteTrabajo.indexOf('after(async () => {')
+  let kAfter = fuenteTrabajo.indexOf('{', iniAfter), dAfter = 0
+  for (; kAfter < fuenteTrabajo.length; kAfter++) { if (fuenteTrabajo[kAfter] === '{') dAfter++; else if (fuenteTrabajo[kAfter] === '}') { dAfter--; if (dAfter === 0) break } }
+  const cuerpoAfter = fuenteTrabajo.slice(fuenteTrabajo.indexOf('{', iniAfter) + 1, kAfter)
+  const tsc = (await import('typescript')).default
+  const jsAfter = tsc.transpileModule(`async function __trabajo(env: any) { const { auth, trabajoId, baseUrl, fetch, mensaje, historial, contexto, institucionId, userIdCliente, accessToken, zonaHoraria, regenerarImagen, conversacionIdSolicitada, marcarGenerando, marcarCompletado, marcarFallido, extraerArchivosDeRespuesta, errorSeguro, console } = env\n${cuerpoAfter}\n}`, { compilerOptions: { target: tsc.ScriptTarget.ES2020, module: tsc.ModuleKind.None } }).outputText
+  const trabajo = new Function(`${jsAfter}; return __trabajo`)() as (env: Record<string, unknown>) => Promise<void>
+  const correrTrabajo = async (fetchSimulado: () => Promise<Response>, completar?: () => Promise<void>) => {
+    const logs: string[] = []
+    const fallidos: unknown[][] = []
+    const completados: unknown[][] = []
+    await trabajo({
+      auth: { supabase: { cliente: 'ficticio' } }, trabajoId: 't-ficticio-1', baseUrl: 'http://interno.prueba.local', fetch: fetchSimulado,
+      mensaje: 'm', historial: [], contexto: null, institucionId: null, userIdCliente: 'u1', accessToken: 'tok', zonaHoraria: null, regenerarImagen: false, conversacionIdSolicitada: null,
+      marcarGenerando: async () => {}, marcarCompletado: async (...a: unknown[]) => { completados.push(a); if (completar) await completar() }, marcarFallido: async (...a: unknown[]) => { fallidos.push(a) },
+      extraerArchivosDeRespuesta: (c: string) => ({ texto: c, archivos: [], contenidoOriginal: null }), errorSeguro: seg.errorSeguro,
+      console: { error: (...a: unknown[]) => logs.push(a.map(String).join(' ')), log: () => {} },
+    })
+    return { logs, fallidos, completados }
+  }
+  const CUERPO_INTERNO = JSON.stringify({ error: `No pude leer "Ficha ${NOMBRE}.docx". Verifica que no esté dañado o protegido con contraseña.` })
+  const t500 = await correrTrabajo(async () => new Response(CUERPO_INTERNO, { status: 500 }))
+  verificar(t500.logs.length === 1 && t500.logs[0] === '[TRABAJO_DOCUMENTO] Falló el trabajo t-ficticio-1: estado_interno=500 tipo=Error' && !t500.logs[0].includes(NOMBRE), `trabajo-documento ante 500 interno con nombre ficticio en el cuerpo → solo trabajoId, estado_interno=500 y tipo (${t500.logs.join(' | ')})`)
+  verificar(t500.fallidos.length === 1 && t500.fallidos[0][1] === 't-ficticio-1' && t500.fallidos[0][2] === `/api/chat interno respondió 500: ${CUERPO_INTERNO.slice(0, 300)}`, 'trabajo-documento: marcarFallido recibe EXACTAMENTE el mismo mensaje de siempre (persistencia sin cambios)')
+  const tRed = await correrTrabajo(async () => { throw new TypeError('fetch failed') })
+  verificar(tRed.logs.length === 1 && tRed.logs[0] === '[TRABAJO_DOCUMENTO] Falló el trabajo t-ficticio-1: tipo=TypeError' && tRed.fallidos[0]?.[2] === 'fetch failed', 'trabajo-documento ante falla de red → sin estado_interno (no hubo respuesta), tipo=TypeError; mensaje persistido igual')
+  const tStorage = await correrTrabajo(async () => new Response('ok', { status: 200 }), async () => { throw Object.assign(new Error(`Invalid key: ${RUTA_FICTICIA}`), { name: 'StorageApiError', status: 400 }) })
+  verificar(tStorage.logs.length === 1 && tStorage.logs[0] === '[TRABAJO_DOCUMENTO] Falló el trabajo t-ficticio-1: tipo=StorageApiError status=400' && !tStorage.logs[0].includes('Ficticia'), 'trabajo-documento ante error de Storage con ruta ficticia → sin ruta, con tipo y status')
+  const tOk = await correrTrabajo(async () => new Response('documento listo', { status: 200 }))
+  verificar(tOk.logs.length === 0 && tOk.fallidos.length === 0 && tOk.completados.length === 1, 'trabajo-documento exitoso → marcarCompletado una vez, sin logs de error (flujo intacto)')
+  const tplCrear = plantilla(fuenteTrabajo, '[TRABAJO_DOCUMENTO] Fallo creando el trabajo')
+  const crear = new Function('errorSeguro', 'e', `return ${tplCrear}`)(seg.errorSeguro, new Error(`Error creando el trabajo de documento: duplicate key ${NOMBRE}`)) as string
+  verificar(crear === '[TRABAJO_DOCUMENTO] Fallo creando el trabajo: tipo=Error', 'trabajo-documento al crear el trabajo → solo tipo de error')
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)
   process.exit(fallos === 0 ? 0 : 1)

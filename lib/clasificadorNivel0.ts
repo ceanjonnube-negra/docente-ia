@@ -12,6 +12,7 @@
 // comportamiento actual de la app, sin cambios).
 
 import Anthropic from '@anthropic-ai/sdk';
+import { errorSeguro } from './logSeguro';
 import type { SesionContexto } from './sesionContexto';
 import type { CampoAlumnoCorregible } from './asistente/tipos';
 import type { ReferenteContextualMetadata, TipoReferenteContextual } from './asistente/contextoConversacional';
@@ -1132,7 +1133,7 @@ export async function clasificarNivel0(
 
     return normalizarClasificacionNivel0(parsedModelo, tieneImagenAdjunta, referentesContextuales);
   } catch (e) {
-    console.error('Error en Clasificador de Nivel 0, usando fallback:', e);
+    console.error(`Error en Clasificador de Nivel 0, usando fallback: ${errorSeguro(e)}`);
     return FALLBACK;
   }
 }

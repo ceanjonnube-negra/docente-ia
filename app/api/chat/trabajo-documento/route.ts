@@ -30,6 +30,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { crearOTrabajoRecuperarPorRequestId, marcarGenerando, marcarCompletado, marcarFallido } from '@/lib/trabajosDocumento'
+import { errorSeguro } from '@/lib/logSeguro'
 
 export const maxDuration = 180
 
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
     // generación — se devuelve el trabajoId existente tal cual.
     if (resultado.yaExistia) return NextResponse.json({ trabajoId: trabajo.id, estado: trabajo.estado })
   } catch (e) {
-    console.error('[TRABAJO_DOCUMENTO] Fallo creando el trabajo:', e)
+    console.error(`[TRABAJO_DOCUMENTO] Fallo creando el trabajo: ${errorSeguro(e)}`)
     return NextResponse.json({ error: 'No fue posible iniciar la generación en este momento. Intenta de nuevo.' }, { status: 502 })
   }
 
@@ -118,6 +119,8 @@ export async function POST(req: NextRequest) {
   // (ver Next.js after()). auth.supabase/accessToken quedan en el
   // closure, nunca se escriben en la base de datos.
   after(async () => {
+    // Solo para el log: el status HTTP de /api/chat interno (nunca su cuerpo).
+    let estadoInterno: number | null = null
     try {
       await marcarGenerando(auth.supabase, trabajoId)
       const res = await fetch(new URL('/api/chat', baseUrl), {
@@ -141,6 +144,7 @@ export async function POST(req: NextRequest) {
         }),
       })
       if (!res.ok) {
+        estadoInterno = res.status
         const detalle = await res.text().catch(() => '')
         throw new Error(`/api/chat interno respondió ${res.status}: ${detalle.slice(0, 300)}`)
       }
@@ -149,7 +153,7 @@ export async function POST(req: NextRequest) {
       await marcarCompletado(auth.supabase, trabajoId, { archivos, mensaje: texto, contenidoOriginal })
     } catch (err) {
       const mensajeError = err instanceof Error ? err.message : 'Error desconocido generando el documento.'
-      console.error(`[TRABAJO_DOCUMENTO] Falló el trabajo ${trabajoId}:`, err)
+      console.error(`[TRABAJO_DOCUMENTO] Falló el trabajo ${trabajoId}: ${estadoInterno !== null ? `estado_interno=${estadoInterno} ` : ''}${errorSeguro(err)}`)
       await marcarFallido(auth.supabase, trabajoId, mensajeError)
     }
   })
