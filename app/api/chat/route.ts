@@ -2503,8 +2503,12 @@ export async function POST(req: NextRequest) {
                     await marcarCompletado(supabaseUser, trabajoPaId, { archivos: [], mensaje: textoFinalPa })
                     console.log(`[PROGRAMA_ANALITICO_TRABAJO] trabajoId=${trabajoPaId} requestId=${requestIdPa} grupoId=${sesionParaTrabajoPa.grupo_activo_id} estado=completado llamadaIa=${resultadoPa.llamadasIa > 0}`)
                   } catch (errTrabajoPa) {
-                    const mensajeErrorPa = errTrabajoPa instanceof Error ? errTrabajoPa.message : 'Error desconocido generando el Programa Analítico.'
-                    console.error(`[PROGRAMA_ANALITICO_TRABAJO] trabajoId=${trabajoPaId} requestId=${requestIdPa} fallo:`, errTrabajoPa)
+                    // Aquí solo llegan excepciones inesperadas (los errores
+                    // esperados vuelven como texto en resultadoPa): nunca se
+                    // persiste ni se muestra su mensaje — error=null y el
+                    // cliente muestra su mensaje genérico de siempre.
+                    const mensajeErrorPa = null
+                    console.error(`[PROGRAMA_ANALITICO_TRABAJO] trabajoId=${trabajoPaId} requestId=${requestIdPa} fallo: ${errorSeguro(errTrabajoPa)}`)
                     await marcarFallido(supabaseUser, trabajoPaId, mensajeErrorPa)
                   }
                 })
@@ -2525,7 +2529,7 @@ export async function POST(req: NextRequest) {
           console.log(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} accion=${accionProgramaAnaliticoEfectiva} llamadaIa=${resultado.llamadasIa > 0} resultado=ok`)
           return respuestaTexto(resultado.texto)
         } catch (e) {
-          console.error(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} excepción:`, e)
+          console.error(`[PROGRAMA_ANALITICO] requestId=${requestIdPa} grupoId=${sesion.grupo_activo_id} excepción: ${errorSeguro(e)}`)
           return respuestaTexto('No fue posible procesar tu Programa Analítico en este momento. Intenta de nuevo en unos segundos.')
         }
       }

@@ -134,6 +134,6 @@ export async function marcarCompletado(sb: SupabaseClient, trabajoId: string, re
   await sb.from('trabajos_documento').update({ estado: 'completado', resultado, actualizado_en: new Date().toISOString() }).eq('id', trabajoId)
 }
 
-export async function marcarFallido(sb: SupabaseClient, trabajoId: string, error: string): Promise<void> {
+export async function marcarFallido(sb: SupabaseClient, trabajoId: string, error: string | null): Promise<void> {
   await sb.from('trabajos_documento').update({ estado: 'fallido', error, actualizado_en: new Date().toISOString() }).eq('id', trabajoId)
 }

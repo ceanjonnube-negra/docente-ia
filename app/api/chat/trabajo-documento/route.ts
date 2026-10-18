@@ -34,6 +34,32 @@ import { errorSeguro } from '@/lib/logSeguro'
 
 export const maxDuration = 180
 
+// Únicos textos que se guardan en trabajos_documento.error: los errores
+// que /api/chat ya muestra al docente tal cual (coincidencia EXACTA,
+// byte a byte con app/api/chat/route.ts y lib/documentGen/herramientas.ts —
+// ver scripts/verificar-logs-sin-datos-personales.ts). Cualquier otra
+// respuesta (infraestructura, red, cuerpo no JSON o texto desconocido)
+// se guarda como null y el cliente muestra su mensaje genérico de siempre.
+// Los dos de "todavía no está disponible" son los que
+// intentarReintentoAutomatico reconoce como límite permanente.
+const ERRORES_PERSISTIBLES: ReadonlySet<string> = new Set([
+  'No fue posible generar el documento en este momento. Toca para intentar de nuevo.',
+  'No fue posible completar la solicitud en este momento. Intenta de nuevo en unos segundos.',
+  'No fue posible generar la imagen en este momento. Intenta de nuevo.',
+  'La generación de audio todavía no está disponible en esta aplicación — falta elegir proveedor.',
+  'La generación de video todavía no está disponible en esta aplicación — falta elegir proveedor.',
+])
+
+function errorPersistible(cuerpo: string): string | null {
+  try {
+    const datos: unknown = JSON.parse(cuerpo)
+    const error = datos !== null && typeof datos === 'object' && !Array.isArray(datos) ? (datos as { error?: unknown }).error : undefined
+    return typeof error === 'string' && ERRORES_PERSISTIBLES.has(error) ? error : null
+  } catch {
+    return null
+  }
+}
+
 // Misma extracción que procesarMarcadorDeArchivo/procesarMarcadorDeContenido
 // (privados en motorTextoClaude.ts, solo cliente) — se repite aquí,
 // server-only, porque no hay un módulo compartido de marcadores en
@@ -121,6 +147,8 @@ export async function POST(req: NextRequest) {
   after(async () => {
     // Solo para el log: el status HTTP de /api/chat interno (nunca su cuerpo).
     let estadoInterno: number | null = null
+    // Lo único que se persiste en trabajos_documento.error (ver ERRORES_PERSISTIBLES).
+    let errorParaDocente: string | null = null
     try {
       await marcarGenerando(auth.supabase, trabajoId)
       const res = await fetch(new URL('/api/chat', baseUrl), {
@@ -146,15 +174,15 @@ export async function POST(req: NextRequest) {
       if (!res.ok) {
         estadoInterno = res.status
         const detalle = await res.text().catch(() => '')
+        errorParaDocente = errorPersistible(detalle)
         throw new Error(`/api/chat interno respondió ${res.status}: ${detalle.slice(0, 300)}`)
       }
       const cuerpoCompleto = await res.text()
       const { texto, archivos, contenidoOriginal } = extraerArchivosDeRespuesta(cuerpoCompleto)
       await marcarCompletado(auth.supabase, trabajoId, { archivos, mensaje: texto, contenidoOriginal })
     } catch (err) {
-      const mensajeError = err instanceof Error ? err.message : 'Error desconocido generando el documento.'
       console.error(`[TRABAJO_DOCUMENTO] Falló el trabajo ${trabajoId}: ${estadoInterno !== null ? `estado_interno=${estadoInterno} ` : ''}${errorSeguro(err)}`)
-      await marcarFallido(auth.supabase, trabajoId, mensajeError)
+      await marcarFallido(auth.supabase, trabajoId, errorParaDocente)
     }
   })
 
