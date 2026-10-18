@@ -1,3 +1,4 @@
+import { archivoSeguro, errorSeguro, formatoArchivoSeguro } from '@/lib/logSeguro'
 import { NextRequest, NextResponse, after } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
@@ -686,7 +687,7 @@ export async function POST(req: NextRequest) {
   // en KB para detectar payloads truncados o vacíos silenciosamente.
   if (imagenBase64 || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0)) {
     if (imagenBase64) {
-      console.log(`[IMAGEN][API] imagen recibida — tipo=${imagenTipo || 'desconocido'} tamañoBase64=${Math.round((imagenBase64.length * 3) / 4 / 1024)}KB nombreArchivo=${nombreArchivo || '(sin nombre)'}`)
+      console.log(`[IMAGEN][API] imagen recibida — tipo=${imagenTipo || 'desconocido'} tamañoBase64=${Math.round((imagenBase64.length * 3) / 4 / 1024)}KB archivo=${nombreArchivo ? formatoArchivoSeguro(nombreArchivo) : '(sin nombre)'}`)
     }
     if (Array.isArray(imagenesBase64) && imagenesBase64.length > 0) {
       console.log(
@@ -1215,7 +1216,7 @@ export async function POST(req: NextRequest) {
         const conversacionIdActual = await obtenerConversacionIdAutorizada()
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId, supabaseUser, conversacionIdActual, null), 'generar-archivo')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
-        console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivo.nombre}`)
+        console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:entrega] OK — ${archivoSeguro(archivo.nombre, archivo.tamanoBytes)}`)
         return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
@@ -1480,7 +1481,7 @@ export async function POST(req: NextRequest) {
           'generar-lista-alumnos'
         )
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
-        console.log(`[LISTA_ALUMNOS] entrega OK — ${archivo.nombre}`)
+        console.log(`[LISTA_ALUMNOS] entrega OK — ${archivoSeguro(archivo.nombre, archivo.tamanoBytes)}`)
         return respuestaTexto(`Documento generado correctamente.\n${marcador}`)
       } catch (err) {
         if (err instanceof HerramientaNoDisponibleError) {
@@ -2240,14 +2241,14 @@ export async function POST(req: NextRequest) {
           try {
             const resultado = await escribirAsistencia(supabaseUser, [{ alumno_id: alumnoId, estado }], sesion.fecha_actual, sesion.grupo_activo_id)
             if (!resultado.exito) {
-              console.error(`[NIVEL0] marcar_asistencia_individual — Supabase rechazó la escritura, alumno_id=${alumnoId}:`, resultado.error)
+              console.error(`[NIVEL0] marcar_asistencia_individual — Supabase rechazó la escritura, alumno_id=${alumnoId} error=${typeof resultado.error === 'string' && resultado.error ? 'presente' : 'ausente'}`)
               return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
             }
             const etiqueta = estado === 'presente' ? 'presente' : estado === 'falta' ? 'con falta' : 'con retardo'
             console.log(`[NIVEL0] marcar_asistencia_individual OK — alumno_id=${alumnoId} estado=${estado}`)
             return respuestaTexto(`Listo, ${nombreReal} quedó registrado ${etiqueta} el día de hoy.`)
           } catch (e) {
-            console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}:`, e)
+            console.error(`[NIVEL0] marcar_asistencia_individual — excepción escribiendo, alumno_id=${alumnoId}: ${errorSeguro(e)}`)
             return respuestaTexto('No fue posible guardar la asistencia. Intenta de nuevo en unos segundos.')
           }
         }
@@ -2269,18 +2270,18 @@ export async function POST(req: NextRequest) {
         const grupoId = sesion.grupo_activo_id
 
         if (!alumnoId || !descripcion || !grupoId) {
-          console.log(`[NIVEL0] registrar_incidencia sin alumno_id (${alumnoId}), descripcion (${descripcion}) o grupo_id (${grupoId}) resuelto — cae al flujo normal`)
+          console.log(`[NIVEL0] registrar_incidencia sin alumno_id (${alumnoId}), descripcion_presente=${!!descripcion} o grupo_id (${grupoId}) resuelto — cae al flujo normal`)
         } else {
           try {
             const resultado = await registrarIncidencia(supabaseUser, alumnoId, grupoId, userId, sesion.fecha_actual, tipo, descripcion)
             if (!resultado.exito) {
-              console.error(`[NIVEL0] registrar_incidencia — Supabase rechazó la escritura, alumno_id=${alumnoId}:`, resultado.error)
+              console.error(`[NIVEL0] registrar_incidencia — Supabase rechazó la escritura, alumno_id=${alumnoId} error=${typeof resultado.error === 'string' && resultado.error ? 'presente' : 'ausente'}`)
               return respuestaTexto('No fue posible registrar la incidencia. Intenta de nuevo en unos segundos.')
             }
             console.log(`[NIVEL0] registrar_incidencia OK — alumno_id=${alumnoId} tipo=${tipo}`)
             return respuestaTexto(`Listo. Registré la incidencia de ${nombreReal} (${tipo}).`)
           } catch (e) {
-            console.error(`[NIVEL0] registrar_incidencia — excepción escribiendo, alumno_id=${alumnoId}:`, e)
+            console.error(`[NIVEL0] registrar_incidencia — excepción escribiendo, alumno_id=${alumnoId}: ${errorSeguro(e)}`)
             return respuestaTexto('No fue posible registrar la incidencia. Intenta de nuevo en unos segundos.')
           }
         }
@@ -4041,7 +4042,7 @@ Grado: [grado] | Grupo: [grupo]
         // documento. Este marcador es SOLO para eso: se decodifica en
         // el cliente para poblar documentoActivo.texto (fuente real
         // para conversiones futuras), nunca se muestra en pantalla.
-        console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivos.map((a) => a.nombre).join(', ')}`)
+        console.log(`[PIPELINE ${etiquetaCaso3}:entrega] OK — ${archivos.map((a) => archivoSeguro(a.nombre, a.tamanoBytes)).join(', ')}`)
         // La imagen no tiene "documento activo" de texto que recuperar
         // después (ver AsistenteService.materialVisualActivo, que se
         // arma directo del marcador de archivo) — DOCUMENTO_CONTENIDO
@@ -4271,7 +4272,7 @@ Grado: [grado] | Grupo: [grupo]
               registrarUsoIA('registro_escolar_continuacion', usoContinuacion)
               toolUseActivo = null
             } catch (e) {
-              console.error('[REGISTRO_ESCOLAR] error ejecutando o continuando:', e)
+              console.error(`[REGISTRO_ESCOLAR] error ejecutando o continuando: ${errorSeguro(e)}`)
               controller.enqueue(encoder.encode('\n\nHubo un problema guardando los datos. Intenta de nuevo en unos segundos.'))
               toolUseActivo = null
             }

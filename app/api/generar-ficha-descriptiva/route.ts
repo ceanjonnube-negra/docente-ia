@@ -1,3 +1,4 @@
+import { errorSeguro } from '@/lib/logSeguro';
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
     const borrador = extraerJsonDeRespuesta(respuesta);
     return NextResponse.json({ borrador });
   } catch (error: any) {
-    console.error('Error en generar-ficha-descriptiva:', error);
+    console.error(`Error en generar-ficha-descriptiva: ${errorSeguro(error)}`);
     if (error instanceof SyntaxError) {
       return NextResponse.json(
         { error: 'La IA no devolvió un formato válido. Intenta de nuevo.' },

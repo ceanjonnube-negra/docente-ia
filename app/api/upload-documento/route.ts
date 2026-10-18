@@ -1,3 +1,4 @@
+import { errorSeguro } from '@/lib/logSeguro';
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabaseClient';
 import crypto from 'crypto';
@@ -188,7 +189,7 @@ export async function POST(req: Request) {
       chunks_creados: numEmbeddings,
     });
   } catch (err: any) {
-    console.error(err);
+    console.error(`[upload-documento] Error: ${errorSeguro(err)}`);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

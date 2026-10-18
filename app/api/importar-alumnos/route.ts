@@ -1,3 +1,4 @@
+import { errorSeguro } from '@/lib/logSeguro';
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import * as XLSX from 'xlsx';
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ alumnos });
   } catch (error: any) {
-    console.error('Error en importar-alumnos:', error);
+    console.error(`Error en importar-alumnos: ${errorSeguro(error)}`);
     if (error instanceof SyntaxError) {
       return NextResponse.json(
         { error: 'La IA no devolvió un formato válido. Intenta de nuevo.' },

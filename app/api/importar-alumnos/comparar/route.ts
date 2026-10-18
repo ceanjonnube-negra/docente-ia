@@ -21,6 +21,7 @@
 // Privacidad: los logs de este endpoint son solo conteos/flags/estado,
 // nunca nombres, CURPs, imágenes ni IDs reales de alumnos.
 
+import { errorSeguro } from '@/lib/logSeguro'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ comparacion, propuestasReparacionCurp })
   } catch (error: unknown) {
-    console.error('Error en importar-alumnos/comparar:', error instanceof Error ? error.message : 'error desconocido')
+    console.error(`Error en importar-alumnos/comparar: ${errorSeguro(error)}`)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Ocurrió un error al comparar la lista.' },
       { status: 500 }

@@ -28,6 +28,7 @@
 // que ese buffer sea un archivo válido (tamaño y firma binaria
 // correctos) antes de gastar una subida con algo corrupto.
 
+import { archivoSeguro, errorSeguro } from '@/lib/logSeguro'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { TipoHerramienta } from '../asistente/documentos'
 import { generarWordBuffer, nombreArchivoWordServidor } from './generarWordServidor'
@@ -115,7 +116,7 @@ async function medirEtapa<T>(etiqueta: string, fn: () => Promise<T> | T): Promis
     console.log(`[PIPELINE ${etiqueta}] OK — ${Date.now() - inicio}ms`)
     return resultado
   } catch (err) {
-    console.error(`[PIPELINE ${etiqueta}] FALLÓ tras ${Date.now() - inicio}ms:`, err)
+    console.error(`[PIPELINE ${etiqueta}] FALLÓ tras ${Date.now() - inicio}ms: ${errorSeguro(err)}`)
     throw err
   }
 }
@@ -228,7 +229,7 @@ export async function ejecutarHerramientaDocumento(
       }
     })
   } catch (err) {
-    console.error(`[PIPELINE ${etiqueta}:verificacion] Buffer inválido tras la conversión:`, err)
+    console.error(`[PIPELINE ${etiqueta}:verificacion] Buffer inválido tras la conversión: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento(`${etiqueta}-VERIF`, `El archivo ${tipo} generado no es válido`)
   }
 
@@ -236,9 +237,9 @@ export async function ejecutarHerramientaDocumento(
   const ruta = rutaArchivo(userId, nombre)
   try {
     await medirEtapa(`${etiqueta}:subida`, () => subirBuffer(sb, ruta, buffer, CONTENT_TYPES[tipo]))
-    console.log(`[UPLOAD] ${etiqueta} — ${nombre} subido a Storage`)
+    console.log(`[UPLOAD] ${etiqueta} — ${archivoSeguro(nombre, buffer.length)} subido a Storage`)
   } catch (err) {
-    console.error(`[UPLOAD] ${etiqueta} — fallo subiendo ${nombre}:`, err)
+    console.error(`[UPLOAD] ${etiqueta} — fallo subiendo ${archivoSeguro(nombre, buffer.length)}: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento(`${etiqueta}-SUB`, `Fallo subiendo el archivo ${tipo}`)
   }
 
@@ -247,9 +248,9 @@ export async function ejecutarHerramientaDocumento(
   let url: string
   try {
     url = await medirEtapa(`${etiqueta}:url-firmada`, () => crearUrlFirmada(sb, ruta, nombre))
-    console.log(`[SIGNED_URL] ${etiqueta} — URL firmada obtenida para ${nombre}`)
+    console.log(`[SIGNED_URL] ${etiqueta} — URL firmada obtenida para ${archivoSeguro(nombre)}`)
   } catch (err) {
-    console.error(`[SIGNED_URL] ${etiqueta} — fallo obteniendo la URL de ${nombre}:`, err)
+    console.error(`[SIGNED_URL] ${etiqueta} — fallo obteniendo la URL de ${archivoSeguro(nombre)}: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento(`${etiqueta}-URL`, `Fallo obteniendo la URL de descarga del ${tipo}`)
   }
 
@@ -263,11 +264,11 @@ export async function ejecutarHerramientaDocumento(
       if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
     })
   } catch (err) {
-    console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible:`, err)
+    console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento(`${etiqueta}-URL-VERIF`, `La URL de descarga del ${tipo} no quedó accesible`)
   }
 
-  console.log(`[DOWNLOAD_READY] ${etiqueta} — ${nombre} verificado y listo para el maestro`)
+  console.log(`[DOWNLOAD_READY] ${etiqueta} — ${archivoSeguro(nombre, buffer.length)} verificado y listo para el maestro`)
 
   // ETAPA 7.6 (solo pdf) — segunda URL firmada del MISMO archivo, SIN
   // `download` (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
@@ -282,7 +283,7 @@ export async function ejecutarHerramientaDocumento(
     try {
       urlVer = await medirEtapa(`${etiqueta}:url-firmada-ver`, () => crearUrlFirmada(sb, ruta))
     } catch (err) {
-      console.error(`[PIPELINE ${etiqueta}:url-firmada-ver] No se pudo generar la URL de visualización (no bloquea):`, err)
+      console.error(`[PIPELINE ${etiqueta}:url-firmada-ver] No se pudo generar la URL de visualización (no bloquea): ${errorSeguro(err)}`)
     }
   }
 
@@ -321,7 +322,7 @@ async function generarUnaIlustracion(
   try {
     imagen = await medirEtapa(`IMAGEN-DOC:generacion[${orden}]`, () => generarImagen({ prompt: descripcion, nivelEscolar: perfil?.grado || undefined, estilo: estiloVisual }))
   } catch (err) {
-    console.error(`[PIPELINE IMAGEN-DOC:generacion] Falló generando la ilustración ${orden} ("${descripcion.slice(0, 60)}"):`, err)
+    console.error(`[PIPELINE IMAGEN-DOC:generacion] Falló generando la ilustración ${orden} (longitud_descripcion=${descripcion.length}): ${errorSeguro(err)}`)
     return null
   }
 
@@ -330,7 +331,7 @@ async function generarUnaIlustracion(
   try {
     await medirEtapa(`IMAGEN-DOC:subida[${orden}]`, () => subirBuffer(sb, ruta, imagen.buffer, imagen.contentType, BUCKET_IMAGENES_GENERADAS))
   } catch (err) {
-    console.error(`[PIPELINE IMAGEN-DOC:subida] Falló subiendo la ilustración ${orden}:`, err)
+    console.error(`[PIPELINE IMAGEN-DOC:subida] Falló subiendo la ilustración ${orden}: ${errorSeguro(err)}`)
     return null
   }
 
@@ -354,7 +355,7 @@ async function generarUnaIlustracion(
         })
       )
     } catch (err) {
-      console.error(`[PIPELINE IMAGEN-DOC:persistencia] No se pudo guardar el registro de la ilustración ${orden} (no bloquea):`, err)
+      console.error(`[PIPELINE IMAGEN-DOC:persistencia] No se pudo guardar el registro de la ilustración ${orden} (no bloquea): ${errorSeguro(err)}`)
     }
   }
 
@@ -429,13 +430,13 @@ async function ejecutarGeneracionImagen(
     try {
       bufferOriginal = await medirEtapa('IMAGEN:descarga-original', () => descargarBuffer(sb, assetAnterior.storagePath, BUCKET_IMAGENES_GENERADAS))
     } catch (err) {
-      console.error('[PIPELINE IMAGEN:descarga-original] Falló descargando la imagen original a editar:', err)
+      console.error(`[PIPELINE IMAGEN:descarga-original] Falló descargando la imagen original a editar: ${errorSeguro(err)}`)
       throw new ErrorHerramientaDocumento('IMAGEN-EDIT-DESCARGA', 'Fallo recuperando la imagen original a editar')
     }
     try {
       imagen = await medirEtapa('IMAGEN:edicion', () => editarImagen(bufferOriginal, prompt))
     } catch (err) {
-      console.error('[PIPELINE IMAGEN:edicion] Falló editando la imagen:', err)
+      console.error(`[PIPELINE IMAGEN:edicion] Falló editando la imagen: ${errorSeguro(err)}`)
       throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo editando la imagen')
     }
   } else {
@@ -464,7 +465,7 @@ async function ejecutarGeneracionImagen(
       // (ej. "Jornada Ampliada", "pago trimestral") sin perderlos.
       imagen = await medirEtapa('IMAGEN:generacion', () => generarImagen({ prompt, tipoPieza, formato, modoVisual, datosExplicitos, calidad, mensajeOriginalDocente }))
     } catch (err) {
-      console.error('[PIPELINE IMAGEN:generacion] Falló generando la imagen:', err)
+      console.error(`[PIPELINE IMAGEN:generacion] Falló generando la imagen: ${errorSeguro(err)}`)
       throw new ErrorHerramientaDocumento('IMAGEN-GEN', 'Fallo generando la imagen')
     }
   }
@@ -481,7 +482,7 @@ async function ejecutarGeneracionImagen(
       }
     })
   } catch (err) {
-    console.error('[PIPELINE IMAGEN:verificacion] Buffer inválido tras la generación:', err)
+    console.error(`[PIPELINE IMAGEN:verificacion] Buffer inválido tras la generación: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento('IMAGEN-VERIF', 'La imagen generada no es válida')
   }
 
@@ -489,18 +490,18 @@ async function ejecutarGeneracionImagen(
   const ruta = rutaArchivo(userId, nombre)
   try {
     await medirEtapa('IMAGEN:subida', () => subirBuffer(sb, ruta, imagen.buffer, imagen.contentType, BUCKET_IMAGENES_GENERADAS))
-    console.log(`[UPLOAD] IMAGEN — ${nombre} subido a Storage`)
+    console.log(`[UPLOAD] IMAGEN — ${archivoSeguro(nombre, imagen.buffer.length)} subido a Storage`)
   } catch (err) {
-    console.error(`[UPLOAD] IMAGEN — fallo subiendo ${nombre}:`, err)
+    console.error(`[UPLOAD] IMAGEN — fallo subiendo ${archivoSeguro(nombre, imagen.buffer.length)}: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento('IMAGEN-SUB', 'Fallo subiendo la imagen')
   }
 
   let url: string
   try {
     url = await medirEtapa('IMAGEN:url-firmada', () => crearUrlFirmada(sb, ruta, nombre, BUCKET_IMAGENES_GENERADAS))
-    console.log(`[SIGNED_URL] IMAGEN — URL firmada obtenida para ${nombre}`)
+    console.log(`[SIGNED_URL] IMAGEN — URL firmada obtenida para ${archivoSeguro(nombre)}`)
   } catch (err) {
-    console.error(`[SIGNED_URL] IMAGEN — fallo obteniendo la URL de ${nombre}:`, err)
+    console.error(`[SIGNED_URL] IMAGEN — fallo obteniendo la URL de ${archivoSeguro(nombre)}: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento('IMAGEN-URL', 'Fallo obteniendo la URL de la imagen')
   }
 
@@ -510,7 +511,7 @@ async function ejecutarGeneracionImagen(
       if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
     })
   } catch (err) {
-    console.error('[PIPELINE IMAGEN:verificacion-url] La URL firmada no quedó accesible:', err)
+    console.error(`[PIPELINE IMAGEN:verificacion-url] La URL firmada no quedó accesible: ${errorSeguro(err)}`)
     throw new ErrorHerramientaDocumento('IMAGEN-URL-VERIF', 'La URL de la imagen no quedó accesible')
   }
 
@@ -539,11 +540,11 @@ async function ejecutarGeneracionImagen(
       )
       assetId = guardado.id
     } catch (err) {
-      console.error('[PIPELINE IMAGEN:persistencia] No se pudo guardar el registro del asset visual (no bloquea la entrega):', err)
+      console.error(`[PIPELINE IMAGEN:persistencia] No se pudo guardar el registro del asset visual (no bloquea la entrega): ${errorSeguro(err)}`)
     }
   }
 
-  console.log(`[DOWNLOAD_READY] IMAGEN — ${nombre} verificado y listo para el maestro`)
+  console.log(`[DOWNLOAD_READY] IMAGEN — ${archivoSeguro(nombre, imagen.buffer.length)} verificado y listo para el maestro`)
   return { tipo: 'imagen', nombre, url, tamanoBytes: imagen.buffer.length, assetId }
 }
 
@@ -554,7 +555,7 @@ function medirEtapaSync<T>(etiqueta: string, fn: () => T): T {
     console.log(`[PIPELINE ${etiqueta}] OK — ${Date.now() - inicio}ms`)
     return resultado
   } catch (err) {
-    console.error(`[PIPELINE ${etiqueta}] FALLÓ tras ${Date.now() - inicio}ms:`, err)
+    console.error(`[PIPELINE ${etiqueta}] FALLÓ tras ${Date.now() - inicio}ms: ${errorSeguro(err)}`)
     throw err
   }
 }

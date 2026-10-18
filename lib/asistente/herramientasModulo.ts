@@ -31,6 +31,7 @@
 // marcador de navegación) a la de "formatearRespuesta(datos): string"
 // que usa este registro.
 
+import { errorSeguro } from '../logSeguro'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ClasificacionNivel0 } from '../clasificadorNivel0'
 import type { SesionContexto } from '../sesionContexto'
@@ -239,7 +240,7 @@ const herramientaConsultarIncidencias = definir({
       const datos = await incidenciasAlumno(ctx.sb, clasificacion.entidades_resueltas.alumno_id!)
       return { exito: true, datos }
     } catch (e) {
-      console.error('[HERRAMIENTA] consultar_incidencias_alumno — fallo consultando:', e)
+      console.error(`[HERRAMIENTA] consultar_incidencias_alumno — fallo consultando: ${errorSeguro(e)}`)
       return { exito: false, error: 'No fue posible consultar las incidencias registradas' }
     }
   },
@@ -524,7 +525,7 @@ const herramientaConsultarDatoAlumno = definir({
       const datosPersonales = (datos?.datos_personales ?? {}) as DatosPersonalesAlumno
       return { exito: true, datos: datosPersonales }
     } catch (e) {
-      console.error('[HERRAMIENTA] consultar_dato_alumno — fallo consultando:', e)
+      console.error(`[HERRAMIENTA] consultar_dato_alumno — fallo consultando: ${errorSeguro(e)}`)
       return { exito: false, error: 'No fue posible consultar ese dato' }
     }
   },
@@ -706,7 +707,7 @@ const herramientaCorregirDatoAlumno = definir({
     try {
       contextoReal = await contextoAlumno(ctx.sb, alumnoId, ctx.sesion.ciclo_escolar_id!)
     } catch (e) {
-      console.error('[HERRAMIENTA] corregir_dato_alumno — fallo consultando el valor actual:', e)
+      console.error(`[HERRAMIENTA] corregir_dato_alumno — fallo consultando el valor actual: ${errorSeguro(e)}`)
       return { exito: false, error: 'No fue posible consultar el dato actual del alumno' }
     }
     const datosPersonales = ((contextoReal as { datos_personales?: DatosPersonalesAlumno })?.datos_personales ?? {}) as DatosPersonalesAlumno

@@ -1,3 +1,4 @@
+import { errorSeguro } from './logSeguro'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Chat IA — Registro escolar: Claude lee nombres de una imagen (no
@@ -74,7 +75,7 @@ export async function resolverAlumnosPorNombre(
     .eq('grupo_id', grupoId)
 
   if (error || !alumnos) {
-    console.error('[EMPAREJAR_ALUMNO] No se pudo leer la lista de alumnos del grupo:', error)
+    console.error(`[EMPAREJAR_ALUMNO] No se pudo leer la lista de alumnos del grupo: ${errorSeguro(error)}`)
     return nombres.map((n) => ({ nombreOriginal: n, alumnoId: null, nombreEmparejado: null, confianza: 0 }))
   }
 

@@ -13,6 +13,7 @@
 // confirmar_correccion_alumno revalida propiedad, grupo, valor anterior y
 // uso único en la misma transacción.
 
+import { errorSeguro } from '@/lib/logSeguro'
 import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { aplicarCorreccionAlumno } from '@/lib/motorContexto'
@@ -93,7 +94,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ exito: true, estado: 'aplicada', texto: `Listo. Corregí el dato: ahora es ${resultado.valorNuevo}.` })
   } catch (error) {
-    console.error('[alumnos/aplicar-correccion] Error:', error)
+    console.error(`[alumnos/aplicar-correccion] Error: ${errorSeguro(error)}`)
     const mensajeError = error instanceof Error ? error.message : 'No pude aplicar la corrección. Intenta de nuevo.'
     return NextResponse.json({ error: mensajeError }, { status: 502 })
   }

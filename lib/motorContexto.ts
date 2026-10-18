@@ -6,6 +6,7 @@
 // (pasando un cliente con el token de sesión del usuario, necesario
 // para que auth.uid() funcione dentro de las RPC con SECURITY DEFINER).
 
+import { errorSeguro } from './logSeguro';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CampoAlumnoCorregible, DiferenciaCalendario, PayloadCorreccionAlumno } from './asistente/tipos';
 import type { AspectoGeneral } from './seguimiento/tipos';
@@ -500,7 +501,7 @@ export async function aplicarCorreccionAlumno(
   })
   if (error) {
     const conocido = ERRORES_CORRECCION_ALUMNO[error.message]
-    if (!conocido) console.error('[CORRECCION_ALUMNO] confirmar_correccion_alumno falló:', error)
+    if (!conocido) console.error(`[CORRECCION_ALUMNO] confirmar_correccion_alumno falló: ${errorSeguro(error)}`)
     return conocido
       ? { exito: false, error: conocido.mensaje, codigo: error.message, definitivo: conocido.definitivo }
       : { exito: false, error: 'No fue posible actualizar el dato', definitivo: false }
@@ -1123,7 +1124,7 @@ export async function ejecutarRegistroEscolar(
 
   const { error } = await sb.from(mapeo.tabla_destino).insert(registrosCompletos)
   if (error) {
-    console.error(`[REGISTRO_ESCOLAR] Supabase rechazó la escritura en ${mapeo.tabla_destino}:`, error)
+    console.error(`[REGISTRO_ESCOLAR] Supabase rechazó la escritura en ${mapeo.tabla_destino}: ${errorSeguro(error)}`)
     return { exito: false, error: error.message, guardados: 0, noResueltos }
   }
 

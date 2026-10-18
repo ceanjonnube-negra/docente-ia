@@ -1,3 +1,4 @@
+import { errorSeguro } from '@/lib/logSeguro';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fechaISOHoy } from '@/lib/tiempo/TimeService';
@@ -56,13 +57,13 @@ export async function POST(req: Request) {
     const resultado = await escribirAsistencia(supabase, registrosNormalizados, fecha, grupo_id || null);
 
     if (!resultado.exito) {
-      console.error('Error al guardar asistencia:', resultado.error);
+      console.error(`Error al guardar asistencia: error=${typeof resultado.error === 'string' && resultado.error ? 'presente' : 'ausente'}`);
       return NextResponse.json({ error: resultado.error }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, guardados: resultado.guardados });
   } catch (err: any) {
-    console.error(err);
+    console.error(`[asistencia-guardar] Error: ${errorSeguro(err)}`);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
