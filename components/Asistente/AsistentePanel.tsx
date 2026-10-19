@@ -245,6 +245,128 @@ async function compartirArchivo(archivo: { tipo: string; nombre: string; url: st
   }
 }
 
+// VISTAS PREVIAS DE PLANEACIÓN (Word/PDF de la planeación y PDF de la
+// hoja, esVistaPrevia) — se regeneran en el servidor a partir de `datos`
+// y se abren SIEMPRE con un <form> POST: el token de la sesión VIGENTE
+// (supabase.auth.getSession(), que lo renueva si hace falta) viaja como
+// campo del cuerpo, nunca en la URL (historial, logs de acceso, enlaces
+// compartidos). La URL guardada en el mensaje es solo una referencia: de
+// ella se toman la ruta y sus campos, y un `token` histórico que todavía
+// traiga se DESCARTA siempre — nunca se reutiliza ni se reenvía.
+const RUTAS_VISTA_PREVIA = new Set([
+  '/api/planeaciones/vista-previa-documento',
+  '/api/planeaciones/vista-previa-documento-word',
+  '/api/planeaciones/vista-previa-hoja',
+])
+const TIPO_MIME_VISTA_PREVIA: Record<string, string> = {
+  pdf: 'application/pdf',
+  word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
+
+type ReferenciaVistaPrevia = { ruta: string; campos: [string, string][] }
+
+function referenciaVistaPrevia(url: string | undefined): ReferenciaVistaPrevia | null {
+  if (!url || typeof window === 'undefined') return null
+  let destino: URL
+  try {
+    destino = new URL(url, window.location.origin)
+  } catch {
+    return null
+  }
+  if (destino.origin !== window.location.origin || !RUTAS_VISTA_PREVIA.has(destino.pathname)) return null
+  return { ruta: destino.pathname, campos: [...destino.searchParams.entries()].filter(([clave]) => clave !== 'token') }
+}
+
+function esVistaPreviaRegenerable(archivo: { url: string }): boolean {
+  return referenciaVistaPrevia(archivo.url) !== null
+}
+
+async function tokenSesionVigente(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token ?? null
+  } catch {
+    return null
+  }
+}
+
+// action = SOLO la ruta: ni el borrador ni la credencial forman parte de
+// la URL — ambos van como campos ocultos del cuerpo del POST.
+function enviarFormularioVistaPrevia(referencia: ReferenciaVistaPrevia, token: string, destino?: string) {
+  const form = document.createElement('form')
+  form.method = 'POST'
+  form.action = referencia.ruta
+  form.style.display = 'none'
+  if (destino) form.target = destino
+  for (const [clave, valor] of [...referencia.campos, ['token', token] as [string, string]]) {
+    const campo = document.createElement('input')
+    campo.type = 'hidden'
+    campo.name = clave
+    campo.value = valor
+    form.appendChild(campo)
+  }
+  document.body.appendChild(form)
+  form.submit()
+  form.remove()
+}
+
+// VER — la pestaña se abre DENTRO del clic (Safari en iPhone bloquea
+// window.open después de un await) y el formulario se envía a esa misma
+// pestaña en cuanto se tiene la sesión vigente. Sin sesión, la pestaña
+// vacía se cierra y la tarjeta lo avisa — nunca una pestaña en blanco.
+function verVistaPrevia(archivo: { url: string; urlVer?: string }, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(archivo.urlVer ?? archivo.url)
+  if (!referencia) { alFallar(); return }
+  const nombreVentana = `vista-previa-${Date.now()}`
+  const ventana = window.open('', nombreVentana)
+  if (!ventana) { alFallar(); return }
+  void tokenSesionVigente().then((token) => {
+    if (!token) { ventana.close(); alFallar(); return }
+    enviarFormularioVistaPrevia(referencia, token, nombreVentana)
+  })
+}
+
+// DESCARGAR — el mismo formulario en la pestaña actual: la respuesta es
+// attachment (application/octet-stream en PDF, igual que
+// /api/archivos/descargar), así que el navegador guarda el archivo sin
+// salir del Chat IA. Sin sesión vigente no se envía nada — nunca una
+// descarga vacía.
+async function descargarVistaPrevia(archivo: { url: string }, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(archivo.url)
+  const token = referencia ? await tokenSesionVigente() : null
+  if (!referencia || !token) { alFallar(); return }
+  enviarFormularioVistaPrevia(referencia, token)
+}
+
+// COMPARTIR — solo el ARCHIVO (Web Share con files), nunca una URL: la
+// referencia lleva el borrador y no sirve sin la sesión del docente. Si
+// el dispositivo no puede compartir archivos, se descarga.
+async function compartirVistaPrevia(archivo: { tipo: string; nombre: string; url: string }, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(archivo.url)
+  const token = referencia ? await tokenSesionVigente() : null
+  if (!referencia || !token) { alFallar(); return }
+  const nav = navigator as Navigator & { canShare?: (data?: ShareData) => boolean }
+  try {
+    const cuerpo = new FormData()
+    for (const [clave, valor] of referencia.campos) cuerpo.append(clave, valor)
+    cuerpo.set('modo', 'descargar')
+    cuerpo.append('token', token)
+    const res = await fetch(referencia.ruta, { method: 'POST', body: cuerpo })
+    if (!res.ok) { alFallar(); return }
+    const blob = await res.blob()
+    const archivoCompartido = new File([blob], archivo.nombre, { type: TIPO_MIME_VISTA_PREVIA[archivo.tipo] || 'application/octet-stream' })
+    if (nav.canShare?.({ files: [archivoCompartido] })) {
+      await nav.share({ files: [archivoCompartido], title: archivo.nombre })
+      return
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return // el docente canceló la hoja de compartir, no es un error
+    alFallar()
+    return
+  }
+  enviarFormularioVistaPrevia(referencia, token)
+}
+
 // FASE V1-A ("contexto visual persistente del Chat IA" — ciclo de vida
 // sano de assets): la signed URL guardada en el mensaje vence a los 7
 // días (VENCIMIENTO_URL_SEGUNDOS, almacenamiento.ts), pero el asset
@@ -354,7 +476,18 @@ function TarjetaDescarga({
   // URL real sigue viva) solo debe seguir ocultando la vista previa y
   // las acciones cuando NO hay forma de refrescar (documentos).
   const puedeRefrescar = principal.tipo === 'imagen' && !!principal.assetId
-  const ocultarPorVencido = vencido && !puedeRefrescar
+  // Las vistas previas de planeación nunca "vencen": se regeneran desde
+  // sus datos con la sesión vigente (ver verVistaPrevia y vecinas), así
+  // que las históricas siguen pudiéndose abrir.
+  const vistaPreviaRegenerable = archivos.every((archivo) => esVistaPreviaRegenerable(archivo))
+  const ocultarPorVencido = vencido && !puedeRefrescar && !vistaPreviaRegenerable
+  const [fallaVistaPrevia, setFallaVistaPrevia] = useState(false)
+  const avisarFallaVistaPrevia = () => { setFallaVistaPrevia(true); setTimeout(() => setFallaVistaPrevia(false), 4000) }
+  const ver = (archivo: ArchivoGeneradoInfo) => (esVistaPreviaRegenerable(archivo) ? verVistaPrevia(archivo, avisarFallaVistaPrevia) : abrirArchivo(archivo))
+  const descargar = (archivo: ArchivoGeneradoInfo) => (esVistaPreviaRegenerable(archivo) ? void descargarVistaPrevia(archivo, avisarFallaVistaPrevia) : descargarArchivoDirecto(archivo))
+  const compartir = (archivo: ArchivoGeneradoInfo) => (esVistaPreviaRegenerable(archivo)
+    ? void compartirVistaPrevia(archivo, avisarFallaVistaPrevia)
+    : compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) }))
 
   return (
     <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border overflow-hidden rounded-bl-sm transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-green-100'} ${className}`}>
@@ -375,6 +508,9 @@ function TarjetaDescarga({
           <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : principal.esVistaPrevia ? 'text-blue-600' : 'text-green-600'}`}>
             {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : principal.esVistaPrevia ? 'Vista previa' : 'Listo'}
           </p>
+          {fallaVistaPrevia && (
+            <p className="text-xs text-amber-600">No fue posible abrir la vista previa. Revisa tu sesión e inténtalo de nuevo.</p>
+          )}
         </div>
       </div>
       {/* Vista previa real de la imagen (ver "Implementar en Docente IA
@@ -402,13 +538,13 @@ function TarjetaDescarga({
             archivo.tipo === 'pdf' ? (
               <div key={archivo.tipo} className="flex gap-1.5">
                 <button
-                  onClick={() => abrirArchivo(archivo)}
+                  onClick={() => ver(archivo)}
                   className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
                 >
                   👁️ Ver PDF
                 </button>
                 <button
-                  onClick={() => descargarArchivoDirecto(archivo)}
+                  onClick={() => descargar(archivo)}
                   className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
                 >
                   ⬇️ Descargar PDF
@@ -419,7 +555,7 @@ function TarjetaDescarga({
                 key={archivo.tipo}
                 // Word/Excel/PowerPoint y demás formatos — descarga
                 // directa, sin Blob (ver descargarArchivoDirecto).
-                onClick={() => descargarArchivoDirecto(archivo)}
+                onClick={() => descargar(archivo)}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}
@@ -428,7 +564,7 @@ function TarjetaDescarga({
           ))}
           {archivosVista.length === 1 ? (
             <button
-              onClick={() => compartirArchivo(archivosVista[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+              onClick={() => compartir(archivosVista[0])}
               className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
             >
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
@@ -446,7 +582,7 @@ function TarjetaDescarga({
                   {archivosVista.map((archivo) => (
                     <button
                       key={archivo.tipo}
-                      onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+                      onClick={() => compartir(archivo)}
                       className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
                     >
                       {enlaceCopiado ? '✅ Enlace copiado' : `Compartir ${NOMBRE_FORMATO[archivo.tipo] || archivo.tipo}`}

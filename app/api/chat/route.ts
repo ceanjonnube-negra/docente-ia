@@ -4552,7 +4552,13 @@ Grado: [grado] | Grupo: [grupo]
               // ruta de vista previa lo exige y lo valida antes de
               // generar nada, nunca lo infiere solo de a qué endpoint
               // llegó la petición.
-              const urlWord = `/api/planeaciones/vista-previa-documento-word?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}`
+              // Sin credenciales: la URL es solo una REFERENCIA que se guarda
+              // en el mensaje (mensajes_chat, localStorage). La tarjeta la
+              // abre con un POST que lleva el token de la sesión VIGENTE en
+              // el cuerpo, nunca en la URL (ver las rutas vista-previa-documento,
+              // vista-previa-documento-word y vista-previa-hoja, y
+              // TarjetaDescarga en AsistentePanel.tsx).
+              const urlWord = `/api/planeaciones/vista-previa-documento-word?tipoDocumento=planeacion&datos=${datosComprimidos}`
               // AJUSTE AISLADO — "corregir únicamente el nombre del
               // archivo Word de la planeación": antes este nombre venía
               // hardcodeado ('vista-previa-planeacion.docx'), sin
@@ -4589,8 +4595,8 @@ Grado: [grado] | Grupo: [grupo]
               // `datos` comprimido (nunca se regenera contenido
               // distinto) — solo cambian las cabeceras de respuesta
               // según el modo, ver vista-previa-documento/route.ts.
-              const urlDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}&modo=descargar`
-              const urlVerDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=${encodeURIComponent(accessToken)}&datos=${datosComprimidos}&modo=ver`
+              const urlDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&datos=${datosComprimidos}&modo=descargar`
+              const urlVerDocumento = `/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&datos=${datosComprimidos}&modo=ver`
               const archivoDocumento = {
                 tipo: 'pdf',
                 nombre: 'vista-previa-planeacion.pdf',
@@ -4647,8 +4653,8 @@ Grado: [grado] | Grupo: [grupo]
               // planeación abre la hoja de evaluación").
               // modo=ver / modo=descargar — mismo criterio que la
               // planeación arriba, ver vista-previa-hoja/route.ts.
-              const url = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}&modo=descargar`
-              const urlVer = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=${encodeURIComponent(accessToken)}&datos=${encodeURIComponent(datosCodificados)}&modo=ver`
+              const url = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&datos=${encodeURIComponent(datosCodificados)}&modo=descargar`
+              const urlVer = `/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&datos=${encodeURIComponent(datosCodificados)}&modo=ver`
               const archivo = {
                 tipo: 'pdf',
                 nombre: 'vista-previa-hoja-evaluacion.pdf',

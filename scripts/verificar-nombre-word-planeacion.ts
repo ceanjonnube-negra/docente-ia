@@ -149,14 +149,19 @@ async function main() {
   verificar(
     cuerpoPanel.includes("function abrirArchivo(archivo: { url: string; urlVer?: string }) {") &&
       cuerpoPanel.includes("window.open(archivo.urlVer ?? archivo.url, '_blank')") &&
-      cuerpoPanel.includes('onClick={() => abrirArchivo(archivo)}'),
+      // Vistas previas de planeación (sin credenciales en la URL): el
+      // botón pasa por ver(archivo), que para cualquier otro documento
+      // sigue llamando exactamente a abrirArchivo(archivo).
+      cuerpoPanel.includes('onClick={() => ver(archivo)}') &&
+      cuerpoPanel.includes(': abrirArchivo(archivo))'),
     '10b. "Ver PDF" abre archivo.urlVer (con fallback a archivo.url si urlVer no existe) vía abrirArchivo(archivo)'
   )
   verificar(
     cuerpoPanel.includes("function descargarArchivoDirecto(archivo: { tipo: string; url: string; nombre: string }) {") &&
       cuerpoPanel.includes("form.action = '/api/archivos/descargar'") &&
       /if \(archivo\.tipo === 'pdf'\) \{[\s\S]{0,600}form\.submit\(\)/.test(cuerpoPanel) &&
-      cuerpoPanel.includes('onClick={() => descargarArchivoDirecto(archivo)}'),
+      cuerpoPanel.includes('onClick={() => descargar(archivo)}') &&
+      cuerpoPanel.includes(': descargarArchivoDirecto(archivo))'),
     '10c. "Descargar PDF" sigue forzando descarga real vía POST a /api/archivos/descargar (nunca <a href> directo) dentro de descargarArchivoDirecto(archivo) — misma corrección real de Safari/iPhone, generalizada a un solo mecanismo para todos los formatos'
   )
   verificar(

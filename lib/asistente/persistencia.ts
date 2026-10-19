@@ -247,6 +247,35 @@ function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversaci
   })
 }
 
+// Vistas previas de planeación guardadas antes de la corrección de
+// credenciales: su URL lleva ?token= (el JWT de la sesión de entonces).
+// Nunca se reutiliza — TarjetaDescarga lo descarta y usa la sesión
+// vigente —, y aquí se quita también de la copia LOCAL (localStorage)
+// para que no siga almacenada en el dispositivo. Solo la copia local:
+// nunca reescribe nada en Supabase (mensajeAFilaRemota no pasa por aquí).
+function sinTokenVistaPrevia(url: string | undefined): string | undefined {
+  if (!url || !url.startsWith('/api/planeaciones/vista-previa-')) return url
+  return url.replace(/([?&])token=[^&#]*(&?)/g, (_m, separador: string, siguiente: string) => (siguiente ? separador : '')).replace(/[?&]$/, '')
+}
+
+function archivoSinTokenVistaPrevia<T extends { url: string; urlVer?: string }>(archivo: T): T {
+  const url = sinTokenVistaPrevia(archivo.url) as string
+  const urlVer = sinTokenVistaPrevia(archivo.urlVer)
+  return url === archivo.url && urlVer === archivo.urlVer ? archivo : { ...archivo, url, ...(archivo.urlVer !== undefined ? { urlVer } : {}) }
+}
+
+function mensajesSinTokenVistaPrevia(mensajes: MensajeConversacion[]): MensajeConversacion[] {
+  return mensajes.map((m) => (m.archivo || m.archivos
+    ? { ...m, ...(m.archivo ? { archivo: archivoSinTokenVistaPrevia(m.archivo) } : {}), ...(m.archivos ? { archivos: m.archivos.map(archivoSinTokenVistaPrevia) } : {}) }
+    : m))
+}
+
+function documentoActivoSinTokenVistaPrevia(documentoActivo: DocumentoActivoGuardado | null): DocumentoActivoGuardado | null {
+  if (!documentoActivo?.archivosGenerados) return documentoActivo
+  const archivosGenerados = Object.fromEntries(Object.entries(documentoActivo.archivosGenerados).map(([tipo, archivo]) => [tipo, archivoSinTokenVistaPrevia(archivo)]))
+  return { ...documentoActivo, archivosGenerados }
+}
+
 export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, materialVisualActivo: MaterialVisualActivoGuardado | null, tituloForzado?: string) {
   if (mensajes.length === 0) return // conversación vacía: nada que guardar todavía
   const mensajesRecortados = mensajes.slice(-TOPE_MENSAJES)
@@ -256,8 +285,8 @@ export function guardarConversacion(id: string, mensajes: MensajeConversacion[],
   const datos: ConversacionGuardada = {
     version: VERSION,
     titulo,
-    mensajes: aligerarParaGuardar(mensajesRecortados),
-    documentoActivo,
+    mensajes: mensajesSinTokenVistaPrevia(aligerarParaGuardar(mensajesRecortados)),
+    documentoActivo: documentoActivoSinTokenVistaPrevia(documentoActivo),
     materialVisualActivo,
     actualizadaEn,
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { gunzipSync } from 'node:zlib'
-import { autenticarRequestApi } from '@/lib/server/authApi'
+import { autenticarRequestApi, leerFormularioPost, respuestaErrorNavegacion } from '@/lib/server/authApi'
+import { errorSeguro } from '@/lib/logSeguro'
 import { generarWordBuffer, nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
 import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 
@@ -19,31 +20,31 @@ const IDENTIFICADOR_VISTA_PREVIA = 'VISTA PREVIA — PENDIENTE DE APROBACIÓN'
 // separado a propósito, en vez de agregar un parámetro `formato` a
 // vista-previa-documento/route.ts, para no tocar esa ruta.
 //
-// GET (no POST), mismo motivo que su hermana PDF: la descarga real se
-// dispara con una petición GET directa (ver descargarArchivo en
-// AsistentePanel.tsx), nunca con window.open a secas — Content-Type y
-// Content-Disposition van siempre correctos para que el navegador (o
-// el picker de Safari en iPhone) ofrezca guardar un .docx real, nunca
-// abrirlo como si fuera texto plano.
-export async function GET(req: NextRequest) {
+// POST, mismo criterio que su hermana PDF: "Descargar" de TarjetaDescarga
+// envía un <form> POST con el token de la sesión VIGENTE en el cuerpo,
+// nunca en la URL — Content-Type y Content-Disposition van siempre
+// correctos para que el navegador (o el picker de Safari en iPhone)
+// ofrezca guardar un .docx real, nunca abrirlo como si fuera texto
+// plano. GET se rechaza siempre (ver abajo).
+async function generarVistaPrevia(parametros: URLSearchParams): Promise<Response> {
   try {
-    const token = req.nextUrl.searchParams.get('token')
-    const datosComprimidos = req.nextUrl.searchParams.get('datos')
+    const token = parametros.get('token')
+    const datosComprimidos = parametros.get('datos')
     // Validación explícita del tipo de documento — mismo criterio que
     // vista-previa-documento/route.ts: esta ruta SOLO genera la
     // planeación completa en Word, nunca decide qué generar solo por a
     // qué endpoint llegó la petición.
-    const tipoDocumento = req.nextUrl.searchParams.get('tipoDocumento')
+    const tipoDocumento = parametros.get('tipoDocumento')
     if (tipoDocumento !== 'planeacion') {
-      return NextResponse.json({ error: 'Tipo de documento inválido para esta vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Tipo de documento inválido para esta vista previa.', 400)
     }
     if (!token || !datosComprimidos) {
-      return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Faltan parámetros para generar la vista previa.', 400)
     }
 
     const auth = await autenticarRequestApi(token)
     if (!auth.ok) {
-      return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
+      return respuestaErrorNavegacion('Tu sesión expiró. Vuelve al Chat IA, inicia sesión de nuevo y toca Ver o Descargar.', auth.status)
     }
     const docenteId = auth.user.id
     const supabase = auth.supabase
@@ -57,7 +58,7 @@ export async function GET(req: NextRequest) {
       texto = datos.texto
       zonaHoraria = datos.zonaHoraria ?? null
     } catch {
-      return NextResponse.json({ error: 'Datos de la vista previa inválidos.' }, { status: 400 })
+      return respuestaErrorNavegacion('Datos de la vista previa inválidos.', 400)
     }
 
     const { data: perfil } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
@@ -86,7 +87,22 @@ export async function GET(req: NextRequest) {
       },
     })
   } catch (err) {
-    console.error('Error en GET /api/planeaciones/vista-previa-documento-word:', err)
-    return NextResponse.json({ error: 'No fue posible generar la vista previa.' }, { status: 500 })
+    console.error(`Error en POST /api/planeaciones/vista-previa-documento-word: ${errorSeguro(err)}`)
+    return respuestaErrorNavegacion('No fue posible generar la vista previa.', 500)
   }
+}
+
+// POST — único método que genera la vista previa (ver comentario arriba).
+export async function POST(req: NextRequest) {
+  const parametros = await leerFormularioPost(req)
+  if (!parametros) return respuestaErrorNavegacion('Solicitud inválida para generar la vista previa.', 400)
+  return generarVistaPrevia(parametros)
+}
+
+// GET — rechazado SIEMPRE, con o sin token: ninguna credencial se acepta
+// en la URL. Una referencia histórica que todavía lleve ?token= se abre
+// desde la tarjeta del Chat IA, que descarta ese token y usa la sesión
+// vigente.
+export async function GET() {
+  return respuestaErrorNavegacion('Esta vista previa se abre desde el Chat IA: vuelve a la conversación y toca Ver o Descargar.', 405, { Allow: 'POST' })
 }

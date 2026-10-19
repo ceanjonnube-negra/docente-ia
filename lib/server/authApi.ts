@@ -49,6 +49,36 @@ export function extraerBearerToken(req: Request): string | null {
   return match ? match[1].trim() : null
 }
 
+// Para las rutas que el navegador abre por NAVEGACIÓN (un <form> POST —
+// pestaña nueva o descarga), donde no se puede mandar el header
+// Authorization: el token de la sesión vigente viaja como campo del
+// CUERPO, nunca en la URL (historial, logs de acceso, enlaces
+// compartidos). Solo campos de texto; null si el cuerpo no es un
+// formulario válido.
+export async function leerFormularioPost(req: Request): Promise<URLSearchParams | null> {
+  try {
+    const formulario = await req.formData()
+    const parametros = new URLSearchParams()
+    for (const [clave, valor] of formulario.entries()) if (typeof valor === 'string') parametros.append(clave, valor)
+    return parametros
+  } catch {
+    return null
+  }
+}
+
+// Error legible para una respuesta a la que el navegador NAVEGA (pestaña
+// de "Ver" o descarga): una página mínima con el mensaje — nunca JSON
+// crudo ni un archivo vacío. El mensaje es siempre un texto fijo del
+// propio código; se escapa igual, y nunca repite parámetros ni
+// credenciales de la petición.
+export function respuestaErrorNavegacion(mensaje: string, status: number, headers: Record<string, string> = {}): Response {
+  const seguro = mensaje.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+  return new Response(
+    `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Docente IA</title></head><body style="font-family:system-ui,sans-serif;padding:24px;color:#374151"><p>${seguro}</p></body></html>`,
+    { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers } }
+  )
+}
+
 // Mismo patrón real que ya usa app/dashboard/grupos/nuevo/page.tsx
 // (líneas 105-120) para resolver las instituciones de un docente: la
 // principal en perfiles_docentes.institucion_id, más las adicionales en
