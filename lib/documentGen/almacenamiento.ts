@@ -100,10 +100,13 @@ export async function descargarBuffer(sb: SupabaseClient, ruta: string, bucket: 
 // de archivo — sin esto, Safari/Chrome en el celular a veces solo abren
 // una pestaña en blanco con un .docx en vez de descargarlo o abrirlo con
 // Word/Office, porque el navegador intenta renderizarlo inline.
-export async function crearUrlFirmada(sb: SupabaseClient, ruta: string, nombreDescarga?: string, bucket: string = BUCKET_DOCUMENTOS_GENERADOS): Promise<string> {
+// vigenciaSegundos es opcional (default: los 7 días de siempre) — solo
+// /api/archivos/renovar-url pide una vigencia corta, porque esa URL
+// siempre puede volver a renovarse.
+export async function crearUrlFirmada(sb: SupabaseClient, ruta: string, nombreDescarga?: string, bucket: string = BUCKET_DOCUMENTOS_GENERADOS, vigenciaSegundos: number = VENCIMIENTO_URL_SEGUNDOS): Promise<string> {
   const { data, error } = await sb.storage
     .from(bucket)
-    .createSignedUrl(ruta, VENCIMIENTO_URL_SEGUNDOS, nombreDescarga ? { download: nombreDescarga } : undefined)
+    .createSignedUrl(ruta, vigenciaSegundos, nombreDescarga ? { download: nombreDescarga } : undefined)
   if (error || !data?.signedUrl) throw new Error(`Error generando URL de descarga: ${error?.message || 'sin URL'}`)
   return data.signedUrl
 }

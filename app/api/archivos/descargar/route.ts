@@ -24,7 +24,7 @@
 // criterio de siempre) — es autosuficiente para leer el archivo.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { BUCKET_DOCUMENTOS_GENERADOS } from '@/lib/documentGen/almacenamiento'
+import { BUCKET_DOCUMENTOS_GENERADOS, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
 
 // Solo se acepta una URL https, del mismo proyecto de Supabase ya
 // configurado (NEXT_PUBLIC_SUPABASE_URL, sin variable de entorno
@@ -50,8 +50,10 @@ function validarUrlAutorizada(candidata: string): URL | null {
   }
   if (url.hostname !== hostSupabase) return null
 
-  const prefijoEsperado = `/storage/v1/object/sign/${BUCKET_DOCUMENTOS_GENERADOS}/`
-  if (!url.pathname.startsWith(prefijoEsperado)) return null
+  // Documentos generados y hojas de evaluación (PDF) — los dos únicos
+  // buckets de archivos del docente que el Chat IA ofrece descargar.
+  const prefijosEsperados = [BUCKET_DOCUMENTOS_GENERADOS, BUCKET_HOJAS_SEGUIMIENTO].map((bucket) => `/storage/v1/object/sign/${bucket}/`)
+  if (!prefijosEsperados.some((prefijo) => url.pathname.startsWith(prefijo))) return null
 
   return url
 }

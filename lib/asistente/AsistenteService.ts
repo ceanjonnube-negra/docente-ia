@@ -68,6 +68,7 @@ import type {
   TrazaDiagnosticoCurp,
 } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
+import { renovarUrlDocumento, urlDocumentoPorVencer } from './renovarUrlDocumento'
 
 class ErrorLimiteDeTiempoAccion extends Error {}
 
@@ -2507,6 +2508,28 @@ class AsistenteServiceImpl {
     if (!this.documentoActivo) return
     const archivoExistente = this.documentoActivo.archivosGenerados?.[tipoResuelto]
     if (archivoExistente) {
+      // URL firmada vencida (o por vencer): se recupera la URL vigente del
+      // MISMO archivo ya guardado (documento_activo) antes de entregarlo —
+      // nunca se regenera, nunca se duplica en Storage, nunca llama a IA.
+      // Si no se puede recuperar, el archivo NO se muestra como disponible.
+      if (urlDocumentoPorVencer(archivoExistente.url)) {
+        this.generando = true
+        this.notificar()
+        let renovada: Awaited<ReturnType<typeof renovarUrlDocumento>> = null
+        try {
+          renovada = this.conversacionActivaId
+            ? await renovarUrlDocumento({ origen: 'documento_activo', conversacionId: this.conversacionActivaId, tipo: tipoResuelto })
+            : null
+        } finally {
+          this.generando = false
+        }
+        if (!renovada) {
+          this.informarArchivoNoRecuperable(textoVisible)
+          return
+        }
+        this.reutilizarArchivoExistente(textoVisible, { ...archivoExistente, url: renovada.url, ...(renovada.urlVer ? { urlVer: renovada.urlVer } : {}) })
+        return
+      }
       this.reutilizarArchivoExistente(textoVisible, archivoExistente)
       return
     }
@@ -3071,6 +3094,22 @@ ${instruccion}`
   // tocar la red, sin volver a invocar a Claude, sin volver a generar
   // el archivo ni subir nada a Storage. Sincrónico y siempre exitoso
   // (no hay nada que pueda fallar aquí — el archivo ya existe).
+  // Par de reutilizarArchivoExistente cuando la URL del archivo guardado
+  // venció y no se pudo recuperar: el docente ve su mensaje y una
+  // respuesta honesta, nunca una tarjeta con un enlace que no abre.
+  private informarArchivoNoRecuperable(textoVisible: string) {
+    // creadoEn estrictamente creciente: al recargar, mensajes_chat se
+    // ordena solo por creado_en — nunca deben empatar y salir invertidos.
+    const creadoEn = Date.now()
+    const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn }
+    const mensajeAsistente: MensajeConversacion = { id: nuevoId(), rol: 'asistente', texto: 'No pude recuperar ese archivo en este momento. Intenta de nuevo en unos segundos.', creadoEn: creadoEn + 1 }
+    this.mensajes = [...this.mensajes, mensajeUsuario, mensajeAsistente]
+    this.turnoAbierto = null
+    this.notificar()
+    this.persistirMensajeAsegurandoConversacion(mensajeUsuario)
+    this.persistirMensajeAsegurandoConversacion(mensajeAsistente)
+  }
+
   private reutilizarArchivoExistente(textoVisible: string, archivo: ArchivoGeneradoInfo) {
     const idMensaje = nuevoId()
     const mensajeUsuario: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }

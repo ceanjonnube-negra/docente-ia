@@ -28,6 +28,7 @@ import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseConteni
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
+import { renovarUrlDocumento, urlDocumentoPorVencer, urlDocumentoVencida, vencimientoUrlDocumento, MARGEN_RENOVACION_MS, type UrlDocumentoRenovada } from '@/lib/asistente/renovarUrlDocumento'
 import type { AdjuntoImagen, ArchivoGeneradoInfo, ResultadoEmbebidoListaFiltrada } from '@/lib/asistente/tipos'
 import VentanaListaFiltrada from './VentanaListaFiltrada'
 import VentanaImagen from './VentanaImagen'
@@ -79,6 +80,13 @@ const TITULO_TIPO_DOCUMENTO: Record<string, string> = {
 // su propio grupo de 1, igual que siempre. Conserva el orden de
 // llegada de los grupos (el primer archivo de cada tipoDocumento fija
 // la posición de su tarjeta).
+// Archivos de un mensaje en el MISMO orden que los guarda mensajes_chat
+// (`archivos` si existe, si no `archivo`) — el índice de cada uno es la
+// referencia que usa /api/archivos/renovar-url.
+function archivosDelMensaje(m: { archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[] }): ArchivoGeneradoInfo[] {
+  return m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []
+}
+
 function agruparArchivosPorDocumento(archivos: ArchivoGeneradoInfo[]): ArchivoGeneradoInfo[][] {
   const grupos: ArchivoGeneradoInfo[][] = []
   const indicePorTipo = new Map<string, number>()
@@ -410,6 +418,83 @@ function useUrlAssetConRefresco(archivo: { url: string; assetId?: string }) {
   return { urlActual, onError }
 }
 
+// Documentos (Word/PDF/PowerPoint/Excel, planeación definitiva, hojas)
+// cuya URL firmada vence: se renuevan ANTES del clic — al mostrar la
+// tarjeta, al volver a la pestaña y poco antes de que venza la URL
+// renovada —, para que Ver y Descargar sigan siendo síncronos dentro del
+// gesto del usuario (Safari en iPhone). El vencimiento es el REAL (exp
+// de la firma), no una estimación por fecha del mensaje. Solo pide algo
+// cuando hace falta; las peticiones se comparten y una falla no se
+// reintenta en bucle (ver lib/asistente/renovarUrlDocumento.ts). Las URLs
+// renovadas viven solo en memoria.
+type EstadoRenovacionDocumentos = 'listo' | 'renovando' | 'no_disponible'
+
+function useRenovacionDocumentos(archivos: ArchivoGeneradoInfo[], conversacionId: string | null | undefined, mensajeId: string | undefined, indices: number[] | undefined) {
+  // Indexado por la URL ORIGINAL que reemplaza cada renovación, y el
+  // estado por la combinación exacta de URLs a la que pertenece: si la
+  // tarjeta pasa a mostrar otros archivos, nunca se aplica un resultado
+  // anterior (no hace falta "limpiar" estado dentro del efecto).
+  const [renovadas, setRenovadas] = useState<Record<string, UrlDocumentoRenovada>>({})
+  const claveUrls = archivos.map((archivo) => archivo.url).join('\n')
+  const claveIndices = (indices ?? []).join(',')
+  const [estadoGuardado, setEstadoGuardado] = useState<{ clave: string; valor: EstadoRenovacionDocumentos }>({ clave: '', valor: 'listo' })
+  const estado: EstadoRenovacionDocumentos = estadoGuardado.clave === `${claveUrls}|${claveIndices}` ? estadoGuardado.valor : 'listo'
+
+  useEffect(() => {
+    if (!archivos.some((archivo) => vencimientoUrlDocumento(archivo.url) !== null)) return
+    const clave = `${claveUrls}|${claveIndices}`
+    let activo = true
+    let temporizador: ReturnType<typeof setTimeout> | undefined
+    const actuales: (UrlDocumentoRenovada | undefined)[] = []
+    const urlVigente = (i: number) => actuales[i]?.url ?? archivos[i].url
+    const fijarEstado = (valor: EstadoRenovacionDocumentos) => setEstadoGuardado({ clave, valor })
+
+    const revisar = async () => {
+      const pendientes = archivos.map((_, i) => i).filter((i) => urlDocumentoPorVencer(urlVigente(i)))
+      if (pendientes.length > 0) {
+        if (pendientes.some((i) => urlDocumentoVencida(urlVigente(i)))) fijarEstado('renovando')
+        const resultados = await Promise.all(pendientes.map((i) => (
+          conversacionId && mensajeId && indices && indices[i] !== undefined && indices[i] >= 0
+            ? renovarUrlDocumento({ origen: 'mensaje', conversacionId, mensajeId, indice: indices[i] })
+            : Promise.resolve(null)
+        )))
+        if (!activo) return
+        const nuevas: Record<string, UrlDocumentoRenovada> = {}
+        resultados.forEach((resultado, k) => { if (resultado) { actuales[pendientes[k]] = resultado; nuevas[archivos[pendientes[k]].url] = resultado } })
+        if (Object.keys(nuevas).length > 0) setRenovadas((previas) => ({ ...previas, ...nuevas }))
+      }
+      const ahora = Date.now()
+      fijarEstado(archivos.some((_, i) => urlDocumentoVencida(urlVigente(i), ahora)) ? 'no_disponible' : 'listo')
+      // Próxima revisión en el siguiente evento REAL: el inicio del margen
+      // de renovación de la URL vigente más próxima o, si ya está dentro
+      // del margen (renovación fallida), su vencimiento — nunca un sondeo
+      // continuo. Siempre se reemplaza el temporizador anterior.
+      const eventos = archivos.flatMap((_, i) => {
+        const vence = vencimientoUrlDocumento(urlVigente(i))
+        if (vence === null || vence <= ahora) return []
+        return [vence - MARGEN_RENOVACION_MS > ahora ? vence - MARGEN_RENOVACION_MS : vence]
+      })
+      if (temporizador) clearTimeout(temporizador)
+      temporizador = eventos.length > 0 ? setTimeout(() => { void revisar() }, Math.min(...eventos) - ahora + 50) : undefined
+    }
+    const alVolver = () => { if (document.visibilityState === 'visible') void revisar() }
+    void revisar()
+    document.addEventListener('visibilitychange', alVolver)
+    return () => {
+      activo = false
+      if (temporizador) clearTimeout(temporizador)
+      document.removeEventListener('visibilitychange', alVolver)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- claveUrls/claveIndices representan exactamente archivos/indices; volver a correr por identidad de arreglo pediría renovaciones innecesarias.
+  }, [conversacionId, mensajeId, claveUrls, claveIndices])
+
+  const archivosRenovados = archivos.map((archivo) => {
+    const renovada = renovadas[archivo.url]
+    return renovada ? { ...archivo, url: renovada.url, ...(renovada.urlVer ? { urlVer: renovada.urlVer } : {}) } : archivo
+  })
+  return { archivosRenovados, estado }
+}
+
 // AJUSTE AISLADO — "descarga real en Word y PDF, sin botones
 // redundantes": esta tarjeta ahora recibe TODOS los formatos del MISMO
 // documento lógico (ej. planeación en Word + PDF) como un solo grupo
@@ -422,7 +507,7 @@ function useUrlAssetConRefresco(archivo: { url: string; assetId?: string }) {
 // (Compartir Word / Compartir PDF) si hay más de uno — nunca crea
 // ningún mensaje en el chat.
 function TarjetaDescarga({
-  archivos, creadoEn, esActivo, className = '', resaltado = false,
+  archivos, creadoEn, esActivo, className = '', resaltado = false, conversacionId, mensajeId, indices,
 }: {
   // 1 o más formatos del MISMO documento lógico — agrupados por
   // tipoDocumento antes de llegar aquí (ver el render de mensajes más
@@ -431,6 +516,13 @@ function TarjetaDescarga({
   // grupo de 1, sin ningún cambio de comportamiento.
   archivos: ArchivoGeneradoInfo[]
   creadoEn: number
+  // Referencia PERSISTIDA del mensaje (mensajes_chat: conversación + id +
+  // posición de cada archivo en el mensaje) para renovar URLs vencidas —
+  // ver useRenovacionDocumentos. Sin ellas la tarjeta se comporta como
+  // siempre.
+  conversacionId?: string | null
+  mensajeId?: string
+  indices?: number[]
   // esActivo (Fase L1 — "Documento activo" es contexto técnico interno
   // del Chat, ver documentoActivo/documentoActivoId en AsistenteService;
   // el maestro nunca necesita conocerlo, así que el indicador visual
@@ -469,7 +561,8 @@ function TarjetaDescarga({
   // recurso: <img>, Descargar y Compartir de esa imagen leen todos de
   // aquí. Documentos (Word/PDF/PowerPoint/Excel) pasan sin tocar.
   const { urlActual, onError } = useUrlAssetConRefresco(principal)
-  const archivosVista = archivos.map((archivo, i) => (i === 0 && archivo.tipo === 'imagen' && archivo.assetId ? { ...archivo, url: urlActual } : archivo))
+  const renovacion = useRenovacionDocumentos(archivos, conversacionId, mensajeId, indices)
+  const archivosVista = renovacion.archivosRenovados.map((archivo, i) => (i === 0 && archivo.tipo === 'imagen' && archivo.assetId ? { ...archivo, url: urlActual } : archivo))
   const principalVista = archivosVista[0]
   // Un asset con assetId siempre puede pedir una URL fresca — el
   // heurístico de "vencido" (basado en cuánto tiempo pasó, no en si la
@@ -480,7 +573,11 @@ function TarjetaDescarga({
   // sus datos con la sesión vigente (ver verVistaPrevia y vecinas), así
   // que las históricas siguen pudiéndose abrir.
   const vistaPreviaRegenerable = archivos.every((archivo) => esVistaPreviaRegenerable(archivo))
-  const ocultarPorVencido = vencido && !puedeRefrescar && !vistaPreviaRegenerable
+  // Documentos con URL firmada renovable: "vencido" es el estado REAL de
+  // su firma después de intentar renovarla (nunca la fecha del mensaje).
+  const documentosRenovables = archivos.every((archivo) => vencimientoUrlDocumento(archivo.url) !== null)
+  const ocultarPorVencido = documentosRenovables ? renovacion.estado === 'no_disponible' : vencido && !puedeRefrescar && !vistaPreviaRegenerable
+  const renovando = renovacion.estado === 'renovando'
   const [fallaVistaPrevia, setFallaVistaPrevia] = useState(false)
   const avisarFallaVistaPrevia = () => { setFallaVistaPrevia(true); setTimeout(() => setFallaVistaPrevia(false), 4000) }
   const ver = (archivo: ArchivoGeneradoInfo) => (esVistaPreviaRegenerable(archivo) ? verVistaPrevia(archivo, avisarFallaVistaPrevia) : abrirArchivo(archivo))
@@ -539,12 +636,14 @@ function TarjetaDescarga({
               <div key={archivo.tipo} className="flex gap-1.5">
                 <button
                   onClick={() => ver(archivo)}
+                  disabled={renovando}
                   className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
                 >
                   👁️ Ver PDF
                 </button>
                 <button
                   onClick={() => descargar(archivo)}
+                  disabled={renovando}
                   className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
                 >
                   ⬇️ Descargar PDF
@@ -556,6 +655,7 @@ function TarjetaDescarga({
                 // Word/Excel/PowerPoint y demás formatos — descarga
                 // directa, sin Blob (ver descargarArchivoDirecto).
                 onClick={() => descargar(archivo)}
+                disabled={renovando}
                 className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
               >
                 ⬇️ {etiquetaDescargar(archivo.tipo)}
@@ -565,6 +665,7 @@ function TarjetaDescarga({
           {archivosVista.length === 1 ? (
             <button
               onClick={() => compartir(archivosVista[0])}
+              disabled={renovando}
               className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
             >
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
@@ -583,6 +684,7 @@ function TarjetaDescarga({
                     <button
                       key={archivo.tipo}
                       onClick={() => compartir(archivo)}
+                      disabled={renovando}
                       className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
                     >
                       {enlaceCopiado ? '✅ Enlace copiado' : `Compartir ${NOMBRE_FORMATO[archivo.tipo] || archivo.tipo}`}
@@ -1330,11 +1432,14 @@ export default function AsistentePanel() {
                       Word/PDF/PPT/Excel de FINALIZAR ARCHIVO,
                       ficha_descriptiva...) siguen rindiendo un grupo de
                       1, exactamente igual que antes. */}
-                  {agruparArchivosPorDocumento(m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []).map((grupo, idxGrupo) => (
+                  {agruparArchivosPorDocumento(archivosDelMensaje(m)).map((grupo, idxGrupo) => (
                     <TarjetaDescarga
                       key={`${m.id}-archivo-${idxGrupo}`}
                       archivos={grupo}
                       creadoEn={m.creadoEn}
+                      conversacionId={asistente.conversacionActivaId}
+                      mensajeId={m.id}
+                      indices={grupo.map((archivo) => archivosDelMensaje(m).indexOf(archivo))}
                       esActivo={asistente.documentoActivoId === m.id || grupo.some((a) => a.assetId && a.assetId === asistente.materialVisualActivoId)}
                       resaltado={asistente.archivoReutilizadoId === m.id}
                     />

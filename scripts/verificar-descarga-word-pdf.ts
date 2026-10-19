@@ -146,7 +146,11 @@ async function main() {
     // mismo de antes (nunca se quita/reordena una entrada, solo puede
     // sustituirse su `url`), verificado de forma estructural y no por texto
     // literal frágil:
-    verificar(rutaPanel.includes('const archivosVista = archivos.map('), '13b-1. archivosVista se deriva con .map() directamente sobre `archivos` — un .map() siempre conserva el mismo tamaño y orden (nunca quita ni reordena entradas)')
+    // Renovación de URLs de documentos (renovar-url): archivosVista se deriva
+    // de renovacion.archivosRenovados, que es a su vez `archivos.map(...)`
+    // dentro de useRenovacionDocumentos — dos .map() encadenados, mismo
+    // tamaño y orden; solo puede sustituirse url/urlVer.
+    verificar(rutaPanel.includes('const archivosVista = renovacion.archivosRenovados.map(') && rutaPanel.includes('const archivosRenovados = archivos.map((archivo) => {'), '13b-1. archivosVista se deriva con .map() directamente sobre `archivos` — un .map() siempre conserva el mismo tamaño y orden (nunca quita ni reordena entradas)')
     verificar(rutaPanel.includes('{ ...archivo, url:') && rutaPanel.includes(': archivo))'), '13b-2. Cada entrada del mapeo solo puede resultar en (a) el mismo `archivo` sin tocar, o (b) un spread `{...archivo, url: ...}` que conserva todos sus campos originales y únicamente sustituye `url` — nunca se construye una entrada distinta')
     verificar(!codigoRealTarjeta.includes('archivosVista.filter(') && !codigoRealTarjeta.includes('archivos.filter('), '13b-3. Ningún .filter() se aplica sobre archivos/archivosVista dentro de la tarjeta — ninguna entrada puede desaparecer antes de renderizarse')
     verificar(codigoRealTarjeta.includes('archivosVista.map((archivo)'), '13b-4. El render de los botones "Descargar" recorre `archivosVista` completo — solo lectura, nunca un subconjunto filtrado ni una lista reconstruida aparte')

@@ -274,7 +274,7 @@ async function main() {
 
   const ref = ver.api
   verificar(!ref.esVistaPreviaRegenerable({ url: 'https://supabase.prueba.local/storage/v1/object/sign/documentos-generados-ia/a/b.docx?token=firma' }) && !ref.esVistaPreviaRegenerable({ url: 'https://otro.prueba.local/api/planeaciones/vista-previa-documento?datos=x' }) && !ref.esVistaPreviaRegenerable({ url: '/api/otra-ruta?datos=x' }) && ref.esVistaPreviaRegenerable(nuevoWord), 'solo las 3 rutas de vista previa del mismo origen usan el flujo POST; documentos de Storage y otros orígenes siguen su camino de siempre')
-  verificar(/const vistaPreviaRegenerable = archivos\.every\(\(archivo\) => esVistaPreviaRegenerable\(archivo\)\)/.test(panel) && /const ocultarPorVencido = vencido && !puedeRefrescar && !vistaPreviaRegenerable/.test(panel), 'las vistas previas históricas no se ocultan como "vencidas": se regeneran con la sesión vigente')
+  verificar(/const vistaPreviaRegenerable = archivos\.every\(\(archivo\) => esVistaPreviaRegenerable\(archivo\)\)/.test(panel) && /const ocultarPorVencido = documentosRenovables \? renovacion\.estado === 'no_disponible' : vencido && !puedeRefrescar && !vistaPreviaRegenerable/.test(panel), 'las vistas previas históricas no se ocultan como "vencidas": se regeneran con la sesión vigente')
   verificar(/onClick=\{\(\) => ver\(archivo\)\}/.test(panel) && (panel.match(/onClick=\{\(\) => descargar\(archivo\)\}/g) || []).length === 2 && /onClick=\{\(\) => compartir\(archivosVista\[0\]\)\}/.test(panel) && /onClick=\{\(\) => compartir\(archivo\)\}/.test(panel), 'TarjetaDescarga conserva Ver, Descargar y Compartir como acciones independientes')
 
   // ===== 4. Copia local (localStorage) =====
