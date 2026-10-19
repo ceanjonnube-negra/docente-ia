@@ -43,7 +43,9 @@ function escaparRegex(caracter: string): string {
 // de pila suelto, para no arriesgar coincidencias con palabras
 // comunes). Límites de palabra manuales vía lookaround (\b no maneja
 // bien acentos) — nunca coincide dentro de una palabra más larga.
-function construirPatronNombreCompleto(nombreCanonico: string): RegExp | null {
+// Exportada (sin cambios) para reutilizarla en la consulta de embeddings
+// del Chat IA (lib/asistente/consultaEmbedding.ts).
+export function construirPatronNombreCompleto(nombreCanonico: string): RegExp | null {
   const limpio = nombreCanonico.trim().replace(/\s+/g, ' ')
   if (limpio.length < 4 || !limpio.includes(' ')) return null
   const cuerpo = limpio

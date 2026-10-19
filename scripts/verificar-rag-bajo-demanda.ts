@@ -59,11 +59,13 @@ async function main() {
   const pGetter = fuente.indexOf('  const obtenerContextoRAGPromise = (): Promise<string> => {')
   const finGetter = fuente.indexOf('\n  }\n', pGetter) + 4
   const getter = fuente.slice(pGetter, finGetter)
-  const pDeclaracion = fuente.indexOf('  let contextoRAGPromise: Promise<string> | null = null')
+  // Privacidad RAG: la consulta protegida (consultaRAG) se declara junto
+  // al getter y forma parte del mismo tramo.
+  const pDeclaracion = fuente.indexOf('  let consultaRAGPreparada: ConsultaEmbedding | null = null')
   verificar(pDeclaracion > 0 && pGetter > pDeclaracion && finGetter > pGetter, 'getter memoizado obtenerContextoRAGPromise() declarado (promesa en una variable de la petición)')
   verificar(/if \(!contextoRAGPromise\) \{/.test(getter) && /return contextoRAGPromise/.test(getter), 'el getter reutiliza la promesa ya creada (memoización)')
   const invocaciones = (fuente.match(/buscarContextoRAG\(supabaseUser/g) || []).length
-  verificar(invocaciones === 1 && getter.includes('buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)'), 'buscarContextoRAG solo se invoca dentro del getter, con los mismos argumentos de siempre')
+  verificar(invocaciones === 1 && getter.includes('buscarContextoRAG(supabaseUser, consulta.texto, sesion.institucion_id)') && getter.includes('consulta?.enviar'), 'buscarContextoRAG solo se invoca dentro del getter, con la copia protegida del mensaje (y solo si la consulta puede enviarse)')
   const usos = [...fuente.matchAll(/obtenerContextoRAGPromise\(\)/g)].map((m) => m.index!)
   verificar(usos.length === 1, `el getter tiene exactamente 1 consumidor (${usos.length})`)
   const pConsumo = usos[0] ?? -1
@@ -79,12 +81,13 @@ async function main() {
 
   // ===== 2. Comportamiento con el código real del getter y del consumidor =====
   console.log('\n— 2. Comportamiento (mocks, sin red) —')
-  const iniConsumo = fuente.lastIndexOf('  const rag = esTurnoFichaDescriptiva', pConsumo)
+  const iniConsumo = fuente.lastIndexOf('  const consultaRAGTurno = esTurnoFichaDescriptiva', pConsumo)
   const finConsumo = fuente.indexOf('\n', fuente.indexOf(".catch(() => '')", pConsumo))
   const consumo = fuente.slice(iniConsumo, finConsumo)
   verificar(iniConsumo > 0 && /const contextoRAG = esTurnoFichaDescriptiva\n\s+\? ''\n\s+: await conLimiteDeTiempo\(obtenerContextoRAGPromise\(\), TIMEOUT_RAG_MS \+ 5_000, '[^']+'\)\.catch\(\(\) => ''\)/.test(consumo), 'consumidor: ficha → \'\'; resto → timeout + .catch(() => \'\') de siempre')
   const ts = (await import('typescript')).default
-  const js = ts.transpileModule(`async function __tramo(env: any) { const { mensaje, sesion, supabaseUser, buscarContextoRAG, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, consumirDosVeces } = env\n${fuente.slice(pDeclaracion, finGetter)}\n if (consumirDosVeces) { void obtenerContextoRAGPromise() }\n${consumo}\n return { contextoRAG, rag } }`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
+  const { prepararConsultaEmbedding } = await import(join(RAIZ, 'lib/asistente/consultaEmbedding.ts'))
+  const js = ts.transpileModule(`async function __tramo(env: any) { const { mensaje, sesion, supabaseUser, buscarContextoRAG, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, consumirDosVeces, prepararConsultaEmbedding } = env\n${fuente.slice(pDeclaracion, finGetter)}\n if (consumirDosVeces) { void obtenerContextoRAGPromise() }\n${consumo}\n return { contextoRAG, rag } }`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
   const tramo = new Function(`${js}; return __tramo`)() as (env: Record<string, unknown>) => Promise<{ contextoRAG: string; rag: string }>
   const conLimiteDeTiempo = <T,>(p: Promise<T>, ms: number, msg: string) => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))])
   const RECUPERADO = '\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES DISPONIBLES ...fragmento ficticio...'
@@ -94,7 +97,7 @@ async function main() {
     const env = {
       mensaje: 'Pregunta ficticia sobre el reglamento escolar', sesion: { institucion_id: '00000000-0000-4000-8000-0000000000aa' }, supabaseUser: { cliente: 'ficticio' },
       buscarContextoRAG: (...a: unknown[]) => { llamadas.push(a); return buscar ? buscar(...a) : Promise.resolve(RECUPERADO) },
-      conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: () => {} }, consumirDosVeces: false, ...extra,
+      conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: () => {} }, consumirDosVeces: false, prepararConsultaEmbedding, ...extra,
     }
     const r = await tramo(env)
     return { ...r, llamadas, logs, env }
@@ -112,7 +115,7 @@ async function main() {
   const conTimeout = await correr({}, () => new Promise<string>(() => {}))
   verificar(conError.contextoRAG === '' && conTimeout.contextoRAG === '' && conError.llamadas.length === 1, 'error o timeout del RAG → \'\' y el turno continúa (manejo de siempre)')
   const estados = [general, ficha, ...noAplica].flatMap((r) => r.logs)
-  verificar(estados.every((l) => /^\[RAG_USO\] estado=(ejecutado|omitido_ficha|no_aplica)$/.test(l)), 'telemetría [RAG_USO]: solo un estado de lista cerrada (nunca mensaje, documentos ni ids)')
+  verificar(estados.every((l) => /^\[RAG_USO\] estado=(ejecutado|omitido_ficha|no_aplica|omitido_privacidad|omitido_error)( nombres=\d+ curp=\d+ contacto=\d+ fechas=\d+)?$/.test(l)), 'telemetría [RAG_USO]: solo un estado de lista cerrada y conteos (nunca mensaje, documentos ni ids)')
 
   // ===== 3. Recuperación y protecciones intactas =====
   console.log('\n— 3. Recuperación sin cambios —')

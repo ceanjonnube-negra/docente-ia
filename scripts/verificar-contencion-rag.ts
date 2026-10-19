@@ -82,10 +82,10 @@ function main() {
   verificar(!/SERVICE_ROLE/.test(cuerpoFn) && !/createClient\(/.test(cuerpoFn), '2b. buscarContextoRAG no crea clientes ni lee SUPABASE_SERVICE_ROLE_KEY')
   const llamadas = chatCodigo.match(/buscarContextoRAG\(([^)]*)\)/g) || []
   const invocaciones = llamadas.filter((l) => !l.startsWith('buscarContextoRAG(sb: '))
-  verificar(invocaciones.length === 1 && /^buscarContextoRAG\(supabaseUser, mensaje, sesion\.institucion_id\)$/.test(invocaciones[0]), '2c. Única invocación: buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)')
+  verificar(invocaciones.length === 1 && /^buscarContextoRAG\(supabaseUser, consulta\.texto, sesion\.institucion_id\)$/.test(invocaciones[0]) && /consultaRAGPreparada = prepararConsultaEmbedding\(mensaje, sesion\?\.alumnos_del_grupo_activo\)/.test(chatCodigo), '2c. Única invocación: buscarContextoRAG(supabaseUser, consulta.texto, sesion.institucion_id) — el texto es la copia protegida del mensaje (privacidad RAG)')
   verificar(/const supabaseUser = autenticacion\?\.ok \? autenticacion\.supabase : null/.test(chatCodigo), '2d. supabaseUser es el cliente devuelto por autenticarRequestApi (sesión del docente)')
   verificar(/process\.env\.NEXT_PUBLIC_SUPABASE_ANON_KEY!/.test(authApi) && /Authorization: `Bearer \$\{accessToken\}`/.test(authApi) && !/SERVICE_ROLE/.test(authApi), '2e. autenticarRequestApi crea el cliente con la clave anon + JWT del docente, nunca con service_role (RLS como authenticated)')
-  verificar(/mensaje\.trim\(\) && sesion\?\.institucion_id && supabaseUser\s*\n\s*\? buscarContextoRAG\(supabaseUser,/.test(chatCodigo), '2f. Sin cliente autenticado no se ejecuta la búsqueda (falla segura)')
+  verificar(/const consulta = mensaje\.trim\(\) && sesion\?\.institucion_id && supabaseUser \? consultaRAG\(\) : null/.test(chatCodigo) && /consulta\?\.enviar && sesion\?\.institucion_id && supabaseUser\s*\n\s*\? buscarContextoRAG\(supabaseUser,/.test(chatCodigo), '2f. Sin cliente autenticado no se ejecuta la búsqueda (falla segura)')
 
   // ============================================================
   // 3. No existe otra llamada insegura a buscar_chunks_similares.

@@ -1,4 +1,5 @@
 import { archivoSeguro, errorSeguro, formatoArchivoSeguro } from '@/lib/logSeguro'
+import { prepararConsultaEmbedding, type ConsultaEmbedding } from '@/lib/asistente/consultaEmbedding'
 import { NextRequest, NextResponse, after } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
@@ -1374,11 +1375,30 @@ export async function POST(req: NextRequest) {
   // llega al único consumidor (justo antes de armar el prompt de
   // Sonnet). Memoizada: como máximo una ejecución por petición. Misma
   // condición, mismos argumentos y mismo manejo de errores/timeout.
+  // PRIVACIDAD RAG — el texto que sale hacia embeddings es una copia
+  // protegida del mensaje (nombres del roster del grupo activo, CURP,
+  // contacto, fechas personales — ver lib/asistente/consultaEmbedding.ts),
+  // calculada una sola vez por petición. El `mensaje` original no cambia.
+  // Si la identidad no se puede proteger con certeza o la preparación
+  // falla, NO se consulta embeddings: el turno sigue sin contexto RAG.
+  let consultaRAGPreparada: ConsultaEmbedding | null = null
+  const consultaRAG = (): ConsultaEmbedding => {
+    if (!consultaRAGPreparada) {
+      try {
+        consultaRAGPreparada = prepararConsultaEmbedding(mensaje, sesion?.alumnos_del_grupo_activo)
+      } catch {
+        // Nunca el texto original como alternativa: sin consulta protegida no hay RAG.
+        consultaRAGPreparada = { enviar: false, motivo: 'error', resumen: { nombres: 0, curp: 0, contacto: 0, fechas: 0 } }
+      }
+    }
+    return consultaRAGPreparada
+  }
   let contextoRAGPromise: Promise<string> | null = null
   const obtenerContextoRAGPromise = (): Promise<string> => {
     if (!contextoRAGPromise) {
-      contextoRAGPromise = mensaje.trim() && sesion?.institucion_id && supabaseUser
-        ? buscarContextoRAG(supabaseUser, mensaje, sesion.institucion_id)
+      const consulta = mensaje.trim() && sesion?.institucion_id && supabaseUser ? consultaRAG() : null
+      contextoRAGPromise = consulta?.enviar && sesion?.institucion_id && supabaseUser
+        ? buscarContextoRAG(supabaseUser, consulta.texto, sesion.institucion_id)
         : Promise.resolve('')
     }
     return contextoRAGPromise
@@ -3405,8 +3425,11 @@ FUENTES QUE NO EXISTEN EN ESTA APLICACIÓN — no son "no disponibles ahora", so
   // límite cubre esa parte también sin tener que tocar la función.
   // P0-C1 — la ficha descriptiva usa fuentes factuales cerradas (bloques
   // A–D): nunca recibe documentos institucionales ni dispara el embedding.
-  const rag = esTurnoFichaDescriptiva ? 'omitido_ficha' : mensaje.trim() && sesion?.institucion_id && supabaseUser ? 'ejecutado' : 'no_aplica'
-  console.log(`[RAG_USO] estado=${rag}`)
+  const consultaRAGTurno = esTurnoFichaDescriptiva || !(mensaje.trim() && sesion?.institucion_id && supabaseUser) ? null : consultaRAG()
+  const rag = esTurnoFichaDescriptiva ? 'omitido_ficha' : !consultaRAGTurno ? 'no_aplica' : consultaRAGTurno.enviar ? 'ejecutado' : `omitido_${consultaRAGTurno.motivo}`
+  // Solo indicadores: estado y conteos de protecciones — nunca texto.
+  const protegidosRAG = consultaRAGTurno ? ` nombres=${consultaRAGTurno.resumen.nombres} curp=${consultaRAGTurno.resumen.curp} contacto=${consultaRAGTurno.resumen.contacto} fechas=${consultaRAGTurno.resumen.fechas}` : ''
+  console.log(`[RAG_USO] estado=${rag}${protegidosRAG}`)
   const contextoRAG = esTurnoFichaDescriptiva
     ? ''
     : await conLimiteDeTiempo(obtenerContextoRAGPromise(), TIMEOUT_RAG_MS + 5_000, 'Tiempo de espera agotado en la búsqueda de contexto RAG').catch(() => '')
