@@ -84,7 +84,35 @@ const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 // institucionId solo puede RESTRINGIR (filtro funcional de la RPC),
 // nunca ampliar el acceso, y un documento sin dueño nunca se sirve.
 async function buscarContextoRAG(sb: SupabaseClient, pregunta: string, institucionId: string | null): Promise<string> {
+  const RE_UUID_INSTITUCION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const TIMEOUT_EXISTENCIA_RAG_MS = 2_000
   try {
+    // Existencia previa: si el docente no tiene NINGÚN documento activo
+    // alcanzable con esta institución, no hay nada que buscar — no se
+    // calcula el embedding ni se llama a la RPC. Mismo filtro que
+    // buscar_chunks_similares (estado activo; institución nula o igual;
+    // el dueño lo pone la RLS de sb = supabaseUser). Solo `id`, limit 1.
+    // Fallo ABIERTO: si la consulta falla, expira o responde algo
+    // inesperado, se sigue con el flujo de siempre (nunca oculta documentos).
+    let existencia: 'si' | 'no' | 'error' | 'institucion_invalida' = 'error'
+    if (institucionId && !RE_UUID_INSTITUCION.test(institucionId)) {
+      // Nunca se interpola un valor que no sea UUID en el filtro de PostgREST:
+      // no se consulta y se sigue con el flujo de siempre (fallo abierto).
+      existencia = 'institucion_invalida'
+    } else {
+      try {
+        const base = sb.from('documentos_institucionales').select('id').eq('estado', 'activo')
+        const filtrada = institucionId ? base.or(`institucion_id.is.null,institucion_id.eq.${institucionId}`) : base.is('institucion_id', null)
+        const { data: docs, error: errorDocs } = await filtrada.limit(1).abortSignal(AbortSignal.timeout(TIMEOUT_EXISTENCIA_RAG_MS))
+        if (!errorDocs && Array.isArray(docs)) existencia = docs.length > 0 ? 'si' : 'no'
+      } catch {
+        existencia = 'error'
+      }
+    }
+    // Solo el indicador — nunca texto del docente, contenido ni identificadores.
+    console.log(`[RAG_DOCS] existencia=${existencia}`)
+    if (existencia === 'no') return ''
+
     // Sin timeout explícito, esta llamada podía quedarse esperando
     // indefinidamente (ver TIMEOUT_NIVEL0_MS en lib/clasificadorNivel0.ts
     // — mismo problema, otro proveedor) — buscarContextoRAG se dispara

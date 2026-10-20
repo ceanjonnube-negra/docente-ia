@@ -17,6 +17,7 @@
 // o VERIFICAR_BASE_REF (route.ts anterior, para comparar buscarContextoRAG).
 
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -33,6 +34,8 @@ function verificar(condicion: boolean, mensaje: string) {
 const RAIZ = join(__dirname, '..')
 const RUTA = process.env.VERIFICAR_RUTA_CHAT || join(RAIZ, 'app/api/chat/route.ts')
 const BASE_REF = process.env.VERIFICAR_BASE_REF || '31257c2aebd5934d59f15bc591b54a00068f2a9f'
+// SHA-256 del bloque de existencia de documentos autorizado en buscarContextoRAG (ver sección 3).
+const HASH_BLOQUE_EXISTENCIA = 'b4681b48d149a588bde04afdd5a5fd7edc06b333d67d14ef4713255ac7b1064e'
 
 function cuerpoFuncion(s: string, firma: string): string {
   const i = s.indexOf(firma)
@@ -121,7 +124,16 @@ async function main() {
   console.log('\n— 3. Recuperación sin cambios —')
   const fnActual = cuerpoFuncion(fuente, 'async function buscarContextoRAG(')
   const fnBase = base ? cuerpoFuncion(base, 'async function buscarContextoRAG(') : ''
-  verificar(!!fnBase && fnActual === fnBase, `buscarContextoRAG idéntica byte a byte a la versión base (${BASE_REF.slice(0, 7)}): mismo embedding, misma RPC, mismo formato`)
+  // La única diferencia admitida es la comprobación previa de existencia de documentos
+  // (constantes + bloque hasta «if (existencia === 'no') return ''»), verificada aparte en
+  // verificar-rag-sin-documentos.ts. Ese bloque exacto queda fijado por su SHA-256: cualquier
+  // cambio en él falla aquí hasta revisarlo y actualizar el hash a propósito. Todo lo demás
+  // debe seguir idéntico byte a byte.
+  const bloqueExistencia = fnActual.match(/\n  const RE_UUID_INSTITUCION = [^\n]*\n  const TIMEOUT_EXISTENCIA_RAG_MS = [^\n]*(\n  try \{\n)[\s\S]*?\n    if \(existencia === 'no'\) return ''\n\n/)
+  const hashBloque = bloqueExistencia ? createHash('sha256').update(bloqueExistencia[0]).digest('hex') : ''
+  verificar(hashBloque === HASH_BLOQUE_EXISTENCIA, `bloque de existencia autorizado intacto (sha256 ${hashBloque.slice(0, 12) || 'no encontrado'})`)
+  const sinExistencia = bloqueExistencia ? fnActual.replace(bloqueExistencia[0], () => bloqueExistencia[1]) : fnActual
+  verificar(!!fnBase && sinExistencia === fnBase, `buscarContextoRAG idéntica byte a byte a la versión base (${BASE_REF.slice(0, 7)}) salvo la comprobación previa de existencia: mismo embedding, misma RPC, mismo formato`)
   verificar(/\$\{contextoEnriquecido\}` : ''\}\$\{contextoRAG\}\$\{contextoProceso\}/.test(fuente), 'el contenido recuperado se sigue insertando en el mismo punto del prompt (bloque C, sin caché)')
   verificar(/messages: \[\n\s+\.\.\.proyeccionSonnet\.historial,/.test(fuente) && /clasificarNivel0\(mensaje, sesion, proyeccionNivel0\.historial\.slice\(-4\)/.test(fuente) && (fuente.match(/cache_control: /g) || []).length === 2, 'P0-B y caché de Sonnet intactos')
 
