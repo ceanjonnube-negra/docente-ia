@@ -141,6 +141,187 @@ function iniciaOracion(texto: string, indice: number): boolean {
 
 const esMayusculaInicial = (palabra: string) => palabra[0] !== palabra[0].toLowerCase() && palabra.slice(1) !== palabra.slice(1).toUpperCase()
 
+// DOCUMENTOS SUBIDOS (app/api/upload-documento) — copia protegida del
+// texto extraído para el índice semántico (embeddings, chunk_texto,
+// contenido_texto). A diferencia de una consulta, un documento no puede
+// "omitirse" palabra por palabra: se protege TODO lo detectable de forma
+// determinista con datos del propio docente:
+// - las protecciones estructurales de arriba (CURP, correo, teléfono,
+//   fecha personal);
+// - nombres completos y fragmentos de 2+ palabras de SUS alumnos → "un alumno";
+// - nombres/apellidos sueltos de sus alumnos (no partículas; si también
+//   son palabra común, solo con mayúscula inicial, o escritos TODO en
+//   mayúsculas junto a otra palabra del nombre ya protegida) → "un alumno".
+// Además cuenta los alumnos IDENTIFICADOS (ver contarAlumnosIdentificados):
+// quien llama decide con ese dato si el documento es un registro personal
+// que no debe indexarse. Nunca agrega ni quita otro contenido. Lanza si
+// algo falla: quien llama NO debe indexar el documento (falla segura).
+export function protegerTextoDocumento(texto: string, nombresAlumnos: readonly string[]): { texto: string; resumen: ResumenProteccionEmbedding; alumnosIdentificados: number } {
+  const resumen: ResumenProteccionEmbedding = { nombres: 0, curp: 0, contacto: 0, fechas: 0 }
+  let r = protegerEstructurales(texto, resumen)
+  const roster = nombresAlumnos.filter((n) => typeof n === 'string' && n.trim()).map((n, i) => ({ alumno_id: String(i), nombre_completo: n }))
+  const alumnosIdentificados = contarAlumnosIdentificados(r, roster)
+  for (const fragmento of fragmentosDelRoster(roster)) {
+    fragmento.patron.lastIndex = 0
+    r = r.replace(fragmento.patron, () => { resumen.nombres++; return MARCADOR_ALUMNO })
+  }
+  const palabrasRoster = new Set(roster.flatMap((a) => a.nombre_completo.trim().split(/\s+/).map(normalizar)).filter((p) => p.length >= 3 && !PARTICULAS.has(p)))
+  if (palabrasRoster.size > 0) r = protegerPalabrasSueltas(r, palabrasRoster, roster, resumen)
+  return { texto: r, resumen, alumnosIdentificados }
+}
+
+// Palabra escrita TODA en mayúsculas («ROSA»; no «Rosa» ni una sola letra).
+const esTodoMayusculas = (palabra: string) => palabra.length > 1 && palabra === palabra.toUpperCase() && palabra !== palabra.toLowerCase()
+const SOLO_ESPACIOS_EN_LINEA = /^[ \t,]*$/
+
+// Nombres/apellidos sueltos del roster → "un alumno". Una palabra que
+// también es común («Rosa», «Paz», «Campos») cuenta solo con mayúscula
+// inicial; escrita TODO en mayúsculas («ROSA», «CAMPOS FORMATIVOS») solo si
+// en la MISMA línea tiene al lado otra palabra del nombre que sí se protege,
+// un "un alumno" ya sustituido u otra palabra en mayúsculas del nombre del
+// MISMO alumno — así «ROSA un alumno» y «ROSA CAMPOS» (de «Rosa Campos …»)
+// se protegen, y «CAMPOS FORMATIVOS», «LA PAZ» o «LUZ Y SONIDO» se conservan.
+function protegerPalabrasSueltas(texto: string, palabrasRoster: Set<string>, roster: AlumnoRoster[], resumen: ResumenProteccionEmbedding): string {
+  const tokens = [...texto.matchAll(/\p{L}+/gu)].map((m) => ({ palabra: m[0], inicio: m.index!, fin: m.index! + m[0].length }))
+  const proteger = tokens.map(({ palabra }) => {
+    const base = normalizar(palabra)
+    if (!palabrasRoster.has(base)) return false
+    return !PALABRAS_COMUNES.has(base) || esMayusculaInicial(palabra)
+  })
+  const juntos = (i: number, j: number) => SOLO_ESPACIOS_EN_LINEA.test(texto.slice(tokens[i].fin, tokens[j].inicio))
+  const esMarcador = (i: number, j: number) => normalizar(tokens[i].palabra) === 'un' && normalizar(tokens[j].palabra) === 'alumno' && juntos(i, j)
+  const nombres = roster.map((a) => new Set(a.nombre_completo.trim().split(/\s+/).map(normalizar)))
+  const mismoAlumno = (i: number, j: number) => esTodoMayusculas(tokens[j].palabra) &&
+    nombres.some((n) => n.has(normalizar(tokens[i].palabra)) && n.has(normalizar(tokens[j].palabra)) && normalizar(tokens[i].palabra) !== normalizar(tokens[j].palabra))
+  const vecinoProtegido = (i: number) =>
+    (i > 0 && juntos(i - 1, i) && (proteger[i - 1] || mismoAlumno(i, i - 1) || (i > 1 && esMarcador(i - 2, i - 1)))) ||
+    (i + 1 < tokens.length && juntos(i, i + 1) && (proteger[i + 1] || mismoAlumno(i, i + 1) || (i + 2 < tokens.length && esMarcador(i + 1, i + 2))))
+  const pendientes = tokens.map(({ palabra }, i) => !proteger[i] && esTodoMayusculas(palabra) && palabrasRoster.has(normalizar(palabra)) && vecinoProtegido(i))
+  pendientes.forEach((p, i) => { if (p) proteger[i] = true })
+  let salida = ''
+  let desde = 0
+  tokens.forEach(({ inicio, fin }, i) => {
+    if (!proteger[i]) return
+    salida += texto.slice(desde, inicio) + MARCADOR_ALUMNO
+    desde = fin
+    resumen.nombres++
+  })
+  return salida + texto.slice(desde)
+}
+
+// Alumnos del roster IDENTIFICADOS en el texto: una secuencia continua de
+// palabras de SU nombre (en cualquier orden — listas oficiales con
+// apellidos primero o en columnas separadas —, unidas solo por espacios,
+// saltos, comas o partículas) que cubre su nombre completo o al menos 3 de
+// sus palabras (nombre y dos apellidos). Un fragmento de 2 palabras
+// («Benito Juárez», «Ana Sofía») se enmascara, pero NO basta para tratar el
+// documento como un registro del alumno. Solo palabras comunes en
+// minúsculas («la rosa, paz y luna») no identifican.
+function contarAlumnosIdentificados(texto: string, roster: AlumnoRoster[]): number {
+  const alumnos = roster
+    .map((a) => new Set(a.nombre_completo.trim().split(/\s+/).map(normalizar).filter((p) => p && !PARTICULAS.has(p))))
+    .filter((palabras) => palabras.size >= 2)
+  if (alumnos.length === 0) return 0
+  const todas = new Set(alumnos.flatMap((palabras) => [...palabras]))
+  const identificados = new Set<number>()
+  let secuencia: { base: string; palabra: string }[] = []
+  let finAnterior = 0
+  const cerrar = () => {
+    if (secuencia.length >= 2) {
+      alumnos.forEach((palabras, i) => {
+        const propias = secuencia.filter((t) => palabras.has(t.base))
+        if (new Set(propias.map((t) => t.base)).size < Math.min(3, palabras.size)) return
+        if (propias.every((t) => PALABRAS_COMUNES.has(t.base) && !esMayusculaInicial(t.palabra) && !esTodoMayusculas(t.palabra))) return
+        identificados.add(i)
+      })
+    }
+    secuencia = []
+  }
+  for (const m of texto.matchAll(/\p{L}+/gu)) {
+    const palabra = m[0]
+    const base = normalizar(palabra)
+    if (secuencia.length > 0 && !/^[\s,]*$/.test(texto.slice(finAnterior, m.index!))) cerrar()
+    finAnterior = m.index! + palabra.length
+    if (todas.has(base)) secuencia.push({ base, palabra })
+    else if (!(secuencia.length > 0 && PARTICULAS.has(base))) cerrar()
+  }
+  cerrar()
+  return identificados.size
+}
+
+// Palabras que nunca forman parte de un nombre de persona en un campo o una
+// fila (etiquetas de formulario, artículos y arranques de oración).
+const NO_NOMBRE = new Set([
+  'nombre', 'nombres', 'apellido', 'apellidos', 'paterno', 'materno', 'fecha', 'nacimiento', 'lugar', 'edad', 'sexo', 'curp', 'domicilio',
+  'telefono', 'correo', 'firma', 'folio', 'matricula', 'clave', 'turno', 'calificacion', 'calificaciones', 'promedio', 'observaciones',
+  'asistencia', 'total', 'el', 'los', 'un', 'una', 'unos', 'unas', 'lo', 'al', 'se', 'es', 'son', 'su', 'sus', 'este', 'esta', 'estos',
+  'estas', 'ese', 'esa', 'que', 'quien', 'cada', 'todo', 'toda', 'todos', 'todas', 'ningun', 'ninguna', 'no', 'si', 'para', 'por', 'con',
+  'sin', 'en', 'debe', 'debera', 'deberan', 'podra', 'podran', 'sera', 'seran', 'tiene', 'tendra', 'persona', 'personas',
+])
+const PALABRA_DE_NOMBRE = /^\p{Lu}[\p{L}'’]+$/u
+
+// ¿Empieza `partes` con un nombre de persona? Devuelve cuántas partes lo
+// forman (0 si no): palabras con mayúscula inicial o TODO en mayúsculas,
+// con partículas intermedias, ninguna etiqueta ni término escolar.
+function longitudNombrePersona(partes: string[], minimo: number): number {
+  let palabras = 0
+  let k = 0
+  for (; k < partes.length; k++) {
+    const t = partes[k].replace(/[,.;:]+$/, '')
+    const base = normalizar(t)
+    if (palabras > 0 && PARTICULAS.has(base)) continue
+    if (!PALABRA_DE_NOMBRE.test(t)) break
+    if (NO_NOMBRE.has(base) || MAYUSCULAS_ESCOLARES.has(base) || INDICIOS_INDIVIDUALES.has(base)) return 0
+    palabras++
+    if (/,$/.test(partes[k]) && palabras >= minimo) { k++; break }
+  }
+  return palabras >= minimo && palabras <= 6 ? k : 0
+}
+
+// Etiqueta de un campo de persona AL INICIO de una línea o celda. Las
+// etiquetas «Nombre del alumno…» admiten el valor en la línea siguiente
+// (tablas de Word extraídas celda por celda); las cortas («Alumno(a):»,
+// «Tutor:», «Nombre:») exigen dos puntos, tabulador o «|».
+const ETIQUETA_LARGA = String.raw`(?:nombre(?:\s+completo)?\s+del?\s+(?:la\s+)?(?:alumn[oa](?:\s*\(a\))?|estudiante|educand[oa]|ni[ñn][oa]|menor|padre|madre|tutor(?:a|\s*\(a\))?)|apellidos?\s+y\s+nombres?(?:\s*\(s\))?)`
+const ETIQUETA_CORTA = String.raw`(?:nombre(?:s|\s*\(s\))?(?:\s+completo)?|alumn[oa](?:\s*\(a\))?|estudiante|educand[oa]|padre\s+o\s+tutor(?:\s*\(a\))?|madre\s+o\s+tutor(?:a)?|padre\s*\/\s*madre(?:\s+o\s+tutor(?:\s*\(a\))?)?|tutor(?:a|\s*\(a\))?)`
+const RE_CAMPO_PERSONA = new RegExp(String.raw`(?:^|[\n\t|])[ \t]*(?:${ETIQUETA_LARGA}[ \t]*(?::[ \t]*\n*|\t|\|[ \t]*|\n+)|${ETIQUETA_CORTA}[ \t]*(?::[ \t]*\n*|\t|\|))[ \t]*([^\n]*)`, 'giu')
+const RE_CALIFICACION = /^(?:10|[0-9])(?:[.,]\d{1,2})?$/
+const RE_FECHA_COMPLETA = new RegExp(String.raw`^(?:\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})$`)
+
+// Señales DETERMINISTAS de un registro personal aunque los nombres NO
+// estén en el roster (boletas, expedientes, fichas, reportes de
+// incidencias, listas nominales de otro grupo o de exalumnos). Exigen un
+// VALOR con forma de nombre de persona — nunca basta un término: un
+// reglamento que habla de «alumno», «evaluación», «diagnóstico»,
+// «inclusión» o «calificación» no las activa:
+// - campos: etiqueta de persona al inicio de línea/celda («Alumno(a):»,
+//   «Nombre del alumno», «Padre o tutor:», …) seguida de un nombre de 2+
+//   palabras con mayúscula;
+// - filas: un nombre de 3+ palabras seguido (en la línea o en las 2
+//   celdas siguientes) de una fecha completa, una calificación con decimal
+//   o 2+ calificaciones. Se exigen 2+ filas: una firma o un encabezado
+//   aislado con un número no forman una lista nominal (un índice tiene un
+//   solo número entero por línea y no cuenta).
+export function detectarDatosPersonalesSinRoster(texto: string): { campos: number; filas: number } {
+  let campos = 0
+  RE_CAMPO_PERSONA.lastIndex = 0
+  for (const m of texto.matchAll(RE_CAMPO_PERSONA)) {
+    if (longitudNombrePersona(m[1].trim().split(/[ \t]+/), 2) > 0) campos++
+  }
+  const lineas = texto.split('\n').map((l) => l.trim()).filter(Boolean)
+  let filas = 0
+  lineas.forEach((linea, i) => {
+    const partes = linea.replace(/^\d{1,3}[.)-]?\s+/, '').split(/[ \t|;]+/).filter(Boolean)
+    const largo = longitudNombrePersona(partes, 3)
+    if (largo === 0) return
+    let valores = partes.slice(largo).map((p) => p.replace(/^[-–—:,]+|[,;]+$/g, '')).filter(Boolean)
+    if (valores.length === 0) valores = lineas.slice(i + 1, i + 3)
+    const calificaciones = valores.filter((v) => RE_CALIFICACION.test(v))
+    if (valores.some((v) => RE_FECHA_COMPLETA.test(v)) || calificaciones.length >= 2 || calificaciones.some((v) => /[.,]/.test(v))) filas++
+  })
+  return { campos, filas: filas >= 2 ? filas : 0 }
+}
+
 export function prepararConsultaEmbedding(mensaje: string, roster: readonly AlumnoRoster[] | null | undefined): ConsultaEmbedding {
   const resumen: ResumenProteccionEmbedding = { nombres: 0, curp: 0, contacto: 0, fechas: 0 }
   try {
