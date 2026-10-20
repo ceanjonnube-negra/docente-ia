@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import OpenAI from 'openai'
 import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -47,43 +46,6 @@ const supabaseRAG = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
-const openaiRAG = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-
-async function buscarContextoRAG(pregunta: string, institucionId: string | null): Promise<string> {
-  try {
-    // Sin timeout explícito, esta llamada podía quedarse esperando
-    // indefinidamente (ver TIMEOUT_NIVEL0_MS en lib/clasificadorNivel0.ts
-    // — mismo problema, otro proveedor) — buscarContextoRAG se dispara
-    // para CUALQUIER mensaje, no solo los que pasan por el Clasificador
-    // de Nivel 0, así que este límite protege la ruta completa de chat.
-    const embeddingResponse = await openaiRAG.embeddings.create(
-      {
-        model: 'text-embedding-3-small',
-        input: pregunta,
-      },
-      { timeout: TIMEOUT_RAG_MS }
-    )
-    const queryEmbedding = embeddingResponse.data[0].embedding
-
-    const { data, error } = await supabaseRAG.rpc('buscar_chunks_similares', {
-      query_embedding: queryEmbedding,
-      cantidad: 4,
-      p_institucion_id: institucionId,
-    })
-
-    if (error || !data || data.length === 0) return ''
-
-    const fragmentos = data
-      .map((d: any) => `Documento (categoria: ${d.categoria || "General"}): ${d.nombre_archivo}\n${d.chunk_texto}`)
-      .join('\n\n---\n\n')
-
-    return `\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES DISPONIBLES (posible Fuente 2 o 3, ver PRIORIZACION DE FUENTES):\n${fragmentos}\n\nSi la categoria del documento es SEP, es informacion oficial de la SEP subida a este sistema. Para cualquier otra categoria (Reglamentos, Normatividad, Acuerdos, Protocolos, Planeacion, Consejos Tecnicos, Formatos Oficiales, Personalizadas, etc) es un documento interno de la escuela — NUNCA la atribuyas a la SEP, di que proviene del reglamento/documento interno correspondiente por su nombre real.`
-  } catch (e) {
-    console.error('Error buscando contexto RAG:', e)
-    return ''
-  }
-}
-
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // ARQUITECTURA — REGLA OBLIGATORIA: si existe una herramienta capaz de
@@ -322,7 +284,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, institucionId, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -580,7 +542,9 @@ export async function POST(req: NextRequest) {
   // su resultado — se disparan de inmediato en paralelo con él en vez de
   // esperar a que termine para empezar recién ahí (eran ~2 llamadas de
   // red seguidas antes de llegar siquiera a Claude).
-  const contextoRAGPromise = buscarContextoRAG(mensaje, institucionId || null)
+  // RAG antiguo desactivado: con service_role, buscar_chunks_similares
+  // (auth.uid()) nunca devuelve filas — evita embeddings inútiles.
+  const contextoRAGPromise: Promise<string> = Promise.resolve('')
   const procesoActivoPromise = userId
     ? Promise.resolve(
         supabaseRAG
