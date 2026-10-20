@@ -175,6 +175,13 @@ async function extractText(buffer: Buffer, formato: Formato, mimeType: string, s
     // pdf-parse 2.x (versión instalada): API de clase; ya no exporta una
     // función por defecto (con la llamada anterior la extracción de PDF
     // fallaba siempre).
+    // Empaquetado (Next/Vercel): pdf-parse/worker importa @napi-rs/canvas de
+    // forma ESTÁTICA (el trazado lo incluye; ver serverExternalPackages en
+    // next.config.ts), instala DOMMatrix/Path2D/ImageData y registra el
+    // worker de pdfjs en el mismo proceso. Debe cargarse ANTES de pdf-parse:
+    // sin esto el bundle falla con "DOMMatrix is not defined" o al buscar
+    // pdf.worker.mjs junto al chunk (scripts/verificar-pdf-empaquetado.ts).
+    await import('pdf-parse/worker');
     const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({ data: new Uint8Array(buffer) });
     signal?.addEventListener('abort', () => { parser.destroy().catch(() => {}); }, { once: true });

@@ -2,6 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // @napi-rs/canvas es un módulo NATIVO (binario .node): Turbopack no puede
+  // empaquetarlo ("asset is not placeable in ESM chunks"). Como paquete
+  // externo, Node lo carga con require y el trazado de la función incluye
+  // su binario — sin él, pdf-parse/pdfjs falla en Vercel con
+  // "ReferenceError: DOMMatrix is not defined" (app/api/upload-documento).
+  serverExternalPackages: ["@napi-rs/canvas"],
   // Permite que el servidor de desarrollo acepte el WebSocket de HMR
   // cuando la app se abre desde otro dispositivo en la misma red local
   // (ej. probar en el iPhone vía http://192.168.1.10:3000) — sin esto,
