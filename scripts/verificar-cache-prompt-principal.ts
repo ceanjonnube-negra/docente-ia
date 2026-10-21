@@ -17,6 +17,7 @@
 //   VERIFICAR_BASE_REF    commit base (por defecto f90a666…, último sin Etapa 1)
 
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -33,6 +34,10 @@ function verificar(condicion: boolean, mensaje: string) {
 const RAIZ = join(__dirname, '..')
 const RUTA = process.env.VERIFICAR_RUTA_CHAT || join(RAIZ, 'app/api/chat/route.ts')
 const BASE_REF = process.env.VERIFICAR_BASE_REF || 'f90a666ad1a10409f387dc5c8e23a440f76c42ff'
+// Cambio AUTORIZADO posterior a la Etapa 1 (atribución de fuentes): el bloque CITAR LA FUENTE
+// de la plantilla base se sustituye por el texto nuevo; ambos quedan fijados por SHA-256.
+const HASH_CITAR_ANTERIOR = '44dd2d4115308fa5fc5faf961a1ed92c2670b49edce5bc4826a5e6cdcc41d343'
+const HASH_CITAR_ACTUAL = 'f120b94a273c0f6750a9a6e2304d8d4857d4515a0ee6b91cb4deb101a8945cdf'
 
 // Extrae el texto fuente de un template literal que empieza en `inicio`
 // (posición del backtick de apertura), respetando ${...} y templates
@@ -119,7 +124,13 @@ function main() {
   console.log('\n— 2. Equivalencia exacta con el prompt anterior —')
   const pBase = base.indexOf('    system: `Eres Docente IA,')
   verificar(pBase > 0, `plantilla base encontrada (${BASE_REF.slice(0, 7)})`)
-  const litBase = literalDesde(base, pBase + '    system: '.length)
+  const litBaseOriginal = literalDesde(base, pBase + '    system: '.length)
+  const bloqueCitar = (s: string) => { const i = s.indexOf('CITAR LA FUENTE — '), f = i < 0 ? -1 : s.indexOf('\n\nMODO CONSULTA — aplica cuando', i); return i < 0 || f < 0 ? '' : s.slice(i, f) }
+  const sha = (t: string) => createHash('sha256').update(t).digest('hex')
+  const citarBase = bloqueCitar(litBaseOriginal), citarActual = bloqueCitar(litC)
+  verificar(sha(citarBase) === HASH_CITAR_ANTERIOR && sha(citarActual) === HASH_CITAR_ACTUAL, `única diferencia admitida con la base: CITAR LA FUENTE anterior → atribución por evidencia (sha256 ${sha(citarActual).slice(0, 12)})`)
+  // Cualquier otra diferencia con la plantilla base sigue fallando la equivalencia byte a byte.
+  const litBase = citarBase && citarActual ? litBaseOriginal.replace(citarBase, () => citarActual) : litBaseOriginal
   const varianteFuentes = (img: boolean, datos: boolean, n = 2) => `\nFUENTES REALES ficticias — imagen=${img ? `sí(${n})` : 'no'} datos=${datos ? 'sí' : 'no'}\n`
   const fechaHora = (dia: string, hora: string) => ({ zonaHoraria: 'America/Ficticia', diaSemana: dia, fechaLegible: `${dia}-fecha-ficticia`, horaLegible: hora, cicloEscolar: '2099-2100' })
   const baseEnv = {

@@ -148,7 +148,14 @@ async function main() {
   // También queda fuera de la comparación la omisión autorizada para mensajes puramente sociales
   // (import + bloque en consultaRAG), verificada en verificar-rag-mensaje-social.ts.
   const sinSocial = (s: string) => s.replace("import { esMensajePuramenteSocial } from '@/lib/asistente/mensajeSocial'\n", '').replace(/\n      \/\/ Mensaje PURAMENTE social[^\n]*\n(?:      \/\/[^\n]*\n)*      if \(esMensajePuramenteSocial\(mensaje\)\) \{\n[^\n]*\n        return consultaRAGPreparada\n      \}\n/, '\n')
-  const resto = (s: string) => sinSocial(s.replace(extraer(s).cuerpo, ''))
+  // Y los dos textos de atribución de fuentes (CITAR LA FUENTE y el ejemplo de la búsqueda oficial),
+  // verificados en verificar-atribucion-fuentes.ts.
+  const sinAtribucion = (s: string) => {
+    const i = s.indexOf('CITAR LA FUENTE — '), f = i < 0 ? -1 : s.indexOf('\n\nMODO CONSULTA — aplica cuando', i)
+    const t = i < 0 || f < 0 ? s : s.slice(0, i) + '«CITAR»' + s.slice(f)
+    return t.replace('cita la fuente y autoridad (ej. "Fuente: calendario oficial SEP, publicado el [fecha]")', '«BUSQUEDA»').replace('cita la fuente y autoridad con la etiqueta de CITAR LA FUENTE (ej. "Fuente consultada: calendario oficial SEP, publicado el [fecha] — [URL del resultado]"), solo con datos que aparezcan en el resultado real', '«BUSQUEDA»')
+  }
+  const resto = (s: string) => sinAtribucion(sinSocial(s.replace(extraer(s).cuerpo, '')))
   const lineas = (s: string) => resto(s).split('\n').filter((l) => l.trim() !== '')
   const [la, lb] = [lineas(actual), lineas(base)]
   const distintas = la.length === lb.length ? la.filter((l, i) => l !== lb[i]).length : Infinity
