@@ -91,9 +91,18 @@ function main() {
   verificar(funcion(actual, 'async function buscarContextoRAG(') === funcion(base, 'async function buscarContextoRAG(') && funcion(actual, 'async function buscarContextoRAG(') !== '', 'buscarContextoRAG (existencia, embeddings, RPC, formato documental) idéntica a HEAD')
   const tramoSocial = (s: string) => { const i = s.indexOf('  let consultaRAGPreparada: ConsultaEmbedding | null = null'), g = s.indexOf('  const obtenerContextoRAGPromise = (): Promise<string> => {'); return i < 0 || g < 0 ? '' : s.slice(i, s.indexOf('\n  }\n', g) + 4) }
   verificar(tramoSocial(actual) !== '' && tramoSocial(actual) === tramoSocial(base) && actual.includes("import { esMensajePuramenteSocial } from '@/lib/asistente/mensajeSocial'"), 'filtro social (consultaRAG + getter) idéntico a HEAD')
-  const citarBase = bloqueCitar(base)
-  const revertido = actual.replace(citar, () => citarBase).replace(FRASE_BUSQUEDA_ACTUAL, () => FRASE_BUSQUEDA_ANTERIOR)
-  verificar(citarBase !== '' && sinLimites(revertido) === sinLimites(base), 'fuera de los dos textos autorizados, route.ts es idéntico a HEAD byte a byte (salvo el residuo local de LÍMITES)')
+  // Comparación SIMÉTRICA (vale antes y después del commit): en ambos lados, el bloque exacto
+  // CITAR LA FUENTE y el ejemplo exacto de la búsqueda oficial (versión anterior o actual) se
+  // sustituyen por marcadores; sus contenidos ya se verificaron arriba (huella y reglas). Cada
+  // marcador debe quedar exactamente una vez por lado, y el resto se compara byte a byte.
+  const normalizar = (s: string) => {
+    const c = bloqueCitar(s)
+    const t = c ? s.replace(c, () => '«CITAR LA FUENTE»') : s
+    return t.replace(FRASE_BUSQUEDA_ACTUAL, () => '«EJEMPLO BÚSQUEDA»').replace(FRASE_BUSQUEDA_ANTERIOR, () => '«EJEMPLO BÚSQUEDA»')
+  }
+  const una = (s: string, m: string) => s.split(m).length === 2
+  const [nA, nB] = [normalizar(actual), normalizar(base)]
+  verificar([nA, nB].every((n) => una(n, '«CITAR LA FUENTE»') && una(n, '«EJEMPLO BÚSQUEDA»')) && sinLimites(nA) === sinLimites(nB), 'fuera de los dos textos autorizados, route.ts es idéntico a HEAD byte a byte (salvo el residuo local de LÍMITES)')
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)
   process.exit(fallos === 0 ? 0 : 1)
