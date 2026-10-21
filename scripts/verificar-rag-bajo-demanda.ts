@@ -92,7 +92,8 @@ async function main() {
   verificar(iniConsumo > 0 && /const contextoRAG = esTurnoFichaDescriptiva\n\s+\? ''\n\s+: await conLimiteDeTiempo\(obtenerContextoRAGPromise\(\), TIMEOUT_RAG_MS \+ 5_000, '[^']+'\)\.catch\(\(\) => ''\)/.test(consumo), 'consumidor: ficha → \'\'; resto → timeout + .catch(() => \'\') de siempre')
   const ts = (await import('typescript')).default
   const { prepararConsultaEmbedding } = await import(join(RAIZ, 'lib/asistente/consultaEmbedding.ts'))
-  const js = ts.transpileModule(`async function __tramo(env: any) { const { mensaje, sesion, supabaseUser, buscarContextoRAG, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, consumirDosVeces, prepararConsultaEmbedding } = env\n${fuente.slice(pDeclaracion, finGetter)}\n if (consumirDosVeces) { void obtenerContextoRAGPromise() }\n${consumo}\n return { contextoRAG, rag } }`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
+  const { esMensajePuramenteSocial } = await import(join(RAIZ, 'lib/asistente/mensajeSocial.ts'))
+  const js = ts.transpileModule(`async function __tramo(env: any) { const { mensaje, sesion, supabaseUser, buscarContextoRAG, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, consumirDosVeces, prepararConsultaEmbedding, esMensajePuramenteSocial } = env\n${fuente.slice(pDeclaracion, finGetter)}\n if (consumirDosVeces) { void obtenerContextoRAGPromise() }\n${consumo}\n return { contextoRAG, rag } }`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
   const tramo = new Function(`${js}; return __tramo`)() as (env: Record<string, unknown>) => Promise<{ contextoRAG: string; rag: string }>
   const conLimiteDeTiempo = <T,>(p: Promise<T>, ms: number, msg: string) => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))])
   const RECUPERADO = '\n\nINFORMACION DE DOCUMENTOS INSTITUCIONALES DISPONIBLES ...fragmento ficticio...'
@@ -102,7 +103,7 @@ async function main() {
     const env = {
       mensaje: 'Pregunta ficticia sobre el reglamento escolar', sesion: { institucion_id: '00000000-0000-4000-8000-0000000000aa' }, supabaseUser: { cliente: 'ficticio' },
       buscarContextoRAG: (...a: unknown[]) => { llamadas.push(a); return buscar ? buscar(...a) : Promise.resolve(RECUPERADO) },
-      conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: () => {} }, consumirDosVeces: false, prepararConsultaEmbedding, ...extra,
+      conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: () => {} }, consumirDosVeces: false, prepararConsultaEmbedding, esMensajePuramenteSocial, ...extra,
     }
     const r = await tramo(env)
     return { ...r, llamadas, logs, env }
@@ -120,7 +121,7 @@ async function main() {
   const conTimeout = await correr({}, () => new Promise<string>(() => {}))
   verificar(conError.contextoRAG === '' && conTimeout.contextoRAG === '' && conError.llamadas.length === 1, 'error o timeout del RAG → \'\' y el turno continúa (manejo de siempre)')
   const estados = [general, ficha, ...noAplica].flatMap((r) => r.logs)
-  verificar(estados.every((l) => /^\[RAG_USO\] estado=(ejecutado|omitido_ficha|no_aplica|omitido_privacidad|omitido_error)( nombres=\d+ curp=\d+ contacto=\d+ fechas=\d+)?$/.test(l)), 'telemetría [RAG_USO]: solo un estado de lista cerrada y conteos (nunca mensaje, documentos ni ids)')
+  verificar(estados.every((l) => /^\[RAG_USO\] estado=(ejecutado|omitido_ficha|no_aplica|omitido_privacidad|omitido_error|omitido_social)( nombres=\d+ curp=\d+ contacto=\d+ fechas=\d+)?$/.test(l)), 'telemetría [RAG_USO]: solo un estado de lista cerrada y conteos (nunca mensaje, documentos ni ids)')
 
   // ===== 3. Recuperación y protecciones intactas =====
   console.log('\n— 3. Recuperación sin cambios —')

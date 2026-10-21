@@ -45,6 +45,7 @@ const CURP_VALIDA = 'FIEA150312MDFCJNA9'
 
 async function main() {
   const { prepararConsultaEmbedding } = await import(join(RAIZ, 'lib/asistente/consultaEmbedding.ts'))
+  const { esMensajePuramenteSocial } = await import(join(RAIZ, 'lib/asistente/mensajeSocial.ts'))
   type Res = { enviar: boolean; texto?: string; motivo?: string; resumen: { nombres: number; curp: number; contacto: number; fechas: number } }
   const p = (texto: string, roster: unknown = GRUPO_A) => prepararConsultaEmbedding(texto, roster) as Res
   const enviaSin = (r: Res, ...prohibidos: string[]) => r.enviar && !!r.texto && prohibidos.every((x) => !r.texto!.toLowerCase().includes(x.toLowerCase()))
@@ -139,7 +140,7 @@ async function main() {
   let kFn = fuente.indexOf('{', fuente.indexOf(')', fuente.indexOf('institucionId: string | null)', iniFn))), dFn = 0
   for (; kFn < fuente.length; kFn++) { if (fuente[kFn] === '{') dFn++; else if (fuente[kFn] === '}') { dFn--; if (dFn === 0) break } }
   verificar(pDecl > 0 && pGetter > pDecl && iniConsumo > finGetter && iniFn > 0, 'tramos reales localizados (consulta protegida, getter, consumidor, buscarContextoRAG)')
-  const codigo = `${fuente.slice(iniFn, kFn + 1)}\nasync function __tramo(env: any) { const { mensaje, sesion, supabaseUser, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, prepararConsultaEmbedding } = env\n${fuente.slice(pDecl, finGetter)}\n${fuente.slice(iniConsumo, finConsumo)}\n return { contextoRAG, rag } }`
+  const codigo = `${fuente.slice(iniFn, kFn + 1)}\nasync function __tramo(env: any) { const { mensaje, sesion, supabaseUser, conLimiteDeTiempo, TIMEOUT_RAG_MS, esTurnoFichaDescriptiva, console, prepararConsultaEmbedding, esMensajePuramenteSocial } = env\n${fuente.slice(pDecl, finGetter)}\n${fuente.slice(iniConsumo, finConsumo)}\n return { contextoRAG, rag } }`
   const js = ts.transpileModule(codigo, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }).outputText
   const correr = async (mensaje: string, roster: unknown, extra: Record<string, unknown> = {}) => {
     const embeddings: { model: string; input: string }[] = []
@@ -149,7 +150,7 @@ async function main() {
     const supabaseUser = { rpc: async (nombre: string, args: unknown) => { rpcs.push([nombre, args]); return { data: [{ categoria: 'Reglamentos', nombre_archivo: 'reglamento-ficticio.pdf', chunk_texto: 'Texto ficticio del reglamento.' }], error: null } } }
     const tramo = new Function('openaiRAG', 'TIMEOUT_RAG_MS', `${js}; return __tramo`)(openaiRAG, 50) as (env: Record<string, unknown>) => Promise<{ contextoRAG: string; rag: string }>
     const conLimiteDeTiempo = <T,>(promesa: Promise<T>) => promesa
-    const env = { mensaje, sesion: { institucion_id: 'inst-ficticia', alumnos_del_grupo_activo: roster }, supabaseUser, conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: (m: string) => logs.push(String(m)) }, prepararConsultaEmbedding, ...extra }
+    const env = { mensaje, sesion: { institucion_id: 'inst-ficticia', alumnos_del_grupo_activo: roster }, supabaseUser, conLimiteDeTiempo, TIMEOUT_RAG_MS: 50, esTurnoFichaDescriptiva: false, console: { log: (m: string) => logs.push(m), error: (m: string) => logs.push(String(m)) }, prepararConsultaEmbedding, esMensajePuramenteSocial, ...extra }
     const r = await tramo(env)
     return { ...r, embeddings, rpcs, logs, env }
   }

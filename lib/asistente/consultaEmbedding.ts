@@ -41,7 +41,7 @@ export type ResumenProteccionEmbedding = { nombres: number; curp: number; contac
 
 export type ConsultaEmbedding =
   | { enviar: true; texto: string; resumen: ResumenProteccionEmbedding }
-  | { enviar: false; motivo: 'privacidad' | 'error'; resumen: ResumenProteccionEmbedding }
+  | { enviar: false; motivo: 'privacidad' | 'error' | 'social'; resumen: ResumenProteccionEmbedding }
 
 type AlumnoRoster = { alumno_id: string; nombre_completo: string }
 

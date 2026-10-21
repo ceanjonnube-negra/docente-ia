@@ -1,5 +1,6 @@
 import { archivoSeguro, errorSeguro, formatoArchivoSeguro } from '@/lib/logSeguro'
 import { prepararConsultaEmbedding, type ConsultaEmbedding } from '@/lib/asistente/consultaEmbedding'
+import { esMensajePuramenteSocial } from '@/lib/asistente/mensajeSocial'
 import { NextRequest, NextResponse, after } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
@@ -1431,6 +1432,13 @@ export async function POST(req: NextRequest) {
   let consultaRAGPreparada: ConsultaEmbedding | null = null
   const consultaRAG = (): ConsultaEmbedding => {
     if (!consultaRAGPreparada) {
+      // Mensaje PURAMENTE social (saludo, agradecimiento o acuse trivial,
+      // lista cerrada — ver lib/asistente/mensajeSocial.ts): no hay nada que
+      // buscar; se omiten existencia, embedding y RPC. Sonnet responde igual.
+      if (esMensajePuramenteSocial(mensaje)) {
+        consultaRAGPreparada = { enviar: false, motivo: 'social', resumen: { nombres: 0, curp: 0, contacto: 0, fechas: 0 } }
+        return consultaRAGPreparada
+      }
       try {
         consultaRAGPreparada = prepararConsultaEmbedding(mensaje, sesion?.alumnos_del_grupo_activo)
       } catch {

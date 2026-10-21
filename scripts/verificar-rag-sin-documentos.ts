@@ -145,7 +145,10 @@ async function main() {
   verificar(tramoRag(cuerpo) !== '' && tramoRag(cuerpo) === tramoRag(cuerpoBase), 'el tramo de embeddings, RPC, salida vacía y manejo de errores es IDÉNTICO al de HEAD')
   verificar(/\.select\('id'\)/.test(cuerpo) && /\.limit\(1\)/.test(cuerpo) && !/select\('\*'\)|chunk_texto.*from\(|embedding'\)/.test(cuerpo.slice(0, cuerpo.indexOf('// Sin timeout explícito'))), "la existencia solo pide select('id') con limit(1): nunca contenido ni embeddings")
   verificar(!/supabaseRAG|SERVICE_ROLE|createClient\(/.test(cuerpo), 'la consulta usa el cliente del docente (sb), nunca service_role')
-  const resto = (s: string) => s.replace(extraer(s).cuerpo, '')
+  // También queda fuera de la comparación la omisión autorizada para mensajes puramente sociales
+  // (import + bloque en consultaRAG), verificada en verificar-rag-mensaje-social.ts.
+  const sinSocial = (s: string) => s.replace("import { esMensajePuramenteSocial } from '@/lib/asistente/mensajeSocial'\n", '').replace(/\n      \/\/ Mensaje PURAMENTE social[^\n]*\n(?:      \/\/[^\n]*\n)*      if \(esMensajePuramenteSocial\(mensaje\)\) \{\n[^\n]*\n        return consultaRAGPreparada\n      \}\n/, '\n')
+  const resto = (s: string) => sinSocial(s.replace(extraer(s).cuerpo, ''))
   const lineas = (s: string) => resto(s).split('\n').filter((l) => l.trim() !== '')
   const [la, lb] = [lineas(actual), lineas(base)]
   const distintas = la.length === lb.length ? la.filter((l, i) => l !== lb[i]).length : Infinity
