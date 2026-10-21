@@ -102,7 +102,9 @@ async function main() {
   const conDoc = [activo(YO, X)]
   const r2 = await correr(actual, conDoc, X), b2 = await correr(base, conDoc, X)
   verificar(r2.llamadas.embeddings === 1 && r2.llamadas.rpc === 1 && r2.contexto.length > 0, 'con documento propio activo → 1 embedding y 1 RPC')
-  verificar(r2.contexto === b2.contexto && b2.llamadas.embeddings === 1 && b2.llamadas.rpc === 1, 'con documentos → respuesta RAG IDÉNTICA a la versión de HEAD')
+  // El formato del contexto documental se fija y prueba en verificar-rag-formato-documental.ts;
+  // aquí se exige el mismo flujo que HEAD y que el contenido recuperado llegue al contexto.
+  verificar(b2.llamadas.embeddings === 1 && b2.llamadas.rpc === 1 && r2.contexto.includes('Texto ficticio del reglamento.') && b2.contexto.includes('Texto ficticio del reglamento.'), 'con documentos → mismo flujo que HEAD (1 embedding, 1 RPC) y el contenido recuperado llega al contexto')
   const r3 = await correr(actual, [activo(OTRO, X), activo(OTRO, null)], X)
   verificar(r3.llamadas.embeddings === 0 && r3.llamadas.rpc === 0 && r3.contexto === '', 'solo documentos de OTRO docente (la RLS los oculta) → 0 embeddings')
   const r4 = await correr(actual, [activo(YO, Y)], X)
@@ -121,7 +123,7 @@ async function main() {
   verificar(r10.llamadas.embeddings === 1 && r10.llamadas.rpc === 1, 'respuesta inesperada (sin datos ni error) → fallo ABIERTO')
   for (const malo of ['inst-ficticia', `${X},user_id.neq.null`, `${X})`]) {
     const r = await correr(actual, [], malo), b = await correr(base, [], malo)
-    verificar(r.llamadas.consultas === 0 && !r.llamadas.filtros.some((x) => x.includes(malo)) && r.llamadas.embeddings === b.llamadas.embeddings && r.llamadas.rpc === b.llamadas.rpc && r.contexto === b.contexto, `institución no UUID «${malo}» → nunca se interpola ni se consulta; comportamiento idéntico a HEAD`)
+    verificar(r.llamadas.consultas === 0 && !r.llamadas.filtros.some((x) => x.includes(malo)) && r.llamadas.embeddings === b.llamadas.embeddings && r.llamadas.rpc === b.llamadas.rpc && (r.contexto === '') === (b.contexto === ''), `institución no UUID «${malo}» → nunca se interpola ni se consulta; comportamiento idéntico a HEAD`)
   }
   const r11 = await correr(actual, [activo(YO, null)], null), r12 = await correr(actual, [activo(YO, X)], null)
   verificar(r11.llamadas.embeddings === 1 && r12.llamadas.embeddings === 0, 'institución nula en la sesión → solo cuentan los documentos sin institución (igual que la RPC)')
@@ -136,8 +138,11 @@ async function main() {
   console.log('\n— 3. Estructura —')
   const { cuerpo } = extraer(actual), { cuerpo: cuerpoBase } = extraer(base)
   verificar((cuerpo.match(/openaiRAG\.embeddings\.create\(/g) || []).length === 1 && (cuerpo.match(/sb\.rpc\('buscar_chunks_similares'/g) || []).length === 1, 'sigue habiendo exactamente 1 llamada de embeddings y 1 RPC de similitud')
-  const tramoRag = (c: string) => c.slice(c.indexOf('    // Sin timeout explícito'))
-  verificar(tramoRag(cuerpo) === tramoRag(cuerpoBase), 'el tramo de embeddings, RPC, formato del contexto y manejo de errores es IDÉNTICO al de HEAD')
+  // Embedding + RPC + salida vacía, y el manejo de errores final: idénticos a HEAD. El formato
+  // del contexto (entre ambos) se fija por SHA-256 en verificar-rag-bajo-demanda.ts.
+  const FIN_RPC = "if (error || !data || data.length === 0) return ''"
+  const tramoRag = (c: string) => { const a = c.indexOf('    // Sin timeout explícito'), b = c.indexOf(FIN_RPC), z = c.lastIndexOf('  } catch (e) {'); return a < 0 || b < 0 || z < 0 ? '' : c.slice(a, b + FIN_RPC.length) + '\n…\n' + c.slice(z) }
+  verificar(tramoRag(cuerpo) !== '' && tramoRag(cuerpo) === tramoRag(cuerpoBase), 'el tramo de embeddings, RPC, salida vacía y manejo de errores es IDÉNTICO al de HEAD')
   verificar(/\.select\('id'\)/.test(cuerpo) && /\.limit\(1\)/.test(cuerpo) && !/select\('\*'\)|chunk_texto.*from\(|embedding'\)/.test(cuerpo.slice(0, cuerpo.indexOf('// Sin timeout explícito'))), "la existencia solo pide select('id') con limit(1): nunca contenido ni embeddings")
   verificar(!/supabaseRAG|SERVICE_ROLE|createClient\(/.test(cuerpo), 'la consulta usa el cliente del docente (sb), nunca service_role')
   const resto = (s: string) => s.replace(extraer(s).cuerpo, '')

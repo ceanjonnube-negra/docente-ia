@@ -416,7 +416,7 @@ async function main() {
 
   console.log('\n— 9. Contrato, logs, migraciones y ausencia de IA adicional —')
   const chat = readFileSync(join(RAIZ, 'app/api/chat/route.ts'), 'utf8')
-  verificar(/sb\.rpc\('buscar_chunks_similares', \{\n\s+query_embedding: queryEmbedding,\n\s+cantidad: 4,\n\s+p_institucion_id: institucionId,\n\s+\}\)/.test(chat) && /`Documento \(categoria: \$\{d\.categoria \|\| "General"\}\): \$\{d\.nombre_archivo\}\\n\$\{d\.chunk_texto\}`/.test(chat), 'la RPC y el formato de buscarContextoRAG no cambian (reciben chunk_texto y nombre_archivo ya protegidos)')
+  verificar(/sb\.rpc\('buscar_chunks_similares', \{\n\s+query_embedding: queryEmbedding,\n\s+cantidad: 4,\n\s+p_institucion_id: institucionId,\n\s+\}\)/.test(chat) && /metadato\(d\.categoria, 60, 'General'\)/.test(chat) && /Archivo: \$\{metadato\(d\.nombre_archivo, 120, 'documento sin nombre'\)\}/.test(chat) && /\$\{texto\(d\.chunk_texto\)\}/.test(chat), 'la RPC no cambia y buscarContextoRAG usa directamente chunk_texto, nombre_archivo y categoria ya protegidos (solo normalizados para el prompt; formato en verificar-rag-formato-documental.ts)')
   verificar(!/from '@\/lib\/supabaseClient'/.test(fuente) && !/SERVICE_ROLE/.test(fuente) && /const sb = auth\.supabase/.test(fuente), 'la ruta usa SOLO el cliente autenticado del docente (sin cliente anónimo ni service_role)')
   verificar(estado.chat === 0, 'ninguna llamada a modelos de chat/visión en todo el verificador')
   verificar(logs.length > 0 && logs.every((l) => !/Ficticia|Ejemplo|Ana Sof|Luis|FIEA|ficticia@|1234 5678|Reglamento|fallo ficticio|Lista|MATEO|Carla|Mateo|12\/03\/2015|1536/.test(l)), `logs sin nombres, CURP, contacto, nombres de archivo ni mensajes crudos (${logs.length} líneas)`)

@@ -36,6 +36,8 @@ const RUTA = process.env.VERIFICAR_RUTA_CHAT || join(RAIZ, 'app/api/chat/route.t
 const BASE_REF = process.env.VERIFICAR_BASE_REF || '31257c2aebd5934d59f15bc591b54a00068f2a9f'
 // SHA-256 del bloque de existencia de documentos autorizado en buscarContextoRAG (ver sección 3).
 const HASH_BLOQUE_EXISTENCIA = 'b4681b48d149a588bde04afdd5a5fd7edc06b333d67d14ef4713255ac7b1064e'
+// SHA-256 del formato autorizado del contexto documental (fuentes, delimitadores y normalización).
+const HASH_FORMATO_DOCUMENTAL = '1b9254651850d241e73e5de7921d5d2ffb7e7f7a5b33c624c73fd8458476c99b'
 
 function cuerpoFuncion(s: string, firma: string): string {
   const i = s.indexOf(firma)
@@ -133,7 +135,15 @@ async function main() {
   const hashBloque = bloqueExistencia ? createHash('sha256').update(bloqueExistencia[0]).digest('hex') : ''
   verificar(hashBloque === HASH_BLOQUE_EXISTENCIA, `bloque de existencia autorizado intacto (sha256 ${hashBloque.slice(0, 12) || 'no encontrado'})`)
   const sinExistencia = bloqueExistencia ? fnActual.replace(bloqueExistencia[0], () => bloqueExistencia[1]) : fnActual
-  verificar(!!fnBase && sinExistencia === fnBase, `buscarContextoRAG idéntica byte a byte a la versión base (${BASE_REF.slice(0, 7)}) salvo la comprobación previa de existencia: mismo embedding, misma RPC, mismo formato`)
+  // Segunda diferencia admitida: el formato del contexto documental (entre «return ''» tras la RPC
+  // y el catch final), fijado también por su SHA-256 y probado en verificar-rag-formato-documental.ts.
+  const FIN_RPC = "    if (error || !data || data.length === 0) return ''\n\n"
+  const formato = (f: string) => { const a = f.indexOf(FIN_RPC), b = a < 0 ? -1 : f.indexOf('  } catch (e) {', a); return a < 0 || b < 0 ? null : f.slice(a + FIN_RPC.length, b) }
+  const sinFormato = (f: string) => { const x = formato(f); return x === null ? f : f.replace(FIN_RPC + x, () => FIN_RPC + '«formato»\n') }
+  const formatoActual = formato(fnActual)
+  const hashFormato = formatoActual === null ? '' : createHash('sha256').update(formatoActual).digest('hex')
+  verificar(hashFormato === HASH_FORMATO_DOCUMENTAL, `formato del contexto documental autorizado intacto (sha256 ${hashFormato.slice(0, 12) || 'no encontrado'})`)
+  verificar(!!fnBase && formato(fnBase) !== null && sinFormato(sinExistencia) === sinFormato(fnBase), `buscarContextoRAG idéntica byte a byte a la versión base (${BASE_REF.slice(0, 7)}) salvo la comprobación previa de existencia y el formato documental: mismo embedding, misma RPC, mismos errores`)
   verificar(/\$\{contextoEnriquecido\}` : ''\}\$\{contextoRAG\}\$\{contextoProceso\}/.test(fuente), 'el contenido recuperado se sigue insertando en el mismo punto del prompt (bloque C, sin caché)')
   verificar(/messages: \[\n\s+\.\.\.proyeccionSonnet\.historial,/.test(fuente) && /clasificarNivel0\(mensaje, sesion, proyeccionNivel0\.historial\.slice\(-4\)/.test(fuente) && (fuente.match(/cache_control: /g) || []).length === 2, 'P0-B y caché de Sonnet intactos')
 
