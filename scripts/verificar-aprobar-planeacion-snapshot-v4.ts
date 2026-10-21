@@ -122,6 +122,11 @@ class ClienteSupabaseFalso {
         if (!this.archivosStorage.has(`${bucket}/${ruta}`)) return { data: null, error: { message: 'archivo no encontrado' } }
         return { data: { signedUrl: `https://fake-storage.local/${bucket}/${ruta}` }, error: null }
       },
+      download: async (ruta: string) => {
+        const buffer = this.archivosStorage.get(`${bucket}/${ruta}`)
+        if (!buffer) return { data: null, error: { message: 'archivo no encontrado' } }
+        return { data: new Blob([new Uint8Array(buffer)]), error: null }
+      },
       remove: async (rutas: string[]) => { rutas.forEach((r) => this.archivosStorage.delete(`${bucket}/${r}`)); return { error: null } },
     }),
   }
@@ -192,6 +197,7 @@ const CAMPOS_BLOQUE: [string, string][] = [
   ['Recursos', 'libros de la biblioteca del aula; hojas de rotafolio'],
   ['Evidencias', 'borrador escrito; antología final'],
   ['Indicadores de evaluación', 'identifica estructura narrativa; participa en la investigación; presenta su leyenda; ilustra su leyenda; comparte su trabajo'],
+  ['Aspectos generales de los indicadores', 'logro_aprendizaje; participacion_colaboracion; aplicacion_aprendizajes; producto_evidencia; autonomia'],
 ]
 
 function construirBloque(tituloDocumento = 'Aquí está tu borrador completo.'): string {
@@ -385,6 +391,11 @@ async function main() {
     // mismo comportamiento ya tolerado por el resto de esta serie.
     const rutas = interno._rutasStorage()
     verificar(rutas.length > 0, 'CASO G. Fase 4.5 sí llegó a generar/subir un documento (texto fuente no vacío)')
+    const evaluacionG = (interno._tabla('planeacion_proyectos')[0] as { evaluacion?: { hoja_id?: string; documento_pdf?: { storage_path?: string; hoja_id?: string; incluye_hoja?: boolean } } } | undefined)?.evaluacion
+    verificar(
+      evaluacionG?.documento_pdf?.incluye_hoja === true && evaluacionG.documento_pdf.hoja_id === evaluacionG.hoja_id && rutas.some((ruta) => ruta.endsWith(`/${evaluacionG.documento_pdf?.storage_path}`)),
+      'CASO G. el PDF definitivo (planeación + hoja descargada de Storage) quedó compuesto, subido y registrado en documento_pdf'
+    )
   }
 
   // CASO H — retry: preserva la misma trazabilidad (nunca la duplica ni la pierde).
@@ -518,6 +529,7 @@ async function main() {
     ['Recursos', 'recurso-del-historial'],
     ['Evidencias', 'evidencia-del-historial'],
     ['Indicadores de evaluación', 'indicador-historial-1; indicador-historial-2; indicador-historial-3; indicador-historial-4; indicador-historial-5'],
+    ['Aspectos generales de los indicadores', 'autonomia; autonomia; autonomia; autonomia; autonomia'],
   ]
   function construirBloqueDiferente(): string {
     const lineas = CAMPOS_BLOQUE_DIFERENTE.map(([etiqueta, valor]) => `${etiqueta}: ${valor}`)

@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { PDFDocument } from 'pdf-lib'
 import { extraerResumenBorrador, tieneBloqueResumen, type ResumenBorrador } from '../lib/planeacion/extraerBorrador'
 import { validarContenidoBorrador } from '../lib/planeacion/validarContenidoBorrador'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
@@ -177,6 +178,11 @@ class ClienteSupabaseFalso {
         if (!this.archivosStorage.has(`${bucket}/${ruta}`)) return { data: null, error: { message: 'archivo no encontrado' } }
         return { data: { signedUrl: `https://fake-storage.local/${bucket}/${ruta}` }, error: null }
       },
+      download: async (ruta: string) => {
+        const buffer = this.archivosStorage.get(`${bucket}/${ruta}`)
+        if (!buffer) return { data: null, error: { message: 'archivo no encontrado' } }
+        return { data: new Blob([new Uint8Array(buffer)]), error: null }
+      },
       remove: async (rutas: string[]) => {
         rutas.forEach((r) => this.archivosStorage.delete(`${bucket}/${r}`))
         return { error: null }
@@ -203,6 +209,10 @@ class ClienteSupabaseFalso {
   _tabla(tabla: string): Fila[] {
     if (!this.tablas.has(tabla)) this.tablas.set(tabla, [])
     return this.tablas.get(tabla)!
+  }
+
+  _archivoStorage(bucket: string, ruta: string): Buffer | undefined {
+    return this.archivosStorage.get(`${bucket}/${ruta}`)
   }
 
   _registrarEscritura(tabla: string, tipo: 'insert' | 'update' | 'delete') {
@@ -279,7 +289,8 @@ const CAMPOS_BLOQUE: [string, string][] = [
   ['Secuencia didáctica', 'Día 1: introducción al tema; Día 2: investigación; Día 3: redacción final'],
   ['Recursos', 'libros de la biblioteca del aula; hojas de rotafolio'],
   ['Evidencias', 'borrador escrito; antología final'],
-  ['Indicadores de evaluación', 'identifica estructura narrativa; participa en la investigación; presenta su leyenda'],
+  ['Indicadores de evaluación', 'identifica estructura narrativa; participa en la investigación; presenta su leyenda; ilustra su leyenda; comparte su trabajo'],
+  ['Aspectos generales de los indicadores', 'logro_aprendizaje; participacion_colaboracion; aplicacion_aprendizajes; producto_evidencia; autonomia'],
 ]
 
 function construirBloque(omitir: string[] = [], overrides: Record<string, string> = {}): string {
@@ -317,7 +328,7 @@ async function main() {
     verificar(r !== null && r.fechaInicio === '2026-08-10' && r.fechaFin === '2026-08-21', 'Extrae las fechas correctamente')
     verificar(r !== null && r.duracionDias === 10, 'Extrae la duración en días efectivos')
     verificar(r !== null && r.secuenciaDidactica.length === 3 && r.secuenciaDidactica[0].dia === 1, 'Extrae la secuencia didáctica día por día')
-    verificar(r !== null && r.indicadores.length === 3, 'Extrae los 3 indicadores de evaluación')
+    verificar(r !== null && r.indicadores.length === 5, 'Extrae los 5 indicadores de evaluación')
   }
   {
     const historial = [{ role: 'assistant', content: BLOQUE_VALIDO }, { role: 'user', content: 'amplíala una semana' }, { role: 'assistant', content: BLOQUE_CORREGIDO }]
@@ -370,11 +381,13 @@ async function main() {
     verificar(interno._tabla('planeaciones').length === 1, '8. Se insertó exactamente 1 fila en planeaciones')
     const proyectos = interno._tabla('planeacion_proyectos')
     verificar(proyectos.length === 1, '9. Se insertó exactamente 1 fila en planeacion_proyectos')
-    const proyecto = proyectos[0] as { nombre: string; actividades: unknown; evaluacion: { indicadores?: unknown; proyecto_seguimiento_id?: unknown; hoja_id?: unknown; hoja_identificador_visible?: unknown } }
+    // ?? {} — si el INSERT no ocurrió, las aserciones siguientes fallan
+    // con su propio mensaje en vez de abortar con una excepción secundaria.
+    const proyecto = (proyectos[0] ?? {}) as { nombre?: string; actividades?: unknown; evaluacion?: { indicadores?: unknown; proyecto_seguimiento_id?: unknown; hoja_id?: unknown; hoja_identificador_visible?: unknown; documento_pdf?: { storage_path?: string; hoja_id?: string; incluye_hoja?: boolean; tamano_bytes?: number } } }
     verificar(proyecto.nombre === 'Leyendas de mi comunidad', '9b. El proyecto guardado tiene el nombre correcto')
     verificar(Array.isArray(proyecto.actividades) && (proyecto.actividades as unknown[]).length === 3, '13. La secuencia didáctica se mapea a planeacion_proyectos.actividades (día por día, sin duplicar toda la planeación)')
     const evaluacion = proyecto.evaluacion
-    verificar(Array.isArray(evaluacion?.indicadores) && (evaluacion.indicadores as unknown[]).length === 3, 'Los indicadores de evaluación quedan guardados en la relación')
+    verificar(Array.isArray(evaluacion?.indicadores) && (evaluacion.indicadores as unknown[]).length === 5, 'Los indicadores de evaluación quedan guardados en la relación')
     verificar(!!evaluacion?.proyecto_seguimiento_id && !!evaluacion?.hoja_id, '11. El vínculo real con proyectos_seguimiento/hojas_evaluacion queda guardado en la relación (sustituye la estructura provisional)')
 
     // Integración con Seguimiento (corrección funcional): la hoja
@@ -387,6 +400,22 @@ async function main() {
     verificar(!!hoja.storage_path, 'La hoja definitiva quedó realmente subida a Storage (storage_path no nulo)')
     const proyectoSeguimiento = interno._tabla('proyectos_seguimiento')[0] as { estado: string; hoja_id: string | null }
     verificar(proyectoSeguimiento.estado === 'hoja_generada' && !!proyectoSeguimiento.hoja_id, 'El proyecto de Seguimiento queda en estado hoja_generada, vinculado a su hoja')
+
+    // PDF definitivo (Fase 4.5): planeación + hoja canónica en un mismo
+    // archivo, compuesto a partir de la hoja descargada de Storage.
+    const documentoPdf = evaluacion?.documento_pdf
+    verificar(r.ok === true && !!r.documentoPlaneacion?.pdf && !!r.documentoPlaneacion?.word, 'PDF. La aprobación devuelve el documento definitivo (Word y PDF)')
+    verificar(documentoPdf?.incluye_hoja === true && documentoPdf.hoja_id === evaluacion?.hoja_id, 'PDF. documento_pdf queda registrado con incluye_hoja=true y vinculado a la misma hoja')
+    const bufferPdf = documentoPdf?.storage_path ? interno._archivoStorage('documentos-generados-ia', documentoPdf.storage_path) : undefined
+    const bufferHoja = hoja?.storage_path ? interno._archivoStorage('hojas-seguimiento', hoja.storage_path) : undefined
+    verificar(!!bufferPdf && bufferPdf.length === documentoPdf?.tamano_bytes, 'PDF. El PDF compuesto quedó subido a Storage con el tamaño registrado')
+    if (bufferPdf && bufferHoja) {
+      const paginasPdf = (await PDFDocument.load(bufferPdf)).getPageCount()
+      const paginasHoja = (await PDFDocument.load(bufferHoja)).getPageCount()
+      verificar(paginasPdf > paginasHoja, 'PDF. El PDF definitivo contiene la planeación además de todas las páginas de la hoja')
+    } else {
+      verificar(false, 'PDF. El PDF definitivo contiene la planeación además de todas las páginas de la hoja')
+    }
   }
 
   // 14. Estado final compatible con el esquema/interfaz real
