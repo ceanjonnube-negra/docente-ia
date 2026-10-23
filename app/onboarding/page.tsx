@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 
@@ -16,25 +16,54 @@ export default function Onboarding() {
   const [paso, setPaso] = useState(0)
   const [datos, setDatos] = useState<Record<string, string>>({})
   const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState('')
+  // Evita un segundo envío (doble clic o Enter) antes de que React
+  // vuelva a pintar el botón deshabilitado.
+  const enviando = useRef(false)
 
   const actual = pasos[paso]
   const progreso = ((paso + 1) / pasos.length) * 100
 
   const siguiente = async () => {
     if (paso < pasos.length - 1) {
+      setError('')
       setPaso(paso + 1)
-    } else {
-      setGuardando(true)
-      const { data: { user } } = await supabase.auth.getUser()
-      await supabase.from('perfiles_docentes').upsert({ id: user?.id, ...datos })
+      return
+    }
+    if (enviando.current) return
+    enviando.current = true
+    setGuardando(true)
+    setError('')
+
+    // Solo se entra a Docente IA cuando el perfil quedó guardado de
+    // verdad. Ante cualquier fallo se queda en este paso, con los datos
+    // capturados intactos, para poder reintentar con el mismo botón.
+    const fallar = (mensaje: string) => {
+      setError(mensaje)
+      setGuardando(false)
+      enviando.current = false
+    }
+    try {
+      const { data: { user }, error: errorSesion } = await supabase.auth.getUser()
+      if (errorSesion || !user) {
+        fallar('Tu sesión no está activa. Inicia sesión de nuevo para guardar tus datos.')
+        return
+      }
+      const { error: errorGuardado } = await supabase.from('perfiles_docentes').upsert({ id: user.id, ...datos })
+      if (errorGuardado) {
+        fallar('No pudimos guardar tus datos. Revisa tu conexión e intenta de nuevo.')
+        return
+      }
       window.location.href = '/dashboard'
+    } catch {
+      fallar('No pudimos guardar tus datos. Revisa tu conexión e intenta de nuevo.')
     }
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-purple-50 flex flex-col p-6 max-w-md mx-auto">
       <div className="flex items-center justify-between mb-6 pt-4">
-        <button onClick={() => paso > 0 && setPaso(paso - 1)} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm text-gray-500">
+        <button onClick={() => { if (paso > 0) { setError(''); setPaso(paso - 1) } }} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm text-gray-500">
           ‹
         </button>
         <span className="text-purple-600 font-semibold text-sm">¿Necesitas ayuda?</span>
@@ -108,6 +137,7 @@ export default function Onboarding() {
       >
         {paso < pasos.length - 1 ? `Continuar →` : guardando ? 'Guardando...' : 'Entrar a Docente IA ✨'}
       </button>
+      {error && <p className="text-red-500 text-sm text-center mt-3">{error}</p>}
 
       <div className="flex justify-center gap-2 mt-6">
         {pasos.map((_, i) => (
