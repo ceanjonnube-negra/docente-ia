@@ -18,11 +18,21 @@ export default function Registro() {
     if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return }
     setLoading(true)
     setError('')
-    const { error } = await supabase.auth.signUp({ email, password })
-    if (error) {
-      setError('Error al crear cuenta. Intenta con otro correo.')
-    } else {
-      window.location.href = '/onboarding'
+    try {
+      const { data, error } = await supabase.auth.signUp({ email, password })
+      if (error) {
+        setError('Error al crear cuenta. Intenta con otro correo.')
+      } else if (data.session) {
+        window.location.href = '/onboarding'
+        return
+      } else {
+        // Sin sesión (p. ej. correo ya registrado o pendiente de
+        // confirmar): el onboarding no podría guardar el perfil. El mensaje
+        // es el mismo en todos los casos para no revelar si el correo existe.
+        setError('Revisa tu correo o inicia sesión si ya tienes una cuenta.')
+      }
+    } catch {
+      setError('No pudimos crear tu cuenta. Revisa tu conexión e intenta de nuevo.')
     }
     setLoading(false)
   }
