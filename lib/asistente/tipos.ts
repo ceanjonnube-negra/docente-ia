@@ -313,3 +313,48 @@ export interface MotorConversacional {
   actualizarContexto(contexto: ContextoAplicacion): void
   suscribir(callback: (evento: EventoMotor) => void): DesuscribirFn
 }
+
+// V1-C2 (ver diseño aprobado "contrato HMAC + transporte + persistencia
+// de la propuesta de lista oficial") — sobre firmado server-side que
+// V1-C genera y V1-D verificará/aplicará. Deliberadamente mínimo: SOLO
+// las entradas realmente accionableV1=true de la comparación
+// determinista (ver lib/listaOficial/matchingListaOficial.ts) — nunca
+// roster completo, nombres, observaciones de Vision, ni categorías
+// SOLO_REPORTE. `campo` se limita a 'curp' a propósito: es el único
+// campo que V1-B puede marcar accionableV1 hoy.
+export type CambioListaOficialFirmable = {
+  alumnoId: string
+  campo: 'curp'
+  valorPropuesto: string
+}
+
+// Exactamente lo que la firma HMAC protege — ver
+// lib/listaOficial/propuestaFirmada.ts (canonicalización). docenteId/
+// conversacionId identifican el contexto autorizado en el momento de
+// generar la propuesta; generadoEn es la marca de tiempo ISO real de
+// esa generación (nunca reconstruida después) — ambos existen para que
+// V1-D pueda, en su propia fase, comparar contra auth.uid()/la
+// conversación real/una ventana de expiración, nunca para que este
+// tipo por sí solo autorice nada.
+export type PayloadPropuestaListaOficial = {
+  docenteId: string
+  conversacionId: string
+  generadoEn: string
+  propuesta: CambioListaOficialFirmable[]
+  // V1-D1 — huella determinista del roster activo usado para construir
+  // la propuesta (ver lib/listaOficial/rosterFingerprint.ts), para que
+  // una fase posterior (aplicación real) pueda rechazar una propuesta
+  // generada contra un roster que ya cambió. Opcional/aditivo a
+  // propósito: un llamador existente que no la calcule (como la
+  // integración read-only actual en app/api/chat/route.ts) sigue
+  // firmando/verificando exactamente igual que antes — su ausencia
+  // nunca invalida un sobre ya válido. Cuando SÍ está presente, queda
+  // cubierta por la firma HMAC (ver construirPayloadCanonico) — nunca
+  // viaja fuera de lo firmado.
+  rosterFingerprint?: string
+}
+
+export type PropuestaListaOficialFirmada = {
+  payload: PayloadPropuestaListaOficial
+  firma: string
+}
