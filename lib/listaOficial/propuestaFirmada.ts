@@ -132,7 +132,7 @@ function canonicalizar(payload: PayloadPropuestaListaOficial): string {
 // nunca corta-pero-real).
 const LONGITUD_MINIMA_SECRETO = 16
 
-function leerSecretoServerOnly(): string | null {
+export function leerSecretoServerOnly(): string | null {
   const valor = process.env.LISTA_OFICIAL_HMAC_SECRET_KEY
   return typeof valor === 'string' && valor.length >= LONGITUD_MINIMA_SECRETO ? valor : null
 }
@@ -147,7 +147,7 @@ export function firmarConSecreto(payload: PayloadPropuestaListaOficial, secreto:
     throw new Error('Payload de propuesta de lista oficial inválido — no se firma.')
   }
   const payloadCanonico = construirPayloadCanonico(payload)
-  const firma = createHmac('sha256', secreto).update(canonicalizar(payloadCanonico)).digest('hex')
+  const firma = firmarCadenaHmacHex(canonicalizar(payloadCanonico), secreto)
   return { payload: payloadCanonico, firma }
 }
 
@@ -160,12 +160,26 @@ export function verificarConSecreto(sobre: unknown, secreto: string): boolean {
   if (typeof o.firma !== 'string' || o.firma.length === 0) return false
   if (!esPayloadPropuestaListaOficialValido(o.payload)) return false
 
-  const firmaEsperadaHex = createHmac('sha256', secreto).update(canonicalizar(o.payload)).digest('hex')
+  return firmaHmacHexCoincide(o.firma, canonicalizar(o.payload), secreto)
+}
+
+// LISTA-P4A — primitivas HMAC compartidas con el contrato de propuesta
+// de actualización (propuestaActualizacionLista.ts): misma firma, mismo
+// secreto y misma comparación en tiempo constante — nunca una segunda
+// implementación. Cada contrato antepone su propia cadena de dominio
+// antes de llamar a estas funciones; este archivo sigue firmando su
+// payload histórico exactamente igual que antes.
+export function firmarCadenaHmacHex(cadena: string, secreto: string): string {
+  return createHmac('sha256', secreto).update(cadena).digest('hex')
+}
+
+export function firmaHmacHexCoincide(firma: string, cadena: string, secreto: string): boolean {
+  const firmaEsperadaHex = firmarCadenaHmacHex(cadena, secreto)
 
   let bufRecibido: Buffer
   let bufEsperado: Buffer
   try {
-    bufRecibido = Buffer.from(o.firma, 'hex')
+    bufRecibido = Buffer.from(firma, 'hex')
     bufEsperado = Buffer.from(firmaEsperadaHex, 'hex')
   } catch {
     return false
