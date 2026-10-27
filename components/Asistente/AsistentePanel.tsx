@@ -25,7 +25,7 @@ import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
-import { comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
+import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
@@ -555,9 +555,33 @@ export default function AsistentePanel() {
     e.target.value = ''
     if (files.length === 0) return
 
-    // Un solo archivo (foto o documento) — camino idéntico al que ya
-    // existía antes de esta mejora, sin compresión ni presupuesto de
-    // varias imágenes de por medio.
+    // Una sola foto: misma compresión y presupuesto que el camino de
+    // varias fotos. Sin esto, una foto de celular (3-9MB, más en
+    // base64) superaba el límite de 4.5MB por petición de Vercel y la
+    // plataforma respondía 413 antes de llegar a /api/chat. Si la foto
+    // no se puede comprimir (p. ej. HEIC no decodificable),
+    // comprimirImagen devuelve el original y el presupuesto evita
+    // enviarlo condenado a fallar.
+    if (files.length === 1 && files[0].type.startsWith('image/')) {
+      const file = files[0]
+      setComprimiendo({ completadas: 0, total: 1 })
+      try {
+        const comprimida = await comprimirImagen(file)
+        if (!verificarPresupuestoAdjuntos([comprimida]).cabe) {
+          mostrarAvisoAdjunto('Esta foto es demasiado pesada para enviarla. Intenta con otra foto o tómala de nuevo.')
+          return
+        }
+        setAdjuntosPendientes([{ base64: comprimida.base64, tipo: comprimida.tipo, nombreArchivo: file.name }])
+      } catch {
+        mostrarAvisoAdjunto('No pude preparar la foto. Intenta de nuevo.')
+      } finally {
+        setComprimiendo(null)
+      }
+      return
+    }
+
+    // Un solo documento (PDF u otro archivo) — camino idéntico al que
+    // ya existía, sin compresión ni presupuesto de imágenes de por medio.
     if (files.length === 1) {
       const file = files[0]
       const base64 = await leerComoBase64(file)

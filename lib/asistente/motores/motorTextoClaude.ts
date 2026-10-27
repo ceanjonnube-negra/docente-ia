@@ -228,7 +228,12 @@ export class MotorTextoClaude implements MotorConversacional {
         // El servidor manda un mensaje específico y accionable (ej. "Error
         // detectado en el módulo DOCX") en vez del genérico de abajo —
         // se usa tal cual cuando existe.
-        let mensajeError = 'No pude generar la respuesta. Toca para reintentar.'
+        // 413 lo responde la plataforma (límite de 4.5MB por petición)
+        // antes de llegar a /api/chat, sin cuerpo JSON: reintentar con lo
+        // mismo volvería a fallar, así que se dice qué pasó.
+        let mensajeError = res.status === 413
+          ? 'El archivo adjunto es demasiado pesado para enviarlo. Intenta con una foto más ligera o un archivo más pequeño.'
+          : 'No pude generar la respuesta. Toca para reintentar.'
         try {
           const cuerpo = JSON.parse(detalle)
           if (typeof cuerpo?.error === 'string' && cuerpo.error.trim()) mensajeError = cuerpo.error
