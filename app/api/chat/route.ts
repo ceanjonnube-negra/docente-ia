@@ -29,6 +29,7 @@ import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta }
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
+import { esSolicitudListaOficial, mencionaListaOficial, responderListaOficial } from '@/lib/listaOficial/flujoChatListaOficial'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
 import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 
@@ -603,6 +604,24 @@ export async function POST(req: NextRequest) {
         })()
       : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
     : null
+
+  // LISTA OFICIAL (intención actualizar_lista_oficial, solo lectura):
+  // reconocida de forma determinista, antes de LISTA DE ALUMNOS y del
+  // Clasificador de Nivel 0, para no cambiar su prompt ni gastar esa
+  // llamada. Con foto adjunta compara la lista contra el grupo del docente;
+  // sin foto solo pide las fotos si nombra la lista oficial. No guarda nada.
+  // Ver lib/listaOficial/flujoChatListaOficial.ts.
+  const hayFotoAdjunta = Boolean(imagenBase64) || imagenesValidas.length > 0
+  const esPdfAdjunto = tipoDocumentoAdjunto === 'pdf' && Boolean(imagenBase64)
+  if (
+    supabaseUser && userId && !esEdicionDocumento && esSolicitudListaOficial(mensaje) &&
+    (hayFotoAdjunta || esPdfAdjunto || mencionaListaOficial(mensaje))
+  ) {
+    const fotos = imagenesValidas.length > 0
+      ? imagenesValidas
+      : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/') ? [{ base64: imagenBase64, tipo: imagenTipo }] : []
+    return respuestaTexto(await responderListaOficial({ anthropic: client, sb: supabaseUser, docenteId: userId, mensaje: mensaje || '', fotos, esPdf: esPdfAdjunto }))
+  }
 
   // LISTA DE ALUMNOS — igual principio que FINALIZAR ARCHIVO más arriba
   // (y con la misma prioridad: antes del Clasificador de Nivel 0 y
