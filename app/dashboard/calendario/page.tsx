@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { useAsistente } from '@/lib/asistente/hooks'
@@ -63,6 +64,12 @@ function useArrastreCerrar(cerrar: () => void) {
 }
 
 export default function CalendarioPage() {
+  const router = useRouter()
+  // Las consultas esperan a confirmar la sesión (mismo patrón que Lista e
+  // Inicio): sin sesión se va a /login en vez de consultar como anónimo
+  // y mostrar un error de conexión que no lo es. getUser() renueva un
+  // token vencido si el refresh sigue siendo válido.
+  const [sesionConfirmada, setSesionConfirmada] = useState(false)
   const hoy = new Date()
   const [mes, setMes] = useState(hoy.getMonth())
   const [anio, setAnio] = useState(hoy.getFullYear())
@@ -148,10 +155,18 @@ export default function CalendarioPage() {
     if (data) setEventosCiclo(data)
   }
 
+  useEffect(() => {
+    const verificarSesion = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) { router.push('/login'); return }
+      setSesionConfirmada(true)
+    }
+    verificarSesion()
+  }, [router])
   // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect -- sincroniza con Supabase (sistema externo) al cambiar de mes, no con estado derivado de props.
-  useEffect(() => { cargarEventos() }, [mes, anio])
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- sincroniza con Supabase (sistema externo) una sola vez al montar.
-  useEffect(() => { cargarCiclo() }, [])
+  useEffect(() => { if (sesionConfirmada) cargarEventos() }, [mes, anio, sesionConfirmada])
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- sincroniza con Supabase (sistema externo) una sola vez, al confirmar la sesión.
+  useEffect(() => { if (sesionConfirmada) cargarCiclo() }, [sesionConfirmada])
 
   const diasEnMes = new Date(anio, mes + 1, 0).getDate()
   const primerDia = new Date(anio, mes, 1).getDay()
