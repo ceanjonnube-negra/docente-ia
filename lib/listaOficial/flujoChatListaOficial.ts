@@ -116,7 +116,16 @@ export function formatearComparacionListaOficial(
   const nuevos = r.filter((x) => x.categoriaDiff === 'NUEVO_POSIBLE')
   const altas = nuevos.filter(lecturaConfiable)
   const duplicados = r.filter((x) => x.categoriaDiff === 'CURP_DUPLICADA' || x.categoriaDiff === 'REGISTRO_DUPLICADO_EN_DOCUMENTO')
-  const dudosas = [...r.filter((x) => x.categoriaDiff === 'LECTURA_DUDOSA'), ...nuevos.filter((x) => !lecturaConfiable(x))]
+  // El comparador marca LECTURA_DUDOSA cuando la foto no trae CURP aunque el
+  // nombre coincida. Solo se presenta como "coincide por nombre" si es una
+  // coincidencia exacta (nombre o su formato canónico, nunca aproximada), con
+  // el nombre leído con confianza alta y sin ninguna CURP en la foto; sigue
+  // pendiente de corroborar. Cualquier otro caso queda como lectura dudosa.
+  const coincidePorNombreSinCurp = (x: ResultadoMatchRegistro) =>
+    x.categoriaDiff === 'LECTURA_DUDOSA' && x.estadoMatch === 'MATCH_EXACTO' && (x.origenMatch === 'nombre' || x.origenMatch === 'formato') &&
+    !!x.alumnoId && !x.registro.curpLeida && x.registro.nombreConfianza === 'alta'
+  const porNombreSinCurp = r.filter(coincidePorNombreSinCurp)
+  const dudosas = [...r.filter((x) => x.categoriaDiff === 'LECTURA_DUDOSA' && !coincidePorNombreSinCurp(x)), ...nuevos.filter((x) => !lecturaConfiable(x))]
   const ambiguas = r.filter((x) => x.categoriaDiff === 'MATCH_AMBIGUO')
   const ausentes = comparacion.ausentesEnDocumento
 
@@ -131,6 +140,7 @@ export function formatearComparacionListaOficial(
     partes.push('', `${titulo} (${filas.length}):`, ...filas.map(linea))
     if (nota) partes.push(nota)
   }
+  seccion('Coinciden por nombre, pendientes de corroborar', porNombreSinCurp.map((x) => `${nombreDe(x)}: coincide por nombre; la fotografía no permite corroborar su CURP.`))
   seccion('Posibles diferencias de nombre', nombreDistinto.map((x) => `En tu lista: ${porId.get(x.alumnoId!)?.nombre}. En la foto: ${leido(x)}.`))
   seccion('CURP que faltan en tu lista y se leyeron con claridad', curpCompletable.map((x) => `${nombreDe(x)}: ${curpOGuion(x.registro.curpLeida)}.`),
     'Podrás confirmarlas en una siguiente versión; por ahora no se guardan.')

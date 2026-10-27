@@ -6,7 +6,8 @@
 
 import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { esSolicitudListaOficial, mencionaListaOficial, extraerGrupoMencionado, resolverGrupoListaOficial, responderListaOficial } from '../lib/listaOficial/flujoChatListaOficial'
+import { esSolicitudListaOficial, mencionaListaOficial, extraerGrupoMencionado, resolverGrupoListaOficial, responderListaOficial, formatearComparacionListaOficial } from '../lib/listaOficial/flujoChatListaOficial'
+import { compararListaOficial } from '../lib/listaOficial/matchingListaOficial'
 
 let fallos = 0
 const chk = (c: boolean, m: string) => { console.log(`${c ? '✓' : '✗'} ${m}`); if (!c) fallos++ }
@@ -128,6 +129,33 @@ const FOTO = [{ base64: 'iVBORw0KGgo=', tipo: 'image/png' }]
   for (const [, p] of casos) salidas.push(await responderListaOficial(p))
   console.log = logOriginal; console.error = errOriginal
   casos.forEach(([n, , rx], i) => chk(rx.test(salidas[i]), `${n}: mensaje claro sin comparar`))
+
+
+  console.log('— Coincidencia por nombre sin CURP en la foto (solo presentación)')
+  const rosterN = [
+    { id: 'n0000000-0000-4000-8000-000000000001', nombre: 'Ana Ficticia Uno', curp: 'FIUA150101MDFCNN01' },
+    { id: 'n0000000-0000-4000-8000-000000000002', nombre: 'Beto Ficticio Dos', curp: null },
+  ]
+  const escenarios: Array<[string, ReturnType<typeof reg>, boolean]> = [
+    ['nombre exacto, sin CURP en la foto, confianza alta', reg('Ana Ficticia Uno', null), true],
+    ['nombre exacto con otro formato (mayúsculas y sin acentos), sin CURP', reg('ANA FICTICIA UNO', null), true],
+    ['nombre exacto, CURP leída pero ilegible', { ...reg('Ana Ficticia Uno', 'FIUA15XX'), curpLegible: false, curpConfianza: 'baja' as const }, false],
+    ['nombre exacto leído con confianza baja, sin CURP', { ...reg('Ana Ficticia Uno', null), nombreConfianza: 'baja' as const }, false],
+    ['nombre parecido (coincidencia aproximada), sin CURP', reg('Ana Ficticia Unno', null), false],
+  ]
+  for (const [nombre, registro, esPorNombre] of escenarios) {
+    const comp = compararListaOficial([registro], rosterN)
+    const cat = comp.resultados[0]
+    const textoN = formatearComparacionListaOficial(comp, rosterN, '4.º B', 1)
+    const enSeccion = textoN.includes('Coinciden por nombre, pendientes de corroborar (1)') && textoN.includes('Ana Ficticia Uno: coincide por nombre; la fotografía no permite corroborar su CURP.')
+    const enDudosas = /Lecturas dudosas \(1\)/.test(textoN)
+    chk(cat.categoriaDiff === 'LECTURA_DUDOSA' && cat.accionableV1 === false, `${nombre}: el comparador sigue marcando LECTURA_DUDOSA no accionable (${cat.estadoMatch}/${cat.origenMatch ?? '-'})`)
+    chk(esPorNombre ? (enSeccion && !enDudosas && /Coinciden con tu lista: 0\./.test(textoN)) : (!enSeccion && enDudosas), `${nombre}: se presenta como ${esPorNombre ? '"coincide por nombre", pendiente y sin contar como coincidencia' : 'lectura dudosa'}`)
+  }
+  const mezcla = compararListaOficial([reg('Ana Ficticia Uno', null), reg('Persona Ficticia Nueva', null), { ...reg('Beto Ficticio Dos', 'FIDB15XX'), curpLegible: false, curpConfianza: 'baja' as const }], rosterN)
+  const textoM = formatearComparacionListaOficial(mezcla, rosterN, '4.º B', 1)
+  chk(textoM.includes('Coinciden por nombre, pendientes de corroborar (1)') && textoM.includes('Posibles altas (no están en tu lista) (1)') && /Lecturas dudosas \(1\)/.test(textoM) && textoM.includes('Beto Ficticio Dos'), 'coincidencia por nombre, posible alta y lectura ilegible quedan en secciones separadas')
+  chk(!/confirm|guardar cambios|aplicar/i.test(textoM) && mezcla.resultados.every((x) => x.accionableV1 === false), 'sin acciones: nada accionable ni ofertas de confirmar')
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)
   process.exit(fallos === 0 ? 0 : 1)
