@@ -91,6 +91,11 @@ export default function CalendarioPage() {
   const [actividadEditando, setActividadEditando] = useState<Evento | null>(null)
   const [nuevo, setNuevo] = useState<FormActividad>(FORM_VACIO)
   const [confirmandoEliminar, setConfirmandoEliminar] = useState(false)
+  // Errores visibles: uno para la carga del mes y otro para la última
+  // operación del formulario o de la tarjeta de detalle (solo una de las
+  // dos hojas está abierta a la vez).
+  const [errorCarga, setErrorCarga] = useState('')
+  const [errorAccion, setErrorAccion] = useState('')
 
   const [busquedaAbierta, setBusquedaAbierta] = useState(false)
   const [busqueda, setBusqueda] = useState('')
@@ -117,8 +122,15 @@ export default function CalendarioPage() {
     const ultimoDia = new Date(anio, mes + 1, 0).getDate()
     const ini = `${anio}-${String(mes + 1).padStart(2, '0')}-01`
     const fin = `${anio}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`
-    const { data } = await supabase.from('calendario_eventos').select('*').gte('fecha', ini).lte('fecha', fin)
-    if (data) setEventos(data)
+    const { data, error } = await supabase.from('calendario_eventos').select('*').gte('fecha', ini).lte('fecha', fin)
+    // Si la consulta falla no se dejan en pantalla los eventos de otro mes.
+    if (error || !data) {
+      setEventos([])
+      setErrorCarga('No pudimos cargar los eventos de este mes. Revisa tu conexión e intenta de nuevo.')
+    } else {
+      setEventos(data)
+      setErrorCarga('')
+    }
     setCargando(false)
   }
 
@@ -176,6 +188,7 @@ export default function CalendarioPage() {
   const abrirFormularioConFecha = (fecha: string) => {
     setActividadEditando(null)
     setNuevo({ ...FORM_VACIO, fecha })
+    setErrorAccion('')
     setMostrarForm(true)
   }
 
@@ -226,13 +239,17 @@ export default function CalendarioPage() {
 
   const agregar = async () => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user || !nuevo.titulo || !nuevo.fecha) return
+    if (!nuevo.titulo || !nuevo.fecha) return
+    if (!user) { setErrorAccion('Tu sesión no está activa. Inicia sesión de nuevo para guardar la actividad.'); return }
+    setErrorAccion('')
     // Rosa (#ec4899), no morado — el morado (#8b5cf6) ya lo usa el
     // análisis de calendario por IA para "evento_oficial"/"consejo
     // técnico" (ver lib/calendario/analisisCalendario.ts); con el mismo
     // color, un punto de actividad propia y uno de un evento oficial
     // en el mismo día eran indistinguibles a simple vista.
-    await supabase.from('calendario_eventos').insert({ user_id: user.id, titulo: nuevo.titulo, fecha: nuevo.fecha, tipo: 'actividad', color: '#ec4899', descripcion: nuevo.descripcion, es_sep: false })
+    const { error } = await supabase.from('calendario_eventos').insert({ user_id: user.id, titulo: nuevo.titulo, fecha: nuevo.fecha, tipo: 'actividad', color: '#ec4899', descripcion: nuevo.descripcion, es_sep: false })
+    // Ante un error el formulario sigue abierto con lo capturado.
+    if (error) { setErrorAccion('No pudimos guardar la actividad. Revisa tu conexión e intenta de nuevo.'); return }
     cerrarFormulario()
     cargarEventos()
     cargarCiclo()
@@ -245,9 +262,14 @@ export default function CalendarioPage() {
   // de detalle).
   const actualizarActividad = async () => {
     if (!actividadEditando || !nuevo.titulo || !nuevo.fecha) return
-    await supabase.from('calendario_eventos')
+    setErrorAccion('')
+    // .select('id') devuelve las filas realmente modificadas: RLS descarta
+    // sin error una fila que no se puede editar, y eso no es un éxito.
+    const { data, error } = await supabase.from('calendario_eventos')
       .update({ titulo: nuevo.titulo, fecha: nuevo.fecha, descripcion: nuevo.descripcion })
       .eq('id', actividadEditando.id)
+      .select('id')
+    if (error || data?.length !== 1) { setErrorAccion('No pudimos guardar los cambios. Revisa tu conexión e intenta de nuevo.'); return }
     cerrarFormulario()
     cargarEventos()
     cargarCiclo()
@@ -255,7 +277,9 @@ export default function CalendarioPage() {
 
   const eliminarActividad = async () => {
     if (!eventoSel) return
-    await supabase.from('calendario_eventos').delete().eq('id', eventoSel.id)
+    setErrorAccion('')
+    const { error } = await supabase.from('calendario_eventos').delete().eq('id', eventoSel.id)
+    if (error) { setErrorAccion('No pudimos eliminar la actividad. Revisa tu conexión e intenta de nuevo.'); setConfirmandoEliminar(false); return }
     setEventoSel(null)
     setConfirmandoEliminar(false)
     cargarEventos()
@@ -266,6 +290,7 @@ export default function CalendarioPage() {
     setActividadEditando(e)
     setNuevo({ titulo: e.titulo, fecha: e.fecha.slice(0, 10), descripcion: e.descripcion || '' })
     setEventoSel(null)
+    setErrorAccion('')
     setMostrarForm(true)
   }
   const cerrarFormulario = () => {
@@ -273,10 +298,12 @@ export default function CalendarioPage() {
     setActividadEditando(null)
     setNuevo(FORM_VACIO)
     setDiaSeleccionado(null)
+    setErrorAccion('')
   }
   const cerrarDetalle = () => {
     setEventoSel(null)
     setConfirmandoEliminar(false)
+    setErrorAccion('')
   }
 
   // Un hook por hoja inferior — mismo componente/lógica de arrastre
@@ -307,9 +334,11 @@ export default function CalendarioPage() {
     : []
 
   const irAEvento = (e: Evento) => {
-    const f = new Date(e.fecha)
-    setMes(f.getMonth())
-    setAnio(f.getFullYear())
+    // Año y mes directo del texto 'AAAA-MM-DD': new Date() lo leería como
+    // UTC y, al oeste de UTC (México), el día 1 caería en el mes anterior.
+    const [anioEvento, mesEvento] = e.fecha.split('-').map(Number)
+    setMes(mesEvento - 1)
+    setAnio(anioEvento)
     setEventoSel(e)
     setBusqueda('')
     setBusquedaAbierta(false)
@@ -523,7 +552,9 @@ export default function CalendarioPage() {
         {/* Eventos del mes, como tarjetas */}
         <div className="bg-white rounded-3xl shadow-md p-5 mb-4 border border-gray-100">
           <h3 className="font-bold text-gray-800 mb-3">Eventos de {MESES[mes]}</h3>
-          {eventosDelMesFiltrados.length === 0 ? (
+          {errorCarga ? (
+            <p className="text-red-500 text-sm py-2">{errorCarga}</p>
+          ) : eventosDelMesFiltrados.length === 0 ? (
             <p className="text-gray-400 text-sm py-2">Sin eventos que mostrar {categoriasInactivas.size > 0 ? 'con los filtros activos' : 'este mes'}.</p>
           ) : (
             <div className="space-y-2">
@@ -659,6 +690,7 @@ export default function CalendarioPage() {
                 </div>
               )
             )}
+            {errorAccion && <p className="text-red-500 text-sm text-center mt-3">{errorAccion}</p>}
 
             <button onClick={cerrarDetalle} className="mt-3 w-full py-2.5 text-gray-400 text-sm font-medium">Cerrar</button>
           </div>
@@ -711,6 +743,7 @@ export default function CalendarioPage() {
               <button onClick={cerrarFormulario} className="flex-1 py-2.5 bg-gray-100 rounded-2xl text-sm font-semibold text-gray-600">Cancelar</button>
               <button onClick={actividadEditando ? actualizarActividad : agregar} className="flex-1 py-2.5 bg-purple-600 text-white rounded-2xl text-sm font-bold hover:bg-purple-700 transition-colors">{actividadEditando ? 'Guardar cambios' : 'Guardar'}</button>
             </div>
+            {errorAccion && <p className="text-red-500 text-sm text-center mt-3">{errorAccion}</p>}
           </div>
         </div>
       )}
