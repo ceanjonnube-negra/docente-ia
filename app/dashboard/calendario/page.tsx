@@ -111,8 +111,12 @@ export default function CalendarioPage() {
 
   const cargarEventos = async () => {
     setCargando(true)
+    // Último día real del mes (28–31), con fecha local sin pasar por UTC:
+    // un "-31" fijo es una fecha inválida en meses de 30 días y en
+    // febrero, y PostgREST rechaza toda la consulta (22008).
+    const ultimoDia = new Date(anio, mes + 1, 0).getDate()
     const ini = `${anio}-${String(mes + 1).padStart(2, '0')}-01`
-    const fin = `${anio}-${String(mes + 1).padStart(2, '0')}-31`
+    const fin = `${anio}-${String(mes + 1).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`
     const { data } = await supabase.from('calendario_eventos').select('*').gte('fecha', ini).lte('fecha', fin)
     if (data) setEventos(data)
     setCargando(false)
