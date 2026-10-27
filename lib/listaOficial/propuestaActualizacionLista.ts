@@ -106,6 +106,13 @@ export type OperacionPropuestaLista = {
   // calcularOperacionId) — el validador lo recalcula, así que el id
   // queda atado a lo que la operación propone.
   operacionId: string
+  // UUID propio de la operación dentro de ESTA propuesta (ver
+  // calcularLlaveOperacion): llave de uso único que recibirá la
+  // escritura — mismo papel que p_propuesta_id en
+  // confirmar_correccion_alumno, que exige un uuid distinto por
+  // corrección. operacionId no sirve para eso: se repite entre
+  // propuestas regeneradas con el mismo contenido.
+  llaveOperacion: string
   tipo: TipoCambioLista
   clasificacion: ClasificacionCambioLista
   // Vacío solo en 'seguro'; al menos uno en las otras dos.
@@ -122,8 +129,8 @@ export type OperacionPropuestaLista = {
 
 export type PayloadPropuestaActualizacionLista = {
   version: typeof VERSION_PROPUESTA_ACTUALIZACION_LISTA
-  // Identificador aleatorio generado por el servidor: llave de uso
-  // único de la aplicación (mismo patrón que p_propuesta_id).
+  // UUID aleatorio generado por el servidor: llave de uso único de la
+  // propuesta completa.
   propuestaId: string
   docenteId: string
   conversacionId: string
@@ -174,6 +181,18 @@ const VIGENCIA_MAXIMA_MINUTOS = 120
 // Tolerancia de reloj entre instancias del servidor.
 const TOLERANCIA_RELOJ_MS = 2 * 60 * 1000
 const DOMINIO_HMAC_PROPUESTA_ACTUALIZACION = 'DOCENTE_IA:LISTA_OFICIAL:PROPUESTA_ACTUALIZACION:V1'
+const DOMINIO_LLAVE_OPERACION = 'DOCENTE_IA:LISTA_OFICIAL:LLAVE_OPERACION:V1'
+
+// Una sola forma textual por valor: UUID en minúsculas (Postgres acepta
+// mayúsculas, pero dos escrituras del mismo uuid no deben circular como
+// llaves distintas) y firma HMAC-SHA256 como 64 hex minúsculos (Buffer
+// acepta mayúsculas, caracteres sobrantes y nibbles sueltos).
+const PATRON_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const PATRON_FIRMA_HMAC = /^[0-9a-f]{64}$/
+
+function esUuid(v: unknown): v is string {
+  return typeof v === 'string' && PATRON_UUID.test(v)
+}
 
 // JSON con claves ordenadas en todos los niveles: la misma propuesta
 // lógica produce siempre la misma cadena, sin depender del orden en que
@@ -197,7 +216,7 @@ function esIsoValido(valor: string): boolean {
   return !Number.isNaN(Date.parse(valor)) && new Date(valor).toISOString() === valor
 }
 
-export function calcularOperacionId(grupoId: string, op: Omit<OperacionPropuestaLista, 'operacionId' | 'clasificacion' | 'motivos' | 'confirmacion'>): string {
+export function calcularOperacionId(grupoId: string, op: Omit<OperacionPropuestaLista, 'operacionId' | 'llaveOperacion' | 'clasificacion' | 'motivos' | 'confirmacion'>): string {
   const contenido = {
     grupoId,
     tipo: op.tipo,
@@ -210,13 +229,24 @@ export function calcularOperacionId(grupoId: string, op: Omit<OperacionPropuesta
   return createHash('sha256').update(jsonCanonico(contenido)).digest('hex').slice(0, 32)
 }
 
+// UUID determinista (formato RFC 9562, versión 8) derivado de la
+// propuesta y la operación: único por operación dentro de una propuesta,
+// distinto entre propuestas, y recalculable por el validador.
+export function calcularLlaveOperacion(propuestaId: string, operacionId: string): string {
+  const b = createHash('sha256').update(`${DOMINIO_LLAVE_OPERACION}\n${propuestaId}\n${operacionId}`).digest().subarray(0, 16)
+  b[6] = (b[6] & 0x0f) | 0x80
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = b.toString('hex')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 // ============================================================
 // Constructor — traduce comparación + plan (+ bajas solicitadas) al
 // contrato. Nunca decide identidad: solo usa lo que ya resolvieron
 // compararListaOficial y construirPlanDeActualizacionLista.
 // ============================================================
 
-type OperacionSinId = Omit<OperacionPropuestaLista, 'operacionId'>
+type OperacionSinId = Omit<OperacionPropuestaLista, 'operacionId' | 'llaveOperacion'>
 
 function evidenciaDeRegistro(r: ResultadoMatchRegistro, indice: number): EvidenciaCambioLista {
   return {
@@ -454,7 +484,10 @@ export function construirPropuestaActualizacionLista(params: {
     rosterFingerprint,
     generadoEn: params.generadoEn,
     expiraEn: new Date(Date.parse(params.generadoEn) + vigencia * 60_000).toISOString(),
-    operaciones: ops.map((op) => ({ operacionId: calcularOperacionId(params.grupoId, op), ...op })),
+    operaciones: ops.map((op) => {
+      const operacionId = calcularOperacionId(params.grupoId, op)
+      return { operacionId, llaveOperacion: calcularLlaveOperacion(params.propuestaId, operacionId), ...op }
+    }),
   }
   if (!esPayloadPropuestaActualizacionListaValido(payload)) {
     throw new ErrorConstruccionPropuestaLista('La propuesta construida no cumple el contrato.')
@@ -476,7 +509,7 @@ function esTextoNoVacio(v: unknown): v is string {
 }
 
 const CLAVES_PAYLOAD = ['version', 'propuestaId', 'docenteId', 'conversacionId', 'grupoId', 'rosterFingerprint', 'generadoEn', 'expiraEn', 'operaciones'] as const
-const CLAVES_OPERACION = ['operacionId', 'tipo', 'clasificacion', 'motivos', 'alumnoId', 'inscripcionId', 'valorActual', 'valorPropuesto', 'evidencia', 'confirmacion'] as const
+const CLAVES_OPERACION = ['operacionId', 'llaveOperacion', 'tipo', 'clasificacion', 'motivos', 'alumnoId', 'inscripcionId', 'valorActual', 'valorPropuesto', 'evidencia', 'confirmacion'] as const
 const CLAVES_EVIDENCIA = ['fuente', 'indiceRegistro', 'nombreLeido', 'nombreConfianza', 'curpLeida', 'curpLegible', 'curpConfianza', 'origenMatch', 'categoriaDiff'] as const
 const CLAVES_SOBRE = ['payload', 'firma'] as const
 const CLAVES_CONFIRMACION = ['operacionId', 'alumnoId', 'inscripcionId', 'autorizaBaja'] as const
@@ -517,7 +550,7 @@ function esEvidenciaValida(v: unknown): v is EvidenciaCambioLista {
   return CLAVES_EVIDENCIA.every((k) => k === 'fuente' || o[k] === null)
 }
 
-function esOperacionValida(v: unknown, grupoId: string): v is OperacionPropuestaLista {
+function esOperacionValida(v: unknown, grupoId: string, propuestaId: string): v is OperacionPropuestaLista {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   if (!tieneExactamenteLasClaves(o, CLAVES_OPERACION)) return false
@@ -563,7 +596,8 @@ function esOperacionValida(v: unknown, grupoId: string): v is OperacionPropuesta
   if (typeof conf !== 'object' || conf === null || !tieneExactamenteLasClaves(conf, ['estado', 'individual'])) return false
   if (conf.estado !== 'pendiente' || conf.individual !== (tipo === 'baja')) return false
 
-  return typeof o.operacionId === 'string' && o.operacionId === calcularOperacionId(grupoId, o as unknown as OperacionPropuestaLista)
+  if (typeof o.operacionId !== 'string' || o.operacionId !== calcularOperacionId(grupoId, o as unknown as OperacionPropuestaLista)) return false
+  return esUuid(o.llaveOperacion) && o.llaveOperacion === calcularLlaveOperacion(propuestaId, o.operacionId)
 }
 
 export function esPayloadPropuestaActualizacionListaValido(v: unknown): v is PayloadPropuestaActualizacionLista {
@@ -571,15 +605,19 @@ export function esPayloadPropuestaActualizacionListaValido(v: unknown): v is Pay
   const o = v as Record<string, unknown>
   if (!tieneExactamenteLasClaves(o, CLAVES_PAYLOAD)) return false
   if (o.version !== VERSION_PROPUESTA_ACTUALIZACION_LISTA) return false
-  if (![o.propuestaId, o.docenteId, o.conversacionId, o.grupoId, o.rosterFingerprint].every(esTextoNoVacio)) return false
+  if (![o.docenteId, o.grupoId, o.rosterFingerprint].every(esTextoNoVacio)) return false
+  if (!esUuid(o.propuestaId) || !esUuid(o.conversacionId)) return false
   if (!esTextoNoVacio(o.generadoEn) || !esTextoNoVacio(o.expiraEn) || !esIsoValido(o.generadoEn) || !esIsoValido(o.expiraEn)) return false
   const vigenciaMs = Date.parse(o.expiraEn) - Date.parse(o.generadoEn)
   if (!(vigenciaMs > 0 && vigenciaMs <= VIGENCIA_MAXIMA_MINUTOS * 60_000)) return false
   if (!Array.isArray(o.operaciones) || o.operaciones.length === 0) return false
   const grupoId = o.grupoId as string
-  if (!o.operaciones.every((op) => esOperacionValida(op, grupoId))) return false
-  const ids = (o.operaciones as OperacionPropuestaLista[]).map((op) => op.operacionId)
-  return new Set(ids).size === ids.length
+  const propuestaId = o.propuestaId
+  if (!o.operaciones.every((op) => esOperacionValida(op, grupoId, propuestaId))) return false
+  const operaciones = o.operaciones as OperacionPropuestaLista[]
+  const ids = operaciones.map((op) => op.operacionId)
+  const llaves = new Set(operaciones.map((op) => op.llaveOperacion))
+  return new Set(ids).size === ids.length && llaves.size === operaciones.length && !llaves.has(propuestaId)
 }
 
 // ============================================================
@@ -601,7 +639,7 @@ export function firmarPropuestaActualizacionConSecreto(payload: PayloadPropuesta
 export function verificarPropuestaActualizacionConSecreto(sobre: unknown, secreto: string): sobre is SobrePropuestaActualizacionLista {
   if (typeof sobre !== 'object' || sobre === null) return false
   const o = sobre as Record<string, unknown>
-  if (!tieneExactamenteLasClaves(o, CLAVES_SOBRE) || !esTextoNoVacio(o.firma)) return false
+  if (!tieneExactamenteLasClaves(o, CLAVES_SOBRE) || typeof o.firma !== 'string' || !PATRON_FIRMA_HMAC.test(o.firma)) return false
   if (!esPayloadPropuestaActualizacionListaValido(o.payload)) return false
   return firmaHmacHexCoincide(o.firma, cadenaParaFirmar(o.payload), secreto)
 }

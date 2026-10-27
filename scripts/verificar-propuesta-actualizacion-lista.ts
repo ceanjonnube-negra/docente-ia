@@ -61,6 +61,11 @@ function registro(
 }
 
 const SECRETO = 'secreto-ficticio-solo-para-pruebas'
+// UUID ficticios.
+const PROPUESTA_1 = '0d5c2b1e-7a41-4c3e-9f10-000000000001'
+const PROPUESTA_2 = '0d5c2b1e-7a41-4c3e-9f10-000000000002'
+const CONVERSACION_1 = '5b7e9a20-3c64-4d1f-8e22-000000000001'
+const CONVERSACION_2 = '5b7e9a20-3c64-4d1f-8e22-000000000002'
 const GENERADO_EN = '2026-10-27T15:00:00.000Z'
 
 // Construye comparación + plan + propuesta con el pipeline real.
@@ -72,6 +77,7 @@ function propuestaDe(params: {
   vigenciaMinutos?: number
   generadoEn?: string
   propuestaId?: string
+  conversacionId?: string
   rosterParaPlan?: AlumnoRosterPropuesta[]
 }): PayloadPropuestaActualizacionLista | null {
   const grupoId = params.grupoId ?? 'grupo-1'
@@ -88,9 +94,9 @@ function propuestaDe(params: {
     roster: rosterPlan.map((a) => ({ id: a.alumnoId, inscripcionId: a.inscripcionId })),
   })
   return construirPropuestaActualizacionLista({
-    propuestaId: params.propuestaId ?? 'propuesta-1',
+    propuestaId: params.propuestaId ?? PROPUESTA_1,
     docenteId: 'docente-1',
-    conversacionId: 'conversacion-1',
+    conversacionId: params.conversacionId ?? CONVERSACION_1,
     grupoId,
     generadoEn: params.generadoEn ?? GENERADO_EN,
     vigenciaMinutos: params.vigenciaMinutos,
@@ -244,7 +250,7 @@ console.log('\n— Bajas —')
 const sobre = firmarPropuestaActualizacionConSecreto(payload, SECRETO)
 const CONTEXTO: ContextoEvaluacionPropuestaLista = {
   docenteId: 'docente-1',
-  conversacionId: 'conversacion-1',
+  conversacionId: CONVERSACION_1,
   grupoId: 'grupo-1',
   rosterFingerprintActual: huella(ROSTER),
   ahora: new Date('2026-10-27T15:10:00.000Z'),
@@ -258,7 +264,7 @@ console.log('\n— Firma y aplicación válida —')
 verificar(verificarPropuestaActualizacionConSecreto(sobre, SECRETO), '21. El sobre firmado verifica')
 {
   const r = evaluar(seguras.map((o) => confirmar(o)))
-  verificar(r.ok && r.operacionesAutorizadas.length === seguras.length && r.propuestaId === 'propuesta-1', '22. Confirmar individualmente cada operación segura la autoriza')
+  verificar(r.ok && r.operacionesAutorizadas.length === seguras.length && r.propuestaId === PROPUESTA_1, '22. Confirmar individualmente cada operación segura la autoriza')
 }
 {
   const r = evaluar([confirmar(nombreA1!)])
@@ -295,7 +301,7 @@ console.log('\n— Revisión y bloqueos no se aplican —')
 console.log('\n— Grupo, docente y conversación —')
 verificar((evaluar([confirmar(curpA2!)], { grupoId: 'grupo-2' }) as { codigo: string }).codigo === 'GRUPO_NO_CORRESPONDE', '30. Grupo incorrecto: rechazada')
 verificar((evaluar([confirmar(curpA2!)], { docenteId: 'docente-2' }) as { codigo: string }).codigo === 'DOCENTE_NO_CORRESPONDE', '31. Otro docente: rechazada')
-verificar((evaluar([confirmar(curpA2!)], { conversacionId: 'conversacion-2' }) as { codigo: string }).codigo === 'CONVERSACION_NO_CORRESPONDE', '32. Otra conversación: rechazada')
+verificar((evaluar([confirmar(curpA2!)], { conversacionId: CONVERSACION_2 }) as { codigo: string }).codigo === 'CONVERSACION_NO_CORRESPONDE', '32. Otra conversación: rechazada')
 {
   const rosterMatching = ROSTER.map((a) => ({ id: a.alumnoId, nombre: a.nombre, curp: a.curp }))
   const comparacion = compararListaOficial(DOCUMENTO, rosterMatching)
@@ -305,7 +311,7 @@ verificar((evaluar([confirmar(curpA2!)], { conversacionId: 'conversacion-2' }) a
     roster: ROSTER.map((a) => ({ id: a.alumnoId, inscripcionId: a.inscripcionId })),
   })
   verificar(
-    lanza(() => construirPropuestaActualizacionLista({ propuestaId: 'p', docenteId: 'd', conversacionId: 'c', grupoId: 'grupo-1', generadoEn: GENERADO_EN, roster: ROSTER, comparacion, plan }), ErrorConstruccionPropuestaLista),
+    lanza(() => construirPropuestaActualizacionLista({ propuestaId: PROPUESTA_1, docenteId: 'd', conversacionId: CONVERSACION_1, grupoId: 'grupo-1', generadoEn: GENERADO_EN, roster: ROSTER, comparacion, plan }), ErrorConstruccionPropuestaLista),
     '33. Un plan de otro grupo no se convierte en propuesta'
   )
 }
@@ -401,6 +407,40 @@ console.log('\n— Niveles educativos —')
   verificar(p.operaciones[0].tipo === 'alta' && p.operaciones[0].motivos.includes('FORMATO_NOMBRE_NO_CONVERTIBLE'), '52. Nombre en formato oficial: no se convierte solo, requiere revisión')
   const q = propuestaDe({ roster: ROSTER, documento: [registro('TORRES/VEGA*ANA', 'alta', 'BARO880214HSPLNT05')] })
   verificar(q === null, '52b. Mismo nombre en formato oficial: no se propone corrección')
+}
+
+console.log('\n— Identificadores UUID, llave por operación y forma de la firma —')
+verificar(lanza(() => propuestaDe({ roster: ROSTER, documento: DOCUMENTO, propuestaId: 'propuesta-1' }), ErrorConstruccionPropuestaLista), '53. propuestaId que no es UUID: no se construye')
+verificar(lanza(() => propuestaDe({ roster: ROSTER, documento: DOCUMENTO, conversacionId: 'conversacion-1' }), ErrorConstruccionPropuestaLista), '53b. conversacionId que no es UUID: no se construye')
+{
+  const mayus = structuredClone(payload)
+  mayus.propuestaId = PROPUESTA_1.toUpperCase()
+  verificar(!esPayloadPropuestaActualizacionListaValido(mayus), '53c. UUID en mayúsculas: inválido (una sola forma textual)')
+  const conv = structuredClone(payload)
+  conv.conversacionId = CONVERSACION_1.toUpperCase()
+  verificar(!esPayloadPropuestaActualizacionListaValido(conv), '53d. conversacionId en mayúsculas: inválido')
+}
+{
+  const PATRON = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const llaves = ops.map((o) => o.llaveOperacion)
+  verificar(llaves.every((l) => PATRON.test(l)), '54. Cada operación lleva una llave UUID válida (versión 8, variante RFC)')
+  verificar(new Set(llaves).size === ops.length && !llaves.includes(payload.propuestaId), '54b. Llaves únicas por operación y distintas de propuestaId')
+  const otra = propuestaDe({ roster: ROSTER, documento: DOCUMENTO, solicitudesBaja: [{ alumnoId: 'a6', inscripcionId: 'i6' }], propuestaId: PROPUESTA_2 })!
+  verificar(
+    otra.operaciones.every((o, i) => o.operacionId === ops[i].operacionId && o.llaveOperacion !== ops[i].llaveOperacion),
+    '54c. Misma operación en otra propuesta: mismo operacionId, llave distinta (no se reutiliza)'
+  )
+  const falsa = structuredClone(payload)
+  falsa.operaciones[0].llaveOperacion = falsa.operaciones[1].llaveOperacion
+  verificar(!esPayloadPropuestaActualizacionListaValido(falsa) && lanza(() => firmarPropuestaActualizacionConSecreto(falsa, SECRETO), ErrorConstruccionPropuestaLista), '54d. Llave alterada o repetida: inválida y nunca se firma')
+}
+{
+  const conFirma = (firma: string) => verificarPropuestaActualizacionConSecreto({ payload: sobre.payload, firma }, SECRETO)
+  verificar(/^[0-9a-f]{64}$/.test(sobre.firma), '55. La firma emitida es de 64 hex minúsculos')
+  verificar(!conFirma(sobre.firma.toUpperCase()), '55b. Firma en mayúsculas: rechazada')
+  verificar(!conFirma(`${sobre.firma}zz`), '55c. Firma con caracteres sobrantes: rechazada')
+  verificar(!conFirma(`${sobre.firma}f`), '55d. Firma con un nibble suelto: rechazada')
+  verificar(!conFirma(sobre.firma.slice(0, 62)), '55e. Firma truncada: rechazada')
 }
 
 console.log(`\n${fallos === 0 ? 'Todas las verificaciones pasaron.' : `${fallos} verificación(es) fallaron.`}`)
