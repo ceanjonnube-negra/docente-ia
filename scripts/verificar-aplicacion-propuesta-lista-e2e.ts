@@ -245,6 +245,29 @@ function guardarManifiesto() {
 
 type Resultado = { ok: true; data: unknown } | { ok: false; codigo: string }
 
+// Forma de la llave sin imprimirla: JWT legado de 3 segmentos con el rol y
+// el proyecto esperados, o llave nueva con su prefijo. Una llave pegada
+// varias veces o de otro proyecto falla aquí, antes de escribir nada.
+function validarLlave(nombre: string, llave: string, rol: string, prefijo: string) {
+  if (llave.startsWith(prefijo) && /^[A-Za-z0-9_-]+$/.test(llave)) return
+  const partes = llave.split('.')
+  let claims: { role?: string; ref?: string } = {}
+  try {
+    claims = partes.length === 3 ? JSON.parse(Buffer.from(partes[1], 'base64url').toString('utf8')) : {}
+  } catch {}
+  if (claims.role !== rol || claims.ref !== PROYECTO_E2E) {
+    throw new Error(`${nombre} no tiene la forma esperada (JWT ${rol} de ${PROYECTO_E2E} o ${prefijo}…).`)
+  }
+}
+
+// Prueba de solo lectura de ambas llaves contra E2E antes del manifiesto.
+async function comprobarLlaves(url: string, anon: string, admin: SupabaseClient) {
+  const r = await fetch(`${url}/auth/v1/settings`, { headers: { apikey: anon } })
+  if (!r.ok) throw new Error(`E2E_SUPABASE_ANON_KEY rechazada por E2E (HTTP ${r.status}).`)
+  const u = await admin.auth.admin.listUsers({ page: 1, perPage: 1 })
+  if (u.error) throw new Error(`E2E_SUPABASE_SERVICE_ROLE_KEY rechazada por E2E: ${u.error.message}`)
+}
+
 function leerEntorno() {
   const url = process.env.E2E_SUPABASE_URL ?? ''
   const anon = process.env.E2E_SUPABASE_ANON_KEY ?? ''
@@ -252,6 +275,8 @@ function leerEntorno() {
   const ruta = process.env.E2E_P4B_MANIFIESTO ?? ''
   if (new URL(url).host !== `${PROYECTO_E2E}.supabase.co`) throw new Error(`Solo se permite el proyecto E2E ${PROYECTO_E2E}.`)
   if (!anon || !service) throw new Error('Faltan las llaves E2E.')
+  validarLlave('E2E_SUPABASE_ANON_KEY', anon, 'anon', 'sb_publishable_')
+  validarLlave('E2E_SUPABASE_SERVICE_ROLE_KEY', service, 'service_role', 'sb_secret_')
   if (!ruta || existsSync(ruta) || resolve(ruta).startsWith(resolve(process.cwd()))) {
     throw new Error('E2E_P4B_MANIFIESTO debe ser una ruta nueva fuera del repositorio.')
   }
@@ -408,6 +433,9 @@ async function ejecutar() {
   if (process.env.E2E_P4B_ESCRIBIR !== '1') throw new Error('Falta E2E_P4B_ESCRIBIR=1.')
   if (!SEMBRADO_CONFIRMADO) throw new Error('SEMBRADO_CONFIRMADO es false: no se escribe nada.')
   const { url, anon, service, ruta } = leerEntorno()
+  const admin = createClient(url, service, sinSesion)
+  const anonimo = createClient(url, anon, sinSesion)
+  await comprobarLlaves(url, anon, admin)
   rutaManifiesto = ruta
   manifiesto = {
     etiqueta: `p4b-${randomBytes(4).toString('hex')}`,
@@ -417,8 +445,6 @@ async function ejecutar() {
   }
   guardarManifiesto()
 
-  const admin = createClient(url, service, sinSesion)
-  const anonimo = createClient(url, anon, sinSesion)
   const { sesionA, sesionB } = await sembrar(admin, url, anon)
   const A = manifiesto.docentes.A
   const B = manifiesto.docentes.B
@@ -535,6 +561,7 @@ async function ejecutar() {
   console.log('\n— 3. P3 —')
   const p3 = propuestaDe({ ...ctxA1, roster: await rosterDe(admin, ctxA1.grupoId), documento: [registro('Mona Hernandez Diaz', CURP.mona)], vigenciaMinutos: 20 / 60 })
   verificar((await registrar('P3', p3)).ok, '3. P3 registrada con 20 s de vigencia')
+  console.log('  (esperando 25 s a que P3 caduque…)')
   await new Promise((r) => setTimeout(r, 25_000))
   const f3 = await foto(admin, docentes)
   verificar(codigo(await aplicar(sesionA, p3, p3.operaciones.map(confirmar))) === 'PROPOSAL_EXPIRED', '3a. Propuesta caducada')
@@ -611,6 +638,42 @@ function limpiezaSql(ruta: string): string {
   const P = lista(Object.values(m.propuestas))
   const CO = `array[${correos.map(([, c]) => `'${c}'`).join(',')}]::text[]`
   const INST = `'${nombreInstitucion(m.etiqueta)}'`
+  const n = (o: Record<string, string>) => Object.keys(o).length
+  // Cada alta aplicada por la RPC crea su inscripción; la RPC solo devuelve
+  // alumnoId, así que esas inscripciones se cuentan por sus altas.
+  const altas = Object.keys(m.alumnos).filter((k) => /_alta\d+$/.test(k)).length
+  // Antes de borrar los padres (ciclo, perfil, institución, usuario), toda FK
+  // del catálogo que los referencie con CASCADE / SET NULL / SET DEFAULT
+  // debe tener cero filas apuntando a ellos, salvo las filas del propio
+  // manifiesto entre esos cuatro padres y las tablas internas de auth
+  // (identidades y sesiones del usuario ficticio). RESTRICT/NO ACTION
+  // abortan solos y revierten la transacción.
+  const GUARDA_CASCADA = `  for r in
+    select c.conname, c.conrelid::regclass as hija, c.confrelid::regclass as padre,
+           c.conkey, c.confkey, ha.attname as col, pa.attname as col_padre
+    from pg_constraint c
+    join pg_attribute ha on ha.attrelid = c.conrelid and ha.attnum = c.conkey[1]
+    join pg_attribute pa on pa.attrelid = c.confrelid and pa.attnum = c.confkey[1]
+    where c.contype = 'f' and c.confdeltype in ('c', 'n', 'd')
+      and c.confrelid in ('auth.users'::regclass, 'public.perfiles_docentes'::regclass,
+                          'public.instituciones'::regclass, 'public.ciclos_escolares'::regclass)
+      and not (c.confrelid = 'auth.users'::regclass and c.connamespace = 'auth'::regnamespace)
+  loop
+    if cardinality(r.conkey) <> 1 or r.col_padre <> 'id' then
+      raise exception 'LIMPIEZA_ABORTADA: FK % no evaluable (compuesta o no apunta a id).', r.conname;
+    end if;
+    padres := case r.padre when 'auth.users'::regclass then ${D} when 'public.perfiles_docentes'::regclass then ${D}
+                           when 'public.instituciones'::regclass then ${I} else ${CI} end;
+    propias := case r.hija when 'public.perfiles_docentes'::regclass then ${D} when 'public.ciclos_escolares'::regclass then ${CI}
+                           when 'public.instituciones'::regclass then ${I} else '{}'::uuid[] end;
+    execute format('select count(*) from %s where %I = any($1)', r.hija, r.col)
+            || case when cardinality(propias) > 0 then ' and not (id = any($2))' else '' end
+      into n using padres, propias;
+    if n > 0 then
+      raise exception 'LIMPIEZA_ABORTADA: % tiene % fila(s) ajenas que % borraría o modificaría (FK %).', r.hija, n, r.padre, r.conname;
+    end if;
+  end loop;
+`
   // Orden por FK: consumidas y correcciones (RESTRICT hacia alumnos y
   // conversaciones) → propuestas (CASCADE a operaciones) → inscripciones →
   // alumnos → conversaciones → docente_grupos (trigger) → grupos → ciclos →
@@ -641,18 +704,27 @@ begin
     raise exception 'LIMPIEZA_ABORTADA: hay registros fuera del manifiesto.';
   end if;
 end $$;
-delete from public.propuestas_correccion_consumidas where alumno_id = any(${AL}) and docente_id = any(${D});
-delete from public.correcciones_alumno where alumno_id = any(${AL}) and docente_id = any(${D});
-delete from public.propuestas_lista_oficial where propuesta_id = any(${P}) and docente_id = any(${D});
-delete from public.inscripciones where alumno_id = any(${AL}) and grupo_id = any(${G});
-delete from public.alumnos where id = any(${AL}) and docente_id = any(${D});
-delete from public.conversaciones_chat where id = any(${C}) and docente_id = any(${D});
-delete from public.docente_grupos where grupo_id = any(${G}) and docente_id = any(${D});
-delete from public.grupos where id = any(${G}) and docente_id = any(${D});
-delete from public.ciclos_escolares where id = any(${CI}) and institucion_id = any(${I});
-delete from public.perfiles_docentes where id = any(${D});
-delete from public.instituciones where id = any(${I}) and nombre = ${INST};
-delete from auth.users where id = any(${D}) and email = any(${CO});
+do $$
+declare n integer; r record; padres uuid[]; propias uuid[];
+begin
+  -- Cada delete debe tocar exactamente las filas del manifiesto; si no, se revierte todo.
+  delete from public.propuestas_correccion_consumidas where alumno_id = any(${AL}) and docente_id = any(${D});
+  delete from public.correcciones_alumno where alumno_id = any(${AL}) and docente_id = any(${D});
+${[
+    ['public.propuestas_lista_oficial', `propuesta_id = any(${P}) and docente_id = any(${D})`, n(m.propuestas)],
+    ['public.inscripciones', `alumno_id = any(${AL}) and grupo_id = any(${G})`, n(m.inscripciones) + altas],
+    ['public.alumnos', `id = any(${AL}) and docente_id = any(${D})`, n(m.alumnos)],
+    ['public.conversaciones_chat', `id = any(${C}) and docente_id = any(${D})`, n(m.conversaciones)],
+    ['public.docente_grupos', `grupo_id = any(${G}) and docente_id = any(${D})`, n(m.grupos)],
+    ['public.grupos', `id = any(${G}) and docente_id = any(${D})`, n(m.grupos)],
+    ['public.ciclos_escolares', `id = any(${CI}) and institucion_id = any(${I})`, m.ciclos.length],
+    ['public.perfiles_docentes', `id = any(${D})`, n(m.docentes)],
+    ['public.instituciones', `id = any(${I}) and nombre = ${INST}`, m.instituciones.length],
+    ['auth.users', `id = any(${D}) and email = any(${CO})`, n(m.docentes)],
+  ].map(([tabla, filtro, esperado]) => `${tabla === 'public.ciclos_escolares' ? GUARDA_CASCADA : ''}  delete from ${tabla} where ${filtro};
+  get diagnostics n = row_count;
+  if n <> ${esperado} then raise exception 'LIMPIEZA_ABORTADA: ${tabla} borró % de ${esperado}.', n; end if;`).join('\n')}
+end $$;
 commit;
 `
 }
