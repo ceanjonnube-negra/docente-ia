@@ -9,6 +9,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { asegurarConversacionRemota } from '../persistencia'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -58,6 +59,9 @@ type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
 // siempre. obtenerPerfilYSesion() (auth de Supabase) rara vez tarda
 // más de 1-2s; 12s ya es generoso.
 const TIMEOUT_SESION_MS = 12_000
+// Crear/fijar la conversación remota solo ocurre la primera vez por
+// conversación; si tarda más, el mensaje se envía sin conversacionId.
+const TIMEOUT_CONVERSACION_REMOTA_MS = 5_000
 // Fetch normal (conversación, sin generar archivo): el servidor nunca
 // deja pasar más de TIMEOUT_ANTHROPIC_MS (25s, ver app/api/chat/
 // route.ts) antes de responder algo — 35s deja margen de sobra.
@@ -100,6 +104,9 @@ export class MotorTextoClaude implements MotorConversacional {
   // quedar en silencio; el segundo SIEMPRE debe emitir un error real,
   // o el docente se queda viendo que "no pasa nada" sin explicación.
   private interrumpidoManualmente = false
+  // Conversación local activa (AsistenteService la sincroniza antes de
+  // cada envío) — de ella se deriva el conversacionId remoto.
+  private conversacionLocalId: string | null = null
 
   // AsistenteService llama esto con los mensajes previos de la
   // conversación (nunca el que se está por enviar) justo antes de cada
@@ -110,6 +117,10 @@ export class MotorTextoClaude implements MotorConversacional {
     this.historial = mensajes
       .filter(m => m.rol === 'usuario' || m.rol === 'asistente')
       .map(m => ({ role: m.rol === 'usuario' ? 'user' as const : 'assistant' as const, content: m.texto }))
+  }
+
+  establecerConversacion(conversacionLocalId: string | null) {
+    this.conversacionLocalId = conversacionLocalId
   }
 
   async iniciar(contexto: ContextoAplicacion, herramientas: Herramienta[]) {
@@ -168,6 +179,11 @@ export class MotorTextoClaude implements MotorConversacional {
         'Tiempo de espera agotado obteniendo la sesión del docente'
       )
       const contextoTexto = construirInstrucciones(perfil, this.contexto)
+      // Fila canónica de conversaciones_chat (LISTA-P5). Si no se pudo,
+      // el chat funciona exactamente igual que antes, sin conversacionId.
+      const conversacionId = user?.id && this.conversacionLocalId
+        ? await conLimiteDeTiempo(asegurarConversacionRemota(this.conversacionLocalId, user.id), TIMEOUT_CONVERSACION_REMOTA_MS, 'Tiempo de espera agotado preparando la conversación').catch(() => null)
+        : null
 
       // Varias imágenes también necesitan el margen largo de un
       // documento: el servidor procesa varios MB y Claude analiza
@@ -192,6 +208,7 @@ export class MotorTextoClaude implements MotorConversacional {
           zonaHoraria: obtenerZonaHorariaDispositivo(),
           finalizarArchivo: finalizarArchivo || null,
           esEdicionDocumento: esEdicionDocumento || false,
+          conversacionId,
           // Ver "Diagnóstico y Plan de Optimización del Pipeline de Voz"
           // — Fase 1: le dice a /api/chat que ajuste SOLO el estilo de
           // esta respuesta para lectura en voz alta, sin tocar el

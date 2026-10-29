@@ -1487,6 +1487,7 @@ ${instruccion}`
   // stateful del lado del servidor mientras dura la llamada).
   private sincronizarHistorialTexto() {
     this.motorTexto?.establecerHistorial(this.mensajes.slice(-20))
+    this.motorTexto?.establecerConversacion(this.conversacionActivaId)
   }
 
   private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {

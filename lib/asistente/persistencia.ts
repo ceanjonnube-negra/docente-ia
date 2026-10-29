@@ -19,6 +19,7 @@
 // dispositivo compartido entre dos docentes, ver AsistenteService: todo
 // esto se limpia por completo al cerrar sesión.
 
+import { supabase } from '@/lib/supabaseClient'
 import { esDocumentoFormal } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
 import type { ArchivoGeneradoInfo, MensajeConversacion } from './tipos'
@@ -257,4 +258,66 @@ export function borrarTodasLasConversaciones() {
   borrar(CLAVE_INDICE)
   borrar(CLAVE_ACTIVA)
   borrar(CLAVE_FORMATO_VIEJO)
+}
+
+// ---------------------------------------------------------------------
+// Identidad remota de la conversación (LISTA-P5, etapa 1): la misma fila
+// canónica de conversaciones_chat que usa la persistencia remota de
+// test/images-v1 (crearConversacionRemota: INSERT {id, docente_id} con
+// RLS; grupo_contexto_version toma su default 1). Los mensajes siguen
+// guardándose SOLO en localStorage, como arriba: aquí no se sincroniza
+// ningún mensaje ni se crea otro almacén.
+//
+// El id remoto se deriva de forma determinista del docente y del id
+// local, así que no hace falta guardar ninguna correspondencia: la misma
+// conversación local —nueva o anterior a esta etapa— siempre apunta a la
+// misma fila, sin duplicados aunque haya dos pestañas o se recargue. El
+// docente solo lo usa para calcular el id; quién es el dueño lo decide
+// RLS con la sesión real.
+//
+// Después se pide a fijar_grupo_conversacion (auth.uid(), security
+// definer) que fije el grupo una sola vez; la base nunca lo cambia
+// después. Si no pudo fijarse (sin grupo o ambiguo), /api/chat lo
+// reintenta cuando lo necesite.
+
+async function idConversacionRemota(docenteId: string, localId: string): Promise<string> {
+  const datos = new TextEncoder().encode(`docente-ia:conversacion-remota:${docenteId}:${localId}`)
+  const b = new Uint8Array(await crypto.subtle.digest('SHA-256', datos)).slice(0, 16)
+  b[6] = (b[6] & 0x0f) | 0x80 // versión 8 (UUID definido por la aplicación)
+  b[8] = (b[8] & 0x3f) | 0x80 // variante RFC 4122
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
+// Una sola promesa por conversación y sesión de página: evita repetir el
+// INSERT en cada mensaje. Si falla se olvida, para reintentar después.
+const conversacionesRemotas = new Map<string, Promise<string | null>>()
+
+// Devuelve el id de la fila remota de la conversación local, creándola
+// si hace falta, o null si no se pudo (el chat sigue igual sin él).
+export function asegurarConversacionRemota(localId: string, docenteId: string): Promise<string | null> {
+  const clave = `${docenteId}:${localId}`
+  const existente = conversacionesRemotas.get(clave)
+  if (existente) return existente
+
+  const promesa = (async () => {
+    const id = await idConversacionRemota(docenteId, localId)
+    const { error } = await supabase.from('conversaciones_chat').insert({ id, docente_id: docenteId })
+    if (error) {
+      // 23505: ya existe. Solo se usa si RLS la devuelve (es del docente).
+      if (error.code !== '23505') throw error
+      const { data, error: errorLectura } = await supabase.from('conversaciones_chat').select('id').eq('id', id).maybeSingle()
+      if (errorLectura) throw errorLectura
+      if (!data) throw new Error('La conversación remota no pertenece a la sesión actual.')
+    }
+    const { error: errorGrupo } = await supabase.rpc('fijar_grupo_conversacion', { p_conversacion_id: id })
+    if (errorGrupo) console.error('[CONVERSACION_REMOTA] grupo_fijado=false')
+    return id
+  })().catch((e) => {
+    conversacionesRemotas.delete(clave)
+    console.error('[CONVERSACION_REMOTA] creada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    return null
+  })
+  conversacionesRemotas.set(clave, promesa)
+  return promesa
 }

@@ -49,6 +49,8 @@ const supabaseRAG = createClient(
 )
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+const UUID_CONVERSACION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 // ARQUITECTURA — REGLA OBLIGATORIA: si existe una herramienta capaz de
 // responder la intención del maestro, el modelo NUNCA responde
 // directamente sin haberla consultado primero. El Clasificador de
@@ -285,7 +287,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, conversacionId } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -411,6 +413,42 @@ export async function POST(req: NextRequest) {
     : null
   const supabaseUser = autenticacion?.ok ? autenticacion.supabase : null
   const userId = autenticacion?.ok ? autenticacion.user.id : null
+
+  // CONVERSACIÓN REMOTA (LISTA-P5, etapa 1) — la fila canónica de
+  // conversaciones_chat que el cliente crea con RLS (ver
+  // asegurarConversacionRemota en lib/asistente/persistencia.ts). Nunca
+  // se crea aquí ni se acepta un grupo del cliente: solo se lee con la
+  // sesión del docente (RLS decide si es suya) y, si su grupo aún no está
+  // fijado, se pide a fijar_grupo_conversacion, que lo fija una sola vez
+  // y nunca lo cambia. Perezosa y memoizada: solo la usan los flujos que
+  // la necesitan. null = sin conversación autorizada (legacy, ajena,
+  // inexistente o error); grupoId null = conversación sin grupo fijado.
+  const conversacionIdSolicitada = typeof conversacionId === 'string' && UUID_CONVERSACION.test(conversacionId) ? conversacionId.toLowerCase() : null
+  let conversacionAutorizadaPromise: Promise<{ id: string; grupoId: string | null } | null> | null = null
+  const obtenerConversacionAutorizada = () => {
+    if (!conversacionAutorizadaPromise) {
+      conversacionAutorizadaPromise = (async () => {
+        if (!conversacionIdSolicitada || !supabaseUser) return null
+        const leer = () => supabaseUser
+          .from('conversaciones_chat')
+          .select('id, grupo_contexto_version, grupo_id')
+          .eq('id', conversacionIdSolicitada)
+          .maybeSingle()
+        let { data, error } = await leer()
+        if (error || !data) return null
+        // Conversación anterior a los snapshots de grupo: no se le fija.
+        if (data.grupo_contexto_version !== 1) return null
+        if (!data.grupo_id) {
+          const { error: errorRpc } = await supabaseUser.rpc('fijar_grupo_conversacion', { p_conversacion_id: conversacionIdSolicitada })
+          if (errorRpc) return { id: data.id as string, grupoId: null }
+          ;({ data, error } = await leer())
+          if (error || !data) return null
+        }
+        return { id: data.id as string, grupoId: (data.grupo_id as string | null) ?? null }
+      })().catch(() => null)
+    }
+    return conversacionAutorizadaPromise
+  }
 
   // Indicadores seguros de diagnóstico (nunca tokens, claves ni cookies
   // completas) — permite confirmar en los logs de producción, sin
@@ -617,6 +655,8 @@ export async function POST(req: NextRequest) {
     supabaseUser && userId && !esEdicionDocumento && esSolicitudListaOficial(mensaje) &&
     (hayFotoAdjunta || esPdfAdjunto || mencionaListaOficial(mensaje))
   ) {
+    const conversacion = await obtenerConversacionAutorizada()
+    console.log(`[LISTA_OFICIAL] conversacion_autorizada=${!!conversacion} grupo_fijado=${!!conversacion?.grupoId}`)
     const fotos = imagenesValidas.length > 0
       ? imagenesValidas
       : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/') ? [{ base64: imagenBase64, tipo: imagenTipo }] : []
