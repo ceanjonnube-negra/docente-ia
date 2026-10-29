@@ -755,3 +755,35 @@ export function evaluarSolicitudAplicacionLista(params: {
   if (rechazos.length > 0) return rechazo('CONFIRMACIONES_INVALIDAS', rechazos)
   return { ok: true, propuestaId: p.propuestaId, operacionesAutorizadas: autorizadas }
 }
+
+// ============================================================
+// Confirmación para aplicar_propuesta_lista_oficial — se deriva SOLO de
+// una operación firmada y ya autorizada por evaluarSolicitudAplicacionLista,
+// nunca de lo que mande el cliente. El eco usa el mismo recorte/mayúsculas
+// que registrar_propuesta_lista_oficial al guardar (validado en P4B).
+// ============================================================
+
+export type ConfirmacionRpcLista = { llaveOperacion: string; eco: Record<string, unknown> }
+
+export function confirmacionParaRpc(op: OperacionPropuestaLista): ConfirmacionRpcLista {
+  const nombre = op.valorPropuesto?.nombre?.trim() ?? null
+  const curp = op.valorPropuesto?.curp ? op.valorPropuesto.curp.trim().toUpperCase() : null
+  let eco: Record<string, unknown>
+  switch (op.tipo) {
+    case 'alta':
+      eco = curp ? { nombre, curp } : { nombre, curp: null, sinCurp: true }
+      break
+    case 'correccion_curp':
+      eco = { alumnoId: op.alumnoId, curpActual: op.valorActual?.curp ?? null, curpNueva: curp }
+      break
+    case 'correccion_nombre':
+      eco = { alumnoId: op.alumnoId, nombreActual: op.valorActual?.nombre ?? null, nombreNuevo: nombre }
+      break
+    case 'baja':
+      eco = { alumnoId: op.alumnoId, inscripcionId: op.inscripcionId, autorizaBaja: true }
+      break
+    default:
+      throw new ErrorConstruccionPropuestaLista(`Operación no aplicable: ${op.tipo}`)
+  }
+  return { llaveOperacion: op.llaveOperacion, eco }
+}

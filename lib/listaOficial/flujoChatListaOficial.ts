@@ -11,16 +11,38 @@
 //   5. devuelve el resumen en texto.
 // No escribe nada, no firma propuestas ni ofrece confirmaciones: aplicar
 // cambios es una etapa posterior. Los logs solo llevan conteos.
+//
+// LISTA-P5 (etapa 2a): con una conversación remota que ya tiene grupo
+// fijado, el grupo es EXCLUSIVAMENTE ese (si el mensaje nombra otro, no se
+// compara) y la lista se lee con inscripción y estatus. Si además el
+// llamador da el cliente del servidor y existe el secreto HMAC, se
+// construye, firma y registra una propuesta (registrar_propuesta_lista_oficial)
+// solo con las operaciones aplicables; nunca bajas (solicitudesBaja: []).
+// Sin esas condiciones, el resultado es la misma comparación de solo
+// lectura. El texto que ve el docente no cambia en esta etapa.
 
+import { randomUUID } from 'node:crypto'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { analizarImagenesListaOficial, type ImagenListaOficial, type MediaTypeImagenListaOficial } from './analisisListaOficial'
 import { compararListaOficial, type ResultadoComparacionListaOficial, type ResultadoMatchRegistro } from './matchingListaOficial'
-import { obtenerRosterConPosicion } from '../rosterGrupo'
+import { obtenerRosterConPosicion, obtenerRosterParaPropuesta } from '../rosterGrupo'
+import { clasificarPropuestasReparacionCurp } from './propuestasReparacionCurp'
+import { construirPlanDeActualizacionLista } from './planActualizacionLista'
+import { calcularRosterFingerprint } from './rosterFingerprint'
+import { leerSecretoServerOnly } from './propuestaFirmada'
+import {
+  construirPropuestaActualizacionLista,
+  firmarPropuestaActualizacionConSecreto,
+  type AlumnoRosterPropuesta,
+  type SobrePropuestaActualizacionLista,
+} from './propuestaActualizacionLista'
 import { normalizarNombre } from '../emparejarAlumno'
 import { validarEstructuraCurp } from '../motorContexto'
 
 const MAXIMO_FOTOS_LISTA_OFICIAL = 4
+// Vigencia de una propuesta registrada desde el chat (decisión LISTA-P5).
+const VIGENCIA_PROPUESTA_MINUTOS = 20
 const MEDIA_TYPES_FOTO: MediaTypeImagenListaOficial[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
 // "Actualiza mi lista oficial", "compara esta lista con mis alumnos",
@@ -86,6 +108,17 @@ export async function resolverGrupoListaOficial(sb: SupabaseClient, docenteId: s
   }
   if (vigentes.length === 1) return { ok: true, grupo: vigentes[0] }
   return { ok: false, motivo: 'ambiguo', opciones, mencionado }
+}
+
+// Grupo fijado de la conversación (LISTA-P5): se relee con RLS y debe ser
+// del docente como titular. Sin exigir ciclo activo: el grupo fijado es
+// la identidad permanente de la conversación.
+async function leerGrupoFijado(sb: SupabaseClient, docenteId: string, grupoId: string): Promise<GrupoVigente | null> {
+  const { data, error } = await sb.from('grupos').select('id, grado, grupo').eq('id', grupoId).eq('docente_id', docenteId).maybeSingle()
+  if (error || !data) return null
+  const grado = soloDigitos(data.grado as string | null)
+  const letra = ((data.grupo as string | null) || '').trim().toUpperCase()
+  return { id: data.id as string, grado, grupo: letra, etiqueta: grado && letra ? etiquetaGrupo(grado, letra) : 'de esta conversación' }
 }
 
 const linea = (texto: string) => `- ${texto}`
@@ -157,23 +190,71 @@ export function formatearComparacionListaOficial(
 
 export type FotoAdjunta = { base64: string; tipo: string }
 
-// Flujo completo de lectura. Devuelve el texto para el chat; nunca lanza.
-export async function responderListaOficial(
-  params: { anthropic: Anthropic; sb: SupabaseClient; docenteId: string; mensaje: string; fotos: FotoAdjunta[]; esPdf: boolean }
-): Promise<string> {
-  const { anthropic, sb, docenteId, mensaje, fotos, esPdf } = params
-  if (esPdf) return 'Por ahora comparo la lista oficial a partir de fotografías. Envíame fotos claras de las hojas de la lista.'
-  const imagenes = fotos.filter((f) => MEDIA_TYPES_FOTO.includes(f.tipo as MediaTypeImagenListaOficial))
-  if (imagenes.length === 0) return 'Para comparar tu lista oficial necesito una o varias fotos claras de la lista (JPG o PNG). Adjúntalas y vuelve a pedírmelo.'
-  if (imagenes.length > MAXIMO_FOTOS_LISTA_OFICIAL) return `Recibí demasiadas fotos para procesar la lista de una vez (máximo ${MAXIMO_FOTOS_LISTA_OFICIAL}). Envíame hasta ${MAXIMO_FOTOS_LISTA_OFICIAL} fotos claras de la lista.`
+export type ConversacionListaOficial = { id: string; grupoId: string | null }
+export type ResultadoListaOficial = { texto: string; sobre: SobrePropuestaActualizacionLista | null }
 
-  const grupo = await resolverGrupoListaOficial(sb, docenteId, mensaje)
-  console.log(`[LISTA_OFICIAL] grupo_resuelto=${grupo.ok} motivo=${grupo.ok ? 'ok' : grupo.motivo} grupos_vigentes=${grupo.ok ? 1 : grupo.opciones.length}`)
-  if (!grupo.ok) {
-    if (grupo.motivo === 'error') return 'No pude confirmar tu grupo en este momento. Intenta de nuevo en unos segundos.'
-    if (grupo.motivo === 'sin_grupo') return 'No encontré un grupo tuyo con ciclo escolar vigente. Revisa tus grupos antes de comparar la lista oficial.'
-    if (grupo.motivo === 'no_encontrado') return `No encontré el grupo ${grupo.mencionado} entre tus grupos vigentes (${grupo.opciones.join(', ')}). Dime cuál es el grupo correcto.`
-    return `Tienes varios grupos vigentes (${grupo.opciones.join(', ')}). Dime de qué grupo es esta lista, por ejemplo: "Actualiza la lista oficial de mi grupo ${grupo.opciones[0]}".`
+type ParametrosListaOficial = {
+  anthropic: Anthropic
+  sb: SupabaseClient
+  docenteId: string
+  mensaje: string
+  fotos: FotoAdjunta[]
+  esPdf: boolean
+  // Conversación remota autorizada (etapa 1); con grupo fijado, ese es el
+  // único grupo posible.
+  conversacion?: ConversacionListaOficial | null
+  // Grupo activo con el que el chat está respondiendo en este turno
+  // (sesion.grupo_activo_id de /api/chat). Debe coincidir con el fijado:
+  // si difiere, no se compara; si se desconoce, no se registra propuesta.
+  grupoActivoSesion?: string | null
+  // Cliente del servidor (service_role) solo para registrar la propuesta.
+  // null/ausente = solo comparación.
+  sbServicio?: SupabaseClient | null
+}
+
+// Flujo completo de lectura. Devuelve el texto para el chat; nunca lanza.
+export async function responderListaOficial(params: ParametrosListaOficial): Promise<string> {
+  return (await responderListaOficialConPropuesta(params)).texto
+}
+
+// Igual que responderListaOficial, más la propuesta firmada y registrada
+// cuando se pudo (null en cualquier otro caso). Nunca lanza.
+export async function responderListaOficialConPropuesta(params: ParametrosListaOficial): Promise<ResultadoListaOficial> {
+  const { anthropic, sb, docenteId, mensaje, fotos, esPdf } = params
+  const soloTexto = (texto: string): ResultadoListaOficial => ({ texto, sobre: null })
+  if (esPdf) return soloTexto('Por ahora comparo la lista oficial a partir de fotografías. Envíame fotos claras de las hojas de la lista.')
+  const imagenes = fotos.filter((f) => MEDIA_TYPES_FOTO.includes(f.tipo as MediaTypeImagenListaOficial))
+  if (imagenes.length === 0) return soloTexto('Para comparar tu lista oficial necesito una o varias fotos claras de la lista (JPG o PNG). Adjúntalas y vuelve a pedírmelo.')
+  if (imagenes.length > MAXIMO_FOTOS_LISTA_OFICIAL) return soloTexto(`Recibí demasiadas fotos para procesar la lista de una vez (máximo ${MAXIMO_FOTOS_LISTA_OFICIAL}). Envíame hasta ${MAXIMO_FOTOS_LISTA_OFICIAL} fotos claras de la lista.`)
+
+  // Grupo: el fijado de la conversación si lo hay; si no, las reglas de P3.
+  let grupoElegido: GrupoVigente
+  const conversacionFijada = params.conversacion?.grupoId ? params.conversacion : null
+  if (conversacionFijada) {
+    // Discrepancia entre el grupo del chat y el de la conversación: se
+    // detiene sin tocar el grupo fijado (la base nunca lo cambia).
+    if (params.grupoActivoSesion && params.grupoActivoSesion !== conversacionFijada.grupoId) {
+      console.log('[LISTA_OFICIAL] grupo_fijado_discrepante=true')
+      return soloTexto('Esta conversación está vinculada a un grupo distinto de tu grupo activo, así que no actualicé nada. Inicia una conversación nueva para trabajar con la lista de tu grupo activo.')
+    }
+    const fijado = await leerGrupoFijado(sb, docenteId, conversacionFijada.grupoId!)
+    console.log(`[LISTA_OFICIAL] grupo_fijado_ok=${!!fijado}`)
+    if (!fijado) return soloTexto('No pude confirmar el grupo de esta conversación. Intenta de nuevo en unos segundos.')
+    const mencion = extraerGrupoMencionado(mensaje)
+    if (mencion && (mencion.grado !== fijado.grado || mencion.letra !== fijado.grupo)) {
+      return soloTexto(`Esta conversación está vinculada al grupo ${fijado.etiqueta}. Para trabajar con la lista del grupo ${etiquetaGrupo(mencion.grado, mencion.letra)}, ábrelo como tu grupo activo e inicia una conversación nueva.`)
+    }
+    grupoElegido = fijado
+  } else {
+    const grupo = await resolverGrupoListaOficial(sb, docenteId, mensaje)
+    console.log(`[LISTA_OFICIAL] grupo_resuelto=${grupo.ok} motivo=${grupo.ok ? 'ok' : grupo.motivo} grupos_vigentes=${grupo.ok ? 1 : grupo.opciones.length}`)
+    if (!grupo.ok) {
+      if (grupo.motivo === 'error') return soloTexto('No pude confirmar tu grupo en este momento. Intenta de nuevo en unos segundos.')
+      if (grupo.motivo === 'sin_grupo') return soloTexto('No encontré un grupo tuyo con ciclo escolar vigente. Revisa tus grupos antes de comparar la lista oficial.')
+      if (grupo.motivo === 'no_encontrado') return soloTexto(`No encontré el grupo ${grupo.mencionado} entre tus grupos vigentes (${grupo.opciones.join(', ')}). Dime cuál es el grupo correcto.`)
+      return soloTexto(`Tienes varios grupos vigentes (${grupo.opciones.join(', ')}). Dime de qué grupo es esta lista, por ejemplo: "Actualiza la lista oficial de mi grupo ${grupo.opciones[0]}".`)
+    }
+    grupoElegido = grupo.grupo
   }
 
   let extraccion: Awaited<ReturnType<typeof analizarImagenesListaOficial>>
@@ -182,19 +263,100 @@ export async function responderListaOficial(
     extraccion = await analizarImagenesListaOficial(anthropic, paraAnalisis)
   } catch {
     console.error('[LISTA_OFICIAL] extraccion_ok=false')
-    return 'No pude leer la lista con claridad suficiente. Intenta de nuevo con fotos más claras y bien iluminadas.'
+    return soloTexto('No pude leer la lista con claridad suficiente. Intenta de nuevo con fotos más claras y bien iluminadas.')
   }
   console.log(`[LISTA_OFICIAL] extraccion_ok=true registros=${extraccion.registros.length} fotos=${imagenes.length}`)
-  if (extraccion.registros.length === 0) return 'No encontré ningún registro legible en la foto. Intenta de nuevo con una foto más clara.'
+  if (extraccion.registros.length === 0) return soloTexto('No encontré ningún registro legible en la foto. Intenta de nuevo con una foto más clara.')
 
-  const { data: roster, error } = await obtenerRosterConPosicion(sb, grupo.grupo.id)
-  if (error) {
-    console.error('[LISTA_OFICIAL] roster_ok=false')
-    return 'No pude leer la lista de tu grupo en este momento. Intenta de nuevo en unos segundos.'
+  // Con grupo fijado, la lista se lee con inscripción y estatus (la misma
+  // que tomará la base); sin él, como en P3.
+  let rosterPropuesta: AlumnoRosterPropuesta[] | null = null
+  let rosterParaMatching: Array<{ id: string; nombre: string; curp: string | null }>
+  if (conversacionFijada) {
+    const { data, error } = await obtenerRosterParaPropuesta(sb, grupoElegido.id)
+    if (error) {
+      console.error('[LISTA_OFICIAL] roster_ok=false')
+      return soloTexto('No pude leer la lista de tu grupo en este momento. Intenta de nuevo en unos segundos.')
+    }
+    rosterPropuesta = data
+    rosterParaMatching = data.map((a) => ({ id: a.alumnoId, nombre: a.nombre, curp: a.curp }))
+  } else {
+    const { data: roster, error } = await obtenerRosterConPosicion(sb, grupoElegido.id)
+    if (error) {
+      console.error('[LISTA_OFICIAL] roster_ok=false')
+      return soloTexto('No pude leer la lista de tu grupo en este momento. Intenta de nuevo en unos segundos.')
+    }
+    rosterParaMatching = roster.map((a) => ({ id: a.id, nombre: a.nombre, curp: a.curp }))
   }
-  const rosterParaMatching = roster.map((a) => ({ id: a.id, nombre: a.nombre, curp: a.curp }))
   const comparacion = compararListaOficial(extraccion.registros, rosterParaMatching)
   const conteo = (c: string) => comparacion.resultados.filter((x) => x.categoriaDiff === c).length
   console.log(`[LISTA_OFICIAL] comparacion_ok=true roster=${rosterParaMatching.length} sin_cambio=${conteo('SIN_CAMBIO')} curp_faltante=${conteo('CURP_FALTANTE_EN_DB')} curp_diferente=${conteo('CURP_DIFERENTE')} nuevos=${conteo('NUEVO_POSIBLE')} dudosas=${conteo('LECTURA_DUDOSA')} ambiguas=${conteo('MATCH_AMBIGUO')} ausentes=${comparacion.ausentesEnDocumento.length}`)
-  return formatearComparacionListaOficial(comparacion, rosterParaMatching, grupo.grupo.etiqueta, imagenes.length)
+  const texto = formatearComparacionListaOficial(comparacion, rosterParaMatching, grupoElegido.etiqueta, imagenes.length)
+
+  // Solo con el contexto confirmado: grupo activo del chat = grupo fijado.
+  const contextoConsistente = !!conversacionFijada && params.grupoActivoSesion === conversacionFijada.grupoId
+  const sobre = contextoConsistente && conversacionFijada && rosterPropuesta && params.sbServicio
+    ? await registrarPropuestaLista({ sbServicio: params.sbServicio, docenteId, conversacionId: conversacionFijada.id, grupoId: grupoElegido.id, roster: rosterPropuesta, comparacion })
+    : null
+  return { texto, sobre }
+}
+
+// Construye (pipeline validado en P4A/P4B), firma y registra la propuesta.
+// null si no hay secreto, nada aplicable o la base la rechaza. Nunca lanza.
+async function registrarPropuestaLista(params: {
+  sbServicio: SupabaseClient
+  docenteId: string
+  conversacionId: string
+  grupoId: string
+  roster: AlumnoRosterPropuesta[]
+  comparacion: ResultadoComparacionListaOficial
+}): Promise<SobrePropuestaActualizacionLista | null> {
+  const secreto = leerSecretoServerOnly()
+  if (!secreto) {
+    console.log('[LISTA_OFICIAL] propuesta=omitida motivo=sin_secreto')
+    return null
+  }
+  try {
+    const { roster, comparacion } = params
+    const generadoEn = new Date().toISOString()
+    const rosterMatching = roster.map((a) => ({ id: a.alumnoId, nombre: a.nombre, curp: a.curp }))
+    const reparacion = clasificarPropuestasReparacionCurp(comparacion, rosterMatching)
+    const plan = construirPlanDeActualizacionLista({
+      grupoId: params.grupoId,
+      rosterFingerprint: calcularRosterFingerprint(roster.map((a) => ({ inscripcionId: a.inscripcionId, estatus: a.estatus, curp: a.curp }))),
+      generadoEn,
+      comparacion,
+      propuestasReparacionCurp: { candidatos: reparacion.candidatos, totalCurpDiferente: reparacion.totalCurpDiferente, totalNoAccionables: reparacion.totalNoAccionables },
+      roster: roster.map((a) => ({ id: a.alumnoId, inscripcionId: a.inscripcionId })),
+    })
+    const payload = construirPropuestaActualizacionLista({
+      propuestaId: randomUUID(),
+      docenteId: params.docenteId,
+      conversacionId: params.conversacionId,
+      grupoId: params.grupoId,
+      generadoEn,
+      vigenciaMinutos: VIGENCIA_PROPUESTA_MINUTOS,
+      roster,
+      comparacion,
+      plan,
+      // Nunca bajas desde una foto: la ausencia no autoriza nada.
+      solicitudesBaja: [],
+    })
+    const aplicables = payload ? payload.operaciones.filter((op) => op.clasificacion === 'seguro').length : 0
+    if (!payload || aplicables === 0) {
+      console.log('[LISTA_OFICIAL] propuesta=omitida motivo=nada_aplicable')
+      return null
+    }
+    const sobre = firmarPropuestaActualizacionConSecreto(payload, secreto)
+    const { error } = await params.sbServicio.rpc('registrar_propuesta_lista_oficial', { p_docente_id: params.docenteId, p_propuesta: payload })
+    if (error) {
+      console.error(`[LISTA_OFICIAL] propuesta=rechazada codigo=${error.code === 'P0001' ? error.message : error.code ?? 'desconocido'}`)
+      return null
+    }
+    console.log(`[LISTA_OFICIAL] propuesta=registrada operaciones=${payload.operaciones.length} aplicables=${aplicables}`)
+    return sobre
+  } catch (e) {
+    console.error(`[LISTA_OFICIAL] propuesta=error tipo=${e instanceof Error ? e.name : 'desconocido'}`)
+    return null
+  }
 }

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { AlumnoRosterPropuesta } from './listaOficial/propuestaActualizacionLista'
 
 export type AlumnoConPosicion = {
   id: string
@@ -50,4 +51,35 @@ export async function obtenerRosterConPosicion(
     .map((a, index) => ({ ...a, posicion: index + 1 }))
 
   return { data: roster, error: null }
+}
+
+// Lista activa del grupo con inscripción y estatus, para las propuestas de
+// lista oficial (LISTA-P5): exactamente las filas que toma la base en
+// snapshot_roster_lista_oficial (inscripciones activas + alumno), leídas
+// con la sesión del docente (RLS). Mismo orden por nombre que
+// obtenerRosterConPosicion.
+export async function obtenerRosterParaPropuesta(
+  sb: SupabaseClient,
+  grupoId: string
+): Promise<{ data: AlumnoRosterPropuesta[]; error: unknown }> {
+  const { data, error } = await sb
+    .from('inscripciones')
+    .select('id, alumno_id, estatus, alumnos(nombre, curp)')
+    .eq('grupo_id', grupoId)
+    .eq('estatus', 'activo')
+
+  if (error || !data) {
+    return { data: [], error: error ?? new Error('Sin datos') }
+  }
+
+  const filas: AlumnoRosterPropuesta[] = []
+  for (const f of data) {
+    const a = f.alumnos as unknown as { nombre: string; curp: string | null } | null
+    // Una inscripción activa sin alumno visible no se puede proponer: se
+    // reporta como error para no firmar contra una lista incompleta.
+    if (!a) return { data: [], error: new Error('Inscripción sin alumno visible') }
+    filas.push({ alumnoId: f.alumno_id as string, inscripcionId: f.id as string, nombre: a.nombre, curp: a.curp, estatus: f.estatus as string })
+  }
+  filas.sort((x, y) => x.nombre.localeCompare(y.nombre, 'es'))
+  return { data: filas, error: null }
 }

@@ -660,7 +660,10 @@ export async function POST(req: NextRequest) {
     const fotos = imagenesValidas.length > 0
       ? imagenesValidas
       : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/') ? [{ base64: imagenBase64, tipo: imagenTipo }] : []
-    return respuestaTexto(await responderListaOficial({ anthropic: client, sb: supabaseUser, docenteId: userId, mensaje: mensaje || '', fotos, esPdf: esPdfAdjunto }))
+    // Con grupo fijado, la comparación usa solo ese grupo (LISTA-P5). El
+    // registro de propuestas (sbServicio) se activa en la etapa 2b, junto
+    // con la tarjeta que las muestra: hasta entonces, solo comparación.
+    return respuestaTexto(await responderListaOficial({ anthropic: client, sb: supabaseUser, docenteId: userId, mensaje: mensaje || '', fotos, esPdf: esPdfAdjunto, conversacion, grupoActivoSesion: sesion?.grupo_activo_id ?? null, sbServicio: null }))
   }
 
   // LISTA DE ALUMNOS — igual principio que FINALIZAR ARCHIVO más arriba
