@@ -29,7 +29,8 @@ import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta }
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
-import { esSolicitudListaOficial, mencionaListaOficial, responderListaOficial } from '@/lib/listaOficial/flujoChatListaOficial'
+import { esSolicitudListaOficial, mencionaListaOficial, responderListaOficialConPropuesta } from '@/lib/listaOficial/flujoChatListaOficial'
+import { prepararPropuestaParaCliente } from '@/lib/listaOficial/sobreCifrado'
 import { nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
 import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 
@@ -660,10 +661,16 @@ export async function POST(req: NextRequest) {
     const fotos = imagenesValidas.length > 0
       ? imagenesValidas
       : imagenBase64 && typeof imagenTipo === 'string' && imagenTipo.startsWith('image/') ? [{ base64: imagenBase64, tipo: imagenTipo }] : []
-    // Con grupo fijado, la comparación usa solo ese grupo (LISTA-P5). El
-    // registro de propuestas (sbServicio) se activa en la etapa 2b, junto
-    // con la tarjeta que las muestra: hasta entonces, solo comparación.
-    return respuestaTexto(await responderListaOficial({ anthropic: client, sb: supabaseUser, docenteId: userId, mensaje: mensaje || '', fotos, esPdf: esPdfAdjunto, conversacion, grupoActivoSesion: sesion?.grupo_activo_id ?? null, sbServicio: null }))
+    // Con grupo fijado, la comparación usa solo ese grupo (LISTA-P5). Si
+    // se registró una propuesta, viaja como marcador técnico (mismo
+    // patrón que [[NAVEGACION:...]]): el motor de texto lo quita del texto
+    // y AsistentePanel la muestra como tarjeta de confirmación.
+    const resultado = await responderListaOficialConPropuesta({ anthropic: client, sb: supabaseUser, docenteId: userId, mensaje: mensaje || '', fotos, esPdf: esPdfAdjunto, conversacion, grupoActivoSesion: sesion?.grupo_activo_id ?? null, sbServicio: supabaseRAG })
+    // Al navegador solo llega el token cifrado y la vista mínima (ver
+    // lib/listaOficial/sobreCifrado.ts), nunca el sobre firmado.
+    const paraCliente = resultado.sobre ? prepararPropuestaParaCliente(resultado.sobre) : null
+    const marcador = paraCliente ? `\n[[PROPUESTA_LISTA:${Buffer.from(JSON.stringify(paraCliente), 'utf-8').toString('base64')}]]` : ''
+    return respuestaTexto(`${resultado.texto}${marcador}`)
   }
 
   // LISTA DE ALUMNOS — igual principio que FINALIZAR ARCHIVO más arriba

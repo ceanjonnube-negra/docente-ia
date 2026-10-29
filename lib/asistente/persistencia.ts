@@ -22,7 +22,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { esDocumentoFormal } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
-import type { ArchivoGeneradoInfo, MensajeConversacion } from './tipos'
+import { propuestaListaParaGuardar, type ArchivoGeneradoInfo, type MensajeConversacion } from './tipos'
 
 const VERSION = 2
 const CLAVE_INDICE = 'docente-ia:conversaciones'
@@ -217,6 +217,9 @@ function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversaci
     let ligero = m
     if (ligero.imagen) ligero = { ...ligero, imagen: { base64: '', tipo: ligero.imagen.tipo, nombreArchivo: ligero.imagen.nombreArchivo } }
     if (ligero.imagenes) ligero = { ...ligero, imagenes: ligero.imagenes.map((img) => ({ base64: '', tipo: img.tipo })) }
+    // Propuesta de lista oficial: el token y la vista solo se
+    // guardan mientras se puede aplicar.
+    if (ligero.datosPropuestaLista) ligero = { ...ligero, datosPropuestaLista: propuestaListaParaGuardar(ligero.datosPropuestaLista) }
     return ligero
   })
 }

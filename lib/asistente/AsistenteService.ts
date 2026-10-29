@@ -39,6 +39,7 @@ import type {
   MensajeConversacion,
   MotorConversacional,
 } from './tipos'
+import { MENSAJE_PROPUESTA_VENCIDA } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
 class ErrorLimiteDeTiempoAccion extends Error {}
@@ -138,6 +139,9 @@ export type EstadoAsistente = {
   // tocó, para que AsistentePanel sepa en qué burbuja mostrar la
   // animación en vez de un estado global ambiguo.
   accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null
+  // Mensaje cuya propuesta de lista oficial se está aplicando ahora mismo
+  // (ver confirmarPropuestaLista) — null el resto del tiempo.
+  propuestaListaEnCurso: string | null
   // Acción de navegación automática pendiente de ejecutar — null el
   // resto del tiempo. Solo AsistentePanel (única pieza con useRouter)
   // la consume: al verla distinta de null, hace router.push y llama a
@@ -173,6 +177,10 @@ type Listener = () => void
 
 let contadorId = 0
 const nuevoId = () => `msg-${Date.now()}-${contadorId++}`
+
+// Propuestas de lista oficial (ver confirmarPropuestaLista): códigos de
+// /api/lista-oficial/aplicar que no invalidan la propuesta.
+const CODIGOS_PROPUESTA_REINTENTABLES = new Set(['SESION_INVALIDA', 'NO_DISPONIBLE', 'ERROR_TEMPORAL'])
 
 class AsistenteServiceImpl {
   // null = sin conversación seleccionada (vista inicial) — nunca se
@@ -282,6 +290,7 @@ class AsistenteServiceImpl {
   // texto que se muestra mientras esa llamada está en curso.
   private accionCalendarioEnProgreso: { mensajeId: string; etapa: string } | null = null
   private accionNavegacionPendiente: AccionNavegacion | null = null
+  private propuestaListaEnCurso: string | null = null
   private accionCalendarioTimer: ReturnType<typeof setInterval> | null = null
   private readonly ETAPAS_ACCION_CALENDARIO = [
     'Analizando cambios...',
@@ -331,6 +340,7 @@ class AsistenteServiceImpl {
       listaConversaciones: this.listaConversaciones,
       archivoReutilizadoId: this.archivoReutilizadoId,
       accionCalendarioEnProgreso: this.accionCalendarioEnProgreso,
+      propuestaListaEnCurso: this.propuestaListaEnCurso,
       accionNavegacionPendiente: this.accionNavegacionPendiente,
       documentoActivoId: this.documentoActivo?.id ?? null,
       perfil: this.perfil,
@@ -1033,6 +1043,15 @@ class AsistenteServiceImpl {
                 ...this.mensajes.slice(idx + 1),
               ]
             }
+          } else if (msg && evento.propuestaLista) {
+            // Propuesta de lista oficial registrada por el servidor: la
+            // tarjeta de confirmación vive pegada al mismo mensaje (ver
+            // confirmarPropuestaLista y TarjetaPropuestaLista).
+            this.mensajes = [
+              ...this.mensajes.slice(0, idx),
+              { ...msg, datosPropuestaLista: { estado: 'pendiente', expiraEn: evento.propuestaLista.expiraEn, token: evento.propuestaLista.token, operaciones: evento.propuestaLista.operaciones } },
+              ...this.mensajes.slice(idx + 1),
+            ]
           }
         }
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
@@ -1404,6 +1423,78 @@ class AsistenteServiceImpl {
     this.accionNavegacionPendiente = mensaje.datosAccionNavegacion
     this.notificar()
     this.persistirConversacion()
+  }
+
+  // El docente marcó operaciones de una propuesta de lista oficial y tocó
+  // "Aplicar seleccionados" (ver TarjetaPropuestaLista). Mismo patrón que
+  // confirmarAccionCalendario: nunca decide nada, solo envía al servidor
+  // el token opaco y el identificador de cada operación elegida.
+  // /api/lista-oficial/aplicar descifra, revalida todo y la RPC garantiza
+  // el uso único. Al terminar (aplicada o rechazada sin remedio) el token
+  // y la vista se descartan del mensaje: solo quedan el estado y el aviso.
+  async confirmarPropuestaLista(mensajeId: string, operacionIds: string[]) {
+    const mensaje = this.mensajes.find((m) => m.id === mensajeId)
+    const datos = mensaje?.datosPropuestaLista
+    if (!mensaje || !datos || datos.estado !== 'pendiente' || !datos.token || !datos.operaciones || this.propuestaListaEnCurso || operacionIds.length === 0) return
+
+    const cerrar = (estado: 'aplicada' | 'cerrada', aviso: string) => {
+      this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, datosPropuestaLista: { estado, expiraEn: datos.expiraEn, aviso } } : m))
+    }
+    const agregarMensaje = (texto: string) => {
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto, creadoEn: Date.now() }]
+    }
+    if (Date.now() >= Date.parse(datos.expiraEn)) {
+      cerrar('cerrada', MENSAJE_PROPUESTA_VENCIDA)
+      agregarMensaje(MENSAJE_PROPUESTA_VENCIDA)
+      this.notificar()
+      this.persistirConversacion()
+      return
+    }
+
+    // Solo operaciones aplicables de la vista; el servidor arma las
+    // confirmaciones desde lo firmado.
+    const elegidas = new Set(operacionIds)
+    const seleccion = datos.operaciones.filter((op) => op.aplicable && elegidas.has(op.operacionId)).map((op) => op.operacionId)
+    if (seleccion.length === 0) return
+
+    this.propuestaListaEnCurso = mensajeId
+    this.notificar()
+    const controlador = new AbortController()
+    const temporizadorFetch = setTimeout(() => controlador.abort(), 55_000)
+    try {
+      const { session } = await conLimiteDeTiempoAccion(obtenerPerfilYSesion(), 12_000, 'Tiempo de espera agotado obteniendo la sesión del docente')
+      const res = await fetch('/api/lista-oficial/aplicar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: datos.token, operacionIds: seleccion, accessToken: session?.access_token || null }),
+        signal: controlador.signal,
+      })
+      const cuerpo = await res.json().catch(() => null) as { exito?: boolean; codigo?: string; error?: string; mensaje?: string } | null
+      if (cuerpo?.exito) {
+        const texto = cuerpo.mensaje || 'Listo: apliqué los cambios a tu lista.'
+        cerrar('aplicada', texto)
+        agregarMensaje(texto)
+      } else {
+        const texto = cuerpo?.error || 'No pude aplicar los cambios. No se modificó nada; intenta de nuevo en unos segundos.'
+        // Los errores temporales dejan la propuesta disponible para
+        // reintentar; cualquier otro rechazo la cierra.
+        if (!cuerpo?.codigo || CODIGOS_PROPUESTA_REINTENTABLES.has(cuerpo.codigo)) {
+          agregarMensaje(texto)
+        } else {
+          cerrar('cerrada', texto)
+          agregarMensaje(texto)
+        }
+      }
+    } catch (err) {
+      agregarMensaje(err instanceof Error && err.name === 'AbortError'
+        ? 'Aplicar los cambios tardó demasiado. No se modificó nada; intenta de nuevo.'
+        : 'No pude aplicar los cambios. No se modificó nada; intenta de nuevo en unos segundos.')
+    } finally {
+      clearTimeout(temporizadorFetch)
+      this.propuestaListaEnCurso = null
+      this.notificar()
+      this.persistirConversacion()
+    }
   }
 
   // AsistentePanel llama esto justo después de hacer router.push, para

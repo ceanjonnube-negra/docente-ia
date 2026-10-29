@@ -20,12 +20,18 @@
 // La única escritura es aplicar_propuesta_lista_oficial con la sesión del
 // docente, que revalida todo en una transacción (uso único, vigencia,
 // foto del grupo, valores actuales) y es la que deja historial.
+//
+// Dos formas de solicitud, un solo camino (normalizarSolicitudAplicacion):
+//   - 2b (chat): { token, operacionIds } — el token es el sobre cifrado
+//     (sobreCifrado.ts); las confirmaciones se arman desde lo firmado;
+//   - 2a: { sobre, confirmaciones }, compatible mientras dura la transición.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { obtenerRosterParaPropuesta } from '@/lib/rosterGrupo'
 import { calcularRosterFingerprint } from '@/lib/listaOficial/rosterFingerprint'
 import { leerSecretoServerOnly } from '@/lib/listaOficial/propuestaFirmada'
+import { normalizarSolicitudAplicacion } from '@/lib/listaOficial/sobreCifrado'
 import {
   confirmacionParaRpc,
   evaluarSolicitudAplicacionLista,
@@ -72,7 +78,8 @@ const rechazo = (codigo: string, error: string, status = 200) =>
 export async function POST(req: NextRequest) {
   try {
     const cuerpo = await req.json().catch(() => null)
-    const { sobre, confirmaciones, accessToken } = (cuerpo ?? {}) as Record<string, unknown>
+    const datos = (cuerpo ?? {}) as Record<string, unknown>
+    const { accessToken } = datos
 
     const auth = await autenticarRequestApi(typeof accessToken === 'string' ? accessToken : null)
     if (!auth.ok) return rechazo('SESION_INVALIDA', 'Sesión no válida. Vuelve a iniciar sesión e intenta de nuevo.', 401)
@@ -82,6 +89,10 @@ export async function POST(req: NextRequest) {
       console.error('[LISTA_OFICIAL][aplicar] secreto=ausente')
       return rechazo('NO_DISPONIBLE', 'Aplicar cambios de la lista oficial no está disponible en este momento.', 503)
     }
+
+    const solicitud = normalizarSolicitudAplicacion(datos, secreto)
+    if (!solicitud.ok) return rechazo(solicitud.codigo === 'TOKEN_INVALIDO' ? 'FIRMA_INVALIDA' : 'SOLICITUD_INVALIDA', solicitud.codigo === 'TOKEN_INVALIDO' ? MENSAJE_RECHAZO.FIRMA_INVALIDA : 'La solicitud no es válida.')
+    const { sobre, confirmaciones } = solicitud
 
     // Firma primero: hasta aquí no se usa ningún dato de la propuesta.
     if (!verificarPropuestaActualizacionConSecreto(sobre, secreto)) return rechazo('FIRMA_INVALIDA', MENSAJE_RECHAZO.FIRMA_INVALIDA)

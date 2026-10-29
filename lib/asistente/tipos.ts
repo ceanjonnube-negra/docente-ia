@@ -8,6 +8,8 @@
 // proveedor significa escribir una clase nueva que la implemente y
 // cambiar qué motor se instancia — nada más en la aplicación se entera.
 
+import type { PropuestaListaParaCliente, VistaOperacionPropuestaLista } from '../listaOficial/vistaPropuestaLista'
+
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
 // Archivo real generado por una de las 7 herramientas (ver
@@ -142,6 +144,34 @@ export type MensajeConversacion = {
   // AccionNavegacion.automatica). Igual que datosAccionCalendario,
   // viaja pegada al mensaje.
   datosAccionNavegacion?: AccionNavegacion
+  // Propuesta de actualización de lista oficial con su tarjeta de
+  // confirmación (ver PropuestaListaEnMensaje).
+  datosPropuestaLista?: PropuestaListaEnMensaje
+}
+
+// LISTA-P5 (2b) — estado de la tarjeta de una propuesta de lista oficial.
+// La fuente de verdad es el registro en la base (registrar/aplicar
+// _propuesta_lista_oficial). El navegador nunca tiene el sobre firmado:
+// solo un token cifrado opaco y la vista mínima de cada operación (ver
+// lib/listaOficial/vistaPropuestaLista.ts). Ambos existen solo mientras
+// la propuesta está pendiente y vigente: al aplicarse, cerrarse o vencer
+// se descartan y quedan únicamente el estado y el aviso.
+export type PropuestaListaEnMensaje = {
+  estado: 'pendiente' | 'aplicada' | 'cerrada'
+  expiraEn: string
+  token?: string
+  operaciones?: VistaOperacionPropuestaLista[]
+  aviso?: string
+}
+
+export const MENSAJE_PROPUESTA_VENCIDA = 'La propuesta venció. Vuelve a enviarme las fotos de la lista para generar una propuesta nueva.'
+
+// Lo único que se guarda de una propuesta que ya no se puede aplicar
+// (aplicada, cerrada o vencida): estado y aviso, sin token ni vista.
+export function propuestaListaParaGuardar(datos: PropuestaListaEnMensaje, ahora = Date.now()): PropuestaListaEnMensaje {
+  if (datos.estado === 'pendiente' && datos.token && datos.operaciones && ahora < Date.parse(datos.expiraEn)) return datos
+  if (datos.estado === 'pendiente') return { estado: 'cerrada', expiraEn: datos.expiraEn, aviso: MENSAJE_PROPUESTA_VENCIDA }
+  return { estado: datos.estado, expiraEn: datos.expiraEn, aviso: datos.aviso }
 }
 
 // Contexto de lo que el docente tiene abierto en este momento. Cada
@@ -224,7 +254,7 @@ export type EventoMotor =
   // app/api/chat/route.ts) — AsistenteService lo usa como señal para
   // recargar EstadoAsistente.perfil, la única fuente que consumen el
   // menú lateral, /dashboard/inicio y el resto de la interfaz.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean; propuestaLista?: PropuestaListaParaCliente }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de

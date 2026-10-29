@@ -7,7 +7,9 @@
 //   - responderListaOficialConPropuesta (lib/listaOficial/flujoChatListaOficial.ts)
 //     con la sesión del docente y el cliente del servidor de E2E; la lectura
 //     de las fotos usa un doble (sin IA real);
-//   - el POST real de app/api/lista-oficial/aplicar/route.ts;
+//   - el POST real de app/api/lista-oficial/aplicar/route.ts, con los dos
+//     formatos: { sobre, confirmaciones } (2a, bloques 2-5) y el token
+//     cifrado de 2b { token, operacionIds } (bloque 6);
 //   - registrar_propuesta_lista_oficial y aplicar_propuesta_lista_oficial.
 //
 // Modos (mismo esquema que los scripts E2E de P4B y P5 etapa 1):
@@ -250,6 +252,7 @@ async function ejecutar() {
   const { construirPlanDeActualizacionLista } = await import('../lib/listaOficial/planActualizacionLista')
   const { calcularRosterFingerprint } = await import('../lib/listaOficial/rosterFingerprint')
   const { POST } = await import('../app/api/lista-oficial/aplicar/route')
+  const cifrado = await import('../lib/listaOficial/sobreCifrado')
   const secreto = process.env.LISTA_OFICIAL_HMAC_SECRET_KEY!
 
   rutaManifiesto = ruta
@@ -286,7 +289,7 @@ async function ejecutar() {
     guardarManifiesto()
   }
   try {
-    await escenarios(admin, url, anon, { flujo, contrato, obtenerRosterParaPropuesta, compararListaOficial, clasificarPropuestasReparacionCurp, construirPlanDeActualizacionLista, calcularRosterFingerprint, POST, secreto })
+    await escenarios(admin, url, anon, { flujo, contrato, obtenerRosterParaPropuesta, compararListaOficial, clasificarPropuestasReparacionCurp, construirPlanDeActualizacionLista, calcularRosterFingerprint, POST, cifrado, secreto })
   } finally {
     await barrerNoAnotados()
     console.log(`\nLimpieza: npx tsx scripts/verificar-propuestas-chat-e2e.ts --limpieza-sql ${ruta}`)
@@ -302,11 +305,12 @@ type Modulos = {
   construirPlanDeActualizacionLista: typeof import('../lib/listaOficial/planActualizacionLista').construirPlanDeActualizacionLista
   calcularRosterFingerprint: typeof import('../lib/listaOficial/rosterFingerprint').calcularRosterFingerprint
   POST: typeof import('../app/api/lista-oficial/aplicar/route').POST
+  cifrado: typeof import('../lib/listaOficial/sobreCifrado')
   secreto: string
 }
 
 async function escenarios(admin: SupabaseClient, url: string, anon: string, mod: Modulos) {
-  const { flujo, contrato, obtenerRosterParaPropuesta, compararListaOficial, clasificarPropuestasReparacionCurp, construirPlanDeActualizacionLista, calcularRosterFingerprint, POST, secreto } = mod
+  const { flujo, contrato, obtenerRosterParaPropuesta, compararListaOficial, clasificarPropuestasReparacionCurp, construirPlanDeActualizacionLista, calcularRosterFingerprint, POST, cifrado, secreto } = mod
   const { A, B, cicloId } = await sembrar(admin, url, anon)
   const m = manifiesto
   const anotar = (registrar: (id: string) => void) => { const id = randomUUID(); registrar(id); guardarManifiesto(); return id }
@@ -322,13 +326,14 @@ async function escenarios(admin: SupabaseClient, url: string, anon: string, mod:
     return { ...r, sobre: r.sobre as unknown as Sobre | null, llamadasIa: ia.estado.llamadas }
   }
   // POST real de /api/lista-oficial/aplicar.
-  const aplicar = async (token: string, sobre: unknown, confirmaciones: unknown): Promise<RespuestaAplicar> => {
+  const enviar = async (cuerpo: Record<string, unknown>): Promise<RespuestaAplicar> => {
     const res = await POST(new Request('http://localhost/api/lista-oficial/aplicar', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sobre, confirmaciones, accessToken: token }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo),
     }) as never)
     return { status: res.status, cuerpo: await res.json() }
   }
+  // Formato 2a.
+  const aplicar = (token: string, sobre: unknown, confirmaciones: unknown) => enviar({ sobre, confirmaciones, accessToken: token })
   const confirmar = (op: Sobre['payload']['operaciones'][number]) => ({ operacionId: op.operacionId, alumnoId: op.alumnoId, inscripcionId: op.inscripcionId, autorizaBaja: false })
   const op = (s: Sobre, tipo: string) => s.payload.operaciones.find((o) => o.tipo === tipo && o.clasificacion === 'seguro')!
   const leerAlumno = async (clave: string) => (await admin.from('alumnos').select('nombre, curp').eq('id', m.alumnos[clave]).maybeSingle()).data as { nombre: string; curp: string | null } | null
@@ -446,6 +451,52 @@ async function escenarios(admin: SupabaseClient, url: string, anon: string, mod:
   // guardó la base, con la sesión del docente (como en P4B).
   const directa = await A.cliente.rpc('aplicar_propuesta_lista_oficial', { p_propuesta_id: pay5.propuestaId, p_confirmaciones: [contrato.confirmacionParaRpc(pay5.operaciones.find((o) => o.tipo === 'alta' && o.clasificacion === 'seguro')!)] })
   verificar(directa.error?.message === 'PROPOSAL_EXPIRED' && await alumnosDeA() === alumnosAntes + 1, `5c. RPC: vigencia persistida vencida (${directa.error?.message ?? 'sin error'}); nada aplicado`)
+
+  // ---- 6. Contrato con token cifrado (2b) ----
+  console.log('\n— 6. Token cifrado y vista mínima (formato del chat) —')
+  const r6 = await proponer('P4')
+  const p4 = r6.sobre
+  const cliente = p4 ? cifrado.prepararPropuestaParaCliente(p4 as never) : null
+  const textoCliente = JSON.stringify(cliente ?? {})
+  verificar(!!cliente && cliente.operaciones.some((o) => o.aplicable && o.etiqueta.includes('Elena Ficticia Cinco')) && cliente.expiraEn === p4?.payload.expiraEn,
+    '6a. El navegador recibe token, vencimiento y vista con el alta de Elena')
+  verificar(!!cliente && !Object.values(m.alumnos).some((id) => textoCliente.includes(id)) && !Object.values(m.inscripciones).some((id) => textoCliente.includes(id)) &&
+    !textoCliente.includes(m.docentes.A) && !textoCliente.includes(m.grupos.GA1) && !/curpLeida|nombreConfianza|evidencia|valorActual|firma/.test(textoCliente),
+    '6b. Sin identificadores internos, docente, grupo, firma ni lecturas de la foto')
+  if (!cliente || !p4) throw new Error('Sin P4 no se puede continuar.')
+  const idAlta = cliente.operaciones.find((o) => o.aplicable)!.operacionId
+  const partes = cliente.token.split('.')
+  const alterarUno = (t: string) => (t[0] === 'A' ? 'B' : 'A') + t.slice(1)
+  const tokenAlterado = [partes[0], partes[1], alterarUno(partes[2]), partes[3]].join('.')
+  const t1 = await enviar({ token: tokenAlterado, operacionIds: [idAlta], accessToken: A.token })
+  verificar(t1.cuerpo.codigo === 'FIRMA_INVALIDA', `6c. Token alterado: ${t1.cuerpo.codigo}`)
+  const t2 = await enviar({ token: cifrado.cifrarSobrePropuesta(p4 as never, randomBytes(32).toString('base64url')), operacionIds: [idAlta], accessToken: A.token })
+  verificar(t2.cuerpo.codigo === 'FIRMA_INVALIDA', `6d. Token cifrado con otra clave: ${t2.cuerpo.codigo}`)
+  const t3 = await enviar({ token: cliente.token, operacionIds: ['no-existe'], accessToken: A.token })
+  verificar(t3.cuerpo.codigo === 'CONFIRMACIONES_INVALIDAS', `6e. Operación que no está en la propuesta: ${t3.cuerpo.codigo}`)
+  const t4 = await enviar({ token: cliente.token, operacionIds: [], accessToken: A.token })
+  verificar(t4.cuerpo.codigo === 'SIN_CONFIRMACIONES', `6f. Sin operaciones elegidas: ${t4.cuerpo.codigo}`)
+  const t5 = await enviar({ token: cliente.token, operacionIds: [idAlta, idAlta], accessToken: A.token })
+  verificar(t5.cuerpo.codigo === 'CONFIRMACIONES_INVALIDAS', `6g. Operación repetida: ${t5.cuerpo.codigo}`)
+  const t6 = await enviar({ token: cliente.token, sobre: p4, operacionIds: [idAlta], accessToken: A.token })
+  verificar(t6.cuerpo.codigo === 'SOLICITUD_INVALIDA', `6h. Token y sobre a la vez: ${t6.cuerpo.codigo}`)
+  const t7 = await enviar({ token: cliente.token, operacionIds: [idAlta], accessToken: B.token })
+  verificar(t7.cuerpo.codigo === 'DOCENTE_NO_CORRESPONDE', `6i. Token con la sesión de B: ${t7.cuerpo.codigo}`)
+  const antes6 = await alumnosDeA()
+  verificar(antes6 === alumnosAntes + 1, '6j. Nada cambió tras los rechazos con token')
+  const t8 = await enviar({ token: cliente.token, operacionIds: [idAlta], accessToken: A.token })
+  // Anotar el alta antes de cualquier otra comprobación (la limpieza la cubre).
+  const { data: elena } = await admin.from('alumnos').select('id').eq('docente_id', m.docentes.A).eq('nombre', 'Elena Ficticia Cinco').maybeSingle()
+  if (elena) {
+    m.alumnos.elena = elena.id as string
+    const { data: ie } = await admin.from('inscripciones').select('id').eq('alumno_id', elena.id).maybeSingle()
+    if (ie) m.inscripciones.elena = ie.id as string
+    guardarManifiesto()
+  }
+  verificar(t8.cuerpo.exito === true && t8.cuerpo.aplicadas === 1 && !!elena && await alumnosDeA() === antes6 + 1, '6k. Alta autorizada con token: aplicada una vez')
+  const t9 = await enviar({ token: cliente.token, operacionIds: [idAlta], accessToken: A.token })
+  verificar(!t9.cuerpo.exito && ['PROPOSAL_ALREADY_USED', 'ROSTER_CAMBIO'].includes(t9.cuerpo.codigo ?? '') && await alumnosDeA() === antes6 + 1, `6l. Segunda aplicación con el mismo token: ${t9.cuerpo.codigo}`)
+  verificar(await estatusDe('carla') === 'activo' && await estatusDe('dani') === 'activo', '6m. Carla y Dani siguen activos')
 
   await A.cliente.auth.signOut({ scope: 'local' })
   await B.cliente.auth.signOut({ scope: 'local' })

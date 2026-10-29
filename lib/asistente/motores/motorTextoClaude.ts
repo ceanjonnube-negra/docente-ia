@@ -21,6 +21,7 @@ import type {
   Herramienta,
   MotorConversacional,
 } from '../tipos'
+import { esPropuestaListaParaCliente, type PropuestaListaParaCliente } from '@/lib/listaOficial/vistaPropuestaLista'
 
 const detectarTipoDocumento = (texto: string): string => {
   if (texto.includes('RÚBRICA')) return 'rubrica'
@@ -270,7 +271,8 @@ export class MotorTextoClaude implements MotorConversacional {
           const { done, value } = await reader.read()
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
-          this.emitir({ tipo: 'respuesta-parcial', texto: respuesta })
+          // El marcador de propuesta (largo, en base64) nunca se pinta.
+          this.emitir({ tipo: 'respuesta-parcial', texto: respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '').trim() })
         }
       }
 
@@ -278,9 +280,10 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
-      const { texto: respuestaLimpia, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
+      const { texto: sinPerfil, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
+      const { texto: respuestaLimpia, propuestaLista } = this.procesarMarcadorDePropuestaLista(sinPerfil)
       this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado })
+      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
@@ -444,6 +447,24 @@ export class MotorTextoClaude implements MotorConversacional {
       return { texto: respuesta.replace(match[0], '').trim(), accionNavegacion }
     } catch {
       return { texto: respuesta.replace(match[0], '').trim() }
+    }
+  }
+
+  // Propuesta de lista oficial firmada y registrada por el servidor (ver
+  // LISTA OFICIAL en app/api/chat/route.ts) — mismo patrón que
+  // procesarMarcadorDeNavegacion. Trae solo el token cifrado y la vista
+  // mínima; aquí solo se comprueba su forma, el servidor decide al aplicar.
+  private procesarMarcadorDePropuestaLista(respuesta: string): { texto: string; propuestaLista?: PropuestaListaParaCliente } {
+    const match = respuesta.match(/\[\[PROPUESTA_LISTA:([^\]]+)\]\]/)
+    if (!match) return { texto: respuesta }
+    const texto = respuesta.replace(match[0], '').trim()
+    try {
+      const binario = atob(match[1])
+      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
+      const propuesta: unknown = JSON.parse(new TextDecoder('utf-8').decode(bytes))
+      return esPropuestaListaParaCliente(propuesta) ? { texto, propuestaLista: propuesta } : { texto }
+    } catch {
+      return { texto }
     }
   }
 

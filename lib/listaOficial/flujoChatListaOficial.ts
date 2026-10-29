@@ -128,7 +128,10 @@ export function formatearComparacionListaOficial(
   comparacion: ResultadoComparacionListaOficial,
   roster: Array<{ id: string; nombre: string; curp: string | null }>,
   etiqueta: string,
-  cantidadFotos: number
+  cantidadFotos: number,
+  // true cuando se registró una propuesta que el chat muestra en una
+  // tarjeta (LISTA-P5 2b): solo cambian las dos frases sobre guardar.
+  conPropuesta = false
 ): string {
   const porId = new Map(roster.map((a) => [a.id, a]))
   const r = comparacion.resultados
@@ -164,7 +167,7 @@ export function formatearComparacionListaOficial(
 
   const partes: string[] = [
     `Comparé ${r.length} registro${r.length === 1 ? '' : 's'} de ${cantidadFotos} foto${cantidadFotos === 1 ? '' : 's'} con la lista del grupo ${etiqueta}.`,
-    'Esto es solo una comparación: no guardé ni cambié nada.',
+    conPropuesta ? 'Todavía no cambié nada: abajo puedes elegir qué cambios aplicar.' : 'Esto es solo una comparación: no guardé ni cambié nada.',
     '',
     `Coinciden con tu lista: ${coincidentes.length}.`,
   ]
@@ -176,7 +179,7 @@ export function formatearComparacionListaOficial(
   seccion('Coinciden por nombre, pendientes de corroborar', porNombreSinCurp.map((x) => `${nombreDe(x)}: coincide por nombre; la fotografía no permite corroborar su CURP.`))
   seccion('Posibles diferencias de nombre', nombreDistinto.map((x) => `En tu lista: ${porId.get(x.alumnoId!)?.nombre}. En la foto: ${leido(x)}.`))
   seccion('CURP que faltan en tu lista y se leyeron con claridad', curpCompletable.map((x) => `${nombreDe(x)}: ${curpOGuion(x.registro.curpLeida)}.`),
-    'Podrás confirmarlas en una siguiente versión; por ahora no se guardan.')
+    conPropuesta ? 'Las que se pueden aplicar aparecen abajo para que elijas.' : 'Podrás confirmarlas en una siguiente versión; por ahora no se guardan.')
   seccion('CURP que faltan en tu lista y no se leyeron con seguridad', curpFaltanteRevisar.map((x) => `${nombreDe(x)}: en la foto ${curpOGuion(x.registro.curpLeida)}.`))
   seccion('CURP distinta a la registrada', curpDiferente.map((x) => `${nombreDe(x)}: en tu lista ${curpOGuion(x.alumnoId ? porId.get(x.alumnoId)?.curp : null)}, en la foto ${curpOGuion(x.registro.curpLeida)}.`))
   seccion('Posibles altas (no están en tu lista)', altas.map((x) => `${leido(x)} — ${curpOGuion(x.registro.curpLeida)}.`))
@@ -291,13 +294,12 @@ export async function responderListaOficialConPropuesta(params: ParametrosListaO
   const comparacion = compararListaOficial(extraccion.registros, rosterParaMatching)
   const conteo = (c: string) => comparacion.resultados.filter((x) => x.categoriaDiff === c).length
   console.log(`[LISTA_OFICIAL] comparacion_ok=true roster=${rosterParaMatching.length} sin_cambio=${conteo('SIN_CAMBIO')} curp_faltante=${conteo('CURP_FALTANTE_EN_DB')} curp_diferente=${conteo('CURP_DIFERENTE')} nuevos=${conteo('NUEVO_POSIBLE')} dudosas=${conteo('LECTURA_DUDOSA')} ambiguas=${conteo('MATCH_AMBIGUO')} ausentes=${comparacion.ausentesEnDocumento.length}`)
-  const texto = formatearComparacionListaOficial(comparacion, rosterParaMatching, grupoElegido.etiqueta, imagenes.length)
-
   // Solo con el contexto confirmado: grupo activo del chat = grupo fijado.
   const contextoConsistente = !!conversacionFijada && params.grupoActivoSesion === conversacionFijada.grupoId
   const sobre = contextoConsistente && conversacionFijada && rosterPropuesta && params.sbServicio
     ? await registrarPropuestaLista({ sbServicio: params.sbServicio, docenteId, conversacionId: conversacionFijada.id, grupoId: grupoElegido.id, roster: rosterPropuesta, comparacion })
     : null
+  const texto = formatearComparacionListaOficial(comparacion, rosterParaMatching, grupoElegido.etiqueta, imagenes.length, !!sobre)
   return { texto, sobre }
 }
 

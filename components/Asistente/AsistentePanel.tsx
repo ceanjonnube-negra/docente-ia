@@ -27,6 +27,7 @@ import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from 
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIMO_IMAGENES_POR_MENSAJE } from '@/lib/asistente/comprimirImagen'
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
+import TarjetaPropuestaLista from './TarjetaPropuestaLista'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
@@ -966,6 +967,16 @@ export default function AsistentePanel() {
                         </button>
                       ))}
                     </div>
+                  )}
+                  {/* Propuesta de lista oficial: tarjeta de confirmación
+                      en la misma burbuja (ver confirmarPropuestaLista). */}
+                  {m.datosPropuestaLista && (
+                    <TarjetaPropuestaLista
+                      datos={m.datosPropuestaLista}
+                      enCurso={asistente.propuestaListaEnCurso === m.id}
+                      ocupado={asistente.propuestaListaEnCurso !== null}
+                      onAplicar={(ids) => asistente.confirmarPropuestaLista(m.id, ids)}
+                    />
                   )}
                   {/* Secuencia visual mientras se aplica la acción
                       confirmada — puramente cosmética (ver
