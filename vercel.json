@@ -1,0 +1,7 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "prueba/sin-despliegue": false
+    }
+  }
+}
