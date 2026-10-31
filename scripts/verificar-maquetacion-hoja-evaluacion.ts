@@ -187,7 +187,7 @@ async function main() {
       'America/Mexico_City'
     )
     verificar(bufferLargo.length > 0 && bufferLargo.subarray(0, 4).toString('latin1') === '%PDF', '9a. Un nombre de escuela/alumno extremadamente largo no rompe la generación (se trunca con puntos suspensivos en vez de desbordar)')
-    verificar(rutaPdf.includes('truncarConEllipsis(l.texto, l.font, l.tamano, ANCHO_CONTENIDO)'), '9b. El encabezado institucional (escuela/docente/grado/grupo/ciclo) se trunca al ancho de contenido, nunca se dibuja sin límite')
+    verificar(rutaPdf.includes('truncarConEllipsis(l.texto, l.font, l.tamano, ANCHO_ENCABEZADO_INSTITUCIONAL)') && rutaPdf.includes('const ANCHO_ENCABEZADO_INSTITUCIONAL = ANCHO_CONTENIDO - anchoBloqueIdentidad - 8'), '9b. El encabezado institucional (escuela/docente/grado/grupo/ciclo) se trunca al ancho de contenido menos el bloque de identidad (código + página), nunca se dibuja sin límite ni encima del identificador')
     verificar(rutaPdf.includes('truncarConEllipsis(datos.nombreProyecto, negrita, 11, ANCHO_CONTENIDO)'), '9c. El nombre del proyecto se trunca al ancho de contenido')
     void regularAux
   }

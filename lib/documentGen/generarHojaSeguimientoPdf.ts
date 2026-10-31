@@ -44,6 +44,7 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { prepararEncabezado } from './encabezadoDocumento'
 import { NIVELES_EVALUACION, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
+import { esIdentificadorHojaValido, normalizarIdentificadorHoja } from '../identificadorHoja'
 
 const ANCHO_PAGINA = 792 // carta apaisada (11in), en puntos
 // EVAL-1D.2 — ALTO_PAGINA/MARGEN exportados (antes privados del
@@ -126,6 +127,23 @@ export async function generarHojaSeguimientoPdfBuffer(
   const ANCHO_NUM = 20
   const ANCHO_NOMBRE = 240 // suficiente para nombre(s) y dos apellidos completos
 
+  // Identidad por página (multipágina): el código SG-XXXX y "Página n
+  // de m" se dibujan al final en TODAS las páginas, en la esquina
+  // superior derecha. En las páginas 2+ la tabla (centrada) nunca llega
+  // a esa esquina, así que ninguna fila, salto ni cálculo de páginas
+  // cambia (ver calcularCantidadPaginasHoja). En la página 1 el
+  // encabezado institucional se recorta antes del bloque para no
+  // encimarse.
+  const TAMANO_IDENTIFICADOR = 13
+  const TAMANO_PAGINACION = 7.5
+  const anchoIdentificador = negrita.widthOfTextAtSize(datos.identificadorVisible, TAMANO_IDENTIFICADOR)
+  const anchoBloqueIdentidad = Math.max(anchoIdentificador + 14, regular.widthOfTextAtSize('Página 99 de 99', TAMANO_PAGINACION))
+  const ANCHO_ENCABEZADO_INSTITUCIONAL = ANCHO_CONTENIDO - anchoBloqueIdentidad - 8
+  // La vista previa usa un rótulo largo en vez de un código real: ese
+  // rótulo solo se dibuja en la página 1 (en las demás invadiría la
+  // tabla); "Página n de m" sí va en todas.
+  const esCodigoReal = esIdentificadorHojaValido(normalizarIdentificadorHoja(datos.identificadorVisible))
+
   let pagina: PDFPage = pdfDoc.addPage([ANCHO_PAGINA, ALTO_PAGINA])
   let y = ALTO_PAGINA - MARGEN - 3 // pequeño respiro respecto al borde superior, nunca pegado al margen exacto
 
@@ -144,17 +162,27 @@ export async function generarHojaSeguimientoPdfBuffer(
       { texto: `Docente: ${enc.docente}    Grado: ${enc.grado}    Grupo: ${enc.grupo}    Ciclo: ${enc.cicloEscolar}`, font: regular, tamano: 8, color: COLOR_TEXTO_SUAVE },
     ]
     for (const l of lineas) {
-      const limpio = truncarConEllipsis(l.texto, l.font, l.tamano, ANCHO_CONTENIDO)
+      const limpio = truncarConEllipsis(l.texto, l.font, l.tamano, ANCHO_ENCABEZADO_INSTITUCIONAL)
       pagina.drawText(limpio, { x: MARGEN, y: y - l.tamano, size: l.tamano, font: l.font, color: l.color })
       y -= l.tamano * 1.3
     }
   }
 
-  function dibujarIdentificador() {
+  // Se llama al final, cuando ya se conoce el total de páginas.
+  function dibujarIdentificador(paginaDestino: PDFPage, numero: number, total: number) {
+    const paginacion = `Página ${numero} de ${total}`
+    paginaDestino.drawText(paginacion, {
+      x: ANCHO_PAGINA - MARGEN - regular.widthOfTextAtSize(paginacion, TAMANO_PAGINACION),
+      y: ALTO_PAGINA - MARGEN - 27,
+      size: TAMANO_PAGINACION,
+      font: regular,
+      color: COLOR_TEXTO_SUAVE,
+    })
+    if (numero > 1 && !esCodigoReal) return
     const texto = datos.identificadorVisible
-    const tamano = 13
-    const ancho = negrita.widthOfTextAtSize(texto, tamano)
-    pagina.drawRectangle({
+    const tamano = TAMANO_IDENTIFICADOR
+    const ancho = anchoIdentificador
+    paginaDestino.drawRectangle({
       x: ANCHO_PAGINA - MARGEN - ancho - 14,
       y: ALTO_PAGINA - MARGEN - 19,
       width: ancho + 14,
@@ -162,7 +190,7 @@ export async function generarHojaSeguimientoPdfBuffer(
       borderColor: COLOR_TITULO,
       borderWidth: 1,
     })
-    pagina.drawText(texto, {
+    paginaDestino.drawText(texto, {
       x: ANCHO_PAGINA - MARGEN - ancho - 7,
       y: ALTO_PAGINA - MARGEN - 14,
       size: tamano,
@@ -225,7 +253,6 @@ export async function generarHojaSeguimientoPdfBuffer(
   }
 
   dibujarEncabezadoInstitucional()
-  dibujarIdentificador()
   dibujarMetadatosProyecto()
   dibujarLeyenda()
   dibujarListaIndicadores()
@@ -308,6 +335,9 @@ export async function generarHojaSeguimientoPdfBuffer(
     dibujarFilaAlumno(alumno)
   }
 
+  const paginas = pdfDoc.getPages()
+  paginas.forEach((p, i) => dibujarIdentificador(p, i + 1, paginas.length))
+
   const bytes = await pdfDoc.save()
   return Buffer.from(bytes)
 }
@@ -367,4 +397,18 @@ export function calcularCantidadPaginasHoja(cantidadAlumnos: number): number {
   if (n <= filasPagina1) return 1
   const restantes = n - filasPagina1
   return 1 + Math.ceil(restantes / filasPorPaginaSiguiente)
+}
+
+// Posiciones "#" impresas en cada página, con la misma distribución que
+// calcularCantidadPaginasHoja (distribucionFilasHoja): la página 1 lleva las
+// primeras filas y cada página siguiente el mismo número de filas. Es
+// la base para validar que cada fila transcrita pertenece a la página
+// fotografiada en la que se leyó.
+export function calcularRangosPaginasHoja(cantidadAlumnos: number): { pagina: number; desde: number; hasta: number }[] {
+  const { n, filasPagina1, filasPorPaginaSiguiente } = distribucionFilasHoja(cantidadAlumnos)
+  const rangos = [{ pagina: 1, desde: 1, hasta: Math.min(n, filasPagina1) }]
+  for (let desde = filasPagina1 + 1; desde <= n; desde += filasPorPaginaSiguiente) {
+    rangos.push({ pagina: rangos.length + 1, desde, hasta: Math.min(n, desde + filasPorPaginaSiguiente - 1) })
+  }
+  return rangos
 }

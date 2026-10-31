@@ -76,6 +76,11 @@ export type FilaHojaEvaluacion = {
   // una fase posterior (matching), que cruzará esta posición contra
   // hojas_evaluacion.roster_congelado.
   posicion: number
+  // Imagen (1..k, en el orden en que se enviaron las fotografías) en la
+  // que el modelo leyó esta fila. Ausente en extracciones anteriores a
+  // la identidad por página. La validación vive en
+  // identidadPaginasHoja.ts, nunca aquí.
+  imagen?: number
   // Exactamente CANTIDAD_INDICADORES_HOJA celdas, una por cada
   // numeroIndicador 1..N — nunca menos, nunca duplicadas (validado
   // server-side, ver validarResultadoExtraccionHoja).
@@ -104,6 +109,10 @@ export type ResultadoAnalisisHojaEvaluacion = {
   // llamador (regla de negocio, no de extracción). null si el modelo
   // no lo vio, no fue legible, o no tuvo certeza — nunca inventado.
   identificadorVisibleObservado: string | null
+  // Lo que el modelo observó en CADA imagen (código y "Página n de m"),
+  // tal como lo devolvió: sin validar aquí. analizar-hoja/route.ts lo
+  // compara contra la hoja canónica con validarIdentidadPaginasHoja.
+  paginasObservadas: unknown
 }
 
 function normalizarIdentificadorVisibleObservado(valor: unknown): string | null {
@@ -301,7 +310,7 @@ export function extraerFotosCapturaPendiente(capturaPendiente: unknown): FotoCap
 // mezcle posiciones entre páginas.
 function construirInstrucciones(cantidadFilasEsperadas: number, cantidadImagenes: number): string {
   const contextoPaginas = cantidadImagenes > 1
-    ? `Recibirás ${cantidadImagenes} fotografías. Son páginas CONSECUTIVAS de la MISMA hoja física, en orden (la primera imagen es la página 1, la segunda es la página 2, y así sucesivamente) — nunca hojas de alumnos distintos, nunca la misma página repetida. Cada página tiene su propio encabezado de tabla, pero las posiciones "#" NUNCA se repiten entre páginas — continúan la numeración de la hoja completa. Transcribe cada página tal como la ves, sin mezclar filas entre páginas.`
+    ? `Recibirás ${cantidadImagenes} fotografías, numeradas como imagen 1, imagen 2, etc. en el orden en que las recibes. Deberían ser páginas de la misma hoja física, pero NO lo asumas: por cada imagen reporta lo que realmente ves impreso en ella. Cada página tiene su propio encabezado de tabla, pero las posiciones "#" continúan la numeración de la hoja completa. Transcribe cada página tal como la ves, sin mezclar filas entre imágenes.`
     : 'Recibirás 1 sola fotografía con toda la hoja.'
 
   return `Eres un asistente que transcribe con extremo cuidado la(s) fotografía(s) de una hoja de evaluación escolar mexicana ya impresa y contestada a mano.
@@ -328,13 +337,18 @@ Reglas estrictas, en orden de prioridad:
 7. Si alguna de las fotografías es demasiado borrosa, está cortada, muestra un documento distinto, o por cualquier razón no puedes transcribir esa página con una confianza razonable, responde "hojaLegible": false y NO incluyas ninguna fila de NINGUNA página — nunca fabriques una tabla que parezca completa a partir de fotos que en realidad no puedes leer todas.
 8. Nunca reportes la misma posición "#" dos veces, aunque aparezca en dos fotografías distintas por error — cada posición existe una sola vez en la hoja completa.
 9. Además, busca en la(s) fotografía(s) un pequeño recuadro con un código corto impreso (formato "SG-" seguido de 4 caracteres, por ejemplo "SG-4F7K"), normalmente cerca de la esquina superior derecha de la hoja. Transcríbelo en "identificadorVisible" EXACTAMENTE tal como lo ves. Si no existe, no es legible, o no tienes certeza completa, responde null en ese campo — NUNCA lo inventes, completes ni lo deduzcas de ninguna otra información (nunca a partir del nombre del proyecto, de los alumnos, ni de nada distinto de ese recuadro impreso).
+10. Por CADA imagen recibida, reporta en "paginas" un elemento con: "imagen" (1, 2, ... según el orden en que la recibiste), "identificadorVisible" (el código SG- impreso en ESA imagen, o null si no aparece o no es legible), "paginaImpresa" y "totalPaginasImpreso" (los números del texto impreso "Página n de m" de ESA imagen, o null si no aparece o no es legible). Cada imagen se reporta por separado, aunque el código se repita. Además, cada fila lleva "imagen": el número de la imagen en la que leíste esa fila. NUNCA copies el código ni la página de una imagen a otra.
 
 Responde ÚNICAMENTE con un JSON válido (sin explicación, sin markdown, sin backticks), con este formato exacto:
 {
   "hojaLegible": true | false,
   "identificadorVisible": "<código exacto tal como lo ves impreso, o null si no existe o no es legible>",
+  "paginas": [
+    { "imagen": 1, "identificadorVisible": "<código de esta imagen o null>", "paginaImpresa": <n o null>, "totalPaginasImpreso": <m o null> }
+  ],
   "filas": [
     {
+      "imagen": <número de la imagen donde está esta fila>,
       "posicion": <número impreso real>,
       "celdas": [
         { "numeroIndicador": 1, "digitosDetectados": [<0 o más números>], "confianza": "alta" | "media" | "baja" },
@@ -419,7 +433,8 @@ function validarFila(f: unknown, posicionesMaximas: number): FilaHojaEvaluacion 
     if (!numerosVistos.has(n)) return null // faltante — nunca se rellena
   }
 
-  return { posicion, celdas: celdasValidas.sort((a, b) => a.numeroIndicador - b.numeroIndicador) }
+  const imagen = typeof obj.imagen === 'number' && Number.isInteger(obj.imagen) && obj.imagen >= 1 ? obj.imagen : undefined
+  return { posicion, ...(imagen !== undefined ? { imagen } : {}), celdas: celdasValidas.sort((a, b) => a.numeroIndicador - b.numeroIndicador) }
 }
 
 // Señal tipada y discriminable (nunca comparación frágil de texto del
@@ -555,5 +570,6 @@ export async function analizarImagenesHojaEvaluacion(
   return {
     extraccion,
     identificadorVisibleObservado: normalizarIdentificadorVisibleObservado(obj.identificadorVisible),
+    paginasObservadas: obj.paginas,
   }
 }

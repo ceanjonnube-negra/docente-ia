@@ -40,6 +40,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
+// Rechazo por página de una hoja antigua multipágina (ver
+// lib/seguimiento/identidadPaginasHoja.ts, mismo texto).
+const MENSAJE_HOJA_SIN_IDENTIDAD_POR_PAGINA =
+  'Esta hoja se imprimió antes de que todas sus páginas llevaran el código de identificación, así que no se puede capturar automáticamente. Necesitas una hoja nueva con el código en cada página.'
+
 export type EstadoCapturaHoja =
   | 'sin_fotografia'
   | 'captura_incompleta'
@@ -460,7 +465,9 @@ export default function CapturaHoja({
           <p className="text-[11px] text-amber-700">
             {razonRechazo === 'hoja_ilegible'
               ? 'La fotografía no es suficientemente legible para transcribir la hoja. Intenta con mejor luz o encuadre.'
-              : 'Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.'}
+              : razonRechazo === 'hoja_sin_identidad_por_pagina'
+                ? MENSAJE_HOJA_SIN_IDENTIDAD_POR_PAGINA
+                : 'Esta fotografía no corresponde a la hoja de evaluación de este proyecto. Toma una foto de la hoja correcta e inténtalo de nuevo.'}
           </p>
           <div className="flex gap-1.5">
             <button type="button" onClick={verHoja} disabled={abriendoHoja} className={claseBoton('secundario')}>

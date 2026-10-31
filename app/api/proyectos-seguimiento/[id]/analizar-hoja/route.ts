@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { descargarBuffer, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
 import { calcularCantidadPaginasHoja } from '@/lib/documentGen/generarHojaSeguimientoPdf'
+import { validarIdentidadPaginasHoja } from '@/lib/seguimiento/identidadPaginasHoja'
 import {
   analizarImagenesHojaEvaluacion,
   normalizarImagenesHojaParaVision,
@@ -301,6 +302,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
       }
       return NextResponse.json({ error: MENSAJE_IDENTIDAD_NO_VALIDA, razon: 'identidad_no_valida' }, { status: 409 })
+    }
+
+    // Identidad por página — el gate anterior valida UN código para todo
+    // el lote; aquí cada imagen debe mostrar el código de esta hoja y su
+    // "Página n de m", y cada fila debe pertenecer a la página en la que
+    // se leyó. Mismo mecanismo de rechazo que arriba (validacionIdentidad,
+    // nunca extraidoBruto), con su propio motivo persistido.
+    const identidadPaginas = validarIdentidadPaginasHoja({
+      identificadorEsperado: hoja.identificador_visible,
+      cantidadAlumnos: rosterCongelado.length,
+      cantidadImagenes: imagenesNormalizadas.length,
+      paginasObservadas: resultado.paginasObservadas,
+      filas: resultado.extraccion.filas,
+    })
+    if (!identidadPaginas.ok) {
+      const { error: errorRechazoPaginas } = await supabase
+        .from('proyectos_seguimiento')
+        .update({
+          captura_pendiente: {
+            ...capturaPendiente,
+            validacionIdentidad: { estado: 'rechazada', razon: identidadPaginas.razon, validadaEn: new Date().toISOString() },
+          },
+          actualizado_en: new Date().toISOString(),
+        })
+        .eq('id', proyectoId)
+      if (errorRechazoPaginas) {
+        return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+      }
+      return NextResponse.json({ error: identidadPaginas.mensaje, razon: 'identidad_no_valida' }, { status: 409 })
     }
 
     const { error: errorUpdate } = await supabase
