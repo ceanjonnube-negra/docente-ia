@@ -342,7 +342,10 @@ const ALTURA_ENCABEZADO_ANTES_DE_TABLA = 23.4 + 26.5 + 10.5 + (Math.ceil(CANTIDA
 // RESERVA_INFERIOR_TABLA/ALTO_PAGINA/MARGEN, mismo orden de
 // decisiones). Se usa para validar, SIN ninguna llamada IA, cuántas
 // fotografías corresponde subir/analizar para una hoja dada.
-export function calcularCantidadPaginasHoja(cantidadAlumnos: number): number {
+// Única fuente de la distribución de filas por página: la usan
+// calcularCantidadPaginasHoja y calcularRangosPaginasHoja, para que
+// nunca puedan divergir entre sí.
+function distribucionFilasHoja(cantidadAlumnos: number): { n: number; filasPagina1: number; filasPorPaginaSiguiente: number } {
   const n = Math.max(Math.floor(cantidadAlumnos), 1)
 
   const yInicioPagina1 = ALTO_PAGINA - MARGEN - 3 - ALTURA_ENCABEZADO_ANTES_DE_TABLA
@@ -355,9 +358,13 @@ export function calcularCantidadPaginasHoja(cantidadAlumnos: number): number {
   const y0PaginaSiguiente = yInicioPaginaSiguiente - ALTO_ENCABEZADO_TABLA
 
   const filasPagina1 = Math.max(1, Math.floor((y0Pagina1 - MARGEN) / ALTO_FILA))
-  if (n <= filasPagina1) return 1
-
   const filasPorPaginaSiguiente = Math.max(1, Math.floor((y0PaginaSiguiente - MARGEN) / ALTO_FILA))
+  return { n, filasPagina1, filasPorPaginaSiguiente }
+}
+
+export function calcularCantidadPaginasHoja(cantidadAlumnos: number): number {
+  const { n, filasPagina1, filasPorPaginaSiguiente } = distribucionFilasHoja(cantidadAlumnos)
+  if (n <= filasPagina1) return 1
   const restantes = n - filasPagina1
   return 1 + Math.ceil(restantes / filasPorPaginaSiguiente)
 }
