@@ -62,7 +62,7 @@ export async function generarYGuardarHojaSeguimiento(
   // de insertar otra — nunca dos hojas para el mismo proyecto.
   const { data: hojaExistente } = await sb
     .from('hojas_evaluacion')
-    .select('id, identificador_visible, storage_path')
+    .select('id, identificador_visible, storage_path, roster_congelado, indicadores')
     .eq('proyecto_id', datos.proyectoId)
     .maybeSingle()
 
@@ -94,10 +94,21 @@ export async function generarYGuardarHojaSeguimiento(
     // un intento previo): NUNCA se escribe ni se modifica
     // roster_congelado/indicadores — esos ya quedaron fijos (o
     // permanecen null, si la hoja es histórica) desde su creación
-    // original. alumnosParaPdf/indicadoresParaPdf conservan los
-    // valores en vivo definidos arriba, igual que siempre.
+    // original. El PDF del retry se imprime con ESE roster/indicadores
+    // congelados, nunca con la lista en vivo: si el grupo cambió entre
+    // intentos, imprimir la lista actual haría que las posiciones del
+    // PDF no correspondan a roster_congelado y los resultados de la foto
+    // se asignarían a otros alumnos. Solo una hoja histórica sin roster
+    // congelado (excluida del análisis automático) conserva la lista en
+    // vivo, igual que siempre.
     hojaId = hojaExistente.id
     identificadorVisible = hojaExistente.identificador_visible
+    const rosterYaCongelado = hojaExistente.roster_congelado as AlumnoRosterCongelado[] | null
+    if (Array.isArray(rosterYaCongelado) && rosterYaCongelado.length > 0) {
+      alumnosParaPdf = rosterYaCongelado.map((a) => ({ nombre: a.nombre, posicion: a.posicion }))
+      const indicadoresYaCongelados = hojaExistente.indicadores as IndicadorCongelado[] | null
+      if (Array.isArray(indicadoresYaCongelados) && indicadoresYaCongelados.length > 0) indicadoresParaPdf = indicadoresYaCongelados
+    }
   } else {
     // EVAL-1B — se congela EXACTAMENTE UNA VEZ, en el mismo INSERT que
     // crea la hoja: `roster` (recién leído arriba, sin ninguna

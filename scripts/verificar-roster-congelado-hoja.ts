@@ -20,6 +20,8 @@
 // Se ejecuta con `npx tsx scripts/verificar-roster-congelado-hoja.ts`.
 
 import { randomUUID } from 'node:crypto'
+import { inflateSync } from 'node:zlib'
+import { PDFArray, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { generarYGuardarHojaSeguimiento } from '../lib/seguimiento/generarYGuardarHoja'
 import { nivelATextoCanonico } from '../lib/seguimiento/conversionCalificacion'
@@ -180,9 +182,27 @@ class ClienteSupabaseFalso {
     return this.fallasForzadas.some((f) => f.tabla === tabla && f.operacion === operacion)
   }
 
+  leerArchivo(bucket: string, ruta: string): Buffer | undefined {
+    return this.archivosStorage.get(`${bucket}/${ruta}`)
+  }
+
   forzarErrorEn(tabla: string, operacion: 'insert' | 'update' | 'select') {
     this.fallasForzadas.push({ tabla, operacion })
   }
+}
+
+// Textos impresos en el PDF real (pdf-lib), página por página.
+async function textosPdf(buffer: Buffer): Promise<string[]> {
+  const doc = await PDFDocument.load(buffer)
+  return doc.getPages().flatMap((p) => {
+    const c = p.node.Contents()
+    const flujos = c instanceof PDFArray ? c.asArray().map((r) => doc.context.lookup(r)) : [c]
+    return flujos.flatMap((f) => {
+      const raw = f as PDFRawStream
+      const contenido = Buffer.from(raw.dict.get(PDFName.of('Filter')) ? inflateSync(raw.contents) : raw.contents).toString('latin1')
+      return [...contenido.matchAll(/<([0-9A-F]*)> Tj/g)].map((m) => Buffer.from(m[1], 'hex').toString('latin1'))
+    })
+  })
 }
 
 function clienteFalso(datos: Record<string, Fila[]> = {}): { sb: SupabaseClient; interno: ClienteSupabaseFalso } {
@@ -308,6 +328,14 @@ async function main() {
     verificar(congeladoOriginal === congeladoTrasRetry, 'CASO E. roster_congelado tras el retry es IDÉNTICO al del primer intento — nunca se reescribe')
     verificar(!congeladoTrasRetry.includes('Elena Vidal'), 'CASO E. el alumno dado de alta ENTRE intentos nunca contamina el roster ya congelado')
     verificar(indicadoresOriginal === indicadoresTrasRetry, 'CASO G. indicadores (con numero_indicador) permanecen estables tras el retry, sin reordenarse ni recalcularse')
+
+    // El PDF que imprime el retry corresponde EXACTAMENTE al roster congelado.
+    const hoja = interno._tabla('hojas_evaluacion')[0] as { storage_path: string; roster_congelado: RosterCongeladoFila[] }
+    const pdf = interno.leerArchivo('hojas-seguimiento', hoja.storage_path)
+    const textos = pdf ? await textosPdf(pdf) : []
+    const nombresImpresos = textos.filter((t) => hoja.roster_congelado.some((a) => a.nombre === t) || t === 'Elena Vidal')
+    verificar(!!pdf && JSON.stringify(nombresImpresos) === JSON.stringify(hoja.roster_congelado.map((a) => a.nombre)), 'CASO H. el PDF del retry imprime exactamente el roster congelado, en su orden — nunca la lista en vivo')
+    verificar(!textos.includes('Elena Vidal'), 'CASO H. el alumno dado de alta entre intentos no aparece en el PDF del retry')
   }
 
   // CASO F — los 5 indicadores nuevos reciben numero_indicador exactamente 1..5, en orden.
