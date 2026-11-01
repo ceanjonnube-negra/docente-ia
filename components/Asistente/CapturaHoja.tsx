@@ -364,10 +364,12 @@ export default function CapturaHoja({
     inputRef.current?.click()
   }
 
-  // "Volver a fotografiar" — disponible en revision_pendiente e
-  // identidad_no_valida. NUNCA limpia captura_pendiente ni hace una
-  // llamada de reset separada: solo arma la señal local (ver
-  // reiniciarCapturaRef) y reutiliza EXACTAMENTE el mismo selector que
+  // "Volver a fotografiar" — disponible en revision_pendiente,
+  // identidad_no_valida y lista_para_confirmar (nunca en confirmado:
+  // foto-hoja/route.ts además rechaza cualquier carga tras confirmar).
+  // NUNCA limpia captura_pendiente ni hace una llamada de reset
+  // separada: solo arma la señal local (ver reiniciarCapturaRef) y
+  // reutiliza EXACTAMENTE el mismo selector que
   // ya usan "Subir foto"/"Agregar página" — la sustitución real de la
   // captura ocurre íntegramente dentro de la subida normal
   // (onArchivoSeleccionado -> foto-hoja/route.ts), nunca antes.
@@ -499,9 +501,14 @@ export default function CapturaHoja({
           <p className="text-[11px] text-green-700">
             {totalAlumnos != null ? `La hoja se leyó correctamente — ${totalAlumnos} alumno(s) listos.` : 'La hoja se leyó correctamente.'}
           </p>
-          <button type="button" onClick={confirmar} className={claseBoton('primario')}>
-            ✅ Confirmar resultados
-          </button>
+          <div className="flex gap-1.5">
+            <button type="button" onClick={confirmar} className={claseBoton('primario')}>
+              ✅ Confirmar resultados
+            </button>
+            <button type="button" onClick={volverAFotografiar} className={claseBoton('secundario')}>
+              📷 Volver a fotografiar
+            </button>
+          </div>
         </>
       )}
 

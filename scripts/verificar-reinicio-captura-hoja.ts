@@ -207,6 +207,34 @@ function main() {
     '9d. volverAFotografiar respeta enCursoRef y reutiliza abrirSelector tal cual — 0 lógica paralela, 0 llamada de red propia'
   )
 
+  verificar(
+    /estado === 'lista_para_confirmar'[\s\S]{0,700}onClick=\{volverAFotografiar\}[\s\S]{0,80}Volver a fotografiar/.test(capturaHoja),
+    '9e. lista_para_confirmar TAMBIÉN ofrece "Volver a fotografiar" mediante volverAFotografiar (reemplazar una captura aceptada antes de confirmar)'
+  )
+  verificar(
+    /estado === 'lista_para_confirmar'[\s\S]{0,500}onClick=\{confirmar\}[\s\S]{0,80}Confirmar resultados/.test(capturaHoja),
+    '9f. lista_para_confirmar CONSERVA "Confirmar resultados" — las dos acciones conviven'
+  )
+  {
+    const bloqueConfirmado = capturaHoja.slice(capturaHoja.indexOf("estado === 'confirmado'"), capturaHoja.indexOf("estado === 'confirmado'") + 200)
+    verificar(!bloqueConfirmado.includes('volverAFotografiar'), '9g. confirmado NO ofrece "Volver a fotografiar"')
+  }
+
+  // ============================================================
+  // 11. Contrato del servidor que hace seguro el reinicio desde
+  //     lista_para_confirmar: una captura aceptada se reemplaza por
+  //     completo (sin extraidoBruto), nunca toca roster ni resultados,
+  //     y nada se puede recargar tras confirmar.
+  // ============================================================
+  {
+    const idxPost = rutaFoto.indexOf('if (ESTADOS_POST_CONFIRMACION.has(proyecto.estado))')
+    const idxEscritura = rutaFoto.indexOf('captura_pendiente: { fotos: fotosActualizadas }')
+    verificar(/const ESTADOS_POST_CONFIRMACION = new Set\(\['confirmado'/.test(rutaFoto) && idxPost > -1 && idxPost < idxEscritura, '11a. foto-hoja rechaza cualquier carga (incluido el reinicio) de una hoja ya confirmada, ANTES de escribir nada')
+    verificar(!/captura_pendiente: \{[^}]*extraidoBruto/.test(rutaFoto) && !/\.\.\.capturaPrevia/.test(rutaFoto), '11b. La escritura de la carga no conserva extraidoBruto ni el resto de la captura previa: la extracción anterior se descarta')
+    verificar(!rutaFoto.includes(".from('seguimiento_resultados')"), '11c. foto-hoja nunca escribe ni lee seguimiento_resultados')
+    verificar(!/from\('hojas_evaluacion'\)[\s\S]{0,120}\.(update|insert|upsert|delete)\(/.test(rutaFoto), '11d. foto-hoja nunca modifica hojas_evaluacion (roster_congelado intacto)')
+  }
+
   // ============================================================
   // 10. Ninguna llamada IA nueva.
   // ============================================================
