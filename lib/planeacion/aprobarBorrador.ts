@@ -203,6 +203,9 @@ export async function aprobarBorradorPlaneacion(
   if (seleccion.estado === 'otro_documento') {
     return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'Después de la planeación trabajamos en otro documento, así que no puedo saber con certeza cuál guardar. Pídeme que vuelva a mostrar la planeación y luego apruébala.' }
   }
+  if (seleccion.estado === 'no_reciente') {
+    return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'El último borrador de planeación quedó varios mensajes atrás y la conversación siguió con otros temas. Pídeme que lo vuelva a mostrar y luego apruébala.' }
+  }
   if (seleccion.estado === 'referencia_no_vigente') {
     return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: `La planeación más reciente de esta conversación es «${seleccion.nombreVigente}». Si quieres guardar otra, pídeme que la presente de nuevo y luego apruébala.` }
   }

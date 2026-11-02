@@ -161,6 +161,7 @@ export type SeleccionBorrador =
   | { estado: 'incompleto' }
   | { estado: 'ya_aprobado' }
   | { estado: 'otro_documento' }
+  | { estado: 'no_reciente' }
   | { estado: 'referencia_no_vigente'; nombreVigente: string }
 
 function normalizarNombre(texto: string): string {
@@ -187,11 +188,20 @@ function normalizarNombre(texto: string): string {
 //   guardó (→ 'ya_aprobado').
 // - Si antes aparece otro documento formal (examen, circular…), no hay
 //   certeza de qué se quiere aprobar (→ 'otro_documento').
+// - Si entre el borrador y ahora hubo más de
+//   MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR respuestas del asistente, la
+//   conversación ya siguió por otro lado: un bloque antiguo nunca basta
+//   por sí solo para guardar (→ 'no_reciente').
 // - Si mensajeDocente nombra otro borrador de la conversación distinto
 //   del vigente (→ 'referencia_no_vigente'): nunca se aprueba uno viejo.
+// Alcanza para un error de guardado, su reintento fallido y una
+// aclaración — no para una conversación que ya cambió de tema.
+export const MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR = 3
+
 export function seleccionarBorradorVigente(historial: { role: string; content: string }[], mensajeDocente = ''): SeleccionBorrador {
   let indiceVigente = -1
   let otroDocumentoDespues = false
+  let respuestasDespues = 0
   for (let i = historial.length - 1; i >= 0; i--) {
     const turno = historial[i]
     if (turno.role !== 'assistant') continue
@@ -201,9 +211,11 @@ export function seleccionarBorradorVigente(historial: { role: string; content: s
     }
     if (turno.content.trim().startsWith(PREFIJO_CONFIRMACION_APROBACION)) return { estado: 'ya_aprobado' }
     if (esDocumentoFormal(turno.content)) otroDocumentoDespues = true
+    respuestasDespues++
   }
   if (indiceVigente === -1) return { estado: 'sin_borrador' }
   if (otroDocumentoDespues) return { estado: 'otro_documento' }
+  if (respuestasDespues > MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR) return { estado: 'no_reciente' }
 
   const contenido = historial[indiceVigente].content
   const resumen = extraerResumenDeTexto(contenido)

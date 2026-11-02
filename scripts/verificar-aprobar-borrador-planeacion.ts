@@ -620,6 +620,23 @@ async function main() {
     verificar(!r.ok && r.codigo === 'BORRADOR_INCOMPLETO' && interno.escrituras.length === 0, 'V6. Un borrador vigente incompleto no recurre a uno anterior')
   }
 
+  // Bloque antiguo tras una conversación que cambió de tema: no basta.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: '¿Cuántos faltaron hoy?' },
+      { role: 'assistant', content: 'Hoy faltaron 2 alumnos.' },
+      { role: 'user', content: 'Registra a Juan con retardo' },
+      { role: 'assistant', content: 'Listo, Juan quedó registrado con retardo el día de hoy.' },
+      { role: 'user', content: '¿Y la reunión?' },
+      { role: 'assistant', content: 'La reunión es el viernes.' },
+      { role: 'user', content: 'Gracias' },
+      { role: 'assistant', content: 'Con gusto.' },
+    ], 'Apruébala')
+    verificar(!r.ok && r.codigo === 'BORRADOR_NO_DETERMINADO' && interno.escrituras.length === 0, 'V8. Un bloque antiguo, con la conversación ya en otros temas, no autoriza ningún guardado')
+  }
+
   // Sin borrador.
   {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())

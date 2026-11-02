@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { seleccionarBorradorVigente, PREFIJO_CONFIRMACION_APROBACION } from '../lib/planeacion/extraerBorrador'
+import { seleccionarBorradorVigente, MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR, PREFIJO_CONFIRMACION_APROBACION } from '../lib/planeacion/extraerBorrador'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -93,6 +93,32 @@ verificar(seleccionarBorradorVigente([a('📝 EXAMEN DE CIENCIAS\n\n1. …')]).e
   verificar(/const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion\(/.test(ruta), '8a. El servidor usa el mismo detector que el cliente (nunca para un prompt de edición)')
   verificar(ruta.includes('? clasificacionAprobarPlaneacion()') && ruta.includes(': await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))'), '8b. Con orden detectada no se llama al clasificador; sin ella, igual que antes')
   verificar(ruta.includes("aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''))"), '8c. La aprobación recibe el historial de esta conversación y el mensaje del docente')
+}
+
+// 9. Un bloque antiguo no basta por sí solo.
+{
+  const intermedios = (n: number) => Array.from({ length: n }, (_, i) => [u(`pregunta ${i}`), a(`respuesta ${i}`)]).flat()
+  verificar(nombreDe(seleccionarBorradorVigente([a(A), ...intermedios(MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR)])) === 'Los insectos', `9a. Hasta ${MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR} respuestas intermedias (error, reintento, aclaración): se recupera`)
+  verificar(seleccionarBorradorVigente([a(A), ...intermedios(MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR + 1)]).estado === 'no_reciente', '9b. Con más respuestas intermedias el bloque antiguo ya no autoriza guardar')
+  verificar(seleccionarBorradorVigente([a(A), ...intermedios(10)], 'Aprueba la planeación Los insectos').estado === 'no_reciente', '9c. Ni siquiera nombrándolo explícitamente')
+}
+
+// 10. Sin datos de otras conversaciones.
+{
+  const aprobar = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarBorrador.ts'), 'utf-8')
+  const extraer = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'extraerBorrador.ts'), 'utf-8')
+  verificar(!/mensajes_chat|conversaciones_chat|conversacionId/.test(aprobar + extraer), '10a. La selección y la aprobación no leen conversaciones guardadas: solo el historial recibido')
+  verificar(seleccionarBorradorVigente([u('Apruébala')]).estado === 'sin_borrador' && nombreDe(seleccionarBorradorVigente([a(A)])) === 'Los insectos', '10b. Función pura: el resultado depende solo del historial que se le pasa')
+}
+
+// 11. Un solo detector compartido entre cliente y servidor.
+{
+  const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+  const servicio = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'AsistenteService.ts'), 'utf-8')
+  const importacion = "import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'"
+  verificar(ruta.includes(importacion) && servicio.includes(importacion), '11a. Servidor y cliente importan el mismo módulo del detector')
+  verificar(!/apruebala|guardala/i.test(ruta + servicio), '11b. Ninguno de los dos define reglas propias de aprobación')
+  verificar(ruta.includes('esBorradorPlaneacion(h.content)') && servicio.includes('esBorradorPlaneacion(this.documentoActivo.texto)'), '11c. Ambos usan la misma definición de "borrador de planeación" (esBorradorPlaneacion)')
 }
 
 async function main() {

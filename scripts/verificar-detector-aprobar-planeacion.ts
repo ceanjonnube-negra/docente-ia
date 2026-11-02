@@ -67,6 +67,13 @@ async function main() {
     'Agrega una actividad y apruébala',
     'Implementa la planeación.',
     'Guárdala',
+    'Apruébala pero cambia el título',
+    'Guarda los cambios',
+    'Guárdala con otro nombre',
+    'Aprueba la planeación con estos cambios',
+    'Revisa la planeación y apruébala',
+    '¿La apruebo o la corrijo?',
+    'Nunca la apruebes sin revisarla',
     '',
   ]
   for (const t of negativas) verificar(!detectarAprobarPlaneacion(t, CON_PLANEACION), `2. Negativa: ${JSON.stringify(t)}`)
