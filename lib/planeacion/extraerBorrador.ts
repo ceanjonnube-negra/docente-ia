@@ -15,7 +15,9 @@
 // el historial que el servidor ya recibe, así que se puede parsear de
 // forma confiable sin tocar ni la interfaz ni la base de datos.
 
-export type DiaSecuenciaDidactica = { dia: number; resumen: string }
+import { esDocumentoFormal } from '../asistente/documentos'
+
+export type DiaSecuenciaDidactica ={ dia: number; resumen: string }
 
 export type ResumenBorrador = {
   nombre: string
@@ -102,10 +104,13 @@ function extraerSecuenciaDidactica(texto: string): DiaSecuenciaDidactica[] {
 export function extraerResumenBorrador(historial: { role: string; content: string }[]): ResumenBorrador | null {
   const ultimo = historial[historial.length - 1]
   if (!ultimo || ultimo.role !== 'assistant') return null
+  return extraerResumenDeTexto(ultimo.content)
+}
 
-  const indiceBloque = ultimo.content.indexOf(ETIQUETA_INICIO_BLOQUE)
+function extraerResumenDeTexto(contenido: string): ResumenBorrador | null {
+  const indiceBloque = contenido.indexOf(ETIQUETA_INICIO_BLOQUE)
   if (indiceBloque === -1) return null
-  const bloque = ultimo.content.slice(indiceBloque)
+  const bloque = contenido.slice(indiceBloque)
 
   const nombre = extraerCampo(bloque, 'Nombre')
   const fechaInicio = extraerCampo(bloque, 'Fecha de inicio')
@@ -143,6 +148,83 @@ export function extraerResumenBorrador(historial: { role: string; content: strin
 export function tieneBloqueResumen(historial: { role: string; content: string }[]): boolean {
   const ultimo = historial[historial.length - 1]
   return !!ultimo && ultimo.role === 'assistant' && ultimo.content.includes(ETIQUETA_INICIO_BLOQUE)
+}
+
+// Inicio fijo del mensaje con que /api/chat confirma una aprobación
+// exitosa (ver app/api/chat/route.ts) — una sola fuente para que
+// seleccionarBorradorVigente reconozca "esta planeación ya se guardó".
+export const PREFIJO_CONFIRMACION_APROBACION = 'Listo, guardé la planeación de '
+
+export type SeleccionBorrador =
+  | { estado: 'listo'; resumen: ResumenBorrador; contenido: string }
+  | { estado: 'sin_borrador' }
+  | { estado: 'incompleto' }
+  | { estado: 'ya_aprobado' }
+  | { estado: 'otro_documento' }
+  | { estado: 'referencia_no_vigente'; nombreVigente: string }
+
+function normalizarNombre(texto: string): string {
+  return texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// El borrador VIGENTE para aprobar, dentro del historial de ESTA
+// conversación (el que el cliente envía — nunca se consultan otras).
+// A diferencia de extraerResumenBorrador, tolera respuestas intermedias
+// (un error de guardado, una aclaración, "No encontré un borrador…")
+// entre el borrador y la orden de aprobar. Reglas, recorriendo los
+// turnos del asistente del más reciente al más antiguo:
+// - El PRIMER turno con bloque de resumen es el único candidato: nunca
+//   se cae a un borrador más antiguo, ni siquiera si el vigente está
+//   incompleto (→ 'incompleto').
+// - Si antes de llegar a él aparece la confirmación de una aprobación
+//   exitosa (PREFIJO_CONFIRMACION_APROBACION), ese borrador ya se
+//   guardó (→ 'ya_aprobado').
+// - Si antes aparece otro documento formal (examen, circular…), no hay
+//   certeza de qué se quiere aprobar (→ 'otro_documento').
+// - Si mensajeDocente nombra otro borrador de la conversación distinto
+//   del vigente (→ 'referencia_no_vigente'): nunca se aprueba uno viejo.
+export function seleccionarBorradorVigente(historial: { role: string; content: string }[], mensajeDocente = ''): SeleccionBorrador {
+  let indiceVigente = -1
+  let otroDocumentoDespues = false
+  for (let i = historial.length - 1; i >= 0; i--) {
+    const turno = historial[i]
+    if (turno.role !== 'assistant') continue
+    if (turno.content.includes(ETIQUETA_INICIO_BLOQUE)) {
+      indiceVigente = i
+      break
+    }
+    if (turno.content.trim().startsWith(PREFIJO_CONFIRMACION_APROBACION)) return { estado: 'ya_aprobado' }
+    if (esDocumentoFormal(turno.content)) otroDocumentoDespues = true
+  }
+  if (indiceVigente === -1) return { estado: 'sin_borrador' }
+  if (otroDocumentoDespues) return { estado: 'otro_documento' }
+
+  const contenido = historial[indiceVigente].content
+  const resumen = extraerResumenDeTexto(contenido)
+  if (!resumen) return { estado: 'incompleto' }
+
+  const mensaje = normalizarNombre(mensajeDocente)
+  if (mensaje) {
+    const nombreVigente = normalizarNombre(resumen.nombre)
+    const restante = mensaje.split(nombreVigente).join(' ')
+    for (let i = 0; i < indiceVigente; i++) {
+      const turno = historial[i]
+      if (turno.role !== 'assistant' || !turno.content.includes(ETIQUETA_INICIO_BLOQUE)) continue
+      const bloque = turno.content.slice(turno.content.indexOf(ETIQUETA_INICIO_BLOQUE))
+      const otro = normalizarNombre(extraerCampo(bloque, 'Nombre') ?? '')
+      if (otro.length >= 4 && otro !== nombreVigente && restante.includes(otro)) {
+        return { estado: 'referencia_no_vigente', nombreVigente: resumen.nombre }
+      }
+    }
+  }
+
+  return { estado: 'listo', resumen, contenido }
 }
 
 // El texto COMPLETO del borrador tal como Claude lo redactó (todos los

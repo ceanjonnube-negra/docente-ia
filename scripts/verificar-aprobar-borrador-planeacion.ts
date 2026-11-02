@@ -535,6 +535,98 @@ async function main() {
     verificar(clasificador.includes('requiere_consulta_oficial=true SOLO cuando'), '30. La regla de consultas SEP sigue presente')
   }
 
+  // --- Borrador vigente con respuestas intermedias (seleccionarBorradorVigente) ---
+
+  // Error de guardado y reintento: el borrador ya no es el último turno.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    interno.forzarErrorEn('planeacion_proyectos', 'insert')
+    const r1 = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }], 'Apruébala y guárdala')
+    verificar(!r1.ok && r1.codigo === 'ERROR_GUARDADO', 'V1. Primer intento falla de forma controlada')
+    interno.quitarErrorForzado('planeacion_proyectos', 'insert')
+    const historial = [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: 'Apruébala y guárdala' },
+      { role: 'assistant', content: 'No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.' },
+    ]
+    const r2 = await aprobarBorradorPlaneacion(sb, sesion(), historial, 'Apruébala y guárdala')
+    verificar(r2.ok === true && r2.planeacion.nombre === 'Leyendas de mi comunidad', 'V1b. Tras el error, el reintento recupera el borrador vigente y guarda')
+    verificar(interno._tabla('planeaciones').length === 1 && interno._tabla('planeacion_proyectos').length === 1, 'V1c. Sin duplicados: 1 planeación y 1 proyecto (reutiliza la fila version=0)')
+    verificar(interno._tabla('proyectos_seguimiento').length === 1 && interno._tabla('hojas_evaluacion').length === 1, 'V1d. Sin duplicados: 1 proyecto de Seguimiento y 1 hoja')
+
+    // Ya aprobado: la confirmación queda en el historial.
+    const conConfirmacion = [...historial, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: 'Listo, guardé la planeación de Leyendas de mi comunidad para 10 días efectivos.' }]
+    const escriturasAntes = interno.escrituras.length
+    const r3 = await aprobarBorradorPlaneacion(sb, sesion(), conConfirmacion, 'Apruébala')
+    verificar(!r3.ok && r3.codigo === 'YA_GUARDADA', 'V2. Un borrador ya aprobado no se aprueba de nuevo')
+    verificar(interno.escrituras.length === escriturasAntes, 'V2b. Ninguna escritura al detectar la aprobación previa')
+  }
+
+  // Ya aprobado SIN la confirmación en el historial: la huella lo protege.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: BLOQUE_VALIDO }, { role: 'user', content: '¿Y el horario?' }, { role: 'assistant', content: 'El horario se ajusta después.' }], 'Apruébala')
+    verificar(!r.ok && r.codigo === 'YA_GUARDADA' && interno._tabla('planeaciones').length === 1, 'V2c. Sin confirmación en el historial, la huella estable sigue impidiendo duplicar')
+  }
+
+  // Aclaración intermedia.
+  {
+    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: '¿Cuántos días dura?' },
+      { role: 'assistant', content: 'Dura 10 días efectivos.' },
+    ], 'Apruébala')
+    verificar(r.ok === true, 'V3. Con una aclaración intermedia se aprueba el borrador vigente')
+  }
+
+  // Dos borradores: siempre el vigente, nunca el anterior.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const historial = [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: 'amplíala una semana' },
+      { role: 'assistant', content: BLOQUE_CORREGIDO },
+      { role: 'user', content: 'Apruébala' },
+      { role: 'assistant', content: 'No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.' },
+    ]
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), historial, 'Apruébala')
+    verificar(r.ok === true && r.planeacion.nombre === 'Leyendas de mi comunidad (ampliada)', 'V4. Con dos borradores se aprueba el vigente (el más reciente)')
+    const rRef = await aprobarBorradorPlaneacion(clienteFalso(DOCENTE_1, datosBase()).sb, sesion(), historial, 'Aprueba la planeación Leyendas de mi comunidad')
+    verificar(!rRef.ok && rRef.codigo === 'BORRADOR_NO_DETERMINADO' && rRef.mensaje.includes('Leyendas de mi comunidad (ampliada)'), 'V4b. Una referencia ambigua o a un borrador anterior no aprueba nada y nombra el vigente')
+    verificar(interno._tabla('planeaciones').length === 1, 'V4c. Solo se guardó la planeación vigente')
+  }
+
+  // Otro documento después del borrador.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: 'Hazme un examen de leyendas' },
+      { role: 'assistant', content: '📝 EXAMEN DE LEYENDAS\n\n1. ¿Qué es una leyenda?' },
+    ], 'Apruébala')
+    verificar(!r.ok && r.codigo === 'BORRADOR_NO_DETERMINADO' && interno.escrituras.length === 0, 'V5. Con otro documento después del borrador no se aprueba nada y se explica')
+  }
+
+  // Borrador vigente incompleto: nunca se cae a uno anterior completo.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [
+      { role: 'assistant', content: BLOQUE_VALIDO },
+      { role: 'user', content: 'cámbiale el nombre' },
+      { role: 'assistant', content: BLOQUE_INCOMPLETO },
+    ], 'Apruébala')
+    verificar(!r.ok && r.codigo === 'BORRADOR_INCOMPLETO' && interno.escrituras.length === 0, 'V6. Un borrador vigente incompleto no recurre a uno anterior')
+  }
+
+  // Sin borrador.
+  {
+    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'user', content: 'Hola' }, { role: 'assistant', content: 'Hola, ¿en qué te ayudo?' }], 'Apruébala')
+    verificar(!r.ok && r.codigo === 'SIN_BORRADOR' && interno.escrituras.length === 0, 'V7. Sin borrador no se guarda ni se genera nada')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)

@@ -187,6 +187,16 @@ const FALLBACK: ClasificacionNivel0 = {
   requiere_consulta_oficial: false,
 };
 
+// Orden inequívoca de aprobar la planeación ya reconocida de forma
+// determinista (ver detectarAprobarPlaneacion) — no se pregunta al
+// modelo: la regla 4 solo marca 'aprobar' si el turno INMEDIATO
+// anterior es el borrador, y tras un error de guardado o una aclaración
+// podría clasificarlo como 'ajustar' y redactar otra planeación.
+// aprobarBorradorPlaneacion vuelve a validar todo de forma determinista.
+export function clasificacionAprobarPlaneacion(): ClasificacionNivel0 {
+  return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 1, requiere_ia: false, accion_planeacion_generar: 'aprobar', nivel_confianza: 1 };
+}
+
 // Últimos turnos reales de la conversación — solo se usan para resolver
 // una confirmación de seguimiento breve ("sí", "correcto") cuando el
 // turno anterior del asistente preguntó "¿Te refieres a...?" antes de

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { clasificacionAprobarPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { obtenerSesionContexto } from '@/lib/sesionContexto'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
@@ -22,7 +22,8 @@ import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
-import { extraerResumenBorrador, extraerTextoCompletoBorrador } from '@/lib/planeacion/extraerBorrador'
+import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
+import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
@@ -774,7 +775,16 @@ export async function POST(req: NextRequest) {
       // propia pregunta "¿Te refieres a...?" del turno anterior (ver
       // regla 13 en clasificadorNivel0.ts). No es historial "de
       // edición" (esEdicionDocumento), así que no aplica ese riesgo.
-      const clasificacion = await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+      // Orden inequívoca de aprobar con un borrador de planeación en ESTA
+      // conversación: mismo detector que el cliente (ver
+      // detectarAprobarPlaneacion) y sin pasar por el modelo — ver
+      // clasificacionAprobarPlaneacion.
+      const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion(String(mensaje ?? ''), {
+        hayBorradorPlaneacion: historialMensajes.some((h) => h.role === 'assistant' && esBorradorPlaneacion(h.content)),
+      })
+      const clasificacion = ordenAprobarPlaneacion
+        ? clasificacionAprobarPlaneacion()
+        : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       marcarTelemetria('intent:classification_finished')
       requiereConsultaOficial = clasificacion.requiere_consulta_oficial === true
       if (requiereConsultaOficial) {
@@ -964,7 +974,7 @@ export async function POST(req: NextRequest) {
       // nunca confía ciegamente en la clasificación.
       if (clasificacion.intencion_principal === 'planeacion_generar' && clasificacion.accion_planeacion_generar === 'aprobar') {
         try {
-          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes)
+          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''))
           if (!resultado.ok) {
             console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)
             return respuestaTexto(resultado.mensaje)
@@ -973,7 +983,7 @@ export async function POST(req: NextRequest) {
           const fechas = p.fecha_inicio && p.fecha_fin ? `, del ${p.fecha_inicio} al ${p.fecha_fin}` : ''
           const duracion = resultado.duracionDias ? ` para ${resultado.duracionDias} días efectivos` : ''
           console.log(`[NIVEL0] planeacion_generar — aprobación OK, planeacion_id=${p.id}, hoja=${resultado.hoja.identificadorVisible}`)
-          const mensajeVoz = `Listo, guardé la planeación de ${p.nombre}${duracion}${fechas}.`
+          const mensajeVoz = `${PREFIJO_CONFIRMACION_APROBACION}${p.nombre}${duracion}${fechas}.`
           const mensajeTexto = `${mensajeVoz} Ya aparece en Planeación, queda disponible para consulta, y la hoja de evaluación se utilizará al finalizar el proyecto.`
           // Documento(s) DEFINITIVO(s) — mismo marcador [[DOCUMENTO_ARCHIVO:...]]
           // que la vista previa, ahora con URLs firmadas reales de

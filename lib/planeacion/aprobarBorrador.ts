@@ -1,7 +1,7 @@
 // lib/planeacion/aprobarBorrador.ts
 //
 // Orquestación de la aprobación real de un borrador (C-005, Paso 3C):
-// extrae el resumen determinista del último turno del asistente
+// extrae el resumen determinista del borrador vigente (ver seleccionarBorradorVigente)
 // (lib/planeacion/extraerBorrador.ts), lo valida estructuralmente
 // (lib/planeacion/validarContenidoBorrador.ts), resuelve el contexto
 // real del docente desde la sesión autenticada (nunca del texto), y
@@ -36,7 +36,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
 import { resolverPeriodoEvaluacionActual } from './generarBorrador'
-import { extraerResumenBorrador, extraerTextoCompletoBorrador, tieneBloqueResumen, type ResumenBorrador } from './extraerBorrador'
+import { extraerTextoCompletoBorrador, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
@@ -50,6 +50,7 @@ export type CodigoErrorAprobacion =
   | 'SESION_INVALIDA'
   | 'GRUPO_NO_DISPONIBLE'
   | 'YA_GUARDADA'
+  | 'BORRADOR_NO_DETERMINADO'
   | 'ERROR_GUARDADO'
 
 // Un formato definitivo (Word o PDF) de la planeación ya generado y
@@ -181,19 +182,34 @@ async function buscarProyectoSeguimientoPorHuella(sb: SupabaseClient, sesion: Se
 export async function aprobarBorradorPlaneacion(
   sb: SupabaseClient,
   sesion: SesionContexto,
-  historial: TurnoHistorial[]
+  historial: TurnoHistorial[],
+  // Texto que escribió el docente en este turno — solo para detectar
+  // si nombra un borrador distinto del vigente (ver seleccionarBorradorVigente).
+  mensajeDocente = ''
 ): Promise<ResultadoAprobacion> {
   if (!sesion.grupo_activo_id) {
     return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: 'No tengo un grupo activo configurado para guardar la planeación.' }
   }
 
-  const resumen = extraerResumenBorrador(historial)
-  if (!resumen) {
-    if (tieneBloqueResumen(historial)) {
-      return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }
-    }
+  // El borrador vigente de ESTA conversación, aunque después haya habido
+  // un error de guardado o una aclaración (ver seleccionarBorradorVigente).
+  const seleccion = seleccionarBorradorVigente(historial, mensajeDocente)
+  if (seleccion.estado === 'incompleto') {
+    return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }
+  }
+  if (seleccion.estado === 'ya_aprobado') {
+    return { ok: false, codigo: 'YA_GUARDADA', mensaje: 'Esta planeación ya está guardada.' }
+  }
+  if (seleccion.estado === 'otro_documento') {
+    return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'Después de la planeación trabajamos en otro documento, así que no puedo saber con certeza cuál guardar. Pídeme que vuelva a mostrar la planeación y luego apruébala.' }
+  }
+  if (seleccion.estado === 'referencia_no_vigente') {
+    return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: `La planeación más reciente de esta conversación es «${seleccion.nombreVigente}». Si quieres guardar otra, pídeme que la presente de nuevo y luego apruébala.` }
+  }
+  if (seleccion.estado === 'sin_borrador') {
     return { ok: false, codigo: 'SIN_BORRADOR', mensaje: 'No encontré un borrador de planeación listo para guardar en esta conversación. ¿Quieres que prepare uno?' }
   }
+  const resumen = seleccion.resumen
 
   // Validación estructural determinista — nunca se persiste un
   // borrador incompleto, sin importar que el bloque de resumen se
@@ -375,8 +391,9 @@ export async function aprobarBorradorPlaneacion(
     let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
     if (!documentoWord || !documentoPdf) {
       try {
-        const ultimoTurno = historial[historial.length - 1]
-        const textoCompleto = ultimoTurno?.role === 'assistant' ? extraerTextoCompletoBorrador(ultimoTurno.content) : ''
+        // El MISMO turno del borrador vigente que se aprobó — no el
+        // último del historial, que puede ser un error o una aclaración.
+        const textoCompleto = extraerTextoCompletoBorrador(seleccion.contenido)
         if (textoCompleto) {
           if (!documentoWord) {
             const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
