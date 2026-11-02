@@ -38,6 +38,7 @@ type Escritura = { tabla: string; tipo: 'insert' | 'update' | 'delete' }
 
 class ConsultaFalsa {
   private filtros: Array<[string, unknown]> = []
+  private condiciones: Array<(f: Fila) => boolean> = []
   private rangos: Array<['gt', string, unknown]> = []
   private orden: { columna: string; ascendente: boolean } | null = null
   private operacion: 'consultar' | 'insertar' | 'actualizar' = 'consultar'
@@ -66,6 +67,24 @@ class ConsultaFalsa {
 
   eq(columna: string, valor: unknown) {
     this.filtros.push([columna, valor])
+    return this
+  }
+
+  // UPDATE condicional del generador de hojas (vincularHojaAlProyecto):
+  // .is(col, null) y .or("col.is.null,col.not.in.(a,b)").
+  is(columna: string, valor: unknown) {
+    this.condiciones.push((f) => (valor === null ? f[columna] == null : f[columna] === valor))
+    return this
+  }
+
+  or(expresion: string) {
+    const alternativas = (expresion.match(/[^,(]+(\([^)]*\))?/g) ?? []).map((parte) => {
+      const m = parte.match(/^(\w+)\.(?:is\.null|not\.in\.\((.*)\))$/)
+      if (!m) throw new Error(`or() no soportado: ${parte}`)
+      const [, columna, lista] = m
+      return lista === undefined ? (f: Fila) => f[columna] == null : (f: Fila) => f[columna] != null && !lista.split(",").includes(String(f[columna]))
+    })
+    this.condiciones.push((f) => alternativas.some((alternativa) => alternativa(f)))
     return this
   }
 
@@ -101,7 +120,7 @@ class ConsultaFalsa {
     }
 
     if (this.operacion === 'actualizar') {
-      const coincidentes = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v))
+      const coincidentes = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v) && this.condiciones.every((p) => p(f)))
       coincidentes.forEach((f) => Object.assign(f, this.payload))
       return { data: coincidentes, error: null }
     }

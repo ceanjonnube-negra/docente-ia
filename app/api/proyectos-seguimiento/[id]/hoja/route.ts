@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { generarYGuardarHojaSeguimiento } from '@/lib/seguimiento/generarYGuardarHoja'
+import { generarYGuardarHojaSeguimiento, MENSAJE_PROYECTO_CONFIRMADO } from '@/lib/seguimiento/generarYGuardarHoja'
 import { ASPECTOS_GENERALES, type IndicadorProyecto } from '@/lib/seguimiento/tipos'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 
@@ -8,8 +8,10 @@ export const runtime = 'nodejs'
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // Mismo conjunto que foto-hoja/analizar-hoja: una vez confirmados los
-// resultados, la hoja ya no se regenera (generarYGuardarHoja devolvería
-// el proyecto a 'hoja_generada' y desbloquearía una nueva captura).
+// resultados, la hoja ya no se regenera (volver a 'hoja_generada'
+// desbloquearía una nueva captura). Este rechazo temprano evita trabajo;
+// la garantía frente a una confirmación concurrente es el UPDATE
+// condicional de generarYGuardarHoja (resultado.conflicto).
 const ESTADOS_POST_CONFIRMACION = new Set(['confirmado', 'corregido', 'sustituido', 'cerrado'])
 
 // Genera la hoja de un proyecto ya existente — llamada por la pantalla
@@ -71,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // posterior a la confirmación. Se rechaza antes de leer o escribir
     // nada más.
     if (proyecto.confirmado_en || ESTADOS_POST_CONFIRMACION.has(proyecto.estado)) {
-      return NextResponse.json({ error: 'Los resultados de este proyecto ya fueron confirmados; la hoja no se puede volver a generar.' }, { status: 409 })
+      return NextResponse.json({ error: MENSAJE_PROYECTO_CONFIRMADO }, { status: 409 })
     }
 
     let periodoNombre: string | null = null
@@ -104,7 +106,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
 
     if (!resultado.ok) {
-      return NextResponse.json({ error: resultado.error }, { status: 500 })
+      return NextResponse.json({ error: resultado.error }, { status: resultado.conflicto ? 409 : 500 })
     }
 
     const { data: proyectoActualizado } = await supabase

@@ -43,7 +43,32 @@ export type ResultadoGenerarHoja =
   // por el botón "Ver PDF" de la tarjeta. `url` sigue siendo,
   // exactamente igual que antes, la URL de descarga forzada.
   | { ok: true; hojaId: string; identificadorVisible: string; url: string; urlVer: string }
-  | { ok: false; error: string }
+  // conflicto: los resultados del proyecto se confirmaron mientras se
+  // generaba la hoja — el proyecto no se tocó (ver vincularHojaAlProyecto).
+  | { ok: false; error: string; conflicto?: true }
+
+export const MENSAJE_PROYECTO_CONFIRMADO = 'Los resultados de este proyecto ya fueron confirmados; la hoja no se puede volver a generar.'
+
+// Mismo conjunto que foto-hoja/analizar-hoja/hoja: estados posteriores a
+// la confirmación de resultados.
+const ESTADOS_POST_CONFIRMACION = ['confirmado', 'corregido', 'sustituido', 'cerrado']
+
+// Enlaza la hoja y deja el proyecto en 'hoja_generada' SOLO si sus
+// resultados siguen sin confirmar. La condición viaja en el mismo UPDATE
+// (PostgreSQL la evalúa de forma atómica sobre la fila, también frente a
+// un confirmar-hoja concurrente) — una lectura previa no bastaría.
+// 0 filas afectadas = conflicto: el proyecto queda exactamente como estaba.
+async function vincularHojaAlProyecto(sb: SupabaseClient, proyectoId: string, hojaId: string): Promise<'ok' | 'conflicto' | 'error'> {
+  const { data, error } = await sb
+    .from('proyectos_seguimiento')
+    .update({ hoja_id: hojaId, estado: 'hoja_generada', actualizado_en: new Date().toISOString() })
+    .eq('id', proyectoId)
+    .is('confirmado_en', null)
+    .or(`estado.is.null,estado.not.in.(${ESTADOS_POST_CONFIRMACION.join(',')})`)
+    .select('id')
+  if (error) return 'error'
+  return data && data.length > 0 ? 'ok' : 'conflicto'
+}
 
 export async function generarYGuardarHojaSeguimiento(
   sb: SupabaseClient,
@@ -82,10 +107,14 @@ export async function generarYGuardarHojaSeguimiento(
 
   if (hojaExistente && hojaExistente.storage_path) {
     // Ya estaba completamente lista de un intento anterior — nunca se
-    // regenera ni se vuelve a subir, solo se confirma el vínculo.
+    // regenera ni se vuelve a subir, solo se confirma el vínculo. Aquí no
+    // hubo ningún efecto previo, así que un conflicto no deja nada que
+    // revertir.
+    const vinculo = await vincularHojaAlProyecto(sb, datos.proyectoId, hojaExistente.id)
+    if (vinculo === 'conflicto') return { ok: false, conflicto: true, error: MENSAJE_PROYECTO_CONFIRMADO }
+    if (vinculo === 'error') return { ok: false, error: 'No se pudo enlazar la hoja con el proyecto. Intenta de nuevo.' }
     const url = await crearUrlFirmada(sb, hojaExistente.storage_path, nombreArchivoHoja(hojaExistente.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
     const urlVer = await crearUrlFirmada(sb, hojaExistente.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
-    await sb.from('proyectos_seguimiento').update({ hoja_id: hojaExistente.id, estado: 'hoja_generada', actualizado_en: new Date().toISOString() }).eq('id', datos.proyectoId)
     return { ok: true, hojaId: hojaExistente.id, identificadorVisible: hojaExistente.identificador_visible, url, urlVer }
   }
 
@@ -190,7 +219,20 @@ export async function generarYGuardarHojaSeguimiento(
     return { ok: false, error: 'No se pudo registrar el archivo de la hoja. Intenta de nuevo.' }
   }
 
-  await sb.from('proyectos_seguimiento').update({ hoja_id: hojaId, estado: 'hoja_generada', actualizado_en: new Date().toISOString() }).eq('id', datos.proyectoId)
+  const vinculo = await vincularHojaAlProyecto(sb, datos.proyectoId, hojaId)
+  if (vinculo !== 'ok') {
+    // Se revierte lo que hizo ESTE intento, en el mismo orden seguro que
+    // arriba: primero se quita la ruta (solo si sigue siendo la nuestra)
+    // y después el archivo recién subido — la hoja vuelve a quedar sin
+    // storage_path, el mismo estado incompleto y recuperable de siempre.
+    // Nunca se tocan roster/indicadores congelados, resultados ni el
+    // proyecto.
+    await sb.from('hojas_evaluacion').update({ storage_path: null }).eq('id', hojaId).eq('storage_path', ruta)
+    await eliminarArchivo(sb, ruta, BUCKET_HOJAS_SEGUIMIENTO)
+    return vinculo === 'conflicto'
+      ? { ok: false, conflicto: true, error: MENSAJE_PROYECTO_CONFIRMADO }
+      : { ok: false, error: 'No se pudo enlazar la hoja con el proyecto. Intenta de nuevo.' }
+  }
 
   const url = await crearUrlFirmada(sb, ruta, nombreArchivoHoja(identificadorVisible), BUCKET_HOJAS_SEGUIMIENTO)
   const urlVer = await crearUrlFirmada(sb, ruta, undefined, BUCKET_HOJAS_SEGUIMIENTO)

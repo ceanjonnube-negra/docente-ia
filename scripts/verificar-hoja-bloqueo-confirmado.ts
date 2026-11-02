@@ -72,9 +72,15 @@ function createClient() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sustituir = (ruta: string, exports: unknown) => { require.cache[ruta] = { id: ruta, filename: ruta, loaded: true, exports } as any }
 sustituir(require.resolve('@supabase/supabase-js'), { createClient })
+const MENSAJE_PROYECTO_CONFIRMADO = 'Los resultados de este proyecto ya fueron confirmados; la hoja no se puede volver a generar.'
+// Simula una confirmación concurrente detectada por el UPDATE condicional
+// del generador (ver scripts/verificar-hoja-confirmacion-concurrente.ts).
+let generadorEnConflicto = false
 sustituir(require.resolve('../lib/seguimiento/generarYGuardarHoja'), {
+  MENSAJE_PROYECTO_CONFIRMADO,
   generarYGuardarHojaSeguimiento: async () => {
     registro.generar++
+    if (generadorEnConflicto) return { ok: false, conflicto: true, error: MENSAJE_PROYECTO_CONFIRMADO }
     return { ok: true, hojaId: 'h', identificadorVisible: 'SG-TEST', url: 'u', urlVer: 'v' }
   },
 })
@@ -114,6 +120,14 @@ async function main() {
   r = await pedir(id(9))
   verificar(r.status === 409 && sinEfectos(), '3b. Estado confirmado sin confirmado_en → 409 sin efectos')
   verificar(/confirmad/i.test(String(r.cuerpo.error)), '3c. El 409 explica que los resultados ya fueron confirmados')
+
+  // 3d. Confirmación concurrente: la lectura previa vio el proyecto sin
+  //     confirmar, pero el UPDATE condicional del generador no afectó filas.
+  generadorEnConflicto = true
+  r = await pedir(id(3))
+  generadorEnConflicto = false
+  verificar(r.status === 409 && registro.generar === 1 && r.cuerpo.error === MENSAJE_PROYECTO_CONFIRMADO, '3d. Conflicto del generador (confirmación concurrente) → 409, no 500')
+  verificar(!registro.lecturas.slice(1).includes('proyectos_seguimiento'), '3e. Tras el conflicto no se vuelve a leer ni a devolver el proyecto')
 
   // 4. Las verificaciones previas siguen intactas y van antes del bloqueo.
   verificar((await pedir('no-es-uuid')).status === 400, '4a. Id no UUID → 400')
