@@ -887,9 +887,13 @@ class AsistenteServiceImpl {
           break
         }
 
-        // Editando un documento existente: el texto que llega reemplaza
-        // ESE mensaje, nunca abre una burbuja nueva.
-        if (this.editandoDocumentoId) {
+        // FINALIZAR ARCHIVO: el texto que llega reemplaza el mensaje del
+        // documento, nunca abre una burbuja nueva. Una edición de
+        // contenido NO entra aquí (append-only, ver enviarComoEdicion): su
+        // respuesta — documento nuevo, aclaración o error en texto — cae
+        // al turno normal de abajo en una burbuja propia, sin pisar el
+        // documento fuente.
+        if (this.editandoDocumentoId && this.documentoFinalizandoId === this.editandoDocumentoId) {
           const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
           if (idx !== -1) {
             // FINALIZAR ARCHIVO (no una edición de contenido real): el
@@ -951,6 +955,13 @@ class AsistenteServiceImpl {
         if (this.editandoDocumentoId) {
           if (textoVacio) {
             const estabaFinalizandoArchivo = this.documentoFinalizandoId !== null
+            // Edición de contenido (append-only): no dejar en pantalla la
+            // burbuja nueva vacía que abrió 'respuesta-parcial'.
+            if (!estabaFinalizandoArchivo && this.turnoAbierto) {
+              const turnoVacio = this.turnoAbierto
+              this.mensajes = this.mensajes.filter(m => m.id !== turnoVacio)
+              this.turnoAbierto = null
+            }
             this.editandoDocumentoId = null
             this.documentoFinalizandoId = null
             this.textoDocumentoFinalizando = null
@@ -958,34 +969,44 @@ class AsistenteServiceImpl {
             this.notificar()
             break
           }
-          // FINALIZAR ARCHIVO: el marcador [[DOCUMENTO_ARCHIVO:...]] ya
-          // se procesó en el motor (ver motorTextoClaude) y llega aquí
-          // como evento.archivo — se adjunta al mensaje para que la
-          // tarjeta muestre el botón de descarga real.
-          if (evento.archivo) {
-            const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
-            if (idx !== -1) {
-              this.mensajes = [
-                ...this.mensajes.slice(0, idx),
-                { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
-                ...this.mensajes.slice(idx + 1),
-              ]
+          if (this.documentoFinalizandoId === this.editandoDocumentoId) {
+            // FINALIZAR ARCHIVO: el marcador [[DOCUMENTO_ARCHIVO:...]] ya
+            // se procesó en el motor (ver motorTextoClaude) y llega aquí
+            // como evento.archivo — se adjunta al mensaje para que la
+            // tarjeta muestre el botón de descarga real.
+            if (evento.archivo) {
+              const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
+              if (idx !== -1) {
+                this.mensajes = [
+                  ...this.mensajes.slice(0, idx),
+                  { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
+                  ...this.mensajes.slice(idx + 1),
+                ]
+              }
             }
+            // El documento sigue activo (con su texto real intacto, ver
+            // arriba) — así un segundo formato ("también en PDF") o una
+            // nueva edición reutilizan el contenido real en vez de partir
+            // de cero o de "Documento generado correctamente.".
+            const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
+            if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
+            this.editandoDocumentoId = null
+            this.documentoFinalizandoId = null
+            this.textoDocumentoFinalizando = null
+            this.intentosFinalizacionActual = 0
+            this.ultimoIntentoEdicion = null
+            this.notificar()
+            break
           }
-          // El documento sigue activo (con su texto real intacto, ver
-          // arriba) tanto si se acaba de finalizar a archivo como si fue
-          // una edición de contenido — así un segundo formato ("también
-          // en PDF") o una nueva edición reutilizan el contenido real en
-          // vez de partir de cero o de "Documento generado correctamente.".
-          const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
-          if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
+          // EDICIÓN DE CONTENIDO con texto real (append-only, mismo
+          // diseño que test/images-v1): el documento fuente nunca se toca
+          // aquí. Se limpia el estado de edición y se deja caer, SIN
+          // break, al turno normal de abajo, que ya sabe completar la
+          // respuesta nueva (documento editado, aclaración o error en
+          // texto), adjuntar archivo y mover documentoActivo solo si la
+          // respuesta es un documento formal.
           this.editandoDocumentoId = null
-          this.documentoFinalizandoId = null
-          this.textoDocumentoFinalizando = null
-          this.intentosFinalizacionActual = 0
           this.ultimoIntentoEdicion = null
-          this.notificar()
-          break
         }
 
         if (textoVacio && this.turnoAbierto) {
@@ -1100,6 +1121,7 @@ class AsistenteServiceImpl {
         this.estadoMotor = 'error'
         const estabaEditandoUnDocumento = this.editandoDocumentoId !== null
         const estabaFinalizandoArchivo = this.documentoFinalizandoId !== null
+        const turnoParcial = this.turnoAbierto
         this.editandoDocumentoId = null
         this.documentoFinalizandoId = null
         this.textoDocumentoFinalizando = null
@@ -1107,6 +1129,12 @@ class AsistenteServiceImpl {
         this.turnoUsuarioPendiente = false
         this.textoAsistentePendiente = ''
         this.finalPendiente = false
+        // Una edición de contenido que falló a medio streaming deja una
+        // burbuja nueva a medias (append-only) — se quita para que el
+        // reintento no la duplique.
+        if (estabaEditandoUnDocumento && !estabaFinalizandoArchivo && turnoParcial) {
+          this.mensajes = this.mensajes.filter(m => m.id !== turnoParcial)
+        }
         if (estabaEditandoUnDocumento) {
           // Falla generando/editando un documento — nunca se mete al
           // chat como si fuera una respuesta del asistente. El documento
@@ -1586,6 +1614,10 @@ ${instruccion}`
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
     this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }]
+    // Append-only: la respuesta de una edición de contenido es un turno
+    // NUEVO, nunca continuación de un turnoAbierto residual de antes.
+    // editandoDocumentoId sigue siendo solo el documento FUENTE.
+    this.turnoAbierto = null
     this.editandoDocumentoId = idDocumento
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion(). Se limpia solo cuando la edición
