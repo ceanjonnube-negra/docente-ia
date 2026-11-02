@@ -7,6 +7,11 @@ export const runtime = 'nodejs'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// Mismo conjunto que foto-hoja/analizar-hoja: una vez confirmados los
+// resultados, la hoja ya no se regenera (generarYGuardarHoja devolvería
+// el proyecto a 'hoja_generada' y desbloquearía una nueva captura).
+const ESTADOS_POST_CONFIRMACION = new Set(['confirmado', 'corregido', 'sustituido', 'cerrado'])
+
 // Genera la hoja de un proyecto ya existente — llamada por la pantalla
 // de creación justo después de POST /api/proyectos-seguimiento, y
 // también disponible como "Reintentar generar hoja" si ese primer
@@ -50,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const { data: proyecto, error: errorProyecto } = await supabase
       .from('proyectos_seguimiento')
-      .select('id, grupo_id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, docente_id')
+      .select('id, grupo_id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, docente_id, estado, confirmado_en')
       .eq('id', proyectoId)
       .maybeSingle()
     if (errorProyecto) {
@@ -61,6 +66,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     if (proyecto.docente_id !== docenteId) {
       return NextResponse.json({ error: 'No tienes acceso a este proyecto.' }, { status: 403 })
+    }
+    // Cualquiera de los dos indicadores basta: confirmado_en o un estado
+    // posterior a la confirmación. Se rechaza antes de leer o escribir
+    // nada más.
+    if (proyecto.confirmado_en || ESTADOS_POST_CONFIRMACION.has(proyecto.estado)) {
+      return NextResponse.json({ error: 'Los resultados de este proyecto ya fueron confirmados; la hoja no se puede volver a generar.' }, { status: 409 })
     }
 
     let periodoNombre: string | null = null
