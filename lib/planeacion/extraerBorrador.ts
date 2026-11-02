@@ -44,6 +44,13 @@ export type ResumenBorrador = {
 }
 
 const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
+
+// true si el texto es un borrador de planeación (trae el bloque de
+// resumen). Lo usa el cliente para saber si "Apruébala" se refiere a una
+// planeación (ver detectarAprobarPlaneacion) sin duplicar la etiqueta.
+export function esBorradorPlaneacion(texto: string): boolean {
+  return texto.includes(ETIQUETA_INICIO_BLOQUE)
+}
 const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/
 
 function extraerCampo(texto: string, etiqueta: string): string | null {

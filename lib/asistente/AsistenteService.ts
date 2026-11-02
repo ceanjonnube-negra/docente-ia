@@ -14,6 +14,8 @@ import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoForm
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
+import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
+import { esBorradorPlaneacion } from '@/lib/planeacion/extraerBorrador'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
@@ -1228,7 +1230,11 @@ class AsistenteServiceImpl {
     // activo, cualquier mensaje que no sea una petición de archivo
     // trabaja sobre él, nunca abre uno nuevo ni exige un verbo
     // específico al inicio.
-    if (this.documentoActivo) {
+    // Excepción: una orden inequívoca de aprobar/guardar la planeación
+    // ("Apruébala y guárdala") no es una edición — se manda como mensaje
+    // normal para que el flujo de aprobación de /api/chat la atienda
+    // (ver detectarAprobarPlaneacion).
+    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) })) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
