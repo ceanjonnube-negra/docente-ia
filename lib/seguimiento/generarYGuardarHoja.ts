@@ -221,14 +221,26 @@ export async function generarYGuardarHojaSeguimiento(
 
   const vinculo = await vincularHojaAlProyecto(sb, datos.proyectoId, hojaId)
   if (vinculo !== 'ok') {
-    // Se revierte lo que hizo ESTE intento, en el mismo orden seguro que
-    // arriba: primero se quita la ruta (solo si sigue siendo la nuestra)
-    // y después el archivo recién subido — la hoja vuelve a quedar sin
-    // storage_path, el mismo estado incompleto y recuperable de siempre.
-    // Nunca se tocan roster/indicadores congelados, resultados ni el
-    // proyecto.
-    await sb.from('hojas_evaluacion').update({ storage_path: null }).eq('id', hojaId).eq('storage_path', ruta)
-    await eliminarArchivo(sb, ruta, BUCKET_HOJAS_SEGUIMIENTO)
+    // Se revierte lo que hizo ESTE intento: primero se quita la ruta (solo
+    // si sigue siendo la nuestra) y el archivo recién subido se elimina
+    // ÚNICAMENTE si esa reversión se confirmó (sin error y con 1 fila
+    // afectada) — nunca una hoja apuntando a un PDF borrado. Si no se
+    // puede confirmar, el archivo se conserva (la referencia sigue siendo
+    // válida) y se registra; el llamador recibe el mismo error controlado,
+    // que no afirma ninguna limpieza. Nunca se tocan roster/indicadores
+    // congelados, resultados ni el proyecto.
+    const { data: revertidas, error: errorRevertir } = await sb
+      .from('hojas_evaluacion')
+      .update({ storage_path: null })
+      .eq('id', hojaId)
+      .eq('storage_path', ruta)
+      .select('id')
+    if (errorRevertir || !revertidas || revertidas.length === 0) {
+      console.error(`[HOJA_SEGUIMIENTO] no se pudo confirmar la reversión de storage_path de la hoja ${hojaId}; se conserva el archivo ${ruta}.`)
+    } else {
+      const errorEliminar = await eliminarArchivo(sb, ruta, BUCKET_HOJAS_SEGUIMIENTO)
+      if (errorEliminar) console.error(`[HOJA_SEGUIMIENTO] no se pudo eliminar el archivo ${ruta} tras revertir la hoja ${hojaId}: ${errorEliminar}`)
+    }
     return vinculo === 'conflicto'
       ? { ok: false, conflicto: true, error: MENSAJE_PROYECTO_CONFIRMADO }
       : { ok: false, error: 'No se pudo enlazar la hoja con el proyecto. Intenta de nuevo.' }

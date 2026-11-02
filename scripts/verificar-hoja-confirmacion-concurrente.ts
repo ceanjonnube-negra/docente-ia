@@ -37,6 +37,11 @@ let db: Record<string, Fila[]> = {}
 const ops: string[] = [] // bitácora de escrituras efectivas y de Storage
 let antesDelUpdateProyecto: (() => void) | null = null
 let fallarUpdateProyecto = false
+// Reversión de storage_path (update de hojas_evaluacion a null): forzar
+// error de Supabase o cambiar la fila justo antes (0 filas afectadas).
+let fallarRevertirHoja = false
+let antesDeRevertirHoja: (() => void) | null = null
+let errorAlEliminar: string | null = null
 
 function condicionOr(expr: string): (f: Fila) => boolean {
   // Soporta exactamente la forma usada: "col.is.null,col.not.in.(a,b)"
@@ -67,6 +72,11 @@ function consulta(tabla: string) {
         antesDelUpdateProyecto?.()
         antesDelUpdateProyecto = null
         if (fallarUpdateProyecto) return { data: null, error: { code: 'XX000', message: 'falla simulada' } }
+      }
+      if (tabla === 'hojas_evaluacion' && accion.valores?.storage_path === null) {
+        antesDeRevertirHoja?.()
+        antesDeRevertirHoja = null
+        if (fallarRevertirHoja) return { data: null, error: { code: 'XX000', message: 'falla simulada' } }
       }
       const afectadas = filas().filter((f) => filtros.every((p) => p(f)))
       for (const f of afectadas) Object.assign(f, accion.valores)
@@ -105,7 +115,10 @@ sustituir(require.resolve('../lib/documentGen/almacenamiento'), {
   BUCKET_HOJAS_SEGUIMIENTO: 'hojas-seguimiento',
   rutaArchivo: (docente: string, nombre: string) => `${docente}/${++secuencia}-${nombre}`,
   subirBuffer: async (_sb: unknown, ruta: string) => { ops.push(`storage upload ${ruta}`) },
-  eliminarArchivo: async (_sb: unknown, ruta: string) => { ops.push(`storage remove ${ruta}`); return null },
+  eliminarArchivo: async (_sb: unknown, ruta: string) => {
+    ops.push(errorAlEliminar ? `storage remove FALLIDO ${ruta}` : `storage remove ${ruta}`)
+    return errorAlEliminar
+  },
   crearUrlFirmada: async (_sb: unknown, ruta: string) => { ops.push('storage url'); return `https://firmada/${ruta}` },
 })
 
@@ -118,6 +131,9 @@ function preparar(proyecto: Fila, hoja: Fila | null) {
   ops.length = 0
   antesDelUpdateProyecto = null
   fallarUpdateProyecto = false
+  fallarRevertirHoja = false
+  antesDeRevertirHoja = null
+  errorAlEliminar = null
 }
 const confirmarConcurrente = () => {
   Object.assign(db.proyectos_seguimiento[0], { estado: 'confirmado', confirmado_en: CONFIRMADO_EN })
@@ -192,6 +208,56 @@ async function main() {
   fallarUpdateProyecto = true
   r = await generar()
   verificar(!r.ok && !('conflicto' in r && r.conflicto) && hoja().storage_path === null && ops.some((o) => o.startsWith('storage remove')), '3e. Error del UPDATE: falla sin conflicto y revierte su propio archivo')
+
+  // 7. Reversión tras un conflicto: el PDF solo se elimina si se confirmó
+  //    que la referencia de ESTE intento se retiró.
+  const silenciarConsola = console.error
+  const registrosError: string[] = []
+  console.error = (...args: unknown[]) => { registrosError.push(args.join(' ')) }
+  const conflictoConPdfNuevo = async () => {
+    preparar({ estado: 'requiere_revision', hoja_id: HOJA }, { storage_path: null })
+    antesDelUpdateProyecto = confirmarConcurrente
+  }
+  const subidaDe = () => ops.find((o) => o.startsWith('storage upload'))?.replace('storage upload ', '')
+  const estadoConfirmadoIntacto = () => proyecto().estado === 'confirmado' && proyecto().confirmado_en === CONFIRMADO_EN && hoja().roster_congelado !== undefined && resultadosIntactos()
+
+  // 7a. Reversión exitosa.
+  await conflictoConPdfNuevo()
+  r = await generar()
+  verificar(!r.ok && hoja().storage_path === null && ops.includes(`storage remove ${subidaDe()}`) && estadoConfirmadoIntacto(), '7a. Reversión exitosa: ruta retirada y después PDF eliminado; lo confirmado intacto')
+
+  // 7b. Error de Supabase al retirar storage_path: el PDF se conserva.
+  await conflictoConPdfNuevo()
+  fallarRevertirHoja = true
+  registrosError.length = 0
+  r = await generar()
+  let pdfIntento = subidaDe()
+  verificar(!r.ok && 'conflicto' in r && r.conflicto === true, '7b. Error al retirar storage_path: sigue siendo un conflicto controlado')
+  verificar(!ops.some((o) => o.startsWith('storage remove')), '7c. Error al retirar storage_path: el PDF NO se elimina')
+  verificar(hoja().storage_path === pdfIntento && ops.includes(`storage upload ${pdfIntento}`), '7d. La hoja apunta a un PDF que sigue existiendo (referencia válida)')
+  verificar(registrosError.some((e) => e.includes('no se pudo confirmar la reversión')) && !/limpi|elimin[oó]/i.test(r.ok ? '' : r.error), '7e. Se registra la reversión no confirmada y el error no afirma ninguna limpieza')
+  verificar(estadoConfirmadoIntacto(), '7f. Estado, confirmado_en, roster y resultados intactos')
+
+  // 7g. UPDATE de reversión sin filas afectadas (la ruta ya no es la de
+  //     este intento): no se borra nada y la otra referencia se conserva.
+  await conflictoConPdfNuevo()
+  antesDeRevertirHoja = () => { db.hojas_evaluacion[0].storage_path = 'otra/referencia-valida.pdf' }
+  registrosError.length = 0
+  r = await generar()
+  verificar(!r.ok && !ops.some((o) => o.startsWith('storage remove')), '7g. 0 filas afectadas al revertir: el PDF NO se elimina')
+  verificar(hoja().storage_path === 'otra/referencia-valida.pdf', '7h. La referencia ajena a este intento se conserva')
+  verificar(registrosError.some((e) => e.includes('no se pudo confirmar la reversión')), '7i. Se registra la reversión no confirmada')
+
+  // 7j. Error al eliminar el archivo tras una reversión confirmada.
+  await conflictoConPdfNuevo()
+  errorAlEliminar = 'falla simulada de Storage'
+  registrosError.length = 0
+  r = await generar()
+  pdfIntento = subidaDe()
+  verificar(!r.ok && 'conflicto' in r && r.conflicto === true && hoja().storage_path === null, '7j. Error al eliminar: la ruta ya está retirada (nunca apunta a un archivo inexistente)')
+  verificar(ops.includes(`storage remove FALLIDO ${pdfIntento}`) && registrosError.some((e) => e.includes('no se pudo eliminar el archivo')), '7k. Error al eliminar: se intenta una sola vez y se registra')
+  verificar(estadoConfirmadoIntacto(), '7l. Estado, confirmado_en, roster y resultados intactos')
+  console.error = silenciarConsola
 
   // 6. La aprobación de planeación sigue llamando la misma función y
   //    trata cualquier ok:false como fallo genérico (sin cambios).
