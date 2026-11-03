@@ -3,7 +3,8 @@ import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAprobarPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
-import { obtenerSesionContexto } from '@/lib/sesionContexto'
+import { mensajeGrupoNoDisponible, obtenerSesionContexto } from '@/lib/sesionContexto'
+import { leerVinculoConversacion, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
   actualizarPerfilDocente,
@@ -426,26 +427,31 @@ export async function POST(req: NextRequest) {
   // la necesitan. null = sin conversación autorizada (legacy, ajena,
   // inexistente o error); grupoId null = conversación sin grupo fijado.
   const conversacionIdSolicitada = typeof conversacionId === 'string' && UUID_CONVERSACION.test(conversacionId) ? conversacionId.toLowerCase() : null
+  // Vínculo conversación → grupo, leído UNA vez por turno y de solo
+  // lectura (lib/vinculoConversacion.ts): lo usan la sesión (grupo
+  // efectivo de todas las herramientas) y Lista Oficial, sin releerlo.
+  const vinculoConversacionPromise: Promise<VinculoConversacion> = supabaseUser
+    ? leerVinculoConversacion(supabaseUser, conversacionIdSolicitada)
+    : Promise.resolve({ estado: 'sin_conversacion' })
   let conversacionAutorizadaPromise: Promise<{ id: string; grupoId: string | null } | null> | null = null
   const obtenerConversacionAutorizada = () => {
     if (!conversacionAutorizadaPromise) {
       conversacionAutorizadaPromise = (async () => {
         if (!conversacionIdSolicitada || !supabaseUser) return null
-        const leer = () => supabaseUser
+        const vinculo = await vinculoConversacionPromise
+        if (vinculo.estado === 'con_grupo') return { id: vinculo.id, grupoId: vinculo.grupoId }
+        // Antigua (anterior a los snapshots de grupo: no se le fija),
+        // ajena, inexistente o error: sin conversación autorizada.
+        if (vinculo.estado !== 'sin_grupo') return null
+        // Sin grupo fijado: Lista Oficial pide fijarlo (mismo flujo de siempre).
+        const { error: errorRpc } = await supabaseUser.rpc('fijar_grupo_conversacion', { p_conversacion_id: conversacionIdSolicitada })
+        if (errorRpc) return { id: vinculo.id, grupoId: null }
+        const { data, error } = await supabaseUser
           .from('conversaciones_chat')
-          .select('id, grupo_contexto_version, grupo_id')
+          .select('id, grupo_id')
           .eq('id', conversacionIdSolicitada)
           .maybeSingle()
-        let { data, error } = await leer()
         if (error || !data) return null
-        // Conversación anterior a los snapshots de grupo: no se le fija.
-        if (data.grupo_contexto_version !== 1) return null
-        if (!data.grupo_id) {
-          const { error: errorRpc } = await supabaseUser.rpc('fijar_grupo_conversacion', { p_conversacion_id: conversacionIdSolicitada })
-          if (errorRpc) return { id: data.id as string, grupoId: null }
-          ;({ data, error } = await leer())
-          if (error || !data) return null
-        }
         return { id: data.id as string, grupoId: (data.grupo_id as string | null) ?? null }
       })().catch(() => null)
     }
@@ -609,7 +615,7 @@ export async function POST(req: NextRequest) {
   // IA responder "sí, ya tengo acceso a tu lista, hay 28 alumnos" en vez
   // de fingir que no sabe — ver CONCIENCIA DE DATOS REALES abajo.
   const sesion = (supabaseUser && userId)
-    ? await conLimiteDeTiempo(obtenerSesionContexto(supabaseUser, userId, zonaHoraria), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
+    ? await conLimiteDeTiempo((async () => obtenerSesionContexto(supabaseUser, userId, zonaHoraria, await vinculoConversacionPromise))(), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
         console.error('Error obteniendo sesión de contexto:', e)
         return null
       })
@@ -642,7 +648,9 @@ export async function POST(req: NextRequest) {
             alumnos.length > 0 ? `\nLista de alumnos con número de lista real (úsalo tal cual, nunca inventes uno distinto):\n${listaConNumero}` : ''
           }`
         })()
-      : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
+      : mensajeGrupoNoDisponible(sesion)
+        ? `Grupo activo: NO disponible en esta conversación. Si el maestro pide algo de sus alumnos o de su grupo, no uses datos de ningún otro grupo y responde solo esto: ${mensajeGrupoNoDisponible(sesion)}`
+        : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
     : null
 
   // LISTA OFICIAL (intención actualizar_lista_oficial, solo lectura):
@@ -1171,7 +1179,7 @@ export async function POST(req: NextRequest) {
             // solos cuando existan) y nunca se deja que Claude
             // improvise una respuesta genérica como si tuviera acceso.
             console.log(`[NIVEL4][planeacion_generar] sin grupo activo — docenteIdPresente=true grupoIdPresente=false`)
-            return respuestaTexto('No encontré un grupo activo asociado a tu cuenta. Verifica que tengas un grupo configurado en la aplicación.')
+            return respuestaTexto(mensajeGrupoNoDisponible(sesion) ?? 'No encontré un grupo activo asociado a tu cuenta. Verifica que tengas un grupo configurado en la aplicación.')
           } else if (clasificacion.intencion_principal === 'consultar_calendario' && userId) {
             // Ciclo completo (no solo "próximos 10") para que el Chat IA
             // pueda responder cualquier pregunta natural sobre el
@@ -1727,7 +1735,11 @@ Grado: [grado] | Grupo: [grupo]
               const input = JSON.parse(toolUseActivo.inputJson)
               console.log(`[REGISTRO_ESCOLAR] tipo=${input.tipo} registros=${input.registros?.length}`)
 
-              const resultadoGuardado = await ejecutarRegistroEscolar(supabaseUser!, userId!, sesion!.grupo_activo_id!, input.tipo, input.registros)
+              // Sin grupo en la sesión (p. ej. grupo de la conversación ya
+              // no válido) no se registra nada en ningún otro grupo.
+              const resultadoGuardado = sesion?.grupo_activo_id
+                ? await ejecutarRegistroEscolar(supabaseUser!, userId!, sesion.grupo_activo_id, input.tipo, input.registros)
+                : { exito: false, guardados: 0, error: mensajeGrupoNoDisponible(sesion) ?? 'No hay un grupo activo para registrar estos datos.' }
 
               const streamContinuacion = await conReintento(
                 () => client.messages.create({

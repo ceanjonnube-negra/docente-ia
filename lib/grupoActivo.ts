@@ -28,8 +28,8 @@ export type GrupoActivo = {
 }
 
 export type ResultadoGrupoActivo =
-  | { ok: true; grupo: GrupoActivo; origen: 'contexto' | 'mas_reciente' }
-  | { ok: false; motivo: 'sin_grupo' | 'error' }
+  | { ok: true; grupo: GrupoActivo; origen: 'conversacion' | 'contexto' | 'mas_reciente' }
+  | { ok: false; motivo: 'sin_grupo' | 'error' | 'grupo_fijado_no_valido' }
 
 const COLUMNAS = 'id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)'
 
@@ -44,7 +44,24 @@ function limpiar(fila: Record<string, unknown>): GrupoActivo {
   }
 }
 
-export async function resolverGrupoActivo(sb: SupabaseClient, docenteId: string): Promise<ResultadoGrupoActivo> {
+// grupoFijadoId: grupo fijado de la conversación del Chat
+// (lib/vinculoConversacion.ts). Si viene, es EL grupo de la sesión: se
+// valida con los mismos criterios (del docente, ciclo activo) y, si ya no
+// es válido, NO se sustituye por otro grupo (grupo_fijado_no_valido).
+export async function resolverGrupoActivo(sb: SupabaseClient, docenteId: string, opciones: { grupoFijadoId?: string | null } = {}): Promise<ResultadoGrupoActivo> {
+  if (opciones.grupoFijadoId) {
+    const { data: fijado, error } = await sb
+      .from('grupos')
+      .select(COLUMNAS)
+      .eq('id', opciones.grupoFijadoId)
+      .eq('docente_id', docenteId)
+      .eq('ciclos_escolares.activo', true)
+      .maybeSingle()
+    if (error) return { ok: false, motivo: 'error' }
+    if (!fijado) return { ok: false, motivo: 'grupo_fijado_no_valido' }
+    return { ok: true, grupo: limpiar(fijado), origen: 'conversacion' }
+  }
+
   const { data: contexto } = await sb
     .from('docente_contexto_activo')
     .select('grupo_id, ciclo_escolar_id')

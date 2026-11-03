@@ -312,7 +312,7 @@ Indicadores de evaluación: Identifica ideas principales; Cuenta colecciones; Si
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     verificar(ruta.includes("import { autenticarRequestApi } from '@/lib/server/authApi'"), '13. route.ts importa el mismo mecanismo de autenticación ya sancionado (autenticarRequestApi), en vez de confiar en el userId del cliente')
     verificar(ruta.includes('autenticacion?.ok ? autenticacion.user.id : null'), '14. userId se resuelve contra la identidad verificada por el servidor (auth.getUser(accessToken)), no contra el valor sin verificar del cliente')
-    verificar(ruta.includes('obtenerSesionContexto(supabaseUser, userId, zonaHoraria)'), '15. La sesión de contexto (grupo activo, ciclo, alumnos) se construye con el userId ya verificado por el servidor')
+    verificar(ruta.includes('obtenerSesionContexto(supabaseUser, userId, zonaHoraria'), '15. La sesión de contexto (grupo activo, ciclo, alumnos) se construye con el userId ya verificado por el servidor')
     verificar(!ruta.includes('obtenerSesionContexto(supabaseUser, userIdCliente'), '15b. La sesión nunca se construye con el userId sin verificar que manda el cliente')
   }
 

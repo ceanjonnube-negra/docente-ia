@@ -8,6 +8,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fechaISOHoy } from './tiempo/TimeService';
 import { nombreOficialAlumno } from './rosterGrupo';
 import { resolverGrupoActivo } from './grupoActivo';
+import type { VinculoConversacion } from './vinculoConversacion';
 
 export type AlumnoLigero = {
   alumno_id: string;
@@ -17,6 +18,11 @@ export type AlumnoLigero = {
   numero_lista: number | null;
 };
 
+// Por qué la sesión quedó SIN grupo a propósito (fail-closed), aunque el
+// docente tenga otros grupos: nunca se sustituye el grupo de la
+// conversación por otro.
+export type MotivoGrupoNoDisponible = 'grupo_fijado_no_valido' | 'conversacion_no_autorizada' | 'error_vinculo';
+
 export type SesionContexto = {
   docente_id: string;
   institucion_id: string | null;
@@ -24,12 +30,31 @@ export type SesionContexto = {
   grupo_activo_id: string | null;
   fecha_actual: string;
   alumnos_del_grupo_activo: AlumnoLigero[];
+  grupo_no_disponible?: MotivoGrupoNoDisponible;
 };
+
+// Respuesta breve para el docente cuando la sesión quedó sin grupo por
+// la conversación; null si no aplica (sin grupo "normal").
+export function mensajeGrupoNoDisponible(sesion: Pick<SesionContexto, 'grupo_no_disponible'> | null | undefined): string | null {
+  switch (sesion?.grupo_no_disponible) {
+    case 'grupo_fijado_no_valido':
+      return 'Esta conversación pertenece a un grupo que ya no está disponible (por ejemplo, de un ciclo escolar que ya terminó), así que aquí no puedo consultar ni registrar datos de alumnos. Inicia una conversación nueva para trabajar con tu grupo actual.';
+    case 'conversacion_no_autorizada':
+      return 'No pude confirmar que esta conversación sea tuya, así que aquí no voy a usar datos de ningún grupo. Inicia una conversación nueva.';
+    case 'error_vinculo':
+      return 'No pude verificar a qué grupo pertenece esta conversación, así que no usé datos de ningún grupo. Intenta de nuevo en unos segundos.';
+    default:
+      return null;
+  }
+}
 
 export async function obtenerSesionContexto(
   sb: SupabaseClient,
   docenteId: string,
-  zonaHoraria?: string | null
+  zonaHoraria?: string | null,
+  // Grupo de la conversación del Chat (lib/vinculoConversacion.ts, leído
+  // una sola vez por turno en /api/chat). Ausente = sin conversación.
+  vinculo?: VinculoConversacion
 ): Promise<SesionContexto> {
   const base: SesionContexto = {
     docente_id: docenteId,
@@ -43,20 +68,23 @@ export async function obtenerSesionContexto(
     alumnos_del_grupo_activo: [],
   };
 
-  // Mismo grupo activo que Lista y Evaluación (lib/grupoActivo.ts).
-  // docente_contexto_activo solo se escribe al crear un grupo, así que
-  // puede quedar ausente o apuntar a un ciclo ya no activo: se usa como
-  // preferencia revalidada (grupo del docente, ciclo activo) y, si no es
-  // válida, cae al grupo más reciente del docente — nunca deja al Chat
-  // sin grupo por un puntero desactualizado. Sin grupo autorizado (o
-  // ante un error de lectura), la sesión sigue sin grupo, como siempre.
-  // PENDIENTE: una conversación ya creada conserva el grupo que le fijó
-  // fijar_grupo_conversacion, que puede diferir de este grupo activo si
-  // después cambió (p. ej. al crear otro grupo); las herramientas del
-  // Chat usan este grupo, no el fijado.
-  const resolucion = await resolverGrupoActivo(sb, docenteId);
+  // Grupo de la sesión — único punto para todas las herramientas del Chat
+  // (asistencia, planeación, aprobación, resolución de alumnos):
+  // - Conversación con grupo fijado: ESE grupo, si sigue siendo del
+  //   docente y de un ciclo activo; si no, sin grupo (nunca otro).
+  // - Conversación no autorizada o error al leer el vínculo: sin grupo.
+  // - Sin conversación, sin grupo fijado o antigua: el mismo grupo activo
+  //   que Lista y Evaluación (lib/grupoActivo.ts: contexto revalidado y,
+  //   si no es válido, el grupo más reciente del docente).
+  if (vinculo?.estado === 'no_autorizada' || vinculo?.estado === 'error') {
+    base.grupo_no_disponible = vinculo.estado === 'error' ? 'error_vinculo' : 'conversacion_no_autorizada';
+    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) motivo=${base.grupo_no_disponible} origen=obtenerSesionContexto`);
+    return base;
+  }
+  const resolucion = await resolverGrupoActivo(sb, docenteId, { grupoFijadoId: vinculo?.estado === 'con_grupo' ? vinculo.grupoId : null });
   if (!resolucion.ok) {
-    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) motivo=${resolucion.motivo} origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
+    if (vinculo?.estado === 'con_grupo') base.grupo_no_disponible = resolucion.motivo === 'error' ? 'error_vinculo' : 'grupo_fijado_no_valido';
+    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) motivo=${base.grupo_no_disponible ?? resolucion.motivo} origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
     return base;
   }
   const grupoActivo = resolucion.grupo;

@@ -123,7 +123,7 @@ async function main() {
   // 6. Sesión del Chat IA (lib/sesionContexto.ts): misma regla que Lista
   //    y Evaluación en cada escenario, y mismo comportamiento seguro sin grupo.
   const sesionCodigo = readFileSync('lib/sesionContexto.ts', 'utf8')
-  verificar(/resolverGrupoActivo\(sb, docenteId\)/.test(sesionCodigo) && !/\.from\('grupos'\)/.test(sesionCodigo), '6a. sesionContexto usa resolverGrupoActivo y ya no consulta grupos por su cuenta')
+  verificar(/resolverGrupoActivo\(sb, docenteId[,)]/.test(sesionCodigo) && !/\.from\('grupos'\)/.test(sesionCodigo), '6a. sesionContexto usa resolverGrupoActivo y ya no consulta grupos por su cuenta')
   const G_INST2 = { ...grupo('g-inst2', DOC, CICLO_2, '2026-07-01T00:00:00Z'), institucion_id: 'inst-2' }
   const escenarios: [string, Fila[], Fila | null, string | null][] = [
     ['contexto válido', [G1, G2], { grupo_id: 'g1', ciclo_escolar_id: CICLO }, 'g1'],

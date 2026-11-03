@@ -33,7 +33,7 @@
 // borrador, con o sin fallos de por medio.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { SesionContexto } from '../sesionContexto'
+import { mensajeGrupoNoDisponible, type SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
 import { resolverPeriodoEvaluacionActual } from './generarBorrador'
 import { extraerTextoCompletoBorrador, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
@@ -188,7 +188,7 @@ export async function aprobarBorradorPlaneacion(
   mensajeDocente = ''
 ): Promise<ResultadoAprobacion> {
   if (!sesion.grupo_activo_id) {
-    return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: 'No tengo un grupo activo configurado para guardar la planeación.' }
+    return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: mensajeGrupoNoDisponible(sesion) ?? 'No tengo un grupo activo configurado para guardar la planeación.' }
   }
 
   // El borrador vigente de ESTA conversación, aunque después haya habido
