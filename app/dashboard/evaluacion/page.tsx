@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { supabase } from '@/lib/supabaseClient'
+import { resolverGrupoActivo } from '@/lib/grupoActivo'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 
@@ -156,50 +157,17 @@ export default function EvaluacionPage() {
       return
     }
 
-    // MG-A — mismo mecanismo canónico ya usado en Lista
-    // (app/dashboard/lista/page.tsx): intenta primero el contexto que
-    // el docente ya seleccionó (docente_contexto_activo.grupo_id) —
-    // una PREFERENCIA, nunca una autorización: se revalida contra
-    // `grupos` filtrando por ESE id Y por docente_id/ciclo activo. Si
-    // no produce un grupo válido, se usa exactamente la misma
-    // heurística de siempre (el grupo más reciente del docente en el
-    // ciclo activo) — nunca por nombre, nunca aproximado. Sin grupo
+    // MG-A — mismo grupo activo que Lista (lib/grupoActivo.ts): el
+    // contexto guardado como preferencia revalidada y, si no es válido,
+    // el grupo más reciente del docente en un ciclo activo. Sin grupo
     // válido, fail-closed: no se muestra ningún proyecto.
-    type GrupoActivo = { id: string; nombre_grupo: string }
-    let grupoActivo: GrupoActivo | undefined
-
-    const { data: contextoPersistido } = await supabase
-      .from('docente_contexto_activo')
-      .select('grupo_id')
-      .eq('docente_id', user.id)
-      .maybeSingle()
-
-    if (contextoPersistido?.grupo_id) {
-      const { data: grupoValidado } = await supabase
-        .from('grupos')
-        .select('id, nombre_grupo, ciclos_escolares!inner(activo)')
-        .eq('id', contextoPersistido.grupo_id)
-        .eq('docente_id', user.id)
-        .eq('ciclos_escolares.activo', true)
-        .maybeSingle()
-      if (grupoValidado) grupoActivo = grupoValidado as unknown as GrupoActivo
+    const resolucion = await resolverGrupoActivo(supabase, user.id)
+    if (!resolucion.ok) {
+      setError('No se encontró un grupo activo.')
+      setCargando(false)
+      return
     }
-
-    if (!grupoActivo) {
-      const { data: grupos } = await supabase
-        .from('grupos')
-        .select('id, nombre_grupo, ciclos_escolares!inner(activo)')
-        .eq('docente_id', user.id)
-        .eq('ciclos_escolares.activo', true)
-        .order('creado_en', { ascending: false })
-        .limit(1)
-      if (!grupos || grupos.length === 0) {
-        setError('No se encontró un grupo activo.')
-        setCargando(false)
-        return
-      }
-      grupoActivo = grupos[0] as unknown as GrupoActivo
-    }
+    const grupoActivo = resolucion.grupo
     setNombreGrupo(grupoActivo.nombre_grupo)
 
     const res = await fetch(`/api/proyectos-seguimiento?grupo_id=${grupoActivo.id}`, {

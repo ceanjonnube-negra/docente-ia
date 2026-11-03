@@ -3,6 +3,7 @@ import { Suspense, useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion, type AlumnoConPosicion } from '@/lib/rosterGrupo'
+import { resolverGrupoActivo } from '@/lib/grupoActivo'
 import ImportacionInteligente from '@/components/ImportacionInteligente'
 import type { GrupoParaImportar } from '@/lib/importacionInteligente'
 import { useAsistente, useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
@@ -93,21 +94,15 @@ function ListaPageContent() {
       return
     }
 
-    const { data: grupos, error: errorGrupo } = await supabase
-      .from('grupos')
-      .select('id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
-      .eq('docente_id', user.id)
-      .eq('ciclos_escolares.activo', true)
-      .order('creado_en', { ascending: false })
-      .limit(1)
-
-    if (errorGrupo || !grupos || grupos.length === 0) {
+    // Mismo grupo activo que Evaluación (lib/grupoActivo.ts).
+    const resolucion = await resolverGrupoActivo(supabase, user.id)
+    if (!resolucion.ok) {
       setMensaje('No se encontró un grupo activo.')
       setCargando(false)
       return
     }
 
-    const grupoActivo = grupos[0]
+    const grupoActivo = resolucion.grupo
     setNombreGrupo(grupoActivo.nombre_grupo)
     setGrupo({
       id: grupoActivo.id,
