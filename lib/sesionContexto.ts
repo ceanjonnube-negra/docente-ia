@@ -7,6 +7,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fechaISOHoy } from './tiempo/TimeService';
 import { nombreOficialAlumno } from './rosterGrupo';
+import { resolverGrupoActivo } from './grupoActivo';
 
 export type AlumnoLigero = {
   alumno_id: string;
@@ -42,32 +43,23 @@ export async function obtenerSesionContexto(
     alumnos_del_grupo_activo: [],
   };
 
-  // CAUSA RAÍZ real de "el Chat IA dice que no tiene acceso" en
-  // cualquier módulo (no solo asistencia): esta función resolvía el
-  // "grupo activo" leyendo un puntero aparte, docente_contexto_activo,
-  // que SOLO se escribe una vez al crear un grupo nuevo (ver
-  // app/dashboard/grupos/nuevo/page.tsx) y nunca se vuelve a actualizar
-  // después — ni hay ninguna pantalla para cambiarlo. Si ese puntero
-  // quedaba ausente o apuntando a un ciclo escolar ya no activo,
-  // grupo_activo_id salía null (o apuntaba al grupo equivocado) para
-  // el Chat, mientras que app/dashboard/lista/page.tsx (cargarTodo)
-  // sigue mostrando datos reales porque calcula el grupo activo DE
-  // CERO cada vez, sin depender de ningún puntero guardado. Fuente
-  // única de verdad real: la misma consulta que ya usa Lista, no un
-  // caché aparte que puede desincronizarse en silencio.
-  const { data: grupos } = await sb
-    .from('grupos')
-    .select('id, institucion_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)')
-    .eq('docente_id', docenteId)
-    .eq('ciclos_escolares.activo', true)
-    .order('creado_en', { ascending: false })
-    .limit(1);
-
-  const grupoActivo = grupos?.[0] as { id: string; institucion_id: string | null; ciclo_escolar_id: string | null; creado_en: string } | undefined;
-  if (!grupoActivo) {
-    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
+  // Mismo grupo activo que Lista y Evaluación (lib/grupoActivo.ts).
+  // docente_contexto_activo solo se escribe al crear un grupo, así que
+  // puede quedar ausente o apuntar a un ciclo ya no activo: se usa como
+  // preferencia revalidada (grupo del docente, ciclo activo) y, si no es
+  // válida, cae al grupo más reciente del docente — nunca deja al Chat
+  // sin grupo por un puntero desactualizado. Sin grupo autorizado (o
+  // ante un error de lectura), la sesión sigue sin grupo, como siempre.
+  // PENDIENTE: una conversación ya creada conserva el grupo que le fijó
+  // fijar_grupo_conversacion, que puede diferir de este grupo activo si
+  // después cambió (p. ej. al crear otro grupo); las herramientas del
+  // Chat usan este grupo, no el fijado.
+  const resolucion = await resolverGrupoActivo(sb, docenteId);
+  if (!resolucion.ok) {
+    console.log(`[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=(ninguno) motivo=${resolucion.motivo} origen=obtenerSesionContexto — sin grupo activo para docente ${docenteId}`);
     return base;
   }
+  const grupoActivo = resolucion.grupo;
 
   base.institucion_id = grupoActivo.institucion_id;
   base.ciclo_escolar_id = grupoActivo.ciclo_escolar_id;
@@ -82,7 +74,7 @@ export async function obtenerSesionContexto(
   // grupo_id distinto para el mismo docente, este valor es lo primero
   // que hay que comparar. Quitar una vez confirmado en producción.
   console.log(
-    `[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} ciclo=${grupoActivo.ciclo_escolar_id} origen=obtenerSesionContexto`
+    `[ASISTENCIA][chat] ts=${new Date().toISOString()} fecha=${base.fecha_actual} grupo=${grupoActivo.id} grupo_creado_en=${grupoActivo.creado_en} ciclo=${grupoActivo.ciclo_escolar_id} resolucion=${resolucion.origen} origen=obtenerSesionContexto`
   );
 
   // sexo y numero_lista van aquí (no solo el nombre) para que el Chat

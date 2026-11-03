@@ -1,7 +1,7 @@
 // scripts/verificar-grupo-activo.ts
 //
-// lib/grupoActivo.ts — resolución única del grupo activo para Lista y
-// Evaluación: contexto guardado (docente_contexto_activo) como
+// lib/grupoActivo.ts — resolución única del grupo activo para Lista,
+// Evaluación y la sesión del Chat IA (lib/sesionContexto.ts): contexto guardado (docente_contexto_activo) como
 // preferencia revalidada y, si no es válido, el grupo más reciente del
 // docente en un ciclo activo (empate por id). Base en memoria que aplica
 // los mismos filtros, orden y límite; sin red ni credenciales.
@@ -10,6 +10,7 @@
 
 import { readFileSync } from 'node:fs'
 import { resolverGrupoActivo } from '../lib/grupoActivo'
+import { obtenerSesionContexto } from '../lib/sesionContexto'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -118,6 +119,36 @@ async function main() {
   preparar([G1, G2], { grupo_id: 'g1', ciclo_escolar_id: CICLO })
   const [lista, evaluacion] = await Promise.all([resolverGrupoActivo(sb, DOC), resolverGrupoActivo(sb, DOC)])
   verificar(lista.ok && evaluacion.ok && lista.grupo.id === evaluacion.grupo.id, '5c. Con los mismos datos, Lista y Evaluación obtienen el mismo grupo')
+
+  // 6. Sesión del Chat IA (lib/sesionContexto.ts): misma regla que Lista
+  //    y Evaluación en cada escenario, y mismo comportamiento seguro sin grupo.
+  const sesionCodigo = readFileSync('lib/sesionContexto.ts', 'utf8')
+  verificar(/resolverGrupoActivo\(sb, docenteId\)/.test(sesionCodigo) && !/\.from\('grupos'\)/.test(sesionCodigo), '6a. sesionContexto usa resolverGrupoActivo y ya no consulta grupos por su cuenta')
+  const G_INST2 = { ...grupo('g-inst2', DOC, CICLO_2, '2026-07-01T00:00:00Z'), institucion_id: 'inst-2' }
+  const escenarios: [string, Fila[], Fila | null, string | null][] = [
+    ['contexto válido', [G1, G2], { grupo_id: 'g1', ciclo_escolar_id: CICLO }, 'g1'],
+    ['contexto válido en otra institución y ciclo', [G2, G_INST2], { grupo_id: 'g-inst2', ciclo_escolar_id: CICLO_2 }, 'g-inst2'],
+    ['contexto desactualizado (ciclo inactivo)', [G1, G2, G_VIEJO], { grupo_id: 'g-viejo', ciclo_escolar_id: CICLO_VIEJO }, 'g2'],
+    ['contexto desactualizado (ciclo distinto)', [G1, G2], { grupo_id: 'g1', ciclo_escolar_id: CICLO_2 }, 'g2'],
+    ['contexto ajeno', [G1, G2, G_AJENO], { grupo_id: 'g-ajeno', ciclo_escolar_id: CICLO }, 'g2'],
+    ['varios grupos con empate (fallback determinista)', [G_A, G_B, G1], null, 'g-a'],
+    ['sin grupo autorizado', [G_VIEJO, G_AJENO], null, null],
+  ]
+  for (const [nombre, grupos, contexto, esperado] of escenarios) {
+    preparar(grupos, contexto)
+    const pagina = await resolverGrupoActivo(sb, DOC)
+    const sesion = await obtenerSesionContexto(sb, DOC, 'America/Mexico_City')
+    const g = pagina.ok ? pagina.grupo : null
+    verificar(
+      (g?.id ?? null) === esperado && sesion.grupo_activo_id === (g?.id ?? null) &&
+        sesion.institucion_id === (g?.institucion_id ?? null) && sesion.ciclo_escolar_id === (g?.ciclo_escolar_id ?? null),
+      `6b. ${nombre}: Lista, Evaluación y Chat → ${esperado ?? 'sin grupo'} (mismo grupo, institución y ciclo)`
+    )
+  }
+  preparar([G1], null); fallarGrupos = true
+  const sesionError = await obtenerSesionContexto(sb, DOC)
+  verificar(sesionError.grupo_activo_id === null && sesionError.alumnos_del_grupo_activo.length === 0 && sesionError.docente_id === DOC, '6c. Error de lectura: sesión sin grupo ni alumnos (comportamiento seguro de siempre)')
+  verificar(escrituras.length === 0, '6d. La sesión tampoco escribe nada')
 
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)
