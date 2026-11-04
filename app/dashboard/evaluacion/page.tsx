@@ -32,6 +32,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { resolverGrupoActivo } from '@/lib/grupoActivo'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
+import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
 
 type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
 
@@ -115,6 +116,10 @@ export default function EvaluacionPage() {
   const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
   const [seleccionado, setSeleccionado] = useState<string | null>(null)
   const [cargandoUrl, setCargandoUrl] = useState<string | null>(null)
+  // Proyecto confirmado cuyos resultados están abiertos (solo lectura).
+  // Estado aparte de `seleccionado`: confirmar dentro de CapturaHoja no
+  // debe reemplazar su propia vista por esta.
+  const [resultadosAbiertos, setResultadosAbiertos] = useState<string | null>(null)
 
   // Única fuente del estado de cada tarjeta: se consulta UNA vez por
   // proyecto al cargar la lista. CapturaHoja, al expandirse, hace su
@@ -256,6 +261,8 @@ export default function EvaluacionPage() {
           const expandido = seleccionado === proyecto.id
           const fecha = proyecto.fecha_inicio ? formatearFecha(proyecto.fecha_inicio, obtenerZonaHorariaDispositivo()) : null
           const accion = estado ? ETIQUETA_ACCION[estado] : undefined
+          const verResultados = estado === 'confirmado' && !expandido
+          const resultadosVisibles = verResultados && resultadosAbiertos === proyecto.id
 
           return (
             <div key={proyecto.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -281,9 +288,18 @@ export default function EvaluacionPage() {
                 >
                   {cargandoUrl === proyecto.id ? 'Abriendo…' : '👁️ Ver hoja'}
                 </button>
-                {/* confirmado y "no disponible" nunca ofrecen una
-                    segunda acción — mismo criterio "estado terminal /
-                    sin pipeline automático", pantalla silenciosa. */}
+                {/* confirmado nunca vuelve a ofrecer captura ni
+                    confirmación — solo la consulta de sus resultados;
+                    "no disponible" no ofrece una segunda acción. */}
+                {verResultados && (
+                  <button
+                    type="button"
+                    onClick={() => setResultadosAbiertos((actual) => (actual === proyecto.id ? null : proyecto.id))}
+                    className="flex-1 bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-teal-700"
+                  >
+                    {resultadosVisibles ? 'Cerrar' : '📊 Ver resultados'}
+                  </button>
+                )}
                 {accion && (
                   <button
                     type="button"
@@ -294,6 +310,12 @@ export default function EvaluacionPage() {
                   </button>
                 )}
               </div>
+
+              {resultadosVisibles && (
+                <div className="border-t border-gray-50">
+                  <ResultadosConfirmados proyectoId={proyecto.id} />
+                </div>
+              )}
 
               {expandido && (
                 <div className="border-t border-gray-50">
