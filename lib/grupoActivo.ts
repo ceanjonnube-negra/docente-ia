@@ -25,13 +25,36 @@ export type GrupoActivo = {
   docente_id: string
   ciclo_escolar_id: string
   creado_en: string
+  // Grado y letra del propio grupo (grupos.grado / grupos.grupo), sin
+  // depender del nivel educativo: preescolar, primaria y secundaria.
+  grado: string | null
+  grupo: string | null
+}
+
+// Rótulo visible del grupo para encabezados ("4° B"): mismo formato que la
+// ficha del alumno. grupos.grado se guarda como dígito; si ya trae el
+// símbolo, no se duplica. Sin grado: nombre_grupo, sin letra.
+export function rotuloGrupo(g: { grado: string | null; grupo: string | null; nombre_grupo: string | null }): { grado: string | null; letra: string | null } {
+  const grado = (g.grado ?? '').trim().replace(/°+$/, '')
+  if (grado) return { grado: `${grado}°`, letra: (g.grupo ?? '').trim() || null }
+  return { grado: (g.nombre_grupo ?? '').trim() || null, letra: null }
+}
+
+// Grado y letra de UN grupo del docente (vistas previas de planeación que
+// reciben grupoId): 'ajeno' si no existe o no es suyo, 'error' si falla
+// la lectura. Solo lectura, con el cliente del docente (RLS).
+export async function leerGrupoDelDocente(sb: SupabaseClient, grupoId: string, docenteId: string): Promise<{ grado: string | null; grupo: string | null } | 'ajeno' | 'error'> {
+  const { data, error } = await sb.from('grupos').select('id, docente_id, grado, grupo').eq('id', grupoId).maybeSingle()
+  if (error) return 'error'
+  if (!data || data.docente_id !== docenteId) return 'ajeno'
+  return { grado: (data.grado as string | null) ?? null, grupo: (data.grupo as string | null) ?? null }
 }
 
 export type ResultadoGrupoActivo =
   | { ok: true; grupo: GrupoActivo; origen: 'conversacion' | 'contexto' | 'mas_reciente' }
   | { ok: false; motivo: 'sin_grupo' | 'error' | 'grupo_fijado_no_valido' }
 
-const COLUMNAS = 'id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, ciclos_escolares!inner(activo)'
+const COLUMNAS = 'id, nombre_grupo, institucion_id, docente_id, ciclo_escolar_id, creado_en, grado, grupo, ciclos_escolares!inner(activo)'
 
 function limpiar(fila: Record<string, unknown>): GrupoActivo {
   return {
@@ -41,6 +64,8 @@ function limpiar(fila: Record<string, unknown>): GrupoActivo {
     docente_id: fila.docente_id as string,
     ciclo_escolar_id: fila.ciclo_escolar_id as string,
     creado_en: fila.creado_en as string,
+    grado: (fila.grado as string | null) ?? null,
+    grupo: (fila.grupo as string | null) ?? null,
   }
 }
 

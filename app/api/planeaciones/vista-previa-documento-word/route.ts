@@ -3,9 +3,12 @@ import { gunzipSync } from 'node:zlib'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { generarWordBuffer, nombreArchivoWordServidor } from '@/lib/documentGen/generarWordServidor'
 import { extraerTitulo } from '@/lib/documentGen/parseContenido'
+import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
+import { leerGrupoDelDocente } from '@/lib/grupoActivo'
 
 export const runtime = 'nodejs'
 
+const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const IDENTIFICADOR_VISTA_PREVIA = 'VISTA PREVIA — PENDIENTE DE APROBACIÓN'
 
 // Hermana Word de vista-previa-documento/route.ts (PDF) — mismo
@@ -50,17 +53,30 @@ export async function GET(req: NextRequest) {
 
     let texto: string
     let zonaHoraria: string | null
+    let grupoId: string | null
     try {
       const json = gunzipSync(Buffer.from(datosComprimidos, 'base64url')).toString('utf-8')
-      const datos = JSON.parse(json) as { texto?: string; zonaHoraria?: string | null }
+      const datos = JSON.parse(json) as { texto?: string; zonaHoraria?: string | null; grupoId?: string | null }
       if (!datos.texto?.trim()) throw new Error('texto vacío')
+      if (datos.grupoId != null && !REGEX_UUID.test(datos.grupoId)) throw new Error('grupoId inválido')
       texto = datos.texto
       zonaHoraria = datos.zonaHoraria ?? null
+      grupoId = datos.grupoId ?? null
     } catch {
       return NextResponse.json({ error: 'Datos de la vista previa inválidos.' }, { status: 400 })
     }
 
-    const { data: perfil } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
+    // Mismo criterio que la vista previa PDF: grado y grupo del grupo de
+    // la planeación (verificado contra el docente), nunca del perfil.
+    // grupoId solo viaja en el enlace del servidor (el borrador aún no está
+    // persistido): acredita la propiedad, no el vínculo con el texto. Sin
+    // grupoId (enlaces anteriores): sin asociación académica verificable,
+    // encabezado del perfil por compatibilidad.
+    const grupo = grupoId ? await leerGrupoDelDocente(supabase, grupoId, docenteId) : null
+    if (grupo === 'error') return NextResponse.json({ error: 'No se pudo verificar el grupo.' }, { status: 500 })
+    if (grupo === 'ajeno') return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
+    const { data: perfilDocente } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
+    const perfil = perfilConGrupoAcademico(perfilDocente, grupo)
 
     // Marca discreta de "todavía no aprobado" — mismo criterio que la
     // vista previa PDF, como una línea más del documento.

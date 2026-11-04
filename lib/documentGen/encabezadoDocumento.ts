@@ -27,6 +27,20 @@ export type EncabezadoDocumento = {
   cicloEscolar: string
 }
 
+// Grado y grupo de un grupo académico VALIDADO (grupos.grado/grupos.grupo)
+// para el encabezado de un documento de ese grupo. Con varios grupos, el
+// perfil no dice a cuál pertenece el documento: si el documento tiene
+// grupo, grado y grupo salen SIEMPRE de él (vacíos si el grupo no los
+// tiene; nunca del perfil, que podría ser de otro grupo). El resto del
+// perfil (escuela, docente, lugar…) se conserva tal cual. grupo = null:
+// documento sin grupo académico, el perfil sin cambios.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function perfilConGrupoAcademico(perfil: any, grupo: { grado: string | null; grupo: string | null } | null): any {
+  if (!grupo) return perfil
+  const grado = (grupo.grado ?? '').trim().replace(/°+$/, '')
+  return { ...(perfil ?? {}), grado: grado ? `${grado}°` : '', grupo: (grupo.grupo ?? '').trim() }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function prepararEncabezado(perfil: any, zonaHoraria: string | null | undefined): EncabezadoDocumento {
   const { fechaLegible, cicloEscolar } = obtenerFechaHora(zonaHoraria)

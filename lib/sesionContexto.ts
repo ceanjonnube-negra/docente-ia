@@ -7,7 +7,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fechaISOHoy } from './tiempo/TimeService';
 import { nombreOficialAlumno } from './rosterGrupo';
-import { resolverGrupoActivo } from './grupoActivo';
+import { resolverGrupoActivo, rotuloGrupo } from './grupoActivo';
 import type { VinculoConversacion } from './vinculoConversacion';
 
 export type AlumnoLigero = {
@@ -31,6 +31,14 @@ export type SesionContexto = {
   fecha_actual: string;
   alumnos_del_grupo_activo: AlumnoLigero[];
   grupo_no_disponible?: MotivoGrupoNoDisponible;
+  // Rótulo del grupo efectivo de la sesión (rotuloGrupo: "4°" y "B", o
+  // nombre_grupo si no tiene grado) para encabezados — nunca el perfil.
+  grupo_activo_grado?: string | null;
+  grupo_activo_letra?: string | null;
+  // Grado y letra tal como están en el grupo efectivo (grupos.grado /
+  // grupos.grupo), para el encabezado de documentos de ese grupo
+  // (perfilConGrupoAcademico). Sin grupo en la sesión: ausente.
+  grupo_activo_datos?: { grado: string | null; grupo: string | null };
 };
 
 // Respuesta breve para el docente cuando la sesión quedó sin grupo por
@@ -92,6 +100,10 @@ export async function obtenerSesionContexto(
   base.institucion_id = grupoActivo.institucion_id;
   base.ciclo_escolar_id = grupoActivo.ciclo_escolar_id;
   base.grupo_activo_id = grupoActivo.id;
+  const rotulo = rotuloGrupo(grupoActivo);
+  base.grupo_activo_grado = rotulo.grado;
+  base.grupo_activo_letra = rotulo.letra;
+  base.grupo_activo_datos = { grado: grupoActivo.grado, grupo: grupoActivo.grupo };
 
   // Log temporal de diagnóstico (ver "Corregir inconsistencia entre
   // Lista y Chat IA en el resumen de asistencia") — mismo formato que

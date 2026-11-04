@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 import { generarHojaSeguimientoPdfBuffer } from '@/lib/documentGen/generarHojaSeguimientoPdf'
+import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
 import type { IndicadorProyecto } from '@/lib/seguimiento/tipos'
 
 export const runtime = 'nodejs'
@@ -83,7 +84,7 @@ export async function GET(req: NextRequest) {
     // en la URL (mismo criterio de siempre: verificar, no asumir).
     const { data: grupo, error: errorGrupo } = await supabase
       .from('grupos')
-      .select('id, docente_id')
+      .select('id, docente_id, grado, grupo')
       .eq('id', datos.grupoId)
       .maybeSingle()
     if (errorGrupo) {
@@ -121,7 +122,8 @@ export async function GET(req: NextRequest) {
         indicadores,
         alumnos: (roster || []).map((a) => ({ nombre: a.nombre, posicion: a.posicion })),
       },
-      perfil,
+      // Grado y grupo del grupo ya verificado arriba, nunca del perfil.
+      perfilConGrupoAcademico(perfil, { grado: grupo.grado, grupo: grupo.grupo }),
       datos.zonaHoraria
     )
 

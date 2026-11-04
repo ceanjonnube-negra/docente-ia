@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { generarYGuardarHojaSeguimiento, MENSAJE_PROYECTO_CONFIRMADO } from '@/lib/seguimiento/generarYGuardarHoja'
 import { ASPECTOS_GENERALES, type IndicadorProyecto } from '@/lib/seguimiento/tipos'
 import { autenticarRequestApi } from '@/lib/server/authApi'
+import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
 
 export const runtime = 'nodejs'
 
@@ -57,7 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const { data: proyecto, error: errorProyecto } = await supabase
       .from('proyectos_seguimiento')
-      .select('id, grupo_id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, docente_id, estado, confirmado_en')
+      .select('id, grupo_id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, docente_id, estado, confirmado_en, grupos(grado, grupo)')
       .eq('id', proyectoId)
       .maybeSingle()
     if (errorProyecto) {
@@ -86,7 +87,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       periodoNombre = periodo?.nombre ?? null
     }
 
-    const { data: perfil } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
+    const { data: perfilDocente } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
+    // La hoja es del grupo del proyecto: grado y grupo de ESE grupo (leído
+    // en la misma consulta del proyecto), nunca del perfil.
+    const grupoProyecto = (Array.isArray(proyecto.grupos) ? proyecto.grupos[0] : proyecto.grupos) as { grado: string | null; grupo: string | null } | null | undefined
+    const perfil = perfilConGrupoAcademico(perfilDocente, grupoProyecto ?? { grado: null, grupo: null })
 
     const resultado = await generarYGuardarHojaSeguimiento(
       supabase,

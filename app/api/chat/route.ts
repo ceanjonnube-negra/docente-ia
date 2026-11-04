@@ -30,6 +30,7 @@ import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
 import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
+import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
 import { clasificarTipoDocumento, extraerTextoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
 import { esSolicitudListaOficial, mencionaListaOficial, responderListaOficialConPropuesta } from '@/lib/listaOficial/flujoChatListaOficial'
 import { prepararPropuestaParaCliente } from '@/lib/listaOficial/sobreCifrado'
@@ -718,12 +719,14 @@ export async function POST(req: NextRequest) {
     }
 
     const { data: perfilLista } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
-    const textoLista = construirTextoListaAlumnos(sesion.alumnos_del_grupo_activo, perfilLista?.grado, perfilLista?.grupo)
+    // Grado y grupo del grupo efectivo de la sesión (conversación o
+    // contexto), no del perfil: con varios grupos el perfil no dice cuál es.
+    const textoLista = construirTextoListaAlumnos(sesion.alumnos_del_grupo_activo, sesion.grupo_activo_grado, sesion.grupo_activo_letra)
 
     if (tipoHerramientaSolicitado) {
       try {
         const archivo = await conReintento(
-          () => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, textoLista, perfilLista, zonaHoraria, supabaseRAG, userId),
+          () => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, textoLista, perfilConGrupoAcademico(perfilLista, sesion.grupo_activo_datos ?? { grado: null, grupo: null }), zonaHoraria, supabaseRAG, userId),
           'generar-lista-alumnos'
         )
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
@@ -1817,7 +1820,9 @@ Grado: [grado] | Grupo: [grupo]
             console.log(`[STREAM][chat] borradorExtraido=${!!textoCompleto}`)
             if (textoCompleto) {
               const resumenParaTitulo = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
-              const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null }
+              // grupoId: la vista previa valida ese grupo y lo usa para el
+              // grado/grupo del encabezado (nunca el perfil).
+              const datosDocumento = { texto: textoCompleto, zonaHoraria: zonaHoraria ?? null, grupoId: sesion.grupo_activo_id }
               const datosComprimidos = gzipSync(Buffer.from(JSON.stringify(datosDocumento), 'utf-8')).toString('base64url')
               const descripcionPlaneacion = resumenParaTitulo
                 ? `${resumenParaTitulo.periodoTexto || 'Sin periodo asignado'} · ${resumenParaTitulo.duracionDias ?? '—'} días efectivos`

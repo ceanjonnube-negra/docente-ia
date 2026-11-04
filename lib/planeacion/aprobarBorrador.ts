@@ -42,6 +42,7 @@ import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } fr
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
+import { perfilConGrupoAcademico } from '../documentGen/encabezadoDocumento'
 import type { Planeacion } from './tipos'
 
 export type CodigoErrorAprobacion =
@@ -341,7 +342,10 @@ export async function aprobarBorradorPlaneacion(
     // Fase 4: hoja de evaluación DEFINITIVA + PDF + Storage — mismo
     // generador y misma función que ya usa Seguimiento (Fase 2),
     // reutilizada tal cual (lib/seguimiento/generarYGuardarHoja.ts).
-    const { data: perfil } = await sb.from('perfiles_docentes').select('*').eq('id', sesion.docente_id).single()
+    const { data: perfilDocente } = await sb.from('perfiles_docentes').select('*').eq('id', sesion.docente_id).single()
+    // Hoja, Word y PDF son de ESTE grupo: grado y grupo del grupo de la
+    // sesión (nunca del perfil); el resto del perfil, igual.
+    const perfil = perfilConGrupoAcademico(perfilDocente, sesion.grupo_activo_datos ?? { grado: null, grupo: null })
     const resultadoHoja = await generarYGuardarHojaSeguimiento(
       sb,
       sesion.docente_id,
