@@ -13,6 +13,9 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { inflateSync } from 'node:zlib'
+import JSZip from 'jszip'
+import { PDFArray, PDFDocument, PDFName, type PDFRawStream, type PDFStream } from 'pdf-lib'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { extraerResumenBorrador, tieneBloqueResumen, type ResumenBorrador } from '../lib/planeacion/extraerBorrador'
 import { validarContenidoBorrador } from '../lib/planeacion/validarContenidoBorrador'
@@ -309,7 +312,22 @@ const BLOQUE_VALIDO = construirBloque()
 const BLOQUE_INCOMPLETO = `Aquí está tu borrador.\n\n📎 RESUMEN PARA GUARDAR\nNombre: Leyendas de mi comunidad\nGrupo: activo\nFecha de inicio: 2026-08-10\n\n¿Deseas corregir algo o aprobarla para guardarla?`
 const BLOQUE_CORREGIDO = construirBloque([], { 'Fecha de fin': '2026-08-28', Nombre: 'Leyendas de mi comunidad (ampliada)' })
 
+// Red simulada para toda la suite: ejecutarHerramientaDocumento comprueba
+// con HEAD la URL firmada de cada archivo subido; el Storage simulado
+// devuelve https://fake-storage.local/…, así que solo esos HEAD reciben un
+// 200 simulado. Cualquier otra solicitud se rechaza: la prueba nunca sale
+// a la red.
+const fetchSimulado: typeof fetch = async (entrada, init) => {
+  const url = new URL(typeof entrada === 'string' ? entrada : entrada instanceof URL ? entrada.href : entrada.url)
+  const metodo = (init?.method ?? (entrada instanceof Request ? entrada.method : 'GET')).toUpperCase()
+  if (url.hostname === 'fake-storage.local' && metodo === 'HEAD') return new Response(null, { status: 200 })
+  throw new Error(`Red bloqueada en esta prueba: ${metodo} ${url.hostname}`)
+}
+
 async function main() {
+  const fetchOriginal = globalThis.fetch
+  globalThis.fetch = fetchSimulado
+  try {
   // --- extraerResumenBorrador / tieneBloqueResumen ---
 
   {
@@ -661,6 +679,60 @@ async function main() {
     const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
     const r = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'user', content: 'Hola' }, { role: 'assistant', content: 'Hola, ¿en qué te ayudo?' }], 'Apruébala')
     verificar(!r.ok && r.codigo === 'SIN_BORRADOR' && interno.escrituras.length === 0, 'V7. Sin borrador no se guarda ni se genera nada')
+  }
+
+  // AB. Contraste A/B de encabezados: perfil "4° A" (desactualizado) y
+  // grupo efectivo de la sesión 4 B. Recorrido completo de la aprobación
+  // con los generadores reales; se lee el contenido de los 3 archivos que
+  // quedaron en el Storage simulado.
+  {
+    const datos = datosBase()
+    datos.perfiles_docentes[0] = { id: 'docente-1', escuela: 'Escuela Contraste AB', nombre: 'Docente Contraste', grado: '4°', grupo: 'A', ciclo_escolar: '2026-2027' }
+    const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+    const r = await aprobarBorradorPlaneacion(sb, sesion({ grupo_activo_datos: { grado: '4', grupo: 'B' } }), [{ role: 'assistant', content: BLOQUE_VALIDO }], 'Apruébala')
+    verificar(r.ok === true, 'AB1. La aprobación con perfil 4° A y grupo efectivo 4 B se completa')
+    const archivos = interno['archivosStorage'] as Map<string, Buffer>
+    const hojaPdf = [...archivos].find(([k]) => k.startsWith('hojas-seguimiento/') && k.endsWith('.pdf'))
+    const planWord = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.docx'))
+    const planPdf = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.pdf'))
+    verificar(!!hojaPdf && !!planWord && !!planPdf, 'AB2. Se subieron los 3 archivos: hoja PDF, Word y PDF de la planeación')
+    const textoWord = async (b: Buffer) => {
+      const zip = await JSZip.loadAsync(b)
+      const partes = Object.keys(zip.files).filter((n) => /^word\/(document|header\d*)\.xml$/.test(n))
+      return (await Promise.all(partes.map((n) => zip.file(n)!.async('string')))).join(' ').replace(/<w:tab\/>/g, ' ').replace(/<\/w:p>/g, ' ').replace(/<[^>]+>/g, '')
+    }
+    const textoPdf = async (b: Buffer) => {
+      const doc = await PDFDocument.load(b)
+      const partes: string[] = []
+      for (const p of doc.getPages()) {
+        const c = p.node.Contents()
+        const flujos = (c instanceof PDFArray ? c.asArray().map((x) => doc.context.lookup(x)) : [c]) as PDFStream[]
+        for (const f of flujos) {
+          const crudo = (f as PDFRawStream).contents
+          const contenido = Buffer.from(f.dict.get(PDFName.of('Filter')) ? inflateSync(crudo) : crudo).toString('latin1')
+          for (const m of contenido.matchAll(/<([0-9A-Fa-f]*)> Tj/g)) partes.push(Buffer.from(m[1], 'hex').toString('latin1'))
+        }
+      }
+      return partes.join(' ')
+    }
+    // null = el archivo no existe: ninguna comprobación de contenido puede
+    // pasar sobre un archivo ausente o un texto vacío.
+    const textos: [string, string | null][] = [
+      ['Word de la planeación', planWord ? await textoWord(planWord[1]) : null],
+      ['PDF de la planeación', planPdf ? await textoPdf(planPdf[1]) : null],
+      ['PDF de la hoja de evaluación', hojaPdf ? await textoPdf(hojaPdf[1]) : null],
+    ]
+    for (const [nombre, texto] of textos) {
+      const t = (texto ?? '').replace(/\s+/g, ' ')
+      const real = texto !== null && t.trim().length > 0
+      verificar(real, `AB3a. ${nombre}: el archivo existe y tiene texto real`)
+      verificar(real && /Grado: 4° +Grupo: B(\s|$)/.test(t), `AB3. ${nombre}: "Grado: 4° Grupo: B"`)
+      verificar(real && !/Grupo: A(\s|$)/.test(t), `AB4. ${nombre}: nunca "Grupo: A" (el del perfil)`)
+      verificar(real && t.includes('Escuela Contraste AB'), `AB5. ${nombre}: conserva la escuela del perfil`)
+    }
+  }
+  } finally {
+    globalThis.fetch = fetchOriginal
   }
 
   console.log('')
