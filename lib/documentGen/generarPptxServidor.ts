@@ -9,6 +9,7 @@
 import PptxGenJS from 'pptxgenjs'
 import { analizarContenido, agruparEnDiapositivas, extraerTitulo } from './parseContenido'
 import { formatearFecha } from '../tiempo/TimeService'
+import { prepararEncabezado } from './encabezadoDocumento'
 
 function quitarEmoji(texto: string): string {
   return texto.replace(/\p{Extended_Pictographic}/gu, '').replace(/\s{2,}/g, ' ').trim()
@@ -20,13 +21,16 @@ export async function generarPptxBuffer(texto: string, perfil: any, zonaHoraria:
   const lineas = analizarContenido(texto)
   const diapositivas = agruparEnDiapositivas(lineas)
   const titulo = quitarEmoji(extraerTitulo(texto))
+  // Grado y grupo como en Word y PDF (el grado ya trae "°"). Escuela y
+  // docente solo con datos reales del perfil: sin textos genéricos.
+  const enc = prepararEncabezado(perfil, zonaHoraria)
 
   // Diapositiva de portada.
   const portada = pptx.addSlide()
   portada.background = { color: '166534' }
   portada.addText(titulo, { x: 0.5, y: 2, w: 9, h: 1.5, fontSize: 32, bold: true, color: 'FFFFFF', align: 'center' })
   portada.addText(
-    `${perfil?.escuela || ''}\nDocente: ${perfil?.nombre || ''} · Grado ${perfil?.grado || ''}° Grupo ${perfil?.grupo || ''}\n${formatearFecha(new Date(), zonaHoraria, { day: 'numeric', month: 'long', year: 'numeric' })}`,
+    `${perfil?.escuela || ''}\nDocente: ${perfil?.nombre || ''} · Grado ${enc.grado} Grupo ${enc.grupo}\n${formatearFecha(new Date(), zonaHoraria, { day: 'numeric', month: 'long', year: 'numeric' })}`,
     { x: 0.5, y: 4, w: 9, h: 1.5, fontSize: 14, color: 'DCFCE7', align: 'center' }
   )
 

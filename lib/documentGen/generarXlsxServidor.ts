@@ -12,6 +12,7 @@
 import ExcelJS from 'exceljs'
 import { analizarContenido, extraerFilasTabulares, extraerTitulo } from './parseContenido'
 import { formatearFecha } from '../tiempo/TimeService'
+import { prepararEncabezado } from './encabezadoDocumento'
 
 const VERDE_ENCABEZADO = 'FF166534'
 const VERDE_CLARO = 'FFDCFCE7'
@@ -20,13 +21,16 @@ const VERDE_CLARO = 'FFDCFCE7'
 export async function generarXlsxBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
   const titulo = extraerTitulo(texto)
+  // Grado y grupo como en Word y PDF (el grado ya trae "°"). Escuela y
+  // docente solo con datos reales del perfil: sin textos genéricos.
+  const enc = prepararEncabezado(perfil, zonaHoraria)
   const hoja = workbook.addWorksheet(nombreHoja(titulo))
 
   const filasTabulares = extraerFilasTabulares(texto)
 
   hoja.addRow([titulo]).font = { bold: true, size: 14, color: { argb: VERDE_ENCABEZADO } }
   hoja.addRow([
-    `${perfil?.escuela || ''}   Docente: ${perfil?.nombre || ''}   Grado ${perfil?.grado || ''}° Grupo ${perfil?.grupo || ''}   ${formatearFecha(new Date(), zonaHoraria, { day: 'numeric', month: 'long', year: 'numeric' })}`,
+    `${perfil?.escuela || ''}   Docente: ${perfil?.nombre || ''}   Grado ${enc.grado} Grupo ${enc.grupo}   ${formatearFecha(new Date(), zonaHoraria, { day: 'numeric', month: 'long', year: 'numeric' })}`,
   ]).font = { italic: true, size: 10, color: { argb: 'FF6B7280' } }
   hoja.addRow([])
 

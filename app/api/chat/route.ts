@@ -554,7 +554,19 @@ export async function POST(req: NextRequest) {
     if (documentoTexto && esDocumentoFormal(documentoTexto)) {
       console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:contenido] OK — ${documentoTexto.length} caracteres (fuente=${fuenteContenido})`)
       try {
-        const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        // Grado y grupo del encabezado: el grupo efectivo de esta
+        // conversación (fijado, o el grupo activo), resuelto con la misma
+        // función y el mismo vínculo del turno que la sesión de abajo —
+        // este camino siempre termina aquí, así que no se resuelve dos
+        // veces. Sin grupo confirmado: vacíos, nunca los del perfil.
+        const [{ data: perfilDocente }, sesionConversion] = await Promise.all([
+          supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single(),
+          conLimiteDeTiempo((async () => obtenerSesionContexto(supabaseUser, userId, zonaHoraria, await vinculoConversacionPromise))(), TIMEOUT_SESION_MS, 'Tiempo de espera agotado obteniendo la sesión de contexto').catch((e) => {
+            console.error('Error obteniendo sesión de contexto:', e)
+            return null
+          }),
+        ])
+        const perfil = perfilConGrupoAcademico(perfilDocente, sesionConversion?.grupo_activo_datos ?? { grado: null, grupo: null })
         // Storage necesita el cliente de service role: el bucket
         // documentos-generados-ia se creó sin políticas RLS explícitas
         // (no hay acceso a SQL/migraciones desde este proyecto — ver
@@ -1641,7 +1653,10 @@ Grado: [grado] | Grupo: [grupo]
 
       if (texto && esDocumentoFormal(texto)) {
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
-        const { data: perfil } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        const { data: perfilDocente } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
+        // Grado y grupo: el grupo efectivo de la sesión (vacíos sin grupo
+        // confirmado, nunca los del perfil) — mismo criterio que Lista.
+        const perfil = perfilConGrupoAcademico(perfilDocente, sesion?.grupo_activo_datos ?? { grado: null, grupo: null })
         // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`

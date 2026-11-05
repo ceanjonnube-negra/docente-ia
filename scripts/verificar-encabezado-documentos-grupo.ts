@@ -4,8 +4,11 @@
 // planeación aprobada, hoja de evaluación y sus vistas previas): grado y
 // grupo salen del grupo validado (perfilConGrupoAcademico), nunca de
 // perfiles_docentes; el resto del perfil se conserva. Documentos sin grupo
-// académico: el perfil sin cambios. Genera Word y PDF REALES con los
-// generadores de la app y lee su texto; sin red, sin Supabase, sin IA.
+// académico: el perfil sin cambios. Las conversiones del Chat (convertir y
+// documento combinado) usan el grupo efectivo de la sesión; sin grupo
+// confirmado, grado y grupo vacíos. Genera Word, PDF, PowerPoint y Excel
+// REALES con los generadores de la app y lee su texto; sin red, sin
+// Supabase, sin IA.
 //
 // Se ejecuta con `npx tsx scripts/verificar-encabezado-documentos-grupo.ts`.
 
@@ -17,6 +20,8 @@ import { perfilConGrupoAcademico, prepararEncabezado } from '../lib/documentGen/
 import { generarWordBuffer } from '../lib/documentGen/generarWordServidor'
 import { generarPdfBuffer } from '../lib/documentGen/generarPdfServidor'
 import { generarHojaSeguimientoPdfBuffer } from '../lib/documentGen/generarHojaSeguimientoPdf'
+import { generarPptxBuffer } from '../lib/documentGen/generarPptxServidor'
+import { generarXlsxBuffer } from '../lib/documentGen/generarXlsxServidor'
 import { construirTextoListaAlumnos } from '../lib/motorContexto'
 
 let fallos = 0
@@ -56,6 +61,15 @@ async function textoPdf(buffer: Buffer): Promise<string> {
   }
   return partes.join(' ')
 }
+// PowerPoint (ppt/slides/*.xml) y Excel (xl/**/*.xml): mismo lector ZIP.
+async function textoZip(buffer: Buffer, partes: RegExp): Promise<string> {
+  const zip = await JSZip.loadAsync(buffer)
+  const nombres = Object.keys(zip.files).filter((n) => partes.test(n))
+  const xml = (await Promise.all(nombres.map((n) => zip.file(n)!.async('string')))).join(' ')
+  return xml.replace(/<\/a:p>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&')
+}
+const textoPptx = (b: Buffer) => textoZip(b, /^ppt\/slides\/slide\d+\.xml$/)
+const textoXlsx = (b: Buffer) => textoZip(b, /^xl\/(sharedStrings|worksheets\/sheet\d+)\.xml$/)
 const sinEspacios = (t: string) => t.replace(/\s+/g, ' ')
 const tieneGrupo = (t: string, grado: string, grupo: string) => new RegExp(`Grado: ${grado} +Grupo: ${grupo}(\\s|$)`).test(sinEspacios(t))
 
@@ -109,10 +123,36 @@ async function main() {
   const pdfGeneral = await textoPdf(await generarPdfBuffer('Oficio de prueba\n\nTexto del oficio.', perfilConGrupoAcademico(PERFIL, null), null))
   verificar(tieneGrupo(pdfGeneral, '4°', 'A'), '5b. Documento general sin grupo: encabezado del perfil, igual que antes')
 
+  // 7. Conversión del Chat en los 4 formatos: perfil 4° A, grupo efectivo 4 B.
+  const OFICIO = 'OFICIO DE PRUEBA\n\nSección 1\nTexto del oficio.\n\nSección 2\nMás texto.'
+  const lectores = { Word: [generarWordBuffer, textoWord], PDF: [generarPdfBuffer, textoPdf], PowerPoint: [generarPptxBuffer, textoPptx], Excel: [generarXlsxBuffer, textoXlsx] } as const
+  for (const [formato, [generar, leer]] of Object.entries(lectores)) {
+    const conGrupo = sinEspacios(await leer(await generar(OFICIO, perfilConGrupoAcademico(PERFIL, GRUPO_B), null)))
+    const conB = formato === 'Word' || formato === 'PDF' ? tieneGrupo(conGrupo, '4°', 'B') : /Grado 4° Grupo B(\s|$)/.test(conGrupo)
+    const conA = /Grupo:? A(\s|$)/.test(conGrupo)
+    verificar(conGrupo.trim().length > 0 && conB && !conA, `7a. ${formato}: grado 4° y grupo B del grupo efectivo, nunca la "A" del perfil`)
+    verificar(!conGrupo.includes('°°'), `7b. ${formato}: sin grado duplicado ("4°°")`)
+    verificar(conGrupo.includes(PERFIL.escuela), `7c. ${formato}: conserva la escuela del perfil`)
+    // Sin grupo confirmado: el documento se genera, sin grado ni grupo del perfil.
+    const sinGrupo = sinEspacios(await leer(await generar(OFICIO, perfilConGrupoAcademico(PERFIL, { grado: null, grupo: null }), null)))
+    verificar(sinGrupo.trim().length > 0 && !sinGrupo.includes('4°') && !/Grupo:? A(\s|$)/.test(sinGrupo) && sinGrupo.includes(PERFIL.escuela), `7d. ${formato} sin grupo confirmado: se genera, sin el grado ni el grupo del perfil, con la escuela`)
+  }
+  // PowerPoint y Excel: escuela y docente solo con datos reales del perfil.
+  const SIN_DATOS_INSTITUCIONALES = { ...PERFIL, escuela: null, nombre: null }
+  for (const [formato, [generar, leer]] of [['PowerPoint', lectores.PowerPoint], ['Excel', lectores.Excel]] as const) {
+    const conDatos = sinEspacios(await leer(await generar(OFICIO, perfilConGrupoAcademico(PERFIL, GRUPO_B), null)))
+    verificar(conDatos.includes(`Docente: ${PERFIL.nombre}`), `7e. ${formato}: muestra el nombre real del docente`)
+    const sinDatos = sinEspacios(await leer(await generar(OFICIO, perfilConGrupoAcademico(SIN_DATOS_INSTITUCIONALES, GRUPO_B), null)))
+    verificar(sinDatos.trim().length > 0 && !sinDatos.includes('Escuela') && !sinDatos.includes('Docente: Docente') && /Grado 4° Grupo B(\s|$)/.test(sinDatos) && !sinDatos.includes('°°'), `7f. ${formato} sin escuela ni nombre: sin textos genéricos ("Escuela", "Docente: Docente"), con grado y grupo correctos`)
+  }
+
   // 6. Integración en los recorridos (estructura del código).
   const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
   verificar(/ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, textoLista, perfilConGrupoAcademico\(perfilLista, sesion\.grupo_activo_datos \?\? \{ grado: null, grupo: null \}\)/.test(ruta), '6a. Lista en Word/PDF: grupo efectivo de la sesión (incompleto → vacío, nunca el perfil)')
-  verificar((ruta.match(/ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, (documentoTexto|texto), perfil,/g) ?? []).length === 2, '6b. Documentos generales (convertir y combinado): perfil sin cambios')
+  verificar((ruta.match(/ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, (documentoTexto|texto), perfil,/g) ?? []).length === 2, '6b. Convertir y combinado generan con el perfil documental')
+  verificar(/const perfil = perfilConGrupoAcademico\(perfilDocente, sesionConversion\?\.grupo_activo_datos \?\? \{ grado: null, grupo: null \}\)/.test(ruta), '6b1. Convertir: grupo efectivo de la conversación (sin grupo → vacío, nunca el perfil)')
+  verificar(/const perfil = perfilConGrupoAcademico\(perfilDocente, sesion\?\.grupo_activo_datos \?\? \{ grado: null, grupo: null \}\)/.test(ruta), '6b2. Documento combinado: grupo efectivo de la sesión (sin grupo → vacío, nunca el perfil)')
+  verificar(!/ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, \w+, perfil(Docente|Lista),/.test(ruta), '6b3. Ningún documento del Chat se genera con el perfil sin resolver el grupo')
   verificar(/grupoId: sesion\.grupo_activo_id \}/.test(ruta), '6c. El enlace de vista previa de la planeación lleva el grupo de la sesión')
   const aprobar = readFileSync('lib/planeacion/aprobarBorrador.ts', 'utf8')
   verificar(/const perfil = perfilConGrupoAcademico\(perfilDocente, sesion\.grupo_activo_datos \?\? \{ grado: null, grupo: null \}\)/.test(aprobar) && /ejecutarHerramientaDocumento\('word', textoCompleto, perfil,/.test(aprobar) && /ejecutarHerramientaDocumento\('pdf', textoCompleto, perfil,/.test(aprobar), '6d. Aprobación: hoja, Word y PDF con el grupo de la sesión')

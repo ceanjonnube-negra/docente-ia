@@ -15,6 +15,7 @@ import { leerVinculoConversacion, type VinculoConversacion } from '../lib/vincul
 import { obtenerSesionContexto, mensajeGrupoNoDisponible } from '../lib/sesionContexto'
 import { resolverGrupoActivo } from '../lib/grupoActivo'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
+import { perfilConGrupoAcademico } from '../lib/documentGen/encabezadoDocumento'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -29,9 +30,9 @@ function verificar(condicion: boolean, mensaje: string) {
 type Fila = Record<string, unknown>
 const DOC = 'doc-a', OTRO = 'doc-b'
 const ciclos: Record<string, boolean> = { 'ciclo-activo': true, 'ciclo-viejo': false }
-const grupo = (id: string, docente: string, ciclo: string, creado: string): Fila => ({ id, nombre_grupo: id, institucion_id: `inst-${id}`, docente_id: docente, ciclo_escolar_id: ciclo, creado_en: creado })
-const G_ACTIVO = grupo('g-activo', DOC, 'ciclo-activo', '2026-10-01T00:00:00Z') // contexto y más reciente
-const G_FIJADO = grupo('g-fijado', DOC, 'ciclo-activo', '2026-08-01T00:00:00Z') // autorizado, distinto
+const grupo = (id: string, docente: string, ciclo: string, creado: string, grado: string | null = null, letra: string | null = null): Fila => ({ id, nombre_grupo: id, institucion_id: `inst-${id}`, docente_id: docente, ciclo_escolar_id: ciclo, creado_en: creado, grado, grupo: letra })
+const G_ACTIVO = grupo('g-activo', DOC, 'ciclo-activo', '2026-10-01T00:00:00Z', '4', 'B') // contexto y más reciente
+const G_FIJADO = grupo('g-fijado', DOC, 'ciclo-activo', '2026-08-01T00:00:00Z', '4', 'A') // autorizado, distinto
 const G_VIEJO = grupo('g-viejo', DOC, 'ciclo-viejo', '2025-08-01T00:00:00Z')
 const G_AJENO = grupo('g-ajeno', OTRO, 'ciclo-activo', '2026-09-01T00:00:00Z')
 const inscripcion = (grupoId: string, alumno: string, nombre: string, n: number): Fila => ({ grupo_id: grupoId, estatus: 'activo', alumno_id: alumno, numero_lista: n, alumnos: { nombre, sexo: 'M' } })
@@ -155,6 +156,28 @@ async function main() {
   verificar(/const vinculo = await vinculoConversacionPromise/.test(ruta) && (ruta.match(/rpc\('fijar_grupo_conversacion'/g) ?? []).length === 1 && /if \(vinculo\.estado !== 'sin_grupo'\) return null/.test(ruta), '5c. Lista Oficial reutiliza la misma lectura y solo pide fijar cuando no hay grupo fijado (como antes)')
   verificar(/escribirAsistencia\(supabaseUser, \[\{ alumno_id: alumnoId, estado \}\], sesion\.fecha_actual, sesion\.grupo_activo_id\)/.test(ruta) && /registrarAsistenciaMasiva\(supabaseUser, sesion\.grupo_activo_id/.test(ruta), '5d. Asistencia individual y masiva escriben en sesion.grupo_activo_id (el grupo efectivo)')
   verificar(/sesion\?\.grupo_activo_id\s*\n?\s*\? await ejecutarRegistroEscolar/.test(ruta), '5e. Registro escolar no se ejecuta sin grupo en la sesión')
+
+  // 7. Encabezado de los documentos del Chat (convertir y combinado): el
+  // perfil documental sale del grupo efectivo de la sesión. Conversación
+  // fijada a 4° A con grupo activo 4° B; el perfil dice 5° C.
+  const PERFIL = { escuela: 'Escuela Ficticia', nombre: 'Docente Ficticio', grado: '5°', grupo: 'C' }
+  const perfilDocumental = async (id: string | null) => {
+    const { sesion } = await sesionCon(id)
+    return perfilConGrupoAcademico(PERFIL, sesion.grupo_activo_datos ?? { grado: null, grupo: null })
+  }
+  let pd = await perfilDocumental('c-fijada')
+  verificar(pd.grado === '4°' && pd.grupo === 'A' && pd.escuela === PERFIL.escuela, '7a. Conversación fijada a A con activo B: documentos con 4° A (ni el activo B ni el perfil 5° C), con la escuela')
+  pd = await perfilDocumental(null)
+  verificar(pd.grado === '4°' && pd.grupo === 'B', '7b. Sin conversación: documentos con el grupo activo 4° B')
+  for (const [id, etiqueta] of [['c-ajeno', 'fijado no válido'], ['c-de-otro', 'no autorizada']] as const) {
+    pd = await perfilDocumental(id)
+    verificar(pd.grado === '' && pd.grupo === '' && pd.escuela === PERFIL.escuela, `7c. Conversación ${etiqueta}: grado y grupo vacíos (nunca el perfil ni otro grupo), escuela intacta`)
+  }
+  falla = 'conversaciones_chat'
+  pd = await perfilDocumental('c-fijada')
+  falla = null
+  verificar(pd.grado === '' && pd.grupo === '', '7d. Error al leer el vínculo: grado y grupo vacíos')
+  verificar((ruta.match(/obtenerSesionContexto\(supabaseUser, userId, zonaHoraria, await vinculoConversacionPromise\)/g) ?? []).length === 2 && /sesionConversion\?\.grupo_activo_datos/.test(ruta), '7e. La conversión temprana resuelve el grupo con la misma sesión y el mismo vínculo del turno')
 
   // 6. La resolución del contexto no escribe nada ni llama RPC.
   efectos.length = 0
