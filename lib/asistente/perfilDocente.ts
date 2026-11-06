@@ -53,9 +53,12 @@ export function contextoAplicacionATexto(contexto: ContextoAplicacion): string {
   return partes.join('\n')
 }
 
+// Sin grado ni grupo: el servidor los agrega desde el grupo efectivo de
+// la conversación (textoGrupoAcademico en lib/sesionContexto.ts), nunca
+// del perfil.
 export function construirInstrucciones(perfil: PerfilDocente | null, contexto: ContextoAplicacion): string {
   const perfilTexto = perfil
-    ? `Nombre: ${perfil.nombre}\nEscuela: ${perfil.escuela}\nGrado: ${perfil.grado}\nGrupo: ${perfil.grupo}\nMunicipio: ${perfil.municipio}\nEstado: ${perfil.estado}`
+    ? `Nombre: ${perfil.nombre}\nEscuela: ${perfil.escuela}\nMunicipio: ${perfil.municipio}\nEstado: ${perfil.estado}`
     : ''
   return [perfilTexto, contextoAplicacionATexto(contexto)].filter(Boolean).join('\n\n')
 }

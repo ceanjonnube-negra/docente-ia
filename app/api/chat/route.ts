@@ -3,7 +3,7 @@ import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAprobarPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
-import { mensajeGrupoNoDisponible, obtenerSesionContexto } from '@/lib/sesionContexto'
+import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
@@ -645,26 +645,30 @@ export async function POST(req: NextRequest) {
   // se inyecta en DATOS DEL MAESTRO más abajo pase lo que pase, sin
   // depender del clasificador. Es lo que hace posible responder "sí,
   // tengo acceso a la lista del grupo 3°B, hay 28 alumnos" en vez de
-  // "no tengo acceso directo a tu lista".
-  const resumenGrupoTexto = sesion
-    ? sesion.grupo_activo_id
-      ? (() => {
-          const alumnos = sesion.alumnos_del_grupo_activo
-          const ninas = alumnos.filter((a) => a.sexo === 'M').length
-          const ninos = alumnos.filter((a) => a.sexo === 'H').length
-          const listaConNumero = alumnos
-            .slice()
-            .sort((a, b) => (a.numero_lista ?? 999) - (b.numero_lista ?? 999))
-            .map((a) => `${a.numero_lista ?? '—'}. ${a.nombre_completo} (${a.sexo === 'M' ? 'niña' : a.sexo === 'H' ? 'niño' : 'sexo no registrado'})`)
-            .join('\n')
-          return `Grupo activo: sí hay un grupo configurado (ID interno ${sesion.grupo_activo_id}).\nAlumnos inscritos activos: ${alumnos.length} (${ninas} niñas, ${ninos} niños${alumnos.length - ninas - ninos > 0 ? `, ${alumnos.length - ninas - ninos} sin sexo registrado` : ''}).${
-            alumnos.length > 0 ? `\nLista de alumnos con número de lista real (úsalo tal cual, nunca inventes uno distinto):\n${listaConNumero}` : ''
-          }`
-        })()
-      : mensajeGrupoNoDisponible(sesion)
-        ? `Grupo activo: NO disponible en esta conversación. Si el maestro pide algo de sus alumnos o de su grupo, no uses datos de ningún otro grupo y responde solo esto: ${mensajeGrupoNoDisponible(sesion)}`
-        : 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
-    : null
+  // "no tengo acceso directo a tu lista". Incluye el grado y grupo del
+  // grupo efectivo (textoGrupoAcademico): única fuente para el cuerpo de
+  // lo que redacta el modelo, igual que para los encabezados. Sin sesión
+  // (error o tiempo agotado) solo va la prohibición de escribirlos.
+  const detalleGrupoTexto = (() => {
+    if (!sesion) return null
+    if (sesion.grupo_activo_id) {
+      const alumnos = sesion.alumnos_del_grupo_activo
+      const ninas = alumnos.filter((a) => a.sexo === 'M').length
+      const ninos = alumnos.filter((a) => a.sexo === 'H').length
+      const listaConNumero = alumnos
+        .slice()
+        .sort((a, b) => (a.numero_lista ?? 999) - (b.numero_lista ?? 999))
+        .map((a) => `${a.numero_lista ?? '—'}. ${a.nombre_completo} (${a.sexo === 'M' ? 'niña' : a.sexo === 'H' ? 'niño' : 'sexo no registrado'})`)
+        .join('\n')
+      return `Grupo activo: sí hay un grupo configurado (ID interno ${sesion.grupo_activo_id}).\nAlumnos inscritos activos: ${alumnos.length} (${ninas} niñas, ${ninos} niños${alumnos.length - ninas - ninos > 0 ? `, ${alumnos.length - ninas - ninos} sin sexo registrado` : ''}).${
+        alumnos.length > 0 ? `\nLista de alumnos con número de lista real (úsalo tal cual, nunca inventes uno distinto):\n${listaConNumero}` : ''
+      }`
+    }
+    const noDisponible = mensajeGrupoNoDisponible(sesion)
+    if (noDisponible) return `Grupo activo: NO disponible en esta conversación. Si el maestro pide algo de sus alumnos o de su grupo, no uses datos de ningún otro grupo y responde solo esto: ${noDisponible}`
+    return 'Grupo activo: el maestro todavía no tiene un grupo configurado como activo.'
+  })()
+  const resumenGrupoTexto = [textoGrupoAcademico(sesion), detalleGrupoTexto].filter(Boolean).join('\n')
 
   // LISTA OFICIAL (intención actualizar_lista_oficial, solo lectura):
   // reconocida de forma determinista, antes de LISTA DE ALUMNOS y del

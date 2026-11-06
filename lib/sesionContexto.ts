@@ -56,6 +56,19 @@ export function mensajeGrupoNoDisponible(sesion: Pick<SesionContexto, 'grupo_no_
   }
 }
 
+// Grado y grupo que el modelo debe usar al redactar (cuerpo de
+// documentos y respuestas): el rótulo del grupo efectivo de la sesión —
+// el mismo de los encabezados —, nunca el perfil. Sin grupo efectivo
+// (sin grupo, fijado no válido, no autorizada, error o sin sesión),
+// prohíbe escribirlos en vez de dejar que se adivinen.
+export function textoGrupoAcademico(sesion: Pick<SesionContexto, 'grupo_activo_id' | 'grupo_activo_grado' | 'grupo_activo_letra'> | null): string {
+  const rotulo = [sesion?.grupo_activo_grado, sesion?.grupo_activo_letra].filter(Boolean).join(' ');
+  if (!sesion?.grupo_activo_id || !rotulo) {
+    return 'Grado y grupo: no hay un grado ni un grupo confirmados en esta conversación. No escribas ningún grado ni grupo (ni en respuestas ni en documentos) y nunca los inventes.';
+  }
+  return `Grado y grupo de esta conversación: ${rotulo}. Son los únicos válidos para respuestas y documentos (encabezado y cuerpo); nunca uses otro grado o grupo.`;
+}
+
 export async function obtenerSesionContexto(
   sb: SupabaseClient,
   docenteId: string,

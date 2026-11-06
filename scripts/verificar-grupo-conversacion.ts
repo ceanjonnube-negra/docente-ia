@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs'
 import { leerVinculoConversacion, type VinculoConversacion } from '../lib/vinculoConversacion'
-import { obtenerSesionContexto, mensajeGrupoNoDisponible } from '../lib/sesionContexto'
+import { obtenerSesionContexto, mensajeGrupoNoDisponible, textoGrupoAcademico } from '../lib/sesionContexto'
 import { resolverGrupoActivo } from '../lib/grupoActivo'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
 import { perfilConGrupoAcademico } from '../lib/documentGen/encabezadoDocumento'
@@ -33,6 +33,7 @@ const ciclos: Record<string, boolean> = { 'ciclo-activo': true, 'ciclo-viejo': f
 const grupo = (id: string, docente: string, ciclo: string, creado: string, grado: string | null = null, letra: string | null = null): Fila => ({ id, nombre_grupo: id, institucion_id: `inst-${id}`, docente_id: docente, ciclo_escolar_id: ciclo, creado_en: creado, grado, grupo: letra })
 const G_ACTIVO = grupo('g-activo', DOC, 'ciclo-activo', '2026-10-01T00:00:00Z', '4', 'B') // contexto y más reciente
 const G_FIJADO = grupo('g-fijado', DOC, 'ciclo-activo', '2026-08-01T00:00:00Z', '4', 'A') // autorizado, distinto
+const G_3A = grupo('g-3a', DOC, 'ciclo-activo', '2026-07-01T00:00:00Z', '3°', 'A') // grado ya guardado con "°"
 const G_VIEJO = grupo('g-viejo', DOC, 'ciclo-viejo', '2025-08-01T00:00:00Z')
 const G_AJENO = grupo('g-ajeno', OTRO, 'ciclo-activo', '2026-09-01T00:00:00Z')
 const inscripcion = (grupoId: string, alumno: string, nombre: string, n: number): Fila => ({ grupo_id: grupoId, estatus: 'activo', alumno_id: alumno, numero_lista: n, alumnos: { nombre, sexo: 'M' } })
@@ -42,12 +43,12 @@ let falla: string | null = null
 const efectos: string[] = []
 const lecturas: string[] = []
 const db: Record<string, Fila[]> = {
-  grupos: [G_ACTIVO, G_FIJADO, G_VIEJO, G_AJENO],
+  grupos: [G_ACTIVO, G_FIJADO, G_3A, G_VIEJO, G_AJENO],
   docente_contexto_activo: [{ docente_id: DOC, grupo_id: 'g-activo', ciclo_escolar_id: 'ciclo-activo' }],
   inscripciones: [inscripcion('g-activo', 'alu-activo', 'Ana Activo', 1), inscripcion('g-fijado', 'alu-fijado', 'Fer Fijado', 1)],
   // RLS: la conversación de otro docente no se devuelve (ver consulta()).
   conversaciones_chat: [
-    conversacion('c-igual', 1, 'g-activo'), conversacion('c-fijada', 1, 'g-fijado'), conversacion('c-ajeno', 1, 'g-ajeno'),
+    conversacion('c-igual', 1, 'g-activo'), conversacion('c-fijada', 1, 'g-fijado'), conversacion('c-3a', 1, 'g-3a'), conversacion('c-ajeno', 1, 'g-ajeno'),
     conversacion('c-vieja', 1, 'g-viejo'), conversacion('c-sin-grupo', 1, null), conversacion('c-antigua', null, null),
     conversacion('c-de-otro', 1, 'g-ajeno', OTRO),
   ],
@@ -179,9 +180,44 @@ async function main() {
   verificar(pd.grado === '' && pd.grupo === '', '7d. Error al leer el vínculo: grado y grupo vacíos')
   verificar((ruta.match(/obtenerSesionContexto\(supabaseUser, userId, zonaHoraria, await vinculoConversacionPromise\)/g) ?? []).length === 2 && /sesionConversion\?\.grupo_activo_datos/.test(ruta), '7e. La conversión temprana resuelve el grupo con la misma sesión y el mismo vínculo del turno')
 
+  // 8. Grado y grupo que recibe el modelo para redactar (cuerpo de
+  // documentos y respuestas): el mismo grupo efectivo del encabezado,
+  // nunca el perfil (5° C). Sin grupo efectivo: prohibido escribirlos.
+  const textoDe = async (id: string | null) => textoGrupoAcademico((await sesionCon(id)).sesion)
+  let t = await textoDe('c-3a')
+  verificar(t.includes('3° A') && !t.includes('°°') && !/[45]°|\bC\b/.test(t), '8a. Grupo efectivo 3° A (grado guardado con "°"): el modelo recibe "3° A", sin "3°°" ni el perfil 5° C')
+  t = await textoDe('c-fijada')
+  verificar(t.includes('4° A') && !t.includes('4° B') && !t.includes('5°'), '8b. Conversación fijada a 4° A con activo 4° B: el modelo recibe 4° A')
+  t = await textoDe(null)
+  verificar(t.includes('4° B') && !t.includes('5°'), '8c. Sin conversación: el modelo recibe el grupo activo 4° B')
+  const SIN_GRADO = 'no hay un grado ni un grupo confirmados'
+  for (const [id, etiqueta] of [['c-ajeno', 'fijado no válido'], ['c-de-otro', 'no autorizada']] as const) {
+    t = await textoDe(id)
+    verificar(t.includes(SIN_GRADO) && !t.includes('°'), `8d. Conversación ${etiqueta}: sin grado ni grupo, con la prohibición de inventarlos`)
+  }
+  falla = 'conversaciones_chat'
+  t = await textoDe('c-fijada')
+  falla = null
+  verificar(t.includes(SIN_GRADO) && !t.includes('°'), '8e. Error al leer el vínculo: sin grado ni grupo')
+  verificar(textoGrupoAcademico({ grupo_activo_id: null }).includes(SIN_GRADO), '8f. Docente sin grupo configurado: sin grado ni grupo')
+  verificar(textoGrupoAcademico(null).includes(SIN_GRADO), '8f2. Sin sesión (error o tiempo agotado): también llega la prohibición, sin grado ni grupo')
+  lecturas.length = 0
+  textoGrupoAcademico((await sesionCon('c-3a')).sesion)
+  const lecturasSesion = lecturas.length
+  lecturas.length = 0
+  await sesionCon('c-3a')
+  verificar(lecturas.length === lecturasSesion, '8g. El texto académico sale de la sesión ya resuelta: 0 consultas adicionales')
+  // El perfil del cliente ya no lleva grado ni grupo.
+  process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'http://supabase.invalid'
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'clave-ficticia'
+  const { construirInstrucciones } = await import('../lib/asistente/perfilDocente')
+  const instrucciones = construirInstrucciones({ id: 'doc', nombre: 'Docente Ficticio', escuela: 'Escuela Ficticia', grado: '5°', grupo: 'C', municipio: 'Mexicali', estado: 'Baja California' }, { pantalla: 'chat' })
+  verificar(!/Grado:|Grupo:|5°/.test(instrucciones) && ['Nombre: Docente Ficticio', 'Escuela: Escuela Ficticia', 'Municipio: Mexicali', 'Estado: Baja California', 'Pantalla actual: chat'].every((l) => instrucciones.includes(l)), '8h. Perfil 5° C: las instrucciones del cliente conservan nombre, escuela, municipio y estado, sin grado ni grupo')
+  verificar(/const resumenGrupoTexto = \[textoGrupoAcademico\(sesion\), detalleGrupoTexto\]/.test(ruta) && /let contextoEnriquecido = \[contexto \|\| '', resumenGrupoTexto \|\| ''\]/.test(ruta) && /DATOS DEL MAESTRO \(ya los conoces[^`]*\n\$\{contextoEnriquecido\}/.test(ruta), '8i. /api/chat: el grado y grupo de la sesión llegan a DATOS DEL MAESTRO del prompt que redacta el documento')
+
   // 6. La resolución del contexto no escribe nada ni llama RPC.
   efectos.length = 0
-  for (const id of [null, 'c-igual', 'c-fijada', 'c-ajeno', 'c-sin-grupo', 'c-antigua', 'c-de-otro']) await sesionCon(id)
+  for (const id of [null, 'c-igual', 'c-fijada', 'c-3a', 'c-ajeno', 'c-sin-grupo', 'c-antigua', 'c-de-otro']) await sesionCon(id)
   verificar(efectos.length === 0, '6. Vínculo + sesión en todos los casos: 0 escrituras y 0 RPC (fijar_grupo_conversacion no se invoca)')
 
   if (fallos > 0) {
