@@ -114,7 +114,10 @@ export async function ejecutarHerramientaDocumento(
   perfil: any,
   zonaHoraria: string | null,
   sb: SupabaseClient,
-  userId: string
+  userId: string,
+  // Solo PowerPoint nuevo (CASO 3 en /api/chat): cantidad de secciones
+  // pedida por el docente. Sin ella (conversiones), nada cambia.
+  opciones?: { seccionesEsperadas?: number }
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -134,7 +137,7 @@ export async function ejecutarHerramientaDocumento(
   const generadores = {
     word: async () => ({ buffer: await generarWordBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoWordServidor(titulo) }),
     pdf: async () => ({ buffer: await generarPdfBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoPdf(titulo) }),
-    powerpoint: async () => ({ buffer: await generarPptxBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoPptx(titulo) }),
+    powerpoint: async () => ({ buffer: await generarPptxBuffer(texto, perfil, zonaHoraria, opciones?.seccionesEsperadas), nombre: nombreArchivoPptx(titulo) }),
     excel: async () => ({ buffer: await generarXlsxBuffer(texto, perfil, zonaHoraria), nombre: nombreArchivoXlsx(titulo) }),
   } as const
 

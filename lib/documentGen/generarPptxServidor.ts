@@ -7,7 +7,7 @@
 // tenga que pedir "una diapositiva por día" explícitamente.
 
 import PptxGenJS from 'pptxgenjs'
-import { analizarContenido, agruparEnDiapositivas, extraerTitulo } from './parseContenido'
+import { analizarContenido, agruparEnDiapositivas, extraerTitulo, type Diapositiva } from './parseContenido'
 import { formatearFecha } from '../tiempo/TimeService'
 import { prepararEncabezado } from './encabezadoDocumento'
 
@@ -74,12 +74,27 @@ function agregarVinetas(slide: PptxGenJS.Slide, vinetas: string[], y: number, al
   )
 }
 
+// Presentación nueva con cantidad pedida: si el texto trae más secciones
+// que las esperadas, las sobrantes se integran en la última permitida —
+// su título como una viñeta más, seguido de su contenido —, sin
+// descartar ni duplicar nada. Con 0 esperadas todo va bajo el título.
+// Menos secciones de las esperadas: se deja tal cual (nada se inventa).
+function ajustarSecciones(diapositivas: Diapositiva[], esperadas: number): Diapositiva[] {
+  const [principal, ...secciones] = diapositivas
+  if (!principal || secciones.length <= esperadas) return diapositivas
+  const conservadas = secciones.slice(0, esperadas).map((s) => ({ ...s, contenido: [...s.contenido] }))
+  const destino = conservadas[conservadas.length - 1] ?? { ...principal, contenido: [...principal.contenido] }
+  for (const sobrante of secciones.slice(esperadas)) destino.contenido.push(sobrante.titulo, ...sobrante.contenido)
+  return esperadas === 0 ? [destino] : [principal, ...conservadas]
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function generarPptxBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
+export async function generarPptxBuffer(texto: string, perfil: any, zonaHoraria: string | null, seccionesEsperadas?: number): Promise<Buffer> {
   const pptx = new PptxGenJS()
   pptx.layout = 'LAYOUT_16x9'
   const lineas = analizarContenido(texto)
-  const diapositivas = agruparEnDiapositivas(lineas)
+  const agrupadas = agruparEnDiapositivas(lineas)
+  const diapositivas = seccionesEsperadas === undefined ? agrupadas : ajustarSecciones(agrupadas, seccionesEsperadas)
   const titulo = quitarEmoji(extraerTitulo(texto))
   // Grado y grupo como en Word y PDF (el grado ya trae "°"). Escuela y
   // docente solo con datos reales del perfil: sin textos genéricos.

@@ -21,7 +21,7 @@ import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
-import { instruccionesPresentacion } from '@/lib/asistente/instruccionesPresentacion'
+import { instruccionesPresentacion, seccionesDePresentacion } from '@/lib/asistente/instruccionesPresentacion'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
@@ -1670,7 +1670,10 @@ Grado: [grado] | Grupo: [grupo]
         // confirmado, nunca los del perfil) — mismo criterio que Lista.
         const perfil = perfilConGrupoAcademico(perfilDocente, sesion?.grupo_activo_datos ?? { grado: null, grupo: null })
         // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
-        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId), 'generar-archivo-combinado')
+        // PowerPoint nuevo: la cantidad pedida también la respeta el
+        // generador (secciones de más se integran en la última).
+        const opcionesArchivo = tipoHerramientaSolicitado === 'powerpoint' ? { seccionesEsperadas: seccionesDePresentacion(mensaje || '') } : undefined
+        const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId, opcionesArchivo), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         // El CASO 3 nunca manda el contenido redactado como texto plano
         // al chat (el maestro nunca lo ve en prosa) — pero sin él, el

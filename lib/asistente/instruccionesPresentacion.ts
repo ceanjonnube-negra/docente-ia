@@ -44,8 +44,13 @@ export function instruccionesPresentacion(mensaje: string): string {
     ? 'Total: 1 diapositiva (título, contenido y datos institucionales juntos).'
     : `Total: ${secciones + 1} diapositivas = portada + ${secciones} de contenido.
 - Primera línea: 📊 seguido del título de la presentación, en MAYÚSCULAS (es la portada). No escribas nada debajo de ella antes de la primera sección; la portada ya muestra escuela, docente, grado, grupo y fecha.`
-  return `PRESENTACIÓN POWERPOINT — formato obligatorio para este documento (la aplicación convierte cada sección en una diapositiva).
+  const requisitos = secciones === 0
+    ? 'REQUISITOS ADICIONALES: cualquier cosa que el maestro pida incluir (una frase, una cita, un dato, una conclusión, una actividad) va como una viñeta más debajo del título — nunca como una sección ni como otro título.'
+    : `REQUISITOS ADICIONALES: cualquier cosa que el maestro pida incluir (una frase, una cita, un dato, una conclusión, una actividad, un agradecimiento) se integra DENTRO de las ${secciones} secciones ya previstas, como una viñeta más de la sección que corresponda. Si la pide "al final", "para cerrar" o "en la última diapositiva", va como la última viñeta de la ÚLTIMA sección. Nunca crees una sección adicional para eso: "la última diapositiva" es la sección ${secciones}, no una nueva.
+ANTES DE TERMINAR: cuenta los títulos de sección — deben ser exactamente ${secciones}. Si tienes más, integra el contenido sobrante en la última sección.`
+  return `PRESENTACIÓN POWERPOINT — formato obligatorio para este documento (la aplicación convierte cada sección en una diapositiva). Cuando el maestro pide "N diapositivas", N es el TOTAL e incluye la portada, salvo que diga expresamente que son N de contenido además de la portada — ya está calculado abajo.
 ${total}${secciones === 0 ? '\n- Primera línea: 📊 seguido del título de la presentación, en MAYÚSCULAS (un título corto, de preferencia menos de 60 caracteres).' : ''}
 ${cuerpo}
+${requisitos}
 Adapta el contenido al tema pedido y al grado del grupo de esta conversación (DATOS DEL MAESTRO). Sin markdown, sin tablas.`
 }

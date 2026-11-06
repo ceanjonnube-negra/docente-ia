@@ -168,6 +168,55 @@ async function main() {
   const fuente = readFileSync('lib/documentGen/generarPptxServidor.ts', 'utf8')
   verificar((fuente.match(/portada\.addText\(/g) ?? []).length === 2 && (fuente.match(/pptx\.addSlide\(\)/g) ?? []).length === 3, '8f. Fuente: la portada tiene exactamente 2 addText y solo hay 3 addSlide (única, portada y cada página de sección)')
 
+  // 9. Cantidad pedida respetada también por el generador (seccionesEsperadas,
+  // solo PowerPoint nuevo): las secciones de más se integran en la última,
+  // sin perder ni duplicar texto, con la paginación existente.
+  const inst = instruccionesPresentacion('Genera un PowerPoint de 4 diapositivas sobre la lectura y en la última diapositiva coloca la frase X')
+  verificar(inst.includes('N es el TOTAL e incluye la portada') && inst.includes('se integra DENTRO de las 3 secciones ya previstas') && inst.includes('última viñeta de la ÚLTIMA sección') && inst.includes('Nunca crees una sección adicional') && inst.includes('deben ser exactamente 3'), '9a. Plantilla: total con portada, requisitos dentro de las secciones previstas, frase final en la última sección y conteo antes de terminar')
+  verificar(instruccionesPresentacion('PowerPoint de 1 diapositiva').includes('va como una viñeta más debajo del título'), '9a2. Plantilla de 1 diapositiva: los requisitos adicionales van como viñetas bajo el título')
+  const seccion = (titulo: string, k: number, n = 3) => [`📚 ${titulo}`, ...Array.from({ length: n }, (_, i) => `- Punto ${i + 1} de ${titulo.toLowerCase()} (${k})`)].join('\n')
+  const conSecciones = (titulos: string[], n = 3) => ['📊 LA IMPORTANCIA DE LA LECTURA', ...titulos.map((t, i) => seccion(t, i + 1, n))].join('\n\n')
+  const textoCompleto = (ss: string[]) => ss.join(' ')
+  const legibles = async (buffer: Buffer) => (await geometria(buffer)).every((g) => dentroYSinEncimarse(g.cajas) && g.letras.every((l) => l >= 11))
+  const unaVez = (ss: string[], frases: string[]) => frases.every((f) => textoCompleto(ss).split(f).length === 2)
+
+  const tresMasConclusion = conSecciones(['POR QUÉ LEER', 'ESTRATEGIAS', 'ACTIVIDADES', 'CONCLUSIÓN'])
+  const bufConclusion = await generarPptxBuffer(tresMasConclusion, PERFIL, null, 3)
+  const sConclusion = await diapositivas(bufConclusion)
+  verificar(sConclusion.length === 4 && sConclusion[3].includes('ACTIVIDADES') && sConclusion[3].includes('CONCLUSIÓN') && sConclusion[3].includes('Punto 3 de conclusión (4)'), `9b. 4 pedidas + sección de conclusión: 4 diapositivas, la conclusión integrada en la última (obtenidas ${sConclusion.length})`)
+  verificar(unaVez(sConclusion, ['CONCLUSIÓN', ...[1, 2, 3].map((i) => `Punto ${i} de conclusión (4)`), ...[1, 2, 3].map((i) => `Punto ${i} de actividades (3)`)]) && await legibles(bufConclusion), '9b2. Conclusión integrada: cada texto una sola vez, cajas dentro y letra legible')
+
+  const conFrase = ['📊 LA IMPORTANCIA DE LA LECTURA', seccion('POR QUÉ LEER', 1), seccion('ESTRATEGIAS', 2), seccion('ACTIVIDADES', 3), '✅ VALIDACIÓN DEL DOCUMENTO\n- Documento de validación E2E PowerPoint'].join('\n\n')
+  const sFrase = await diapositivas(await generarPptxBuffer(conFrase, PERFIL, null, 3))
+  verificar(sFrase.length === 4 && sFrase[3].includes('Documento de validación E2E PowerPoint') && unaVez(sFrase, ['Documento de validación E2E PowerPoint', 'VALIDACIÓN DEL DOCUMENTO']), `9c. Frase pedida para la última diapositiva: queda dentro de la diapositiva 4, una sola vez (obtenidas ${sFrase.length})`)
+
+  const cinco = conSecciones(['UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO'], 2)
+  const bufCinco = await generarPptxBuffer(cinco, PERFIL, null, 3)
+  const sCinco = await diapositivas(bufCinco)
+  verificar(sCinco.length === 4 && ['CUATRO', 'CINCO', 'Punto 2 de cuatro (4)', 'Punto 2 de cinco (5)'].every((t) => sCinco[3].includes(t)) && unaVez(sCinco, ['Punto 1 de uno (1)', 'Punto 2 de tres (3)', 'Punto 1 de cuatro (4)', 'Punto 2 de cinco (5)']) && await legibles(bufCinco), `9d. Varias secciones sobrantes: 4 diapositivas, todo integrado en la última sin pérdida (obtenidas ${sCinco.length})`)
+
+  const dos = conSecciones(['UNO', 'DOS'])
+  const sDos = await diapositivas(await generarPptxBuffer(dos, PERFIL, null, 3))
+  verificar(sDos.length === 3 && sDos.slice(1).every((x) => x.includes('Punto 1')), `9e. Menos secciones de las esperadas: no se inventan ni se agregan diapositivas vacías (obtenidas ${sDos.length})`)
+
+  const unaConSecciones = conSecciones(['IDEA PRINCIPAL', 'CIERRE'], 2)
+  const sUnaSec = await diapositivas(await generarPptxBuffer(unaConSecciones, PERFIL, null, 0))
+  verificar(sUnaSec.length === 1 && ['IDEA PRINCIPAL', 'CIERRE', 'Punto 2 de cierre (2)', 'Escuela Ficticia', 'Grado 3° Grupo A'].every((t) => sUnaSec[0].includes(t)), `9f. Una sola diapositiva con secciones escritas: todo el contenido y los datos institucionales en 1 (obtenidas ${sUnaSec.length})`)
+
+  const excesivo = conSecciones(['UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS'], 5)
+  const bufExc = await generarPptxBuffer(excesivo, PERFIL, null, 3)
+  const sExc = await diapositivas(bufExc)
+  const fijas = sExc.slice(1).filter((x) => !x.includes('(continuación)'))
+  verificar(sExc.length > 4 && fijas.length === 3 && sExc.slice(4).every((x) => x.includes('TRES (continuación)')), `9g. Contenido excesivo: 3 secciones como se pidió y lo que no cabe sigue en "(continuación)" de la última (obtenidas ${sExc.length}, límite físico)`)
+  verificar(unaVez(sExc, ['Punto 5 de seis (6)', 'Punto 1 de cuatro (4)', 'Punto 3 de cinco (5)', 'SEIS']) && await legibles(bufExc), '9g2. Contenido excesivo: nada oculto ni duplicado, cajas dentro y letra legible (sin encoger viñetas)')
+
+  const sConv = await diapositivas(await generarPptxBuffer(tresMasConclusion, PERFIL, null))
+  verificar(sConv.length === 5 && sConv[4].includes('CONCLUSIÓN') && !sConv[3].includes('CONCLUSIÓN'), `9h. Conversión existente (sin seccionesEsperadas): sin cambios, una diapositiva por sección (obtenidas ${sConv.length})`)
+  const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')
+  verificar(/powerpoint: async \(\) => \(\{ buffer: await generarPptxBuffer\(texto, perfil, zonaHoraria, opciones\?\.seccionesEsperadas\)/.test(herramientas) && (herramientas.match(/seccionesEsperadas/g) ?? []).length === 2, '9i. Herramientas: seccionesEsperadas solo llega al generador PowerPoint')
+  const rutaChat = readFileSync('app/api/chat/route.ts', 'utf8')
+  verificar((rutaChat.match(/seccionesEsperadas: seccionesDePresentacion\(mensaje \|\| ''\)/g) ?? []).length === 1 && /tipoHerramientaSolicitado === 'powerpoint' \? \{ seccionesEsperadas/.test(rutaChat) && /ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId\)/.test(rutaChat), '9j. /api/chat: solo el CASO 3 de PowerPoint pasa seccionesEsperadas; la conversión de un documento existente no')
+
   // 6. Solo PowerPoint recibe la plantilla.
   const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
   verificar(/const systemCaso3 = tipoHerramientaSolicitado === 'powerpoint'\s*\n\s*\? `\$\{parametrosClaude\.system\}\\n\\n\$\{instruccionesPresentacion\(mensaje \|\| ''\)\}`\s*\n\s*: parametrosClaude\.system/.test(ruta) && /client\.messages\.create\(\{ \.\.\.parametrosClaude, system: systemCaso3, stream: false \}/.test(ruta), '6a. CASO 3: la plantilla de presentación solo se agrega para PowerPoint (Word, PDF y Excel sin cambios)')
