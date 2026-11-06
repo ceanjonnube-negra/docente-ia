@@ -27,7 +27,7 @@ import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorra
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from '@/lib/asistente/documentos'
+import { detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, type TipoHerramienta } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -537,7 +537,9 @@ export async function POST(req: NextRequest) {
     if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
       documentoTexto = finalizarArchivo.documentoTexto
       fuenteContenido = 'cliente'
-    } else {
+    } else if (!esDocumentoNuevoConFormato(mensaje || '')) {
+      // Un documento NUEVO nunca se resuelve convirtiendo el último del
+      // historial: sigue al CASO 3, que lo redacta.
       const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
       if (ultimoDocumento) {
         documentoTexto = ultimoDocumento.content

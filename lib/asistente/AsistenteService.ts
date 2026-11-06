@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -1234,7 +1234,11 @@ class AsistenteServiceImpl {
     // ("Apruébala y guárdala") no es una edición — se manda como mensaje
     // normal para que el flujo de aprobación de /api/chat la atienda
     // (ver detectarAprobarPlaneacion).
-    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) })) {
+    // Otra excepción: pedir un documento NUEVO en un formato ("genera un
+    // documento PDF nuevo con el título...") no es conversión ni edición
+    // del documento activo — va como mensaje normal y /api/chat lo
+    // redacta (ver esDocumentoNuevoConFormato).
+    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esDocumentoNuevoConFormato(limpio)) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un

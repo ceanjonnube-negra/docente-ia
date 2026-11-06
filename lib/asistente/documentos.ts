@@ -133,3 +133,41 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
   const normalizado = normalizar(texto)
   return FRASES_FINALIZAR_DOCUMENTO.some((frase) => normalizado.includes(frase)) ? 'word' : null
 }
+
+// Qué pide un mensaje que ya nombra un formato (detectarHerramientaDocumento):
+// - 'nuevo': un documento distinto, con una construcción explícita de
+//   generación ("genera un documento PDF con el título...", "crea una
+//   presentación sobre...", "hazme otro oficio") o un marcador
+//   inequívoco ("un documento nuevo").
+// - 'editar': cambiar el contenido y entregarlo ("agrega una conclusión y
+//   guárdalo en PDF", "corrige la ortografía y pásalo a Word"). Por ahora
+//   solo se clasifica: todavía no cambia el comportamiento (se sigue
+//   tratando como hasta hoy); edición + entrega queda para otra fase.
+// - 'convertir': todo lo demás ("pásalo a PDF", "hazme un PDF",
+//   "pásalo otra vez a PDF") — el archivo del contenido que ya existe.
+// Nombrar el formato nunca basta para decidir, y tampoco una palabra
+// suelta ("sobre", "nueva"): "agrega información sobre las leyendas" o
+// "agrega una sección nueva" siguen siendo ediciones.
+const GENERACION = /\b(genera|generame|crea|creame|haz|hazme|elabora|elaborame|redacta|redactame|escribe|escribeme|prepara|preparame)\s+(un|una|otro|otra)\b/
+const GENERACION_OTRO = /\b(genera|generame|crea|creame|haz|hazme|elabora|elaborame|redacta|redactame|escribe|escribeme|prepara|preparame)\s+(otro|otra)\s+(?!vez\b)/
+const DETALLE_DOCUMENTO_NUEVO = /\bcon\s+(el\s+)?titulo\b|\btitulad[oa]\b|\bsobre\b|\bacerca\s+de\b|\bnuev[oa]\b/
+const DOCUMENTO = '(documento|archivo|oficio|examen|presentacion|carta|ficha|circular|citatorio|reporte|informe)'
+const DOCUMENTO_NUEVO = new RegExp(`\\b${DOCUMENTO}\\s+(\\w+\\s+)?nuev[oa]\\b|\\bnuev[oa]\\s+${DOCUMENTO}\\b`)
+const VERBO_EDICION = /\b(agrega|agregale|anade|anadele|quita|quitale|elimina|cambia|cambiale|corrige|corrigele|modifica|reemplaza|amplia|resume|acorta)\b/
+
+export type IntencionConFormato = 'convertir' | 'nuevo' | 'editar'
+
+export function clasificarIntencionConFormato(texto: string): IntencionConFormato {
+  const normalizado = normalizar(texto)
+  const generaConDetalle = GENERACION.test(normalizado) && DETALLE_DOCUMENTO_NUEVO.test(normalizado)
+  if (generaConDetalle || GENERACION_OTRO.test(normalizado) || DOCUMENTO_NUEVO.test(normalizado)) return 'nuevo'
+  if (VERBO_EDICION.test(normalizado)) return 'editar'
+  return 'convertir'
+}
+
+// Pide un archivo de un documento NUEVO: nunca se responde convirtiendo
+// el documento activo (cliente) ni el último del historial (servidor) —
+// se redacta desde cero (CASO 3 de FINALIZAR ARCHIVO en /api/chat).
+export function esDocumentoNuevoConFormato(texto: string): boolean {
+  return detectarHerramientaDocumento(texto) !== null && clasificarIntencionConFormato(texto) === 'nuevo'
+}
