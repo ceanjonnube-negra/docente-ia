@@ -31,8 +31,9 @@ export function analizarContenido(texto: string): LineaDocumento[] {
   // app/api/chat/route.ts) no son 100% mayúsculas porque incluyen un
   // título variable: "DÍA 1 — [título del día]", "RESUMEN — [nombre de
   // la ley]", "CRITERIO 1: [nombre]". Se reconocen por patrón además de
-  // por mayúsculas puras.
-  const PATRON_SECCION_MIXTA = /^(📅\s*)?D[IÍ]A\s+\d+\b|^CRITERIO\s+\d+\b|^(📄\s*)?RESUMEN\s*—/i
+  // por mayúsculas puras. "DIAPOSITIVA 2: [título]" es solo un respaldo
+  // para presentaciones que no sigan el formato de secciones.
+  const PATRON_SECCION_MIXTA = /^(📅\s*)?D[IÍ]A\s+\d+\b|^CRITERIO\s+\d+\b|^(📄\s*)?RESUMEN\s*—|^(\p{Extended_Pictographic}️?\s*)?DIAPOSITIVA\s+\d+\b/iu
 
   const resultado: LineaDocumento[] = []
   let tituloUsado = false

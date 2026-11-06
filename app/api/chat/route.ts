@@ -21,6 +21,7 @@ import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
+import { instruccionesPresentacion } from '@/lib/asistente/instruccionesPresentacion'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
@@ -1654,7 +1655,12 @@ Grado: [grado] | Grupo: [grupo]
     console.log(`[PIPELINE ${etiquetaCaso3}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=claude-directo (sin documento previo que recuperar)`)
     try {
       const inicioContenido = Date.now()
-      const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
+      // Solo PowerPoint: formato de presentación (portada + N secciones)
+      // en la misma llamada; Word, PDF y Excel no cambian.
+      const systemCaso3 = tipoHerramientaSolicitado === 'powerpoint'
+        ? `${parametrosClaude.system}\n\n${instruccionesPresentacion(mensaje || '')}`
+        : parametrosClaude.system
+      const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, system: systemCaso3, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
 
       if (texto && esDocumentoFormal(texto)) {
