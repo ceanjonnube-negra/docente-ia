@@ -9,6 +9,7 @@
 // cambiar qué motor se instancia — nada más en la aplicación se entera.
 
 import type { PropuestaListaParaCliente, VistaOperacionPropuestaLista } from '../listaOficial/vistaPropuestaLista'
+import type { FormatoEntrega } from './documentos'
 
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
@@ -341,7 +342,7 @@ export interface MotorConversacional {
   // logs de telemetría temporal del servidor con los del cliente
   // (?voiceDebug=1). turnId nunca contiene datos del docente ni del
   // alumno, es un identificador corto generado localmente.
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean): Promise<void>
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

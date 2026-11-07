@@ -140,9 +140,8 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
 //   presentación sobre...", "hazme otro oficio") o un marcador
 //   inequívoco ("un documento nuevo").
 // - 'editar': cambiar el contenido y entregarlo ("agrega una conclusión y
-//   guárdalo en PDF", "corrige la ortografía y pásalo a Word"). Por ahora
-//   solo se clasifica: todavía no cambia el comportamiento (se sigue
-//   tratando como hasta hoy); edición + entrega queda para otra fase.
+//   guárdalo en PDF", "corrige la ortografía y pásalo a Word"): se edita el
+//   texto real y con el resultado se genera el archivo (esEdicionConFormato).
 // - 'convertir': todo lo demás ("pásalo a PDF", "hazme un PDF",
 //   "pásalo otra vez a PDF") — el archivo del contenido que ya existe.
 // Nombrar el formato nunca basta para decidir, y tampoco una palabra
@@ -170,4 +169,149 @@ export function clasificarIntencionConFormato(texto: string): IntencionConFormat
 // se redacta desde cero (CASO 3 de FINALIZAR ARCHIVO en /api/chat).
 export function esDocumentoNuevoConFormato(texto: string): boolean {
   return detectarHerramientaDocumento(texto) !== null && clasificarIntencionConFormato(texto) === 'nuevo'
+}
+
+// Editar el documento y entregarlo en un formato ("agrega una conclusión y
+// guárdalo en PDF"): pide un cambio de contenido, no un documento nuevo.
+export function esEdicionConFormato(texto: string): boolean {
+  return detectarHerramientaDocumento(texto) !== null && clasificarIntencionConFormato(texto) === 'editar'
+}
+
+// Formatos que una edición puede entregar como archivo. El servidor solo
+// acepta un formatoEntrega de esta lista (nunca confía en el cliente).
+export const FORMATOS_ENTREGA = ['word', 'pdf', 'powerpoint', 'excel'] as const
+export type FormatoEntrega = (typeof FORMATOS_ENTREGA)[number]
+export function esFormatoEntrega(valor: unknown): valor is FormatoEntrega {
+  return typeof valor === 'string' && (FORMATOS_ENTREGA as readonly string[]).includes(valor)
+}
+
+// Separa, dentro del prompt de edición (construirPromptEdicion en
+// AsistenteService.ts), la instrucción real del maestro del documento que
+// la precede — así nada se calcula sobre el texto del documento.
+export const MARCADOR_INSTRUCCION_EDICION = 'INSTRUCCIÓN DEL MAESTRO:'
+export function instruccionDeEdicion(promptEdicion: string): string | null {
+  const i = promptEdicion.lastIndexOf(MARCADOR_INSTRUCCION_EDICION)
+  return i === -1 ? null : promptEdicion.slice(i + MARCADOR_INSTRUCCION_EDICION.length).trim() || null
+}
+
+// Prompt de edición del documento: lo usan el cliente (documento activo,
+// AsistenteService.ts) y el servidor (documento recuperado del historial,
+// /api/chat) — un solo texto para los dos.
+// Ampliado (ver "Motor de interpretación de intención y edición del
+// Documento Activo") con dos párrafos nuevos: completado profesional
+// ante instrucciones vagas, e interpretación de una foto adjunta
+// como el mismo documento en vez de un tema nuevo. El resto del
+// prompt (formato de salida, MODO DOCUMENTO) queda intacto a
+// propósito — sigue siendo el mismo camino de edición que ya
+// funciona, solo con más criterio para decidir QUÉ escribir.
+export function construirPromptEdicion(documentoTexto: string, instruccion: string): string {
+  return `El maestro pidió modificar/convertir el siguiente documento que ya se venía trabajando en esta conversación (aunque todavía no estuviera en el formato final de documento). Devuelve el documento COMPLETO ya actualizado, empezando DIRECTAMENTE con su título en mayúsculas y emoji (MODO DOCUMENTO) — nunca antes con una frase de confirmación, ni narrando de nuevo el contenido en prosa conversacional, ni explicando qué vas a hacer: la respuesta ES el documento, de principio a fin, sin nada más. Si la instrucción pide imágenes o ilustraciones, usa íconos y emoji relevantes para dar esa sensación visual dentro del texto — nunca respondas que no puedes generar imágenes.
+
+Si la instrucción es vaga o pide completar/mejorar el documento en general ("complétalo", "llénalo", "hazlo formal", "termínalo", "arréglalo", "redáctalo", "pon lo que falta", "hazlo mejor", "corrígelo", "ponlo bonito", "perfecciónalo", "actualízalo", "modifícalo", o equivalentes): redacta tú mismo cualquier campo institucional que siga vacío o incompleto (observaciones, acuerdos, comentarios, seguimiento, conclusiones, recomendaciones, fundamento legal, etc.), con estilo profesional/institucional, coherente con el resto del documento (mismo alumno, incidente, fecha, materia y hechos ya presentes — nunca inventes datos que no estén ahí ni en la conversación). Nunca dejes marcadores genéricos como "Pendiente", "Opcional", "Escriba aquí" o similar, y nunca preguntes qué escribir — el maestro espera que completes esas partes con tu propio criterio profesional, no que se lo devuelvas sin terminar.
+
+Si el mensaje trae una foto adjunta, en la gran mayoría de los casos esa foto ES este mismo documento (una captura de pantalla, una foto del papel ya impreso o firmado, una foto de lo que el maestro escribió a mano) — a menos que el maestro claramente esté pidiendo comparar o analizar algo distinto, interprétala como parte de este documento (para copiar datos que aparecen en ella, verificar que coincide, o completar/corregir con base en lo que se ve) y no como un tema nuevo e independiente.
+
+DOCUMENTO/CONTENIDO ACTUAL:
+${documentoTexto}
+
+${MARCADOR_INSTRUCCION_EDICION}
+${instruccion}`
+}
+
+// A qué documento se refiere un pedido de editar y entregar:
+// - 'otro': nombra un documento distinto al último ("el oficio de la
+//   semana pasada", "el primer examen", "el otro documento") — nunca se
+//   sustituye por el más reciente.
+// - 'reciente': se refiere sin ambigüedad al documento de la
+//   conversación ("guárdalo", "agrégale", "el documento anterior",
+//   "este documento").
+// - 'ninguna': no se refiere a ningún documento.
+// Sin búsqueda por título o fecha (eso es del futuro historial canónico).
+export type ReferenciaDocumento = 'reciente' | 'otro' | 'ninguna'
+// Solo palabras que nombran el documento, no su tema ("de la lectura",
+// "la lista de útiles" suelen ser el tema de un pedido nuevo).
+const DOCUMENTOS = '(documento|archivo|texto|contenido|oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion)'
+const OTRO_DOCUMENTO = new RegExp(`\\bsemana\\s+pasada\\b|\\bmes\\s+pasado\\b|\\b(ayer|anteayer|antier)\\b|\\bhace\\s+(unos?|unas?|dos|tres|varios|varias|\\d+)\\b|\\b(del|el)\\s+(lunes|martes|miercoles|jueves|viernes)\\b|\\b(primer|primero|primera|penultimo|penultima|viejo|vieja|antiguo|antigua)\\s+${DOCUMENTOS}\\b|\\b(el|la)\\s+otr[oa]\\b|\\botr[oa]\\s+${DOCUMENTOS}\\b`)
+const REFERENCIA_RECIENTE = new RegExp(`\\b(guarda|pasa|convierte|entrega|descarga|manda|envia|haz|pon|deja|exporta|genera|imprime|comparte|dame|resume|corrige|amplia|agrega|anade|quita|cambia|modifica)(l[oae]|mel[oa]|selo|sela)\\b|\\b(este|esta|ese|esa|el|la|mi)\\s+${DOCUMENTOS}\\b|\\b(lo|el|la)\\s+(anterior|ultimo|ultima)\\b|\\b${DOCUMENTOS}\\s+anterior\\b`)
+export function referenciaDocumento(texto: string): ReferenciaDocumento {
+  const n = normalizar(texto)
+  if (OTRO_DOCUMENTO.test(n)) return 'otro'
+  if (REFERENCIA_RECIENTE.test(n)) return 'reciente'
+  return 'ninguna'
+}
+export function refiereDocumentoExistente(texto: string): boolean {
+  return referenciaDocumento(texto) !== 'ninguna'
+}
+
+// ¿El documento que se tiene corresponde a lo que el docente nombró? Si
+// nombra un tipo cuyo título lo dice siempre ("el oficio", "el examen",
+// "el citatorio"...) y el título del documento no lo dice, no es ese.
+const TIPO_CON_TITULO = /\b(el|la|este|esta|ese|esa|mi)\s+(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular)\b/
+export function referenciaCompatibleConDocumento(mensaje: string, documentoTexto: string): boolean {
+  if (referenciaDocumento(mensaje) === 'otro') return false
+  const tipo = normalizar(mensaje).match(TIPO_CON_TITULO)?.[2]
+  if (!tipo) return true
+  return normalizar(documentoTexto.trim().split('\n')[0] ?? '').includes(tipo)
+}
+
+// --- Decisión de /api/chat sobre el archivo pedido (pura, sin red) ---
+
+type FinalizarArchivoCliente = { tipo: TipoHerramienta; documentoTexto: string }
+function esFinalizarArchivo(valor: unknown): valor is FinalizarArchivoCliente {
+  return typeof valor === 'object' && valor !== null && typeof (valor as { documentoTexto?: unknown }).documentoTexto === 'string'
+}
+
+// Qué archivo pide este turno (null: ninguno). Una edición nunca se
+// detecta por su texto (es un prompt interno): solo cuenta formatoEntrega,
+// y solo si está en FORMATOS_ENTREGA.
+export function tipoArchivoSolicitado(e: { mensaje: string; esEdicionDocumento: boolean; formatoEntrega: unknown; finalizarArchivo: unknown }): TipoHerramienta | null {
+  if (e.esEdicionDocumento) return esFormatoEntrega(e.formatoEntrega) ? e.formatoEntrega : null
+  if (esFinalizarArchivo(e.finalizarArchivo)) return e.finalizarArchivo.tipo
+  return detectarHerramientaDocumento(e.mensaje)
+}
+
+// De dónde sale el contenido del archivo (fuera de una edición del
+// documento activo, que ya trae su texto completo desde el cliente):
+// - 'cliente' / 'historial': texto ya hecho, se convierte tal cual.
+// - 'edicion-historial': editar Y entregar sin documento activo — el
+//   documento a editar es, de forma explícita, el más reciente del
+//   historial; su texto va dentro del prompt de edición (el modelo nunca
+//   elige entre varios documentos).
+// - 'ninguna': nada que convertir — el CASO 3 lo redacta (documento
+//   nuevo; o edición cuyo referente es el adjunto de este mismo turno).
+// - 'sin-documento': editar algo que ya no está disponible — no se
+//   convierte una versión anterior ni se inventa.
+// - 'aclarar': no se sabe con seguridad qué documento editar (nombra otro
+//   documento, no corresponde al último o no se refiere a ninguno).
+export type ContenidoParaArchivo =
+  | { fuente: 'cliente' | 'historial' | 'edicion-historial'; texto: string }
+  | { fuente: 'ninguna' | 'sin-documento' | 'aclarar' }
+
+// Texto que queda en el historial cuando un documento se generó directo
+// como archivo (CASO 3 en /api/chat): su contenido no está en el historial.
+export const AVISO_ARCHIVO_GENERADO = 'Documento generado correctamente.'
+
+export function contenidoParaArchivo(e: { mensaje: string; finalizarArchivo: unknown; historial: { role: 'user' | 'assistant'; content: string }[]; adjuntoPresente?: boolean }): ContenidoParaArchivo {
+  if (esFinalizarArchivo(e.finalizarArchivo)) return { fuente: 'cliente', texto: e.finalizarArchivo.documentoTexto }
+  if (esDocumentoNuevoConFormato(e.mensaje)) return { fuente: 'ninguna' }
+  const ultimoDocumento = [...e.historial].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
+  if (esEdicionConFormato(e.mensaje)) {
+    if (e.adjuntoPresente) return { fuente: 'ninguna' }
+    const referencia = referenciaDocumento(e.mensaje)
+    if (referencia === 'otro') return { fuente: 'aclarar' }
+    if (referencia === 'reciente') {
+      // El documento más reciente pudo generarse directo como archivo: en
+      // el historial solo dejó "Documento generado correctamente." (sin su
+      // texto). Entonces el último documento CON texto no es el reciente.
+      const ultimoTurnoDeDocumento = [...e.historial].reverse().find((h) => h.role === 'assistant' && (esDocumentoFormal(h.content) || h.content.trim().startsWith(AVISO_ARCHIVO_GENERADO)))
+      if (!ultimoDocumento || ultimoTurnoDeDocumento !== ultimoDocumento) return { fuente: 'sin-documento' }
+      return referenciaCompatibleConDocumento(e.mensaje, ultimoDocumento.content) ? { fuente: 'edicion-historial', texto: ultimoDocumento.content } : { fuente: 'aclarar' }
+    }
+    // Sin referencia: con construcción de creación es un pedido nuevo
+    // ("haz un PowerPoint de la lectura y agrega imágenes"); si no, no se
+    // sabe qué editar.
+    if (GENERACION.test(normalizar(e.mensaje))) return { fuente: 'ninguna' }
+    return ultimoDocumento ? { fuente: 'aclarar' } : { fuente: 'sin-documento' }
+  }
+  return ultimoDocumento ? { fuente: 'historial', texto: ultimoDocumento.content } : { fuente: 'ninguna' }
 }

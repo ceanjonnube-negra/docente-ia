@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { asegurarConversacionRemota } from '../persistencia'
+import type { FormatoEntrega } from '../documentos'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -154,7 +155,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega) {
     this.controlador = new AbortController()
     this.interrumpidoManualmente = false
 
@@ -190,7 +191,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // documento: el servidor procesa varios MB y Claude analiza
       // varias fotos a la vez, más lento que un turno de solo texto.
       const esVariasImagenes = !!adjuntos && adjuntos.length > 1
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
+      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || formatoEntrega || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -209,6 +210,9 @@ export class MotorTextoClaude implements MotorConversacional {
           zonaHoraria: obtenerZonaHorariaDispositivo(),
           finalizarArchivo: finalizarArchivo || null,
           esEdicionDocumento: esEdicionDocumento || false,
+          // Edición que además pide el archivo (ver enviarComoEdicion):
+          // el servidor lo valida contra FORMATOS_ENTREGA.
+          formatoEntrega: esEdicionDocumento && formatoEntrega ? formatoEntrega : null,
           conversacionId,
           // Ver "Diagnóstico y Plan de Optimización del Pipeline de Voz"
           // — Fase 1: le dice a /api/chat que ajuste SOLO el estilo de

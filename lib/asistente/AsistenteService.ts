@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -233,6 +233,8 @@ class AsistenteServiceImpl {
     // Presente solo cuando el reintento es de FINALIZAR ARCHIVO (ver
     // enviarComoFinalizacion) en vez de una edición de contenido normal.
     finalizarArchivo?: { tipo: TipoHerramienta; documentoTexto: string; textoOriginal: string }
+    // Edición que además pide el archivo en un formato: se reintenta igual.
+    formatoEntrega?: FormatoEntrega
   } | null = null
 
   private motor: MotorConversacional | null = null
@@ -1238,7 +1240,10 @@ class AsistenteServiceImpl {
     // documento PDF nuevo con el título...") no es conversión ni edición
     // del documento activo — va como mensaje normal y /api/chat lo
     // redacta (ver esDocumentoNuevoConFormato).
-    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esDocumentoNuevoConFormato(limpio)) {
+    // Y otra: editar Y entregar un documento que NO es el activo ("corrige
+    // el oficio de la semana pasada y pásalo a PDF") — va como mensaje
+    // normal y /api/chat pide aclaración (ver referenciaCompatibleConDocumento).
+    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esDocumentoNuevoConFormato(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, this.documentoActivo.texto))) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
@@ -1250,10 +1255,18 @@ class AsistenteServiceImpl {
         // del archivo referenciado").
         const formatoExplicito = detectarFormatoExplicito(limpio)
         const tipoResuelto = formatoExplicito ?? (this.documentoActivo.ultimoFormatoGenerado as TipoHerramienta | undefined) ?? tipoFinalizar
+        // Editar Y entregar en un formato ("agrega una conclusión y
+        // guárdalo en PDF"): primero la edición con el texto real del
+        // documento y, en la misma llamada, el archivo del resultado
+        // (CASO 3 en /api/chat) — nunca la conversión del texto anterior.
+        if (esEdicionConFormato(limpio) && tipoResuelto !== 'imagen' && tipoResuelto !== 'audio' && tipoResuelto !== 'video') {
+          await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, tipoResuelto)
+          return
+        }
         await this.ejecutarConversionFormato(tipoResuelto, limpio)
         return
       }
-      await this.enviarComoEdicion(this.documentoActivo.id, limpio, this.construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
+      await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
       return
     }
 
@@ -1587,26 +1600,6 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
-  // Ampliado (ver "Motor de interpretación de intención y edición del
-  // Documento Activo") con dos párrafos nuevos: completado profesional
-  // ante instrucciones vagas, e interpretación de una foto adjunta
-  // como el mismo documento en vez de un tema nuevo. El resto del
-  // prompt (formato de salida, MODO DOCUMENTO) queda intacto a
-  // propósito — sigue siendo el mismo camino de edición que ya
-  // funciona, solo con más criterio para decidir QUÉ escribir.
-  private construirPromptEdicion(documentoTexto: string, instruccion: string): string {
-    return `El maestro pidió modificar/convertir el siguiente documento que ya se venía trabajando en esta conversación (aunque todavía no estuviera en el formato final de documento). Devuelve el documento COMPLETO ya actualizado, empezando DIRECTAMENTE con su título en mayúsculas y emoji (MODO DOCUMENTO) — nunca antes con una frase de confirmación, ni narrando de nuevo el contenido en prosa conversacional, ni explicando qué vas a hacer: la respuesta ES el documento, de principio a fin, sin nada más. Si la instrucción pide imágenes o ilustraciones, usa íconos y emoji relevantes para dar esa sensación visual dentro del texto — nunca respondas que no puedes generar imágenes.
-
-Si la instrucción es vaga o pide completar/mejorar el documento en general ("complétalo", "llénalo", "hazlo formal", "termínalo", "arréglalo", "redáctalo", "pon lo que falta", "hazlo mejor", "corrígelo", "ponlo bonito", "perfecciónalo", "actualízalo", "modifícalo", o equivalentes): redacta tú mismo cualquier campo institucional que siga vacío o incompleto (observaciones, acuerdos, comentarios, seguimiento, conclusiones, recomendaciones, fundamento legal, etc.), con estilo profesional/institucional, coherente con el resto del documento (mismo alumno, incidente, fecha, materia y hechos ya presentes — nunca inventes datos que no estén ahí ni en la conversación). Nunca dejes marcadores genéricos como "Pendiente", "Opcional", "Escriba aquí" o similar, y nunca preguntes qué escribir — el maestro espera que completes esas partes con tu propio criterio profesional, no que se lo devuelvas sin terminar.
-
-Si el mensaje trae una foto adjunta, en la gran mayoría de los casos esa foto ES este mismo documento (una captura de pantalla, una foto del papel ya impreso o firmado, una foto de lo que el maestro escribió a mano) — a menos que el maestro claramente esté pidiendo comparar o analizar algo distinto, interprétala como parte de este documento (para copiar datos que aparecen en ella, verificar que coincide, o completar/corregir con base en lo que se ve) y no como un tema nuevo e independiente.
-
-DOCUMENTO/CONTENIDO ACTUAL:
-${documentoTexto}
-
-INSTRUCCIÓN DEL MAESTRO:
-${instruccion}`
-  }
 
   // El motor de texto necesita ver la conversación real (turnos previos)
   // para no "olvidar" de qué se está hablando entre un mensaje y el
@@ -1619,7 +1612,7 @@ ${instruccion}`
     this.motorTexto?.establecerConversacion(this.conversacionActivaId)
   }
 
-  private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen) {
+  private async enviarComoEdicion(idDocumento: string, textoVisible: string, textoParaModelo: string, adjunto?: AdjuntoImagen, formatoEntrega?: FormatoEntrega) {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
@@ -1632,25 +1625,25 @@ ${instruccion}`
     // Se guarda para poder reintentar exactamente esto mismo si falla —
     // ver reintentarGeneracion(). Se limpia solo cuando la edición
     // termina bien (ver 'respuesta-final').
-    this.ultimoIntentoEdicion = { idDocumento, textoParaModelo, adjunto }
+    this.ultimoIntentoEdicion = { idDocumento, textoParaModelo, adjunto, formatoEntrega }
     this.notificar()
-    await this.ejecutarEdicion(textoParaModelo, adjunto)
+    await this.ejecutarEdicion(textoParaModelo, adjunto, formatoEntrega)
   }
 
   // Aislado de enviarComoEdicion() para que reintentarGeneracion() pueda
   // reusarlo sin repetir la burbuja del docente (ya está en pantalla de
   // la vez anterior) ni perder this.ultimoIntentoEdicion.
-  private async ejecutarEdicion(textoParaModelo: string, adjunto?: AdjuntoImagen) {
+  private async ejecutarEdicion(textoParaModelo: string, adjunto?: AdjuntoImagen, formatoEntrega?: FormatoEntrega) {
     try {
       // OJO: editandoDocumentoId NO se limpia aquí en el catch — lo hace
       // el propio manejador de 'error' (ver manejarEventoMotor), que
       // necesita verlo todavía puesto para saber que esto fue una falla
       // de documento y mostrar el aviso breve en vez de una burbuja.
       // esEdicionDocumento=true: textoParaModelo es un prompt interno
-      // (construirPromptEdicion), no algo que el maestro escribió — jamás
+      // (construirPromptEdicion en documentos.ts), no algo que el maestro escribió — jamás
       // debe interpretarse en /api/chat como una solicitud de archivo
       // (ver esEdicionDocumento en app/api/chat/route.ts).
-      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true)
+      await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, formatoEntrega)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
     }
@@ -1718,7 +1711,7 @@ ${instruccion}`
   // activo y el resto de la conversación se conservan tal cual.
   async reintentarGeneracion() {
     if (!this.ultimoIntentoEdicion) return
-    const { idDocumento, textoParaModelo, adjunto, finalizarArchivo } = this.ultimoIntentoEdicion
+    const { idDocumento, textoParaModelo, adjunto, finalizarArchivo, formatoEntrega } = this.ultimoIntentoEdicion
     this.avisoGeneracion = null
     if (this.avisoGeneracionTimer) {
       clearTimeout(this.avisoGeneracionTimer)
@@ -1734,7 +1727,7 @@ ${instruccion}`
     if (finalizarArchivo) {
       await this.ejecutarFinalizacion(finalizarArchivo.tipo, finalizarArchivo.documentoTexto, finalizarArchivo.textoOriginal)
     } else {
-      await this.ejecutarEdicion(textoParaModelo, adjunto)
+      await this.ejecutarEdicion(textoParaModelo, adjunto, formatoEntrega)
     }
   }
 

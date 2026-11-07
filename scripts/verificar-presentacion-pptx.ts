@@ -215,11 +215,11 @@ async function main() {
   const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')
   verificar(/powerpoint: async \(\) => \(\{ buffer: await generarPptxBuffer\(texto, perfil, zonaHoraria, opciones\?\.seccionesEsperadas\)/.test(herramientas) && (herramientas.match(/seccionesEsperadas/g) ?? []).length === 2, '9i. Herramientas: seccionesEsperadas solo llega al generador PowerPoint')
   const rutaChat = readFileSync('app/api/chat/route.ts', 'utf8')
-  verificar((rutaChat.match(/seccionesEsperadas: seccionesDePresentacion\(mensaje \|\| ''\)/g) ?? []).length === 1 && /tipoHerramientaSolicitado === 'powerpoint' \? \{ seccionesEsperadas/.test(rutaChat) && /ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId\)/.test(rutaChat), '9j. /api/chat: solo el CASO 3 de PowerPoint pasa seccionesEsperadas; la conversión de un documento existente no')
+  verificar((rutaChat.match(/seccionesEsperadas: seccionesDePresentacion\(instruccionDocente \?\? ''\)/g) ?? []).length === 1 && /const opcionesArchivo = plantillaPresentacion \? \{ seccionesEsperadas/.test(rutaChat) && /ejecutarHerramientaDocumento\(tipoHerramientaSolicitado, documentoTexto, perfil, zonaHoraria, supabaseRAG, userId\)/.test(rutaChat), '9j. /api/chat: solo el CASO 3 de PowerPoint (con plantilla) pasa seccionesEsperadas; la conversión de un documento existente no')
 
   // 6. Solo PowerPoint recibe la plantilla.
   const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
-  verificar(/const systemCaso3 = tipoHerramientaSolicitado === 'powerpoint'\s*\n\s*\? `\$\{parametrosClaude\.system\}\\n\\n\$\{instruccionesPresentacion\(mensaje \|\| ''\)\}`\s*\n\s*: parametrosClaude\.system/.test(ruta) && /client\.messages\.create\(\{ \.\.\.parametrosClaude, system: systemCaso3, stream: false \}/.test(ruta), '6a. CASO 3: la plantilla de presentación solo se agrega para PowerPoint (Word, PDF y Excel sin cambios)')
+  verificar(/const plantillaPresentacion = tipoHerramientaSolicitado === 'powerpoint' && instruccionDocente !== null && \(!esEdicion \|\| tieneCantidadExplicita\(instruccionDocente\)\)/.test(ruta) && /const systemCaso3 = plantillaPresentacion\s*\n\s*\? `\$\{parametrosClaude\.system\}\\n\\n\$\{instruccionesPresentacion\(instruccionDocente \?\? ''\)\}`\s*\n\s*: parametrosClaude\.system/.test(ruta) && /client\.messages\.create\(\{ \.\.\.parametrosClaude, system: systemCaso3, stream: false \}/.test(ruta), '6a. CASO 3: la plantilla de presentación solo se agrega para PowerPoint (Word, PDF y Excel sin cambios); en una edición, solo con cantidad explícita')
   verificar((ruta.match(/instruccionesPresentacion\(/g) ?? []).length === 1, '6b. Ningún otro camino usa la plantilla de presentación')
 
   console.log('')

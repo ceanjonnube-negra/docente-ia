@@ -21,14 +21,14 @@ import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
 import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
-import { instruccionesPresentacion, seccionesDePresentacion } from '@/lib/asistente/instruccionesPresentacion'
+import { instruccionesPresentacion, seccionesDePresentacion, tieneCantidadExplicita } from '@/lib/asistente/instruccionesPresentacion'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, type TipoHerramienta } from '@/lib/asistente/documentos'
+import { construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -121,6 +121,12 @@ function respuestaTexto(texto: string): Response {
 // console.error para diagnóstico; esto es lo único que llega al chat.
 const MENSAJE_ERROR_GENERICO = 'No fue posible completar la solicitud en este momento. Intenta de nuevo en unos segundos.'
 const MENSAJE_ERROR_DOCUMENTO = 'No fue posible generar el documento en este momento. Toca para intentar de nuevo.'
+// Editar y entregar un documento del que no queda texto en esta conversación:
+// se dice con claridad en vez de convertir una versión anterior o inventarlo.
+// Editar y entregar cuando no se sabe con seguridad qué documento es (nombra
+// otro documento, no corresponde al último o no se refiere a ninguno).
+const MENSAJE_EDICION_AMBIGUA = 'No tengo claro a qué documento te refieres, así que no modifiqué nada ni generé un archivo. Si es el último que preparamos, dime "edita el documento anterior"; si es otro, pégame su texto y aplico el cambio.'
+const MENSAJE_EDICION_SIN_DOCUMENTO = 'No encuentro el contenido de ese documento en esta conversación, así que no lo modifiqué ni generé un archivo con una versión anterior. Pégame el texto o pídeme generarlo de nuevo y aplico el cambio.'
 
 // Tiempo máximo que se espera la respuesta de Anthropic antes de darla
 // por colgada — sin esto, una llamada que nunca resuelve (no rechaza, no
@@ -292,7 +298,7 @@ export async function POST(req: NextRequest) {
   // closure del ReadableStream de más abajo.
   const inicioRequestMs = Date.now()
   console.log('[STREAM][chat] chatRequestIniciado=true')
-  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, channel, turnId, voiceDebug, conversacionId } = await req.json()
+  const { mensaje, historial, contexto, imagenBase64, imagenTipo, nombreArchivo, imagenesBase64, userId: userIdCliente, accessToken, zonaHoraria, finalizarArchivo, esEdicionDocumento, formatoEntrega, channel, turnId, voiceDebug, conversacionId } = await req.json()
 
   // TELEMETRÍA TEMPORAL de latencia del modo voz (ver "Medir con
   // precisión el pipeline de voz antes de optimizar" — no cambia
@@ -525,28 +531,33 @@ export async function POST(req: NextRequest) {
   // detectarHerramientaDocumento — de por sí ya sabemos que no es un
   // pedido de archivo, es exactamente lo contrario (seguir editando el
   // mismo documento).
-  const tipoHerramientaSolicitado: TipoHerramienta | null = esEdicionDocumento
-    ? null
-    : finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string'
-      ? finalizarArchivo.tipo
-      : detectarHerramientaDocumento(mensaje || '')
+  //
+  // Edición que además pide el archivo (formatoEntrega, ver
+  // enviarComoEdicion): el formato llega explícito del cliente y solo se
+  // acepta si está en FORMATOS_ENTREGA — nunca se detecta dentro del
+  // prompt de edición. Esa edición va directo al CASO 3 (el modelo aplica
+  // el cambio sobre el texto real y con su resultado se genera el archivo).
+  const tipoHerramientaSolicitado = tipoArchivoSolicitado({ mensaje: mensaje || '', esEdicionDocumento: Boolean(esEdicionDocumento), formatoEntrega, finalizarArchivo })
 
-  if (supabaseUser && userId && tipoHerramientaSolicitado) {
-    let documentoTexto = ''
-    let fuenteContenido: 'cliente' | 'historial' | 'ninguna' = 'ninguna'
-
-    if (finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo.documentoTexto === 'string') {
-      documentoTexto = finalizarArchivo.documentoTexto
-      fuenteContenido = 'cliente'
-    } else if (!esDocumentoNuevoConFormato(mensaje || '')) {
-      // Un documento NUEVO nunca se resuelve convirtiendo el último del
-      // historial: sigue al CASO 3, que lo redacta.
-      const ultimoDocumento = [...historialMensajes].reverse().find((h) => h.role === 'assistant' && esDocumentoFormal(h.content))
-      if (ultimoDocumento) {
-        documentoTexto = ultimoDocumento.content
-        fuenteContenido = 'historial'
-      }
+  if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento) {
+    // Un documento NUEVO nunca se resuelve convirtiendo el último del
+    // historial, y editar+entregar tampoco: los dos siguen al CASO 3. Si
+    // se pide editar un documento que ya no está disponible, se dice en
+    // vez de convertir una versión anterior o inventarlo.
+    const adjuntoPresente = Boolean(imagenBase64) || (Array.isArray(imagenesBase64) && imagenesBase64.length > 0) || mensajeConDocumento !== mensaje
+    const contenido = contenidoParaArchivo({ mensaje: mensaje || '', finalizarArchivo, historial: historialMensajes, adjuntoPresente })
+    if (contenido.fuente === 'sin-documento' || contenido.fuente === 'aclarar') {
+      console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:deteccion] edicion+formato ${contenido.fuente} — no se convierte ni se redacta`)
+      return respuestaTexto(contenido.fuente === 'aclarar' ? MENSAJE_EDICION_AMBIGUA : MENSAJE_EDICION_SIN_DOCUMENTO)
     }
+    if (contenido.fuente === 'edicion-historial') {
+      // El texto del documento recuperado va explícito en el prompt de
+      // edición (el mismo que usa el cliente con el documento activo):
+      // el CASO 3 aplica el cambio sobre ESE texto y entrega el archivo.
+      mensajeConDocumento = construirPromptEdicion(contenido.texto, mensaje || '')
+    }
+    const documentoTexto = contenido.fuente === 'cliente' || contenido.fuente === 'historial' ? contenido.texto : ''
+    const fuenteContenido = contenido.fuente
 
     // ETAPA 1 (detección de la intención): ya se resolvió arriba —
     // tipoHerramientaSolicitado. ETAPA 2 (obtención del contenido): el
@@ -1657,8 +1668,15 @@ Grado: [grado] | Grupo: [grupo]
       const inicioContenido = Date.now()
       // Solo PowerPoint: formato de presentación (portada + N secciones)
       // en la misma llamada; Word, PDF y Excel no cambian.
-      const systemCaso3 = tipoHerramientaSolicitado === 'powerpoint'
-        ? `${parametrosClaude.system}\n\n${instruccionesPresentacion(mensaje || '')}`
+      // En una edición la plantilla solo aplica si el docente dijo
+      // cuántas diapositivas quiere; la cantidad se calcula sobre SU
+      // instrucción, nunca sobre el texto del documento. Sin cantidad,
+      // se conserva la estructura del documento (como una conversión).
+      const instruccionDocente = esEdicionDocumento ? instruccionDeEdicion(mensaje || '') : (mensaje || '')
+      const esEdicion = esEdicionDocumento || esEdicionConFormato(mensaje || '')
+      const plantillaPresentacion = tipoHerramientaSolicitado === 'powerpoint' && instruccionDocente !== null && (!esEdicion || tieneCantidadExplicita(instruccionDocente))
+      const systemCaso3 = plantillaPresentacion
+        ? `${parametrosClaude.system}\n\n${instruccionesPresentacion(instruccionDocente ?? '')}`
         : parametrosClaude.system
       const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, system: systemCaso3, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
@@ -1672,7 +1690,7 @@ Grado: [grado] | Grupo: [grupo]
         // Ver nota en el CASO 1/2 arriba: Storage necesita service role.
         // PowerPoint nuevo: la cantidad pedida también la respeta el
         // generador (secciones de más se integran en la última).
-        const opcionesArchivo = tipoHerramientaSolicitado === 'powerpoint' ? { seccionesEsperadas: seccionesDePresentacion(mensaje || '') } : undefined
+        const opcionesArchivo = plantillaPresentacion ? { seccionesEsperadas: seccionesDePresentacion(instruccionDocente ?? '') } : undefined
         const archivo = await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, texto, perfil, zonaHoraria, supabaseRAG, userId, opcionesArchivo), 'generar-archivo-combinado')
         const marcador = `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
         // El CASO 3 nunca manda el contenido redactado como texto plano

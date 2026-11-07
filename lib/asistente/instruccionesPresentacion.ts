@@ -22,6 +22,11 @@ const PORTADA_APARTE = /\bde\s+contenido\b|\bmas\s+(la\s+|una\s+)?portada\b|\bad
 export const TOTAL_DIAPOSITIVAS_POR_DEFECTO = 5
 const MAXIMO_SECCIONES = 20
 
+// El docente dijo cuántas diapositivas quiere ("en 5 diapositivas").
+export function tieneCantidadExplicita(mensaje: string): boolean {
+  return CANTIDAD.test(mensaje.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+}
+
 // Secciones de contenido (una diapositiva cada una) además de la portada.
 export function seccionesDePresentacion(mensaje: string): number {
   const texto = mensaje.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')

@@ -10,7 +10,7 @@
 // `npx tsx scripts/verificar-intencion-formato-documento.ts`.
 
 import { readFileSync } from 'node:fs'
-import { clasificarIntencionConFormato, detectarHerramientaDocumento, esDocumentoNuevoConFormato, type IntencionConFormato } from '../lib/asistente/documentos'
+import { clasificarIntencionConFormato, contenidoParaArchivo, detectarHerramientaDocumento, esDocumentoNuevoConFormato, type IntencionConFormato } from '../lib/asistente/documentos'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -19,8 +19,8 @@ function verificar(condicion: boolean, mensaje: string) {
 }
 
 // 1. Clasificador: [mensaje, formato esperado, intención esperada].
-// 'editar' solo se clasifica: en esta fase NO cambia el comportamiento
-// (ver 3c); edición + entrega del formato queda para otra fase.
+// 'editar' (con formato) va a la edición + archivo: ver 3c y
+// verificar-edicion-con-formato.
 const CASOS: [string, string, IntencionConFormato][] = [
   ['Pásalo a PDF', 'pdf', 'convertir'],
   ['Hazme un PDF', 'pdf', 'convertir'],
@@ -62,15 +62,16 @@ verificar(!esDocumentoNuevoConFormato('Agrega una sección nueva sobre la evalua
 // 3. Cliente: con documentoActivo, un pedido nuevo con formato sale del
 // bloque de conversión/edición y va como mensaje normal.
 const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-verificar(/if \(this\.documentoActivo && !detectarAprobarPlaneacion\([^)]*\{[^}]*\}\) && !esDocumentoNuevoConFormato\(limpio\)\) \{\s*\n\s*const tipoFinalizar = detectarHerramientaDocumento\(limpio\)/.test(servicio), '3a. Cliente con documentoActivo: un pedido nuevo con formato no entra a ejecutarConversionFormato ni a enviarComoEdicion')
-verificar(/const tipoFinalizar = detectarHerramientaDocumento\(limpio\)\s*\n\s*if \(tipoFinalizar\) \{/.test(servicio) && !servicio.includes('clasificarIntencionConFormato'), "3c. Cliente: la clasificación 'editar' todavía no cambia el comportamiento (una edición con formato sigue el camino de siempre)")
+verificar(/if \(this\.documentoActivo && !detectarAprobarPlaneacion\([^)]*\{[^}]*\}\) && !esDocumentoNuevoConFormato\(limpio\)( && !\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, this\.documentoActivo\.texto\)\))?\) \{\s*\n\s*const tipoFinalizar = detectarHerramientaDocumento\(limpio\)/.test(servicio), '3a. Cliente con documentoActivo: un pedido nuevo con formato no entra a ejecutarConversionFormato ni a enviarComoEdicion')
+verificar(/if \(esEdicionConFormato\(limpio\) && tipoResuelto !== 'imagen'[^\n]*\{\s*\n\s*await this\.enviarComoEdicion\(this\.documentoActivo\.id, limpio, construirPromptEdicion\(this\.documentoActivo\.texto, limpio\), adjunto, tipoResuelto\)\s*\n\s*return\s*\n\s*\}\s*\n\s*await this\.ejecutarConversionFormato\(tipoResuelto, limpio\)/.test(servicio), "3c. Cliente: una edición con formato va a la edición con el texto real (y el formato), nunca a la conversión del texto anterior (ver verificar-edicion-con-formato)")
 verificar(/await this\.ejecutarConversionFormato\(tipoResuelto, limpio\)/.test(servicio) && /detectarFormatoExplicito\(limpio\)/.test(servicio), '3b. Cliente: "Pásalo a PDF" conserva la conversión del documento activo y la resolución del último formato')
 
 // 4. Servidor: con solo un documento en el historial, un pedido nuevo no
 // lo recupera; finalizarArchivo del cliente conserva la prioridad.
 const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
-verificar(/fuenteContenido = 'cliente'\s*\n\s*\} else if \(!esDocumentoNuevoConFormato\(mensaje \|\| ''\)\) \{[\s\S]{0,200}const ultimoDocumento = \[\.\.\.historialMensajes\]\.reverse\(\)/.test(ruta), '4a. Servidor con documento histórico: un pedido nuevo no recupera el último documento del historial')
-verificar(/if \(finalizarArchivo && typeof finalizarArchivo === 'object' && typeof finalizarArchivo\.documentoTexto === 'string'\) \{\s*\n\s*documentoTexto = finalizarArchivo\.documentoTexto/.test(ruta), '4b. Servidor: el contenido enviado por el cliente (conversión explícita) conserva la prioridad')
+const DOC_HISTORIAL = [{ role: 'user' as const, content: 'Hazme un oficio' }, { role: 'assistant' as const, content: '📨 OFICIO ANTERIOR\nTexto del oficio anterior.' }]
+verificar(contenidoParaArchivo({ mensaje: 'Genera un documento PDF nuevo con el título Prueba de grupo académico PDF', finalizarArchivo: null, historial: DOC_HISTORIAL }).fuente === 'ninguna' && /const contenido = contenidoParaArchivo\(\{ mensaje: mensaje \|\| '', finalizarArchivo, historial: historialMensajes, adjuntoPresente \}\)/.test(ruta), '4a. Servidor con documento histórico: un pedido nuevo no recupera el último documento del historial')
+verificar(JSON.stringify(contenidoParaArchivo({ mensaje: 'Genera un documento PDF nuevo con el título X', finalizarArchivo: { tipo: 'pdf', documentoTexto: '📨 TEXTO DEL CLIENTE' }, historial: DOC_HISTORIAL })) === JSON.stringify({ fuente: 'cliente', texto: '📨 TEXTO DEL CLIENTE' }) && JSON.stringify(contenidoParaArchivo({ mensaje: 'Pásalo a PDF', finalizarArchivo: null, historial: DOC_HISTORIAL })) === JSON.stringify({ fuente: 'historial', texto: '📨 OFICIO ANTERIOR\nTexto del oficio anterior.' }), '4b. Servidor: el contenido enviado por el cliente conserva la prioridad, y "Pásalo a PDF" sigue convirtiendo el del historial')
 verificar(/fuenteContenido=claude-directo \(sin documento previo que recuperar\)/.test(ruta), '4c. Servidor: sin contenido recuperado, el pedido sigue al CASO 3 (redacción + archivo)')
 
 console.log('')
