@@ -22,6 +22,7 @@ import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { AsistenteService } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
+import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { clasificarTipoDocumento } from '@/lib/documentGen/extraerTextoDocumento'
@@ -404,6 +405,30 @@ function useEtapaGeneracion(activo: boolean): string {
     return () => clearInterval(intervalo)
   }, [activo])
   return ETAPAS_GENERACION[indice]
+}
+
+// "Copiar" de una respuesta: discreto, una sola acción. La copia se
+// inicia directo en el toque (Safari) y "Copiado" solo aparece si se
+// confirmó.
+function BotonCopiar({ texto }: { texto: string }) {
+  const [copiado, setCopiado] = useState(false)
+  const copiar = () => {
+    copiarAlPortapapeles(texto).then((ok) => {
+      if (!ok) return
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 2000)
+    })
+  }
+  return (
+    <button
+      type="button"
+      onClick={copiar}
+      aria-label="Copiar respuesta"
+      className="mt-1 px-1.5 py-0.5 rounded-md text-[11px] text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+    >
+      {copiado ? '✓ Copiado' : 'Copiar'}
+    </button>
+  )
 }
 
 function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto: string; escribiendo: boolean; generandoArchivo: boolean }) {
@@ -858,6 +883,9 @@ export default function AsistentePanel() {
         {asistente.mensajes.map((m, i) => {
           const esUltimoGenerando = asistente.generando && i === asistente.mensajes.length - 1
           const esDoc = m.rol === 'asistente' && esDocumentoFormal(m.texto)
+          // Una sola acción "Copiar" por respuesta del asistente, cuando
+          // ya terminó y tiene contenido útil (ver copiarRespuesta.ts).
+          const textoCopiable = m.rol === 'asistente' && !esUltimoGenerando ? textoParaCopiar(m) : null
           return (
             <div key={m.id} id={`asistente-msg-${m.id}`} className={`flex flex-col ${m.rol === 'usuario' ? 'items-end' : 'items-start'} w-full`}>
               {m.rol === 'asistente' && (
@@ -1009,6 +1037,7 @@ export default function AsistentePanel() {
                   )}
                 </div>
               )}
+              {textoCopiable && <BotonCopiar texto={textoCopiable} />}
             </div>
           )
         })}

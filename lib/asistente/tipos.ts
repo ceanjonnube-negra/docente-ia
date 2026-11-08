@@ -121,6 +121,13 @@ export type MensajeConversacion = {
   // la vez — cuando trae exactamente uno, sigue viajando únicamente en
   // `archivo`, igual que siempre.
   archivos?: ArchivoGeneradoInfo[]
+  // Texto real del documento que este mensaje entregó SOLO como archivo
+  // (CASO 3 en /api/chat: en `texto` queda "Documento generado
+  // correctamente."). Lo usa únicamente "Copiar" (copiarRespuesta.ts);
+  // no cambia lo que se muestra. Se guarda y restaura con el resto del
+  // mensaje (lib/asistente/persistencia.ts). Mensajes anteriores no lo
+  // tienen y no se reconstruye.
+  contenidoDocumento?: string
   // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
   // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
   // que la burbuja lo siga mostrando después de restaurar la
