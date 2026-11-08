@@ -1,0 +1,7 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "feat/chat-copiar-respuesta": false
+    }
+  }
+}
