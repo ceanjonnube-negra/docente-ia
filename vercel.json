@@ -1,0 +1,7 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "fix/chat-documento-nuevo-contextual": false
+    }
+  }
+}
