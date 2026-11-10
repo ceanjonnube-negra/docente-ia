@@ -40,20 +40,28 @@ const ICONO_ARCHIVO: Record<string, string> = { word: '📄', pdf: '🖨️', po
 // disponible en la tarjeta, nunca un menú de conversión.
 const NOMBRE_FORMATO: Record<string, string> = { word: 'Word', pdf: 'PDF', powerpoint: 'PowerPoint', excel: 'Excel' }
 
-// Etiqueta del botón principal de descarga (AJUSTE DE NOMENCLATURA —
-// diagnóstico real en iPhone Safari: "Descargar Word" sí descarga un
-// .docx real, pero en un PDF Safari toma el control y lo abre en su
-// visor integrado en vez de descargarlo directo, sin importar el
-// mecanismo de blob+<a download> ni el Content-Disposition del
-// servidor — es un comportamiento propio de WebKit con PDFs, no un
-// error de esta app). Nunca se cambió el comportamiento real (el botón
-// sigue llamando a descargarArchivo tal cual): el docente puede
-// guardar o compartir el PDF desde esa misma vista, así que solo hacía
-// falta que la etiqueta dejara de prometer una descarga directa que
-// Safari no siempre entrega.
+// Etiqueta del botón de descarga de los formatos que no son PDF. El PDF
+// tiene sus propias acciones (ver accionesDescargaArchivo): con el
+// blob+<a download> de estos formatos, Safari en iPhone lo abría en su
+// visor integrado en vez de guardarlo.
 function etiquetaDescargar(tipo: string): string {
-  if (tipo === 'pdf') return 'Ver / Descargar PDF'
   return `Descargar ${NOMBRE_FORMATO[tipo] || tipo.toUpperCase()}`
+}
+
+// Acciones de un archivo en su tarjeta. Todo PDF tiene "Descargar PDF"
+// directo (navegación a la URL firmada con `download`, que Storage sirve
+// con Content-Disposition: attachment — sin Blob, sin ObjectURL, sin
+// window.open de respaldo) y, si trae urlVer (URL firmada SIN
+// `download`), además "Ver PDF". Igual para la planeación, la hoja de
+// evaluación y cualquier PDF del Chat (CASO 3, conversiones). Los demás
+// formatos conservan su descarga de siempre. "Compartir" va aparte.
+export type AccionArchivo = { accion: 'ver' | 'descargar-directo' | 'descargar'; url: string; etiqueta: string }
+export function accionesDescargaArchivo(archivo: Pick<ArchivoGeneradoInfo, 'tipo' | 'url' | 'urlVer'>): AccionArchivo[] {
+  if (archivo.tipo === 'pdf') {
+    const descargar: AccionArchivo = { accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }
+    return archivo.urlVer ? [{ accion: 'ver', url: archivo.urlVer, etiqueta: '👁️ Ver PDF' }, descargar] : [descargar]
+  }
+  return [{ accion: 'descargar', url: archivo.url, etiqueta: `⬇️ ${etiquetaDescargar(archivo.tipo)}` }]
 }
 
 // Título legible para los documentos de planeación/hoja de evaluación
@@ -298,41 +306,32 @@ function TarjetaDescarga({
       </div>
       {!vencido && (
         <div className="px-3 pb-3 space-y-1.5">
-          {archivos.map((archivo) => (
-            // "Ver PDF" y "Descargar PDF" (CORRECCIÓN AISLADA —
-            // "separar 'Ver PDF' de 'Descargar PDF' y forzar descarga
-            // real en iPhone"): dos botones y dos callbacks distintos,
-            // solo para el pdf de planeación/hoja de evaluación
-            // (único caso con urlVer real, ver agruparArchivosPorDocumento
-            // y las rutas de vista-previa/Storage que lo generan). Un
-            // pdf genérico sin urlVer (FINALIZAR ARCHIVO fuera de
-            // planeación/hoja) sigue mostrando el botón único de
-            // siempre, sin ningún cambio.
-            archivo.tipo === 'pdf' && archivo.tipoDocumento && archivo.urlVer ? (
+          {archivos.map((archivo) => {
+            // Ver, Descargar (ver accionesDescargaArchivo) y, abajo,
+            // Compartir: tres acciones independientes.
+            const acciones = accionesDescargaArchivo(archivo)
+            const ejecutar = (a: AccionArchivo) =>
+              a.accion === 'ver' ? window.open(a.url, '_blank')
+                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)
+                  : descargarArchivo(a.url, archivo.nombre)
+            return (
               <div key={archivo.tipo} className="flex gap-1.5">
-                <button
-                  onClick={() => window.open(archivo.urlVer, '_blank')}
-                  className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50"
-                >
-                  👁️ Ver PDF
-                </button>
-                <button
-                  onClick={() => descargarPdfDirecto(archivo.url, archivo.nombre)}
-                  className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
-                >
-                  ⬇️ Descargar PDF
-                </button>
+                {acciones.map((a) => (
+                  <button
+                    key={a.accion}
+                    onClick={() => ejecutar(a)}
+                    className={
+                      a.accion === 'ver'
+                        ? 'flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50'
+                        : 'flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700'
+                    }
+                  >
+                    {a.etiqueta}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <button
-                key={archivo.tipo}
-                onClick={() => descargarArchivo(archivo.url, archivo.nombre)}
-                className="w-full flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700"
-              >
-                ⬇️ {etiquetaDescargar(archivo.tipo)}
-              </button>
             )
-          ))}
+          })}
           {archivos.length === 1 ? (
             <button
               onClick={() => compartirArchivo(archivos[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}

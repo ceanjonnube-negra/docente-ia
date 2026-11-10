@@ -90,8 +90,8 @@ async function main() {
   //       archivo.url (la URL de descarga real) — nunca con una
   //       versión ya envuelta en blob.
   // ============================================================
-  verificar(cuerpoPanel.includes('onClick={() => descargarPdfDirecto(archivo.url, archivo.nombre)}'), '5. El botón "Descargar PDF" llama a descargarPdfDirecto(archivo.url, archivo.nombre) de forma síncrona y directa')
-  verificar(cuerpoPanel.includes("onClick={() => window.open(archivo.urlVer, '_blank')}"), '6. El botón "Ver PDF" sigue abriendo archivo.urlVer en una pestaña nueva, sin cambios')
+  verificar(cuerpoPanel.includes("a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)") && cuerpoPanel.includes("{ accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }"), '5. El botón "Descargar PDF" llama a descargarPdfDirecto con la URL de descarga (archivo.url), de forma síncrona y directa')
+  verificar(cuerpoPanel.includes("a.accion === 'ver' ? window.open(a.url, '_blank')") && cuerpoPanel.includes("{ accion: 'ver', url: archivo.urlVer, etiqueta: '👁️ Ver PDF' }"), '6. El botón "Ver PDF" abre archivo.urlVer en una pestaña nueva')
   verificar(!cuerpoPanel.includes('descargarArchivoForzado'), '6b. La variante anterior basada en Blob (descargarArchivoForzado) fue eliminada por completo — no queda ningún rastro')
 
   // ============================================================
@@ -99,8 +99,8 @@ async function main() {
   //    (archivo.urlVer vs archivo.url) — nunca la misma URL.
   // ============================================================
   {
-    const bloqueBotones = cuerpoPanel.slice(cuerpoPanel.indexOf('archivo.tipo === \'pdf\' && archivo.tipoDocumento && archivo.urlVer'), cuerpoPanel.indexOf('archivo.tipo === \'pdf\' && archivo.tipoDocumento && archivo.urlVer') + 1200)
-    verificar(bloqueBotones.includes('archivo.urlVer') && bloqueBotones.includes('archivo.url,'), '9. El bloque Ver/Descargar usa archivo.urlVer para "Ver" y archivo.url para "Descargar" — dos campos distintos, nunca el mismo')
+    const bloqueBotones = cuerpoPanel.slice(cuerpoPanel.indexOf('export function accionesDescargaArchivo('), cuerpoPanel.indexOf('export function accionesDescargaArchivo(') + 700)
+    verificar(bloqueBotones.includes('url: archivo.urlVer') && bloqueBotones.includes('url: archivo.url,'), '9. El bloque Ver/Descargar usa archivo.urlVer para "Ver" y archivo.url para "Descargar" — dos campos distintos, nunca el mismo')
   }
 
   // ============================================================

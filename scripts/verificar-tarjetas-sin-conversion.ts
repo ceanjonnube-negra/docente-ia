@@ -108,7 +108,7 @@ async function main() {
     // en iPhone Safari, donde el PDF se abre en el visor en vez de
     // descargarse directo) — el mecanismo real (descargarArchivo) no
     // cambió en ningún caso.
-    verificar(cuerpoTarjeta.includes('etiquetaDescargar(archivo.tipo)') && cuerpoTarjeta.includes('descargarArchivo(archivo.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
+    verificar(cuerpoTarjeta.includes('accionesDescargaArchivo(archivo)') && cuerpoTarjeta.includes('descargarArchivo(a.url, archivo.nombre)') && cuerpoTarjeta.includes('descargarPdfDirecto(a.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
     verificar(!codigoRealTarjeta.includes('🔗 Abrir'), '7. El botón "Abrir" fue retirado intencionalmente (decisión de producto posterior) — la vista previa ya está dentro del chat')
     verificar(cuerpoTarjeta.includes('📤 Compartir') && cuerpoTarjeta.includes('compartirArchivo(archivo'), '8. El botón "Compartir" sigue presente y sigue llamando a compartirArchivo con el archivo real')
   }
@@ -151,7 +151,8 @@ async function main() {
     const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
     verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
     verificar(
-      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer/.test(c)),
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer|ejecutar\(a\)/.test(c)) &&
+        /const ejecutar = \(a: AccionArchivo\) =>\s*\n\s*a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url, archivo\.nombre\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(cuerpoTarjeta),
       '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo, abren "Ver PDF" o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
     )
   }
