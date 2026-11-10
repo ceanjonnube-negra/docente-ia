@@ -1,0 +1,7 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "fix/chat-archivo-sin-sesion": false
+    }
+  }
+}
