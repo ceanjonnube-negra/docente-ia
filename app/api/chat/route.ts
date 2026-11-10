@@ -28,7 +28,7 @@ import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorra
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
+import { archivoSinSesion, construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, MENSAJE_ARCHIVO_SIN_SESION, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -538,6 +538,14 @@ export async function POST(req: NextRequest) {
   // prompt de edición. Esa edición va directo al CASO 3 (el modelo aplica
   // el cambio sobre el texto real y con su resultado se genera el archivo).
   const tipoHerramientaSolicitado = tipoArchivoSolicitado({ mensaje: mensaje || '', esEdicionDocumento: Boolean(esEdicionDocumento), formatoEntrega, finalizarArchivo })
+
+  // Archivo de documento (nuevo, conversión o edición con formato) sin
+  // docente autenticado: se avisa aquí, antes de Nivel 0 y de cualquier
+  // llamada al modelo — nunca texto alternativo en lugar del archivo.
+  if (archivoSinSesion(tipoHerramientaSolicitado, userId)) {
+    console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado!]}:deteccion] archivo solicitado sin sesión — no se llama al modelo`)
+    return respuestaTexto(MENSAJE_ARCHIVO_SIN_SESION)
+  }
 
   if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento) {
     // Un documento NUEVO nunca se resuelve convirtiendo el último del

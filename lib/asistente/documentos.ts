@@ -315,3 +315,12 @@ export function contenidoParaArchivo(e: { mensaje: string; finalizarArchivo: unk
   }
   return ultimoDocumento ? { fuente: 'historial', texto: ultimoDocumento.content } : { fuente: 'ninguna' }
 }
+
+// Pedir un archivo de documento (Word, PDF, PowerPoint, Excel) sin
+// docente autenticado: nunca se redacta ni se convierte nada — /api/chat
+// responde este aviso antes de cualquier llamada al modelo, y el cliente
+// lo muestra tal cual (también en modo conversión).
+export const MENSAJE_ARCHIVO_SIN_SESION = 'Tu sesión no está activa. Inicia sesión para generar el archivo; no se creó ningún archivo.'
+export function archivoSinSesion(tipo: TipoHerramienta | null, userId: string | null): boolean {
+  return !userId && esFormatoEntrega(tipo)
+}

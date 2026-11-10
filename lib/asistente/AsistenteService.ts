@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, esDocumentoNuevoConFormato, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esDocumentoNuevoConFormato, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -974,6 +974,20 @@ class AsistenteServiceImpl {
             break
           }
           if (this.documentoFinalizandoId === this.editandoDocumentoId) {
+            // Aviso controlado del servidor (archivo sin sesión, ver
+            // MENSAJE_ARCHIVO_SIN_SESION): se muestra como respuesta del
+            // asistente y el documento activo queda intacto. Cualquier
+            // otra respuesta sin archivo sigue el camino de siempre.
+            if (!evento.archivo && evento.texto.trim() === MENSAJE_ARCHIVO_SIN_SESION) {
+              this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: MENSAJE_ARCHIVO_SIN_SESION, creadoEn: Date.now() }]
+              this.editandoDocumentoId = null
+              this.documentoFinalizandoId = null
+              this.textoDocumentoFinalizando = null
+              this.intentosFinalizacionActual = 0
+              this.ultimoIntentoEdicion = null
+              this.notificar()
+              break
+            }
             // FINALIZAR ARCHIVO: el marcador [[DOCUMENTO_ARCHIVO:...]] ya
             // se procesó en el motor (ver motorTextoClaude) y llega aquí
             // como evento.archivo — se adjunta al mensaje para que la
