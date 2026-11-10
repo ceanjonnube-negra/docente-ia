@@ -10,7 +10,7 @@
 import { supabase } from '@/lib/supabaseClient'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esDocumentoNuevoConFormato, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -1250,14 +1250,16 @@ class AsistenteServiceImpl {
     // ("Apruébala y guárdala") no es una edición — se manda como mensaje
     // normal para que el flujo de aprobación de /api/chat la atienda
     // (ver detectarAprobarPlaneacion).
-    // Otra excepción: pedir un documento NUEVO en un formato ("genera un
-    // documento PDF nuevo con el título...") no es conversión ni edición
-    // del documento activo — va como mensaje normal y /api/chat lo
-    // redacta (ver esDocumentoNuevoConFormato).
+    // Otra excepción: pedir un documento NUEVO, con o sin formato ("genera
+    // un citatorio en PDF", "prepara otro citatorio", "hazme un examen de
+    // fracciones"), no es conversión ni edición del documento activo — va
+    // como mensaje normal y /api/chat lo redacta (ver
+    // esPedidoDocumentoNuevo; una referencia explícita al documento
+    // existente, como "de este examen", lo mantiene como edición).
     // Y otra: editar Y entregar un documento que NO es el activo ("corrige
     // el oficio de la semana pasada y pásalo a PDF") — va como mensaje
     // normal y /api/chat pide aclaración (ver referenciaCompatibleConDocumento).
-    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esDocumentoNuevoConFormato(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, this.documentoActivo.texto))) {
+    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esPedidoDocumentoNuevo(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, this.documentoActivo.texto))) {
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
@@ -1273,8 +1275,11 @@ class AsistenteServiceImpl {
         // guárdalo en PDF"): primero la edición con el texto real del
         // documento y, en la misma llamada, el archivo del resultado
         // (CASO 3 en /api/chat) — nunca la conversión del texto anterior.
+        // Solo con un formato NOMBRADO ("en PDF", "a Word"): una palabra
+        // genérica ("haz un resumen de este documento") no pide archivo,
+        // así que es una edición normal, sin formato.
         if (esEdicionConFormato(limpio) && tipoResuelto !== 'imagen' && tipoResuelto !== 'audio' && tipoResuelto !== 'video') {
-          await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, tipoResuelto)
+          await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, formatoExplicito ? tipoResuelto : undefined)
           return
         }
         await this.ejecutarConversionFormato(tipoResuelto, limpio)

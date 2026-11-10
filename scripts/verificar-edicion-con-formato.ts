@@ -115,7 +115,7 @@ verificar(instruccionDeEdicion('texto sin marcador') === null, '5d. Sin marcador
 
 // 6. Cliente (estructura): edición con formato, reintento y motor.
 const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-verificar(/if \(esEdicionConFormato\(limpio\)[^\n]*\{\s*\n\s*await this\.enviarComoEdicion\(this\.documentoActivo\.id, limpio, construirPromptEdicion\(this\.documentoActivo\.texto, limpio\), adjunto, tipoResuelto\)\s*\n\s*return/.test(servicio), '6a. Con documento activo: edición con formato → edición con el texto real y el formato resuelto')
+verificar(/if \(esEdicionConFormato\(limpio\)[^\n]*\{\s*\n\s*await this\.enviarComoEdicion\(this\.documentoActivo\.id, limpio, construirPromptEdicion\(this\.documentoActivo\.texto, limpio\), adjunto, formatoExplicito \? tipoResuelto : undefined\)\s*\n\s*return/.test(servicio), '6a. Con documento activo: edición con formato → edición con el texto real y el formato resuelto')
 verificar(/\$\{MARCADOR_INSTRUCCION_EDICION\}\n\$\{instruccion\}`/.test(readFileSync('lib/asistente/documentos.ts', 'utf8')) && /import \{[^}]*construirPromptEdicion[^}]*\} from '\.\/documentos'/.test(servicio), '6b. construirPromptEdicion (compartido en documentos.ts) usa el marcador que lee el servidor')
 verificar(/this\.ultimoIntentoEdicion = \{ idDocumento, textoParaModelo, adjunto, formatoEntrega \}/.test(servicio) && /const \{ idDocumento, textoParaModelo, adjunto, finalizarArchivo, formatoEntrega \} = this\.ultimoIntentoEdicion/.test(servicio) && /await this\.ejecutarEdicion\(textoParaModelo, adjunto, formatoEntrega\)\s*\n\s*\}\s*\n\s*\}/.test(servicio), '6c. Reintento: repite la misma edición CON el mismo formato')
 verificar(/enviarTexto\(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, formatoEntrega\)/.test(servicio), '6d. La edición envía formatoEntrega al motor de texto')
@@ -127,7 +127,7 @@ const bloqueError = servicio.slice(servicio.indexOf("      case 'error': {"), se
 verificar(bloqueError.length > 100 && !bloqueError.includes('documentoActivo') && bloqueError.includes('this.editandoDocumentoId = null'), '6g. Falla (error de red, del modelo o del archivo): el documento activo anterior se conserva intacto')
 
 // 7. Servidor (estructura).
-verificar(/&& !esDocumentoNuevoConFormato\(limpio\) && !\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, this\.documentoActivo\.texto\)\)\) \{/.test(servicio), '7h. Cliente: editar y entregar un documento que no es el activo no edita el activo (va al servidor, que pide aclaración)')
+verificar(/&& !esPedidoDocumentoNuevo\(limpio\) && !\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, this\.documentoActivo\.texto\)\)\) \{/.test(servicio), '7h. Cliente: editar y entregar un documento que no es el activo no edita el activo (va al servidor, que pide aclaración)')
 verificar((servicio.match(/construirPromptEdicion\(this\.documentoActivo\.texto, limpio\)/g) ?? []).length === 2 && !/private construirPromptEdicion/.test(servicio), '7e. Con documento activo: la edición (con o sin formato) usa SU texto completo con el mismo prompt compartido')
 const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
 verificar(/const tipoHerramientaSolicitado = tipoArchivoSolicitado\(\{ mensaje: mensaje \|\| '', esEdicionDocumento: Boolean\(esEdicionDocumento\), formatoEntrega, finalizarArchivo \}\)/.test(ruta), '7a. El servidor decide el archivo con tipoArchivoSolicitado (formato validado)')

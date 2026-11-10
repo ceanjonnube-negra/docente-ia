@@ -148,19 +148,57 @@ export function detectarHerramientaDocumento(texto: string): TipoHerramienta | n
 // suelta ("sobre", "nueva"): "agrega información sobre las leyendas" o
 // "agrega una sección nueva" siguen siendo ediciones.
 const GENERACION = /\b(genera|generame|crea|creame|haz|hazme|elabora|elaborame|redacta|redactame|escribe|escribeme|prepara|preparame)\s+(un|una|otro|otra)\b/
-const GENERACION_OTRO = /\b(genera|generame|crea|creame|haz|hazme|elabora|elaborame|redacta|redactame|escribe|escribeme|prepara|preparame)\s+(otro|otra)\s+(?!vez\b)/
 const DETALLE_DOCUMENTO_NUEVO = /\bcon\s+(el\s+)?titulo\b|\btitulad[oa]\b|\bsobre\b|\bacerca\s+de\b|\bnuev[oa]\b/
 const DOCUMENTO = '(documento|archivo|oficio|examen|presentacion|carta|ficha|circular|citatorio|reporte|informe)'
 const DOCUMENTO_NUEVO = new RegExp(`\\b${DOCUMENTO}\\s+(\\w+\\s+)?nuev[oa]\\b|\\bnuev[oa]\\s+${DOCUMENTO}\\b`)
 const VERBO_EDICION = /\b(agrega|agregale|anade|anadele|quita|quitale|elimina|cambia|cambiale|corrige|corrigele|modifica|reemplaza|amplia|resume|acorta)\b/
 
+// Construcción explícita de creación: un verbo de creación, "un/una"
+// (u "otro/otra") y LO QUE SE CREA. Lo creado es una lista ABIERTA —
+// cualquier sustantivo ("citatorio", "examen", "instrumento", "rúbrica"...)
+// — salvo los que no son un documento nuevo: un formato o archivo ("un
+// PDF", "un documento") pide convertir, y un cambio o una parte del
+// documento existente ("una versión más corta", "un resumen", "una
+// conclusión", "otro igual") pide editarlo.
+const VERBO_CREACION = '(genera|generame|crea|creame|haz|hazme|elabora|elaborame|redacta|redactame|escribe|escribeme|prepara|preparame|disena|disename|arma|armame|construye|construyeme|quiero|necesito)'
+const CREACION = new RegExp(`\\b${VERBO_CREACION}\\s+(?:un|una|unos|unas|otro|otra|otros|otras)\\s+(?:(?:nuev[oa]s?|breve|corto|corta|pequen[oa])\\s+)?([a-z]+)`, 'g')
+const FORMATO_O_ARCHIVO = new Set(['pdf', 'word', 'docx', 'doc', 'excel', 'xlsx', 'powerpoint', 'power', 'ppt', 'pptx', 'archivo', 'archivos', 'documento', 'documentos', 'copia', 'vez'])
+const CAMBIO_O_PARTE = new Set([
+  'version', 'resumen', 'adaptacion', 'traduccion', 'revision', 'correccion', 'mejora', 'ajuste', 'cambio', 'cambios', 'modificacion',
+  'conclusion', 'introduccion', 'seccion', 'parrafo', 'apartado', 'titulo', 'encabezado', 'cierre', 'despedida', 'saludo', 'firma', 'pregunta', 'preguntas', 'tabla',
+  'igual', 'parecido', 'parecida', 'similar', 'mas', 'asi',
+])
+function sustantivosCreados(normalizado: string): string[] {
+  return [...normalizado.matchAll(CREACION)].map((m) => m[2])
+}
+
+// Referencia EXPLÍCITA al documento que ya existe ("este examen", "de
+// esto", "el documento anterior"): tiene prioridad sobre la creación. No
+// cuentan los pronombres ("entrégamelo"), que también se usan con lo que
+// se está pidiendo crear, ni "este viernes".
+const REFERENCIA_EXPLICITA = /\b(este|esta|ese|esa)\s+(documento|archivo|texto|contenido|oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|borrador|version|aviso|actividad|instrumento|lista)\b|\b(de|con|a\s+partir\s+de)\s+(esto|eso)\b|\b(lo|el|la)\s+anterior\b|\b(documento|archivo|texto|contenido|oficio|examen|citatorio|resumen|borrador|version)\s+anterior\b/
+
+// Pide crear un documento NUEVO (con o sin formato): una construcción
+// explícita de creación de algo que no es un formato ni un cambio del
+// documento existente, o los marcadores de siempre ("nuevo", "con el
+// título..."), y sin referencia explícita al documento existente.
+export function esPedidoDocumentoNuevo(texto: string): boolean {
+  const normalizado = normalizar(texto)
+  if (REFERENCIA_EXPLICITA.test(normalizado)) return false
+  if (sustantivosCreados(normalizado).some((s) => !FORMATO_O_ARCHIVO.has(s) && !CAMBIO_O_PARTE.has(s))) return true
+  return (GENERACION.test(normalizado) && DETALLE_DOCUMENTO_NUEVO.test(normalizado)) || DOCUMENTO_NUEVO.test(normalizado)
+}
+
 export type IntencionConFormato = 'convertir' | 'nuevo' | 'editar'
 
 export function clasificarIntencionConFormato(texto: string): IntencionConFormato {
   const normalizado = normalizar(texto)
-  const generaConDetalle = GENERACION.test(normalizado) && DETALLE_DOCUMENTO_NUEVO.test(normalizado)
-  if (generaConDetalle || GENERACION_OTRO.test(normalizado) || DOCUMENTO_NUEVO.test(normalizado)) return 'nuevo'
-  if (VERBO_EDICION.test(normalizado)) return 'editar'
+  if (esPedidoDocumentoNuevo(texto)) return 'nuevo'
+  // No es un documento nuevo y aun así pide "crear" algo que no es un
+  // formato ("hazme una síntesis de este documento", "una versión más
+  // corta en PDF"): es una transformación del documento existente. Solo
+  // "un PDF", "un documento"... siguen siendo conversión.
+  if (VERBO_EDICION.test(normalizado) || sustantivosCreados(normalizado).some((s) => !FORMATO_O_ARCHIVO.has(s))) return 'editar'
   return 'convertir'
 }
 
@@ -267,7 +305,11 @@ function esFinalizarArchivo(valor: unknown): valor is FinalizarArchivoCliente {
 export function tipoArchivoSolicitado(e: { mensaje: string; esEdicionDocumento: boolean; formatoEntrega: unknown; finalizarArchivo: unknown }): TipoHerramienta | null {
   if (e.esEdicionDocumento) return esFormatoEntrega(e.formatoEntrega) ? e.formatoEntrega : null
   if (esFinalizarArchivo(e.finalizarArchivo)) return e.finalizarArchivo.tipo
-  return detectarHerramientaDocumento(e.mensaje)
+  const tipo = detectarHerramientaDocumento(e.mensaje)
+  // Una transformación textual sin formato NOMBRADO ("hazme una síntesis
+  // de este documento") no pide archivo: "documento" no implica Word.
+  if (tipo && !detectarFormatoExplicito(e.mensaje) && clasificarIntencionConFormato(e.mensaje) === 'editar') return null
+  return tipo
 }
 
 // De dónde sale el contenido del archivo (fuera de una edición del
