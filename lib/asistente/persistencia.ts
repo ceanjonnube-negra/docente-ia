@@ -292,6 +292,33 @@ async function idConversacionRemota(docenteId: string, localId: string): Promise
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
+// Id remoto de una conversación local: el de su relación guardada (una
+// conversación descargada de otro dispositivo, etapa 3A) o, si no la
+// tiene, el determinista de siempre. La relación solo vale para el
+// docente que la creó.
+const CLAVE_VINCULOS_REMOTOS = 'docente-ia:vinculos-remotos'
+type VinculoRemoto = { docenteId: string; remotoId: string }
+
+function leerVinculosRemotos(): Record<string, VinculoRemoto> {
+  try {
+    const datos = JSON.parse(leer(CLAVE_VINCULOS_REMOTOS) ?? '{}')
+    return datos && typeof datos === 'object' ? datos : {}
+  } catch {
+    return {}
+  }
+}
+
+export function idRemotoDe(docenteId: string, localId: string): Promise<string> {
+  const vinculo = leerVinculosRemotos()[localId]
+  return vinculo && vinculo.docenteId === docenteId ? Promise.resolve(vinculo.remotoId) : idConversacionRemota(docenteId, localId)
+}
+
+function guardarVinculoRemoto(localId: string, docenteId: string, remotoId: string) {
+  const vinculos = leerVinculosRemotos()
+  vinculos[localId] = { docenteId, remotoId }
+  escribir(CLAVE_VINCULOS_REMOTOS, JSON.stringify(vinculos))
+}
+
 // Una sola promesa por conversación y sesión de página: evita repetir el
 // INSERT en cada mensaje. Si falla se olvida, para reintentar después.
 const conversacionesRemotas = new Map<string, Promise<string | null>>()
@@ -304,7 +331,7 @@ export function asegurarConversacionRemota(localId: string, docenteId: string): 
   if (existente) return existente
 
   const promesa = (async () => {
-    const id = await idConversacionRemota(docenteId, localId)
+    const id = await idRemotoDe(docenteId, localId)
     const { error } = await supabase.from('conversaciones_chat').insert({ id, docente_id: docenteId })
     if (error) {
       // 23505: ya existe. Solo se usa si RLS la devuelve (es del docente).
@@ -349,6 +376,7 @@ export function asegurarConversacionRemota(localId: string, docenteId: string): 
 const PREFIJO_SINCRONIZACION = 'docente-ia:mensajes-remotos:'
 const TOPE_PENDIENTES = 400
 const TOPE_HUELLAS = 3000
+const TOPE_SOLO_INSERCION = 5000
 const ESPERAS_REINTENTO_MS = [5_000, 15_000, 60_000, 300_000]
 
 export type FilaMensajeRemoto = {
@@ -361,7 +389,10 @@ export type FilaMensajeRemoto = {
   creado_en: string
 }
 type MensajePendiente = { localId: string; fila: FilaMensajeRemoto; huella: string }
-type EstadoSincronizacion = { desde: number; pendientes: MensajePendiente[]; huellas: Record<string, string> }
+// soloInsercion: mensajes descargados de Supabase (etapa 3A). Ya existen
+// remotos y los escribió otro dispositivo: un cambio local nunca los
+// sobrescribe (hasta tener versiones atómicas, etapa 4).
+type EstadoSincronizacion = { desde: number; pendientes: MensajePendiente[]; huellas: Record<string, string>; soloInsercion?: Record<string, true> }
 
 export function idMensajeRemoto(conversacionRemotaId: string, mensajeId: string): string {
   return `${conversacionRemotaId}:${mensajeId}`
@@ -412,6 +443,8 @@ function leerEstadoSincronizacion(docenteId: string): EstadoSincronizacion {
 function escribirEstadoSincronizacion(docenteId: string, estado: EstadoSincronizacion) {
   const huellas = Object.entries(estado.huellas)
   if (huellas.length > TOPE_HUELLAS) estado.huellas = Object.fromEntries(huellas.slice(-TOPE_HUELLAS))
+  const soloInsercion = Object.keys(estado.soloInsercion ?? {})
+  if (soloInsercion.length > TOPE_SOLO_INSERCION) estado.soloInsercion = Object.fromEntries(soloInsercion.slice(-TOPE_SOLO_INSERCION).map((id) => [id, true]))
   if (estado.pendientes.length > TOPE_PENDIENTES) {
     console.error(`[MENSAJES_REMOTOS] cola_llena descartados=${estado.pendientes.length - TOPE_PENDIENTES}`)
     estado.pendientes = estado.pendientes.slice(-TOPE_PENDIENTES)
@@ -422,7 +455,7 @@ function escribirEstadoSincronizacion(docenteId: string, estado: EstadoSincroniz
 // Encola los mensajes nuevos o cambiados de una conversación local y
 // los envía. Nunca lanza: si algo falla, quedan en la cola.
 export async function guardarMensajesRemotos(localId: string, docenteId: string, mensajes: MensajeConversacion[]): Promise<void> {
-  const conversacionRemotaId = await idConversacionRemota(docenteId, localId)
+  const conversacionRemotaId = await idRemotoDe(docenteId, localId)
   const estado = leerEstadoSincronizacion(docenteId)
   const nuevos: MensajePendiente[] = []
   for (const mensaje of mensajes) {
@@ -430,6 +463,7 @@ export async function guardarMensajesRemotos(localId: string, docenteId: string,
     const fila = mensajeAFilaRemota(conversacionRemotaId, docenteId, mensaje)
     const huella = huellaDe(fila)
     if (estado.huellas[fila.id] === huella) continue
+    if (estado.soloInsercion?.[fila.id]) continue
     nuevos.push({ localId, fila, huella })
   }
   if (nuevos.length > 0) {
@@ -489,6 +523,7 @@ async function enviarPendientes(docenteId: string): Promise<void> {
       const confirmados = new Set((data ?? []).map((f: { id: string }) => f.id))
       if (confirmados.size < filas.length) fallo = true
       confirmar(docenteId, grupo, confirmados, false)
+      if (confirmados.size > 0) await actualizarContextoRemoto(docenteId, grupo[0].localId, conversacionRemotaId)
     }
   } catch (e) {
     console.error('[MENSAJES_REMOTOS] guardado=false', e instanceof Error ? e.message : String(e))
@@ -612,7 +647,7 @@ async function ejecutarMigracion(docenteId: string): Promise<ResultadoMigracion>
     const anteriores = datos?.mensajes.filter((m) => m.creadoEn < desde) ?? []
     if (!datos || anteriores.length === 0) continue
     const crudo = JSON.parse(leer(PREFIJO_CONVERSACION + localId) ?? '{}') as Partial<ConversacionGuardada>
-    candidatas.push({ localId, remotoId: await idConversacionRemota(docenteId, localId), titulo: datos.titulo, actualizadaEn: Number(crudo.actualizadaEn) || 0, documentoActivo: datos.documentoActivo, mensajes: anteriores })
+    candidatas.push({ localId, remotoId: await idRemotoDe(docenteId, localId), titulo: datos.titulo, actualizadaEn: Number(crudo.actualizadaEn) || 0, documentoActivo: datos.documentoActivo, mensajes: anteriores })
   }
   if (candidatas.length === 0) return resultado
 
@@ -707,4 +742,142 @@ async function migrarConversacion(
     if (c.documentoActivo && canonico(final.documento_activo) !== canonico(c.documentoActivo)) return 'conflicto'
   }
   return 'migrada'
+}
+
+// ---------------------------------------------------------------------
+// Recuperación entre dispositivos (persistencia remota, etapa 3A).
+//
+// - Lista: una consulta con las conversaciones del docente y su número
+//   de mensajes; las vacías no se muestran (no se borran). Las que ya
+//   tienen copia local se quedan con la local.
+// - Abrir una remota: se descargan sus últimos mensajes, se guarda la
+//   relación local → remoto ANTES de activarla (así el motor y la etapa
+//   1 siguen usando el mismo id remoto y su grupo original) y se copia
+//   al navegador sin pisar ninguna conversación local existente. Sus
+//   mensajes quedan registrados como ya enviados y de solo inserción.
+// - Título y fecha: el título se escribe solo si el remoto sigue siendo
+//   el último que este dispositivo conoció (si otro lo cambió, se adopta
+//   sin pisarlo); la fecha solo avanza.
+
+const PREFIJO_TITULOS_REMOTOS = 'docente-ia:titulos-remotos:'
+
+function leerTitulosRemotos(docenteId: string): Record<string, string> {
+  try {
+    const datos = JSON.parse(leer(PREFIJO_TITULOS_REMOTOS + docenteId) ?? '{}')
+    return datos && typeof datos === 'object' ? datos : {}
+  } catch {
+    return {}
+  }
+}
+
+function recordarTituloRemoto(docenteId: string, remotoId: string, titulo: string) {
+  const titulos = leerTitulosRemotos(docenteId)
+  titulos[remotoId] = titulo
+  escribir(PREFIJO_TITULOS_REMOTOS + docenteId, JSON.stringify(titulos))
+}
+
+async function actualizarContextoRemoto(docenteId: string, localId: string, remotoId: string): Promise<void> {
+  try {
+    const resumen = leerIndice().find((c) => c.id === localId)
+    if (!resumen) return
+    const conocido = leerTitulosRemotos(docenteId)[remotoId] ?? TITULO_INICIAL
+    if (resumen.titulo && resumen.titulo !== conocido) {
+      const { data, error } = await supabase.from('conversaciones_chat').update({ titulo: resumen.titulo }).eq('id', remotoId).eq('titulo', conocido).select('id')
+      if (error) throw error
+      if (data && data.length > 0) {
+        recordarTituloRemoto(docenteId, remotoId, resumen.titulo)
+      } else {
+        const { data: actual, error: errorLectura } = await supabase.from('conversaciones_chat').select('titulo').eq('id', remotoId).maybeSingle()
+        if (errorLectura) throw errorLectura
+        if (actual?.titulo) recordarTituloRemoto(docenteId, remotoId, actual.titulo)
+      }
+    }
+    const ms = resumen.actualizadaEn > 1e15 ? Math.floor(resumen.actualizadaEn / 1000) : resumen.actualizadaEn
+    if (ms > 0) {
+      const iso = new Date(ms).toISOString()
+      const { error } = await supabase.from('conversaciones_chat').update({ actualizado_en: iso }).eq('id', remotoId).lt('actualizado_en', iso)
+      if (error) throw error
+    }
+  } catch (e) {
+    console.error('[CONTEXTO_REMOTO] actualizado=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+  }
+}
+
+// Conversaciones remotas con mensajes y sin copia en este dispositivo.
+export async function conversacionesRemotasSinCopiaLocal(docenteId: string): Promise<ConversacionResumen[]> {
+  const { data, error } = await supabase
+    .from('conversaciones_chat')
+    .select('id, titulo, actualizado_en, mensajes_chat(count)')
+    .eq('docente_id', docenteId)
+    .order('actualizado_en', { ascending: false })
+    .limit(TOPE_CONVERSACIONES)
+  if (error) throw error
+  const locales = leerIndice()
+  const conCopia = new Set([...locales.map((c) => c.id), ...(await Promise.all(locales.map((c) => idRemotoDe(docenteId, c.id))))])
+  return ((data ?? []) as { id: string; titulo: string; actualizado_en: string; mensajes_chat?: { count: number }[] }[])
+    .filter((f) => (f.mensajes_chat?.[0]?.count ?? 0) > 0 && !conCopia.has(f.id))
+    .map((f) => ({ id: f.id, titulo: f.titulo, actualizadaEn: Date.parse(f.actualizado_en) * 1000 }))
+}
+
+// Lista de la barra lateral: las locales primero en prioridad; las
+// remotas solo si no hay una local con el mismo id.
+export function combinarConversaciones(locales: ConversacionResumen[], remotasSinCopia: ConversacionResumen[]): ConversacionResumen[] {
+  const ids = new Set(locales.map((c) => c.id))
+  return [...locales, ...remotasSinCopia.filter((r) => !ids.has(r.id))].sort((a, b) => b.actualizadaEn - a.actualizadaEn)
+}
+
+// Descarga una conversación remota al navegador. Devuelve false si no
+// existe, no es del docente o no tiene mensajes. Nunca pisa una copia
+// local existente (y solo la acepta si su relación es de este docente).
+export async function descargarConversacionRemota(docenteId: string, remotoId: string): Promise<boolean> {
+  if (cargarConversacionPorId(remotoId)) return leerVinculosRemotos()[remotoId]?.docenteId === docenteId
+  const { data: conversacion, error } = await supabase
+    .from('conversaciones_chat')
+    .select('id, titulo, documento_activo')
+    .eq('id', remotoId)
+    .eq('docente_id', docenteId)
+    .maybeSingle()
+  if (error) throw error
+  if (!conversacion) return false
+  const { data: filas, error: errorMensajes } = await supabase
+    .from('mensajes_chat')
+    .select('id, rol, texto, contenido, creado_en')
+    .eq('conversacion_id', remotoId)
+    .order('creado_en', { ascending: false })
+    .limit(TOPE_MENSAJES)
+  if (errorMensajes) throw errorMensajes
+  const prefijo = `${remotoId}:`
+  const mensajes = ((filas ?? []) as { id: string; rol: MensajeConversacion['rol']; texto: string; contenido: Record<string, unknown> | null; creado_en: string }[])
+    .filter((f) => f.id.startsWith(prefijo))
+    .reverse()
+    .map((f) => ({ ...(f.contenido ?? {}), id: f.id.slice(prefijo.length), rol: f.rol, texto: f.texto, creadoEn: Date.parse(f.creado_en) }) as MensajeConversacion)
+  if (mensajes.length === 0) return false
+
+  // Relación primero: desde aquí el motor y la etapa 1 usan este id.
+  guardarVinculoRemoto(remotoId, docenteId, remotoId)
+  // Documento activo: el guardado en la fila si sigue en los mensajes; si
+  // no hay, el último documento formal del asistente (mismo criterio con
+  // el que el chat lo fija al terminar un documento).
+  const documentoRemoto = conversacion.documento_activo as DocumentoActivoGuardado | null
+  const ultimoDocumento = [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
+  const documentoActivo = documentoRemoto && mensajes.some((m) => m.id === documentoRemoto.id)
+    ? documentoRemoto
+    : ultimoDocumento ? { id: ultimoDocumento.id, texto: ultimoDocumento.texto } : null
+  const titulo = conversacion.titulo && conversacion.titulo !== TITULO_INICIAL ? conversacion.titulo : undefined
+  guardarConversacion(remotoId, mensajes, documentoActivo, titulo)
+
+  // Ya están en Supabase: se registran como enviados (sin reenvío) y de
+  // solo inserción; la etapa 2 no los vuelve a procesar.
+  const guardados = cargarConversacionPorId(remotoId)?.mensajes ?? []
+  const estado = leerEstadoSincronizacion(docenteId)
+  estado.soloInsercion = estado.soloInsercion ?? {}
+  for (const m of guardados) {
+    const fila = mensajeAFilaRemota(remotoId, docenteId, m)
+    estado.huellas[fila.id] = huellaDe(fila)
+    estado.soloInsercion[fila.id] = true
+  }
+  escribirEstadoSincronizacion(docenteId, estado)
+  marcarConversacionMigracion(docenteId, remotoId, 'migrada')
+  recordarTituloRemoto(docenteId, remotoId, conversacion.titulo)
+  return true
 }

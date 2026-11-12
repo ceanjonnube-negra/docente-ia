@@ -147,10 +147,10 @@ async function main() {
   const { readFileSync } = await import('node:fs')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const guardarAhora = servicio.slice(servicio.indexOf('private guardarAhora() {'), servicio.indexOf('private copiaRemotaTimer'))
-  verificar(/guardarConversacion\(this\.conversacionActivaId, this\.mensajes, this\.documentoActivo\)\s*\n\s*this\.listaConversaciones = listarConversaciones\(\)\s*\n\s*this\.programarCopiaRemota\(this\.conversacionActivaId, this\.mensajes\)/.test(guardarAhora), '10a. La copia remota se programa después del guardado local, sin cambiarlo')
+  verificar(/guardarConversacion\(this\.conversacionActivaId, this\.mensajes, this\.documentoActivo\)\s*\n\s*this\.(?:listaConversaciones = listarConversaciones\(\)|recalcularLista\(\))\s*\n\s*this\.programarCopiaRemota\(this\.conversacionActivaId, this\.mensajes\)/.test(guardarAhora), '10a. La copia remota se programa después del guardado local, sin cambiarlo')
   const envioRemoto = servicio.slice(servicio.indexOf('private async enviarCopiaRemota() {'), servicio.indexOf('// Guardado inmediato, sin esperar el debounce'))
   verificar(/if \(this\.generando\) return/.test(envioRemoto) && !/turnoAbierto\)/.test(envioRemoto) && !/setTimeout/.test(envioRemoto) && /vigentes\.has\(localId\)/.test(envioRemoto) && !/this\.mensajes =|this\.documentoActivo =|notificar\(\)/.test(envioRemoto), '10b. Espera solo a la generación (no a turnoAbierto), sin sondeo, solo conversaciones vigentes y sin tocar el estado del chat')
-  verificar(!/fetch\(|\/api\/chat|messages\.create/.test(envioRemoto) && /if \(evento === 'SIGNED_OUT'\) AsistenteService\.limpiarConversacionGuardada\(\)/.test(servicio), '10c. Sin llamadas de IA; el cierre de sesión no cambia')
+  verificar(!/fetch\(|\/api\/chat|messages\.create/.test(envioRemoto) && /if \(evento === 'SIGNED_OUT'\) \{?\s*AsistenteService\.limpiarConversacionGuardada\(\)/.test(servicio), '10c. Sin llamadas de IA; el cierre de sesión no cambia')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
   verificar(!/service_role|SERVICE_ROLE|\.from\([^)]*\)\s*\.delete/.test(persistencia.slice(persistencia.indexOf('// Copia remota de los mensajes'))), '10d. Sin credenciales privilegiadas ni borrados')
 

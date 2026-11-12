@@ -20,7 +20,7 @@ import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
-import { AsistenteService } from '@/lib/asistente/AsistenteService'
+import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
@@ -857,13 +857,15 @@ export default function AsistentePanel() {
                   }`}
                 >
                   <span className="flex-1 truncate">{c.titulo}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); asistente.eliminarConversacion(c.id) }}
-                    aria-label="Eliminar conversación"
-                    className="text-gray-300 hover:text-red-500 text-xs px-2 py-1.5 rounded-lg flex-shrink-0"
-                  >
-                    🗑️
-                  </button>
+                  {ELIMINAR_CONVERSACION_DISPONIBLE && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); asistente.eliminarConversacion(c.id) }}
+                      aria-label="Eliminar conversación"
+                      className="text-gray-300 hover:text-red-500 text-xs px-2 py-1.5 rounded-lg flex-shrink-0"
+                    >
+                      🗑️
+                    </button>
+                  )}
                 </div>
               ))
             )}

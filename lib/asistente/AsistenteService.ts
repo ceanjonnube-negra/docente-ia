@@ -19,7 +19,10 @@ import { esBorradorPlaneacion } from '@/lib/planeacion/extraerBorrador'
 import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
+  combinarConversaciones,
+  conversacionesRemotasSinCopiaLocal,
   crearNuevaConversacion,
+  descargarConversacionRemota,
   eliminarConversacion as eliminarConversacionGuardada,
   establecerConversacionActiva,
   guardarConversacion,
@@ -180,8 +183,18 @@ export type PasoDebugVoz = {
 
 type Listener = () => void
 
+// Eliminar conversaciones queda desactivado SOLO en las Previews de
+// Vercel mientras no exista la eliminación global (etapa 3B): con la
+// recuperación entre dispositivos (etapa 3A), borrar solo la copia local
+// haría que la conversación reapareciera desde Supabase. En Production
+// (VERCEL_ENV = production) y en local no cambia nada.
+export const ELIMINAR_CONVERSACION_DISPONIBLE = process.env.NEXT_PUBLIC_VERCEL_ENV !== 'preview'
+
+// El sufijo aleatorio evita que dos dispositivos que continúan la misma
+// conversación generen el mismo id (mismo milisegundo y contador).
 let contadorId = 0
-const nuevoId = () => `msg-${Date.now()}-${contadorId++}`
+const sufijoAleatorio = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(36).padStart(2, '0')).join('')
+const nuevoId = () => `msg-${Date.now()}-${contadorId++}-${sufijoAleatorio()}`
 
 // Propuestas de lista oficial (ver confirmarPropuestaLista): códigos de
 // /api/lista-oficial/aplicar que no invalidan la propuesta.
@@ -422,11 +435,16 @@ class AsistenteServiceImpl {
 
   // Mismo patrón que mostrarAvisoVoz, para fallas generando/editando un
   // documento — nunca se guarda como mensaje del asistente.
-  private mostrarAvisoGeneracion(texto: string) {
+  // informativo: el aviso solo informa (p. ej. no se pudo abrir una
+  // conversación remota); tocarlo lo cierra y NUNCA reintenta nada.
+  private avisoInformativo = false
+  private mostrarAvisoGeneracion(texto: string, informativo = false) {
     if (this.avisoGeneracionTimer) clearTimeout(this.avisoGeneracionTimer)
     this.avisoGeneracion = texto
+    this.avisoInformativo = informativo
     this.avisoGeneracionTimer = setTimeout(() => {
       this.avisoGeneracion = null
+      this.avisoInformativo = false
       this.avisoGeneracionTimer = null
       this.notificar()
     }, 6000)
@@ -491,7 +509,7 @@ class AsistenteServiceImpl {
     // guardarConversacion().
     if (!this.conversacionActivaId || this.mensajes.length === 0) return
     guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo)
-    this.listaConversaciones = listarConversaciones()
+    this.recalcularLista()
     this.programarCopiaRemota(this.conversacionActivaId, this.mensajes)
   }
 
@@ -579,6 +597,7 @@ class AsistenteServiceImpl {
     this.textoDocumentoFinalizando = null
     this.intentosFinalizacionActual = 0
     this.avisoGeneracion = null
+    this.avisoInformativo = false
     this.avisoVoz = null
     this.ultimoIntentoEdicion = null
     this.turnoUsuarioPendiente = false
@@ -607,7 +626,10 @@ class AsistenteServiceImpl {
     if (this.persistenciaTimer) { clearTimeout(this.persistenciaTimer); this.persistenciaTimer = null }
     this.guardarAhora() // no perder los últimos cambios de la conversación que se deja
     const datos = cargarConversacionPorId(id)
-    if (!datos) return
+    if (!datos) {
+      if (this.remotasSinCopia.some((c) => c.id === id)) void this.abrirConversacionRemota(id)
+      return
+    }
     this.conversacionActivaId = id
     establecerConversacionActiva(id)
     this.mensajes = datos.mensajes
@@ -616,13 +638,73 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
+  // --- Conversaciones de otros dispositivos (persistencia remota, etapa 3A) ---
+  // Solo del docente de la sesión: `remotasDe` evita mostrar las de otro
+  // docente si cambia la sesión en el mismo dispositivo.
+  private remotasSinCopia: ConversacionResumen[] = []
+  private remotasDe: string | null = null
+  private ultimaConsultaRemota = 0
+  private abriendoRemota: string | null = null
+
+  private recalcularLista() {
+    this.listaConversaciones = combinarConversaciones(listarConversaciones(), this.remotasSinCopia)
+  }
+
+  olvidarConversacionesRemotas() {
+    this.remotasSinCopia = []
+    this.remotasDe = null
+    this.ultimaConsultaRemota = 0
+  }
+
+  async refrescarConversacionesRemotas(docenteId: string, forzar = false) {
+    if (this.remotasDe !== docenteId) this.olvidarConversacionesRemotas()
+    if (!forzar && Date.now() - this.ultimaConsultaRemota < 60_000) return
+    this.ultimaConsultaRemota = Date.now()
+    try {
+      const remotas = await conversacionesRemotasSinCopiaLocal(docenteId)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user?.id !== docenteId) return
+      this.remotasSinCopia = remotas
+      this.remotasDe = docenteId
+      this.recalcularLista()
+      this.notificar()
+    } catch (e) {
+      this.ultimaConsultaRemota = 0
+      console.error('[CONVERSACIONES_REMOTAS] lista=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    }
+  }
+
+  private async abrirConversacionRemota(id: string) {
+    if (this.abriendoRemota === id) return
+    this.abriendoRemota = id
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId || docenteId !== this.remotasDe) return
+      const descargada = await descargarConversacionRemota(docenteId, id)
+      this.remotasSinCopia = this.remotasSinCopia.filter((c) => c.id !== id)
+      if (descargada) this.abrirConversacion(id)
+      else {
+        this.recalcularLista()
+        this.notificar()
+      }
+    } catch (e) {
+      console.error('[CONVERSACIONES_REMOTAS] abrir=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      this.mostrarAvisoGeneracion('No se pudo abrir la conversación. Revisa tu conexión e intenta de nuevo.', true)
+      this.notificar()
+    } finally {
+      this.abriendoRemota = null
+    }
+  }
+
   // Borra una conversación guardada de forma permanente — si era la
   // activa, la pantalla vuelve a la vista inicial (null), nunca genera
   // sola una conversación nueva: la existencia/ausencia de datos
   // guardados no debe asignar activeConversationId por sí misma.
   eliminarConversacion(id: string) {
+    if (!ELIMINAR_CONVERSACION_DISPONIBLE) return
     eliminarConversacionGuardada(id)
-    this.listaConversaciones = listarConversaciones()
+    this.recalcularLista()
     if (id === this.conversacionActivaId) {
       this.conversacionActivaId = null
       this.mensajes = []
@@ -655,6 +737,9 @@ class AsistenteServiceImpl {
     this.panelAbierto = true
     this.notificar()
     this.asegurarMotor()
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.id) void this.refrescarConversacionesRemotas(session.user.id)
+    })
   }
 
   cerrarPanel() {
@@ -1788,6 +1873,13 @@ class AsistenteServiceImpl {
   // que el maestro tenga que volver a escribir el mensaje — el documento
   // activo y el resto de la conversación se conservan tal cual.
   async reintentarGeneracion() {
+    if (this.avisoInformativo) {
+      if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
+      this.avisoGeneracion = null
+      this.avisoInformativo = false
+      this.notificar()
+      return
+    }
     if (!this.ultimoIntentoEdicion) return
     const { idDocumento, textoParaModelo, adjunto, finalizarArchivo, formatoEntrega } = this.ultimoIntentoEdicion
     this.avisoGeneracion = null
@@ -1842,7 +1934,10 @@ if (typeof document !== 'undefined') {
 // una navegación de cliente (router.push), no una recarga completa, así
 // que el singleton sigue vivo en memoria a menos que se limpie aquí.
 supabase.auth.onAuthStateChange((evento, session) => {
-  if (evento === 'SIGNED_OUT') AsistenteService.limpiarConversacionGuardada()
+  if (evento === 'SIGNED_OUT') {
+    AsistenteService.limpiarConversacionGuardada()
+    AsistenteService.olvidarConversacionesRemotas()
+  }
   // Cubre el login real y la restauración de sesión desde storage al
   // recargar la pestaña — ambos casos pueden dejar EstadoAsistente.perfil
   // en null (sesión aún no existía cuando el constructor la pidió).
@@ -1850,5 +1945,7 @@ supabase.auth.onAuthStateChange((evento, session) => {
   if ((evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION') && session?.user?.id) {
     AsistenteService.reintentarCopiaRemota(session.user.id)
     AsistenteService.iniciarMigracionHistorial(session.user.id)
+    const docenteId = session.user.id
+    setTimeout(() => void AsistenteService.refrescarConversacionesRemotas(docenteId, true), 0)
   }
 })

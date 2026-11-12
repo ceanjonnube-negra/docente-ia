@@ -207,7 +207,7 @@ async function main() {
   const { readFileSync } = await import('node:fs')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
-  const migracionCodigo = persistencia.slice(persistencia.indexOf('// Migración del historial local anterior'))
+  const migracionCodigo = persistencia.slice(persistencia.indexOf('// Migración del historial local anterior'), persistencia.indexOf('// Recuperación entre dispositivos'))
   verificar(/AsistenteService\.iniciarMigracionHistorial\(session\.user\.id\)/.test(servicio) && /if \(this\.migracionesLanzadas\.has\(docenteId\)\) return/.test(servicio), '6a. Se lanza al iniciar o restaurar sesión, una vez por página y docente')
   verificar(!/borrar\(|escribir\(PREFIJO_CONVERSACION|guardarConversacion\(|eliminarConversacion\(|\.delete\(\)|rpc\(|fetch\(|\/api\/chat/.test(migracionCodigo), '6b. La migración no borra ni escribe el historial local, no fija grupo y no llama a la IA')
   verificar(/if \(mensaje\.creadoEn < estado\.desde\) continue/.test(persistencia) && /if \(this\.generando\) return/.test(servicio), '6c. Etapa 1 intacta (mismo filtro de mensajes nuevos y misma espera a la generación)')
