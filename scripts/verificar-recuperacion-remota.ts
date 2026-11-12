@@ -253,7 +253,9 @@ async function main() {
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
   verificar(!/idConversacionRemota\(docenteId, localId\)/.test(persistencia.replace(/: idConversacionRemota\(docenteId, localId\)/, '')), '7a. Etapas 1 y 2 y el motor resuelven el id con idRemotoDe')
-  verificar(/eliminarConversacionGuardada\(id\)\s*\n\s*this\.recalcularLista\(\)/.test(servicio) && !/eliminarConversacionRemota|\.delete\(\)/.test(servicio + persistencia.slice(persistencia.indexOf('// Recuperación entre dispositivos'))), '7b. Eliminar no cambia de operación (solo la copia local; nada se borra en Supabase)')
+  // Desde la etapa 3B-1 Eliminar es global (ver verificar-eliminacion-global.ts):
+  // pasa por eliminarConversacionGlobal y nunca borra filas directamente.
+  verificar(/void this\.eliminarConversacionEnTodos\(id\)/.test(servicio) && !/\.delete\(\)/.test(servicio + persistencia.slice(persistencia.indexOf('// Recuperación entre dispositivos'))), '7b. Eliminar pasa por la eliminación global (3B-1), sin borrar filas directamente')
   verificar(!/fetch\(|\/api\/chat|messages\.create/.test(persistencia.slice(persistencia.indexOf('// Recuperación entre dispositivos'))), '7c. Sin llamadas de IA')
 
   console.log('')

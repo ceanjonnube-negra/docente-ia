@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAprobarPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
-import { leerVinculoConversacion, type VinculoConversacion } from '@/lib/vinculoConversacion'
+import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import {
   actualizarPerfilDocente,
@@ -538,6 +538,12 @@ export async function POST(req: NextRequest) {
   // prompt de edición. Esa edición va directo al CASO 3 (el modelo aplica
   // el cambio sobre el texto real y con su resultado se genera el archivo).
   const tipoHerramientaSolicitado = tipoArchivoSolicitado({ mensaje: mensaje || '', esEdicionDocumento: Boolean(esEdicionDocumento), formatoEntrega, finalizarArchivo })
+
+  // Conversación eliminada (etapa 3B-1): nunca se continúa, ni se llama
+  // al modelo. El vínculo ya se pidió arriba en paralelo.
+  if (conversacionIdSolicitada && (await vinculoConversacionPromise).estado === 'eliminada') {
+    return respuestaTexto(MENSAJE_CONVERSACION_ELIMINADA)
+  }
 
   // Archivo de documento (nuevo, conversión o edición con formato) sin
   // docente autenticado: se avisa aquí, antes de Nivel 0 y de cualquier

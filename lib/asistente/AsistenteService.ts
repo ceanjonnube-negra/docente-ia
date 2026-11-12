@@ -20,16 +20,19 @@ import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
   combinarConversaciones,
+  conversacionesLocalesEliminadas,
   conversacionesRemotasSinCopiaLocal,
   crearNuevaConversacion,
   descargarConversacionRemota,
-  eliminarConversacion as eliminarConversacionGuardada,
+  eliminarConversacionGlobal,
   establecerConversacionActiva,
   guardarConversacion,
   guardarMensajesRemotos,
   listarConversaciones,
   migrarHistorialLocal,
+  registrarAlRetirarConversacion,
   reintentarMensajesRemotosPendientes,
+  retirarConversacionLocal,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
 } from './persistencia'
@@ -661,9 +664,10 @@ class AsistenteServiceImpl {
     if (!forzar && Date.now() - this.ultimaConsultaRemota < 60_000) return
     this.ultimaConsultaRemota = Date.now()
     try {
-      const remotas = await conversacionesRemotasSinCopiaLocal(docenteId)
+      const [remotas, eliminadas] = await Promise.all([conversacionesRemotasSinCopiaLocal(docenteId), conversacionesLocalesEliminadas(docenteId)])
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.user?.id !== docenteId) return
+      for (const { localId, remotoId } of eliminadas) await retirarConversacionLocal(docenteId, localId, remotoId)
       this.remotasSinCopia = remotas
       this.remotasDe = docenteId
       this.recalcularLista()
@@ -701,16 +705,49 @@ class AsistenteServiceImpl {
   // activa, la pantalla vuelve a la vista inicial (null), nunca genera
   // sola una conversación nueva: la existencia/ausencia de datos
   // guardados no debe asignar activeConversationId por sí misma.
+  // Elimina la conversación en TODOS los dispositivos del docente (etapa
+  // 3B-1), previa confirmación nativa. La copia local solo se retira
+  // cuando Supabase confirma; si falla, no se toca nada y se avisa.
   eliminarConversacion(id: string) {
     if (!ELIMINAR_CONVERSACION_DISPONIBLE) return
-    eliminarConversacionGuardada(id)
-    this.recalcularLista()
-    if (id === this.conversacionActivaId) {
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+      && !window.confirm('¿Eliminar esta conversación? Se eliminará en todos tus dispositivos y no se puede deshacer.')) return
+    void this.eliminarConversacionEnTodos(id)
+  }
+
+  private async eliminarConversacionEnTodos(id: string) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId) {
+        this.mostrarAvisoGeneracion('Inicia sesión para eliminar la conversación.', true)
+        this.notificar()
+        return
+      }
+      const soloRemota = !cargarConversacionPorId(id) && this.remotasSinCopia.some((c) => c.id === id)
+      await eliminarConversacionGlobal(docenteId, id, soloRemota ? id : undefined)
+      // eliminarConversacionGlobal ya retiró la copia local (y avisó a
+      // alRetirarConversacion); para una solo remota, se quita de la lista.
+      this.alRetirarConversacion(id)
+    } catch (e) {
+      console.error('[ELIMINAR_CONVERSACION] eliminada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      this.mostrarAvisoGeneracion('No se pudo eliminar la conversación. Revisa tu conexión e intenta de nuevo.', true)
+      this.notificar()
+    }
+  }
+
+  // Una conversación dejó de existir en este dispositivo (eliminada aquí
+  // o en otro): sale de la lista y, si estaba abierta, a la vista inicial.
+  alRetirarConversacion(localId: string) {
+    this.remotasSinCopia = this.remotasSinCopia.filter((c) => c.id !== localId)
+    if (localId === this.conversacionActivaId) {
+      if (this.persistenciaTimer) { clearTimeout(this.persistenciaTimer); this.persistenciaTimer = null }
       this.conversacionActivaId = null
       this.mensajes = []
       this.documentoActivo = null
       this.limpiarEstadoTransitorio()
     }
+    this.recalcularLista()
     this.notificar()
   }
 
@@ -1909,6 +1946,7 @@ class AsistenteServiceImpl {
 // Instancia única de todo el proceso del navegador — se crea una sola vez
 // al cargar el módulo, no dentro de ningún componente de React.
 export const AsistenteService = new AsistenteServiceImpl()
+registrarAlRetirarConversacion((localId) => AsistenteService.alRetirarConversacion(localId))
 
 if (typeof document !== 'undefined') {
   // El caso real reportado: el docente minimiza, cambia de app o el

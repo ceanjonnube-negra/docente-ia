@@ -17,6 +17,8 @@ export type VinculoConversacion =
   | { estado: 'sin_grupo'; id: string }
   // Conversación del docente anterior a los snapshots de grupo (grupo_contexto_version ≠ 1).
   | { estado: 'antigua'; id: string }
+  // Conversación del docente eliminada (marca eliminada_en, etapa 3B-1): nunca se continúa.
+  | { estado: 'eliminada'; id: string }
   // La conversación no existe o RLS no la devuelve (no es del docente).
   | { estado: 'no_autorizada' }
   // Falla al leer el vínculo.
@@ -27,15 +29,20 @@ export async function leerVinculoConversacion(sb: SupabaseClient, conversacionId
   try {
     const { data, error } = await sb
       .from('conversaciones_chat')
-      .select('id, grupo_contexto_version, grupo_id')
+      .select('id, grupo_contexto_version, grupo_id, eliminada_en')
       .eq('id', conversacionId)
       .maybeSingle()
     if (error) return { estado: 'error' }
     if (!data) return { estado: 'no_autorizada' }
     const id = data.id as string
+    if (data.eliminada_en) return { estado: 'eliminada', id }
     if (data.grupo_contexto_version !== 1) return { estado: 'antigua', id }
     return data.grupo_id ? { estado: 'con_grupo', id, grupoId: data.grupo_id as string } : { estado: 'sin_grupo', id }
   } catch {
     return { estado: 'error' }
   }
 }
+
+// Respuesta de /api/chat cuando la conversación fue eliminada (en este u
+// otro dispositivo): se responde antes de cualquier llamada al modelo.
+export const MENSAJE_CONVERSACION_ELIMINADA = 'Esta conversación fue eliminada. Inicia una conversación nueva para continuar.'

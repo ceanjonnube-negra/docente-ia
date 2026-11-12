@@ -516,6 +516,13 @@ async function enviarPendientes(docenteId: string): Promise<void> {
       }
       const { data, error } = await supabase.from('mensajes_chat').upsert(filas, { onConflict: 'id' }).select('id')
       if (error) {
+        // RLS rechaza escribir en una conversación eliminada (etapa 3B-1):
+        // si es eso, su cola se descarta y se retira la copia local.
+        if (error.code === '42501' && (await conversacionEliminadaRemota(conversacionRemotaId))) {
+          confirmar(docenteId, grupo, new Set(), true)
+          await retirarConversacionLocal(docenteId, grupo[0].localId)
+          continue
+        }
         console.error('[MENSAJES_REMOTOS] guardado=false', error.code ?? error.message)
         fallo = true
         continue
@@ -658,15 +665,19 @@ async function ejecutarMigracion(docenteId: string): Promise<ResultadoMigracion>
     // Una sola consulta para la pertenencia de todas las candidatas.
     const { data: propias, error } = await supabase
       .from('conversaciones_chat')
-      .select('id, titulo, documento_activo, actualizado_en')
+      .select('id, titulo, documento_activo, actualizado_en, eliminada_en')
       .in('id', candidatas.map((c) => c.remotoId))
     if (error) throw error
-    const filasPropias = new Map((propias ?? []).map((f: { id: string; titulo: string; documento_activo: unknown; actualizado_en: string }) => [f.id, f]))
+    const filasPropias = new Map((propias ?? []).map((f: { id: string; titulo: string; documento_activo: unknown; actualizado_en: string; eliminada_en: string | null }) => [f.id, f]))
 
     for (const c of candidatas) {
       const remota = filasPropias.get(c.remotoId)
       if (!remota) {
         resultado.sinPertenencia++
+        continue
+      }
+      if (remota.eliminada_en) {
+        await retirarConversacionLocal(docenteId, c.localId)
         continue
       }
       try {
@@ -809,6 +820,7 @@ export async function conversacionesRemotasSinCopiaLocal(docenteId: string): Pro
     .from('conversaciones_chat')
     .select('id, titulo, actualizado_en, mensajes_chat(count)')
     .eq('docente_id', docenteId)
+    .is('eliminada_en', null)
     .order('actualizado_en', { ascending: false })
     .limit(TOPE_CONVERSACIONES)
   if (error) throw error
@@ -880,4 +892,87 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
   marcarConversacionMigracion(docenteId, remotoId, 'migrada')
   recordarTituloRemoto(docenteId, remotoId, conversacion.titulo)
   return true
+}
+
+// ---------------------------------------------------------------------
+// Eliminación global (etapa 3B-1). La conversación se elimina en
+// Supabase con eliminar_conversacion (borra sus mensajes y deja la fila
+// como marca: ningún dispositivo puede recrearla). Solo después de esa
+// confirmación se retira la copia local; en los demás dispositivos se
+// retira al detectar la marca (lista, etapa 1 o etapa 2). Archivos de
+// Storage: fuera de esta subfase.
+
+// Quien muestra la lista se entera de que una conversación se retiró
+// del dispositivo (para salir de ella si estaba abierta).
+let alRetirarConversacion: ((localId: string) => void) | null = null
+export function registrarAlRetirarConversacion(funcion: (localId: string) => void) {
+  alRetirarConversacion = funcion
+}
+
+async function conversacionEliminadaRemota(remotoId: string): Promise<boolean> {
+  const { data, error } = await supabase.from('conversaciones_chat').select('eliminada_en').eq('id', remotoId).maybeSingle()
+  return !error && !!data?.eliminada_en
+}
+
+// Quita del dispositivo todo lo de una conversación: copia local,
+// relación local → remoto, mensajes pendientes, huellas y marcas. Nada
+// remoto.
+export async function retirarConversacionLocal(docenteId: string, localId: string, remotoConocido?: string): Promise<void> {
+  const remotoId = remotoConocido ?? (await idRemotoDe(docenteId, localId))
+  eliminarConversacion(localId)
+  const vinculos = leerVinculosRemotos()
+  if (vinculos[localId]) {
+    delete vinculos[localId]
+    escribir(CLAVE_VINCULOS_REMOTOS, JSON.stringify(vinculos))
+  }
+  const estado = leerEstadoSincronizacion(docenteId)
+  const prefijo = `${remotoId}:`
+  estado.pendientes = estado.pendientes.filter((p) => p.fila.conversacion_id !== remotoId)
+  estado.huellas = Object.fromEntries(Object.entries(estado.huellas).filter(([id]) => !id.startsWith(prefijo)))
+  if (estado.soloInsercion) estado.soloInsercion = Object.fromEntries(Object.entries(estado.soloInsercion).filter(([id]) => !id.startsWith(prefijo)))
+  escribirEstadoSincronizacion(docenteId, estado)
+  const migracion = leerEstadoMigracion(docenteId)
+  if (migracion[localId]) {
+    delete migracion[localId]
+    escribir(PREFIJO_MIGRACION + docenteId, JSON.stringify(migracion))
+  }
+  const titulos = leerTitulosRemotos(docenteId)
+  if (titulos[remotoId]) {
+    delete titulos[remotoId]
+    escribir(PREFIJO_TITULOS_REMOTOS + docenteId, JSON.stringify(titulos))
+  }
+  conversacionesRemotas.delete(`${docenteId}:${localId}`)
+  alRetirarConversacion?.(localId)
+}
+
+// Elimina en todos los dispositivos. remotoConocido: para una
+// conversación que solo existe en Supabase (su id local ES el remoto).
+// Lanza si Supabase no confirma: entonces no se retira nada local.
+export async function eliminarConversacionGlobal(docenteId: string, localId: string, remotoConocido?: string): Promise<'eliminada' | 'ya_eliminada' | 'no_encontrada'> {
+  const remotoId = remotoConocido ?? (await idRemotoDe(docenteId, localId))
+  const { data, error } = await supabase.rpc('eliminar_conversacion', { p_conversacion_id: remotoId })
+  if (error) throw error
+  const estado = (data as { estado?: string } | null)?.estado
+  if (estado !== 'eliminada' && estado !== 'ya_eliminada' && estado !== 'no_encontrada') throw new Error('Respuesta inesperada al eliminar la conversación.')
+  // no_encontrada: nunca llegó a Supabase (solo local) o no es de este
+  // docente; en ambos casos se retira solo la copia de este dispositivo.
+  await retirarConversacionLocal(docenteId, localId, remotoId)
+  return estado
+}
+
+// Conversaciones con copia en este dispositivo que fueron eliminadas en
+// otro: una consulta acotada a sus ids remotos.
+export async function conversacionesLocalesEliminadas(docenteId: string): Promise<{ localId: string; remotoId: string }[]> {
+  const locales = leerIndice()
+  if (locales.length === 0) return []
+  const pares = await Promise.all(locales.map(async (c) => ({ localId: c.id, remotoId: await idRemotoDe(docenteId, c.id) })))
+  const { data, error } = await supabase
+    .from('conversaciones_chat')
+    .select('id')
+    .eq('docente_id', docenteId)
+    .in('id', pares.map((p) => p.remotoId))
+    .not('eliminada_en', 'is', null)
+  if (error) throw error
+  const eliminadas = new Set((data ?? []).map((f: { id: string }) => f.id))
+  return pares.filter((p) => eliminadas.has(p.remotoId))
 }
