@@ -2,12 +2,15 @@
 //
 // Validación de la URL firmada que recibe POST /api/archivos/descargar
 // (descarga real de PDF en Safari iOS: same-origin, donde sí se respeta
-// la descarga). La ruta solo puede pedir al servidor archivos del bucket
-// de documentos generados del MISMO proyecto de Supabase del entorno, con
-// una URL firmada vigente: poseer esa URL es la misma autorización que ya
-// tiene hoy el botón. Sin red: funciones puras.
+// la descarga). La ruta solo puede pedir al servidor PDFs de los buckets
+// privados del Chat (documentos generados y hojas de evaluación) del MISMO
+// proyecto de Supabase del entorno, con una URL firmada vigente: poseer
+// esa URL es la misma autorización que ya tiene hoy el botón. Sin red:
+// funciones puras.
 
 export const BUCKET_DESCARGA_PDF = 'documentos-generados-ia'
+// Lista cerrada: cualquier otro bucket se rechaza.
+export const BUCKETS_DESCARGA_PDF = [BUCKET_DESCARGA_PDF, 'hojas-seguimiento'] as const
 export const TAMANO_MAXIMO_DESCARGA_PDF = 4 * 1024 * 1024 // límite de respuesta de una Function de Vercel (4.5 MB), con margen
 
 export type UrlDescargaValida = { ok: true; url: string; nombre: string }
@@ -52,8 +55,9 @@ export function validarUrlFirmadaPdf(entrada: unknown, urlSupabase: string | und
   // credenciales): descarta hosts parecidos y cualquier otro servidor.
   if (url.username || url.password || url.port || url.hostname !== base.hostname || url.origin !== base.origin) return { ok: false, motivo: 'origen' }
   if (url.hash) return { ok: false, motivo: 'fragmento' }
-  const prefijo = `/storage/v1/object/sign/${BUCKET_DESCARGA_PDF}/`
-  if (!url.pathname.startsWith(prefijo)) return { ok: false, motivo: 'ruta' }
+  const bucket = BUCKETS_DESCARGA_PDF.find((b) => url.pathname.startsWith(`/storage/v1/object/sign/${b}/`))
+  if (!bucket) return { ok: false, motivo: 'ruta' }
+  const prefijo = `/storage/v1/object/sign/${bucket}/`
   const ruta = url.pathname.slice(prefijo.length)
   let rutaDecodificada: string
   try {

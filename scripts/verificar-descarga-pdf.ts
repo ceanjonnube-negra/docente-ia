@@ -22,6 +22,8 @@ const BASE = 'https://e2eproyecto000000000.supabase.co'
 process.env.NEXT_PUBLIC_SUPABASE_URL = BASE
 const firmada = (ruta: string, extra = '') => `${BASE}/storage/v1/object/sign/documentos-generados-ia/${ruta}?token=abc${extra}`
 const VALIDA = firmada('d0000000-0000-4000-8000-0000000000d0/1794524701227-PRUEBA_REGISTRO.pdf', '&download=PRUEBA_REGISTRO.pdf')
+// Hoja de evaluación: bucket hojas-seguimiento, mismo formato que generarYGuardarHoja.
+const HOJA = `${BASE}/storage/v1/object/sign/hojas-seguimiento/d0000000-0000-4000-8000-0000000000d0/1794524701227-hoja-seguimiento-HS-001.pdf?token=abc&download=hoja-seguimiento-HS-001.pdf`
 
 async function main() {
   const v = await import('../lib/documentGen/descargaPdf')
@@ -30,13 +32,24 @@ async function main() {
   // ---- 1. Validación de la URL ----
   const ok = v.validarUrlFirmadaPdf(VALIDA, BASE)
   verificar(ok.ok && ok.nombre === 'PRUEBA_REGISTRO.pdf', '1a. URL firmada válida del bucket y proyecto del entorno: aceptada, con su nombre')
+  const hoja = v.validarUrlFirmadaPdf(HOJA, BASE)
+  verificar(hoja.ok && hoja.nombre === 'hoja-seguimiento-HS-001.pdf' && hoja.url === HOJA, '1a2. Hoja de evaluación (bucket hojas-seguimiento): aceptada, con su nombre y sin alterar la URL')
+  verificar(v.BUCKETS_DESCARGA_PDF.length === 2 && v.BUCKETS_DESCARGA_PDF.includes('documentos-generados-ia') && v.BUCKETS_DESCARGA_PDF.includes('hojas-seguimiento'), '1a3. Lista cerrada: exactamente los dos buckets del Chat')
   const rechazos: [string, unknown][] = [
     ['1b. http (sin TLS)', VALIDA.replace('https://', 'http://')],
     ['1c. otro proyecto de Supabase', VALIDA.replace('e2eproyecto000000000', 'otroproyecto00000000')],
     ['1d. host parecido (sufijo)', VALIDA.replace('.supabase.co', '.supabase.co.evil.example')],
     ['1e. credenciales en la URL', VALIDA.replace('https://', 'https://user:pass@')],
     ['1f. puerto explícito', VALIDA.replace('.supabase.co/', '.supabase.co:8443/')],
-    ['1g. otro bucket', VALIDA.replace('documentos-generados-ia', 'hojas-seguimiento')],
+    ['1g. bucket de documentos institucionales', VALIDA.replace('documentos-generados-ia', 'documentos-institucionales')],
+    ['1g2. bucket de imágenes', VALIDA.replace('documentos-generados-ia', 'imagenes-generadas-ia')],
+    ['1g3. bucket con prefijo engañoso (documentos-generados-ia-otro)', VALIDA.replace('documentos-generados-ia/', 'documentos-generados-ia-otro/')],
+    ['1g4. bucket con prefijo engañoso (hojas-seguimiento2)', HOJA.replace('hojas-seguimiento/', 'hojas-seguimiento2/')],
+    ['1g5. foto de hoja (no PDF) en hojas-seguimiento', HOJA.replace('.pdf?token', '.jpg?token')],
+    ['1g6. hoja con http', HOJA.replace('https://', 'http://')],
+    ['1g7. hoja de otro proyecto', HOJA.replace('e2eproyecto000000000', 'otroproyecto00000000')],
+    ['1g8. hoja sin token', HOJA.replace('token=abc', 'otro=1')],
+    ['1g9. hoja con recorrido de ruta', HOJA.replace('hojas-seguimiento/d0000000', 'hojas-seguimiento/%2e%2e/documentos-institucionales/d0000000')],
     ['1h. ruta pública (no firmada)', VALIDA.replace('/object/sign/', '/object/public/')],
     ['1i. recorrido de ruta codificado (%2e%2e)', firmada('d0/%2e%2e/otro/x.pdf')],
     ['1j. barra invertida codificada', firmada('d0/a%5Cb.pdf')],
@@ -76,6 +89,10 @@ async function main() {
   verificar(r.headers.get('content-type') === 'application/octet-stream' && /^attachment; filename="PRUEBA_REGISTRO\.pdf"; filename\*=UTF-8''PRUEBA_REGISTRO\.pdf$/.test(r.headers.get('content-disposition') ?? ''), '3b. application/octet-stream + Content-Disposition attachment con nombre')
   verificar(r.headers.get('cache-control') === 'private, no-store' && r.headers.get('x-content-type-options') === 'nosniff' && r.headers.get('content-length') === '5', '3c. Cache-Control private, no-store; nosniff; Content-Length')
   verificar(llamadas.length === 1 && llamadas[0].url === VALIDA && llamadas[0].redirect === 'manual', '3d. Se pide exactamente la URL validada, sin seguir redirecciones')
+
+  llamadas.length = 0
+  const rHoja = await pedir(HOJA)
+  verificar(rHoja.status === 200 && rHoja.headers.get('content-type') === 'application/octet-stream' && /^attachment; filename="hoja-seguimiento-HS-001\.pdf"/.test(rHoja.headers.get('content-disposition') ?? '') && llamadas.length === 1 && llamadas[0].url === HOJA && llamadas[0].redirect === 'manual', '3d2. Hoja de evaluación: se descarga igual (octet-stream, attachment, sin redirecciones)')
 
   llamadas.length = 0
   verificar((await pedir('https://evil.example/storage/v1/object/sign/documentos-generados-ia/a/b.pdf?token=x')).status === 400 && llamadas.length === 0, '3e. URL fuera del proyecto: 400 y NO se hace ninguna petición (sin SSRF)')
