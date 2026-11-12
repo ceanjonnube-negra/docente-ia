@@ -42,8 +42,8 @@ async function main() {
   // 3. Mecanismos (código fuente).
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   const directo = panel.slice(panel.indexOf('function descargarPdfDirecto('), panel.indexOf('async function compartirArchivo('))
-  verificar(directo.length > 50 && !/fetch\(|Blob|createObjectURL|revokeObjectURL|window\.open/.test(directo) && /enlace\.href = url/.test(directo), '3a. Descargar PDF: navegación directa a la URL, sin fetch, Blob, ObjectURL ni window.open')
-  verificar(/a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url, archivo\.nombre\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel), '3b. Cada acción ejecuta solo su mecanismo (Ver abre urlVer; Descargar, la URL de descarga)')
+  verificar(directo.length > 50 && !/fetch\(|Blob|createObjectURL|revokeObjectURL|window\.open/.test(directo) && /formulario\.method = 'POST'/.test(directo) && /formulario\.action = '\/api\/archivos\/descargar'/.test(directo) && /campo\.value = url/.test(directo) && /formulario\.submit\(\)/.test(directo), '3a. Descargar PDF: formulario POST nativo a la ruta del mismo origen, sin fetch, Blob, ObjectURL ni window.open')
+  verificar(/a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel), '3b. Cada acción ejecuta solo su mecanismo (Ver abre urlVer; Descargar, la URL de descarga)')
   verificar(!panel.includes("'Ver / Descargar PDF'") && !/archivo\.tipoDocumento && archivo\.urlVer/.test(panel), '3c. Ya no existe el botón combinado ni la condición limitada a planeación/hoja')
   verificar(/compartirArchivo\(archivos\[0\]/.test(panel) && panel.includes("'📤 Compartir'"), '3d. Compartir sigue como acción independiente')
   const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')

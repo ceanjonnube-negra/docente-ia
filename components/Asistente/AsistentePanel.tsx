@@ -196,14 +196,26 @@ async function descargarArchivo(url: string, nombreSugerido: string) {
 // navegación real, síncrona, del navegador — nada que Safari pueda
 // interpretar como "hay que mostrar esto" en vez de "hay que
 // guardarlo".
-function descargarPdfDirecto(url: string, nombreSugerido: string) {
-  const enlace = document.createElement('a')
-  enlace.href = url
-  enlace.download = nombreSugerido
-  enlace.rel = 'noopener'
-  document.body.appendChild(enlace)
-  enlace.click()
-  enlace.remove()
+//
+// Safari en iPhone, sin embargo, ignora `download` en un enlace a OTRO
+// origen (la URL firmada es de Supabase) y abre el PDF en su visor aunque
+// llegue como attachment. Por eso la descarga va por un formulario POST
+// nativo a la ruta del MISMO origen /api/archivos/descargar, que devuelve
+// el archivo como application/octet-stream + attachment. La URL firmada
+// viaja en el cuerpo, no en la barra de direcciones.
+function descargarPdfDirecto(url: string) {
+  const formulario = document.createElement('form')
+  formulario.method = 'POST'
+  formulario.action = '/api/archivos/descargar'
+  formulario.style.display = 'none'
+  const campo = document.createElement('input')
+  campo.type = 'hidden'
+  campo.name = 'u'
+  campo.value = url
+  formulario.appendChild(campo)
+  document.body.appendChild(formulario)
+  formulario.submit()
+  formulario.remove()
 }
 
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
@@ -312,7 +324,7 @@ function TarjetaDescarga({
             const acciones = accionesDescargaArchivo(archivo)
             const ejecutar = (a: AccionArchivo) =>
               a.accion === 'ver' ? window.open(a.url, '_blank')
-                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)
+                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url)
                   : descargarArchivo(a.url, archivo.nombre)
             return (
               <div key={archivo.tipo} className="flex gap-1.5">
