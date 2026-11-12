@@ -508,11 +508,11 @@ class AsistenteServiceImpl {
 
   private async enviarCopiaRemota() {
     if (this.copiaRemotaTimer) { clearTimeout(this.copiaRemotaTimer); this.copiaRemotaTimer = null }
-    // Turno en curso: se espera a que termine (solo versiones finales).
-    if (this.generando || this.turnoAbierto) {
-      this.copiaRemotaTimer = setTimeout(() => void this.enviarCopiaRemota(), 2000)
-      return
-    }
+    // Respuesta en curso: no se envía nada a medias. Lo pendiente se
+    // queda en el mapa y la notificación que cierra el turno (respuesta
+    // final o error) vuelve a programar la copia, sin sondeos. No se
+    // usa turnoAbierto: sigue abierto después de la respuesta final.
+    if (this.generando) return
     const lote = [...this.copiasRemotasPendientes]
     this.copiasRemotasPendientes.clear()
     if (lote.length === 0) return

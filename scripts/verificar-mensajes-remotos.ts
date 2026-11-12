@@ -149,10 +149,46 @@ async function main() {
   const guardarAhora = servicio.slice(servicio.indexOf('private guardarAhora() {'), servicio.indexOf('private copiaRemotaTimer'))
   verificar(/guardarConversacion\(this\.conversacionActivaId, this\.mensajes, this\.documentoActivo\)\s*\n\s*this\.listaConversaciones = listarConversaciones\(\)\s*\n\s*this\.programarCopiaRemota\(this\.conversacionActivaId, this\.mensajes\)/.test(guardarAhora), '10a. La copia remota se programa después del guardado local, sin cambiarlo')
   const envioRemoto = servicio.slice(servicio.indexOf('private async enviarCopiaRemota() {'), servicio.indexOf('// Guardado inmediato, sin esperar el debounce'))
-  verificar(/if \(this\.generando \|\| this\.turnoAbierto\)/.test(envioRemoto) && /vigentes\.has\(localId\)/.test(envioRemoto) && !/this\.mensajes =|this\.documentoActivo =|notificar\(\)/.test(envioRemoto), '10b. Espera a que termine el turno, solo conversaciones vigentes y no toca el estado del chat')
+  verificar(/if \(this\.generando\) return/.test(envioRemoto) && !/turnoAbierto\)/.test(envioRemoto) && !/setTimeout/.test(envioRemoto) && /vigentes\.has\(localId\)/.test(envioRemoto) && !/this\.mensajes =|this\.documentoActivo =|notificar\(\)/.test(envioRemoto), '10b. Espera solo a la generación (no a turnoAbierto), sin sondeo, solo conversaciones vigentes y sin tocar el estado del chat')
   verificar(!/fetch\(|\/api\/chat|messages\.create/.test(envioRemoto) && /if \(evento === 'SIGNED_OUT'\) AsistenteService\.limpiarConversacionGuardada\(\)/.test(servicio), '10c. Sin llamadas de IA; el cierre de sesión no cambia')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
   verificar(!/service_role|SERVICE_ROLE|\.from\([^)]*\)\s*\.delete/.test(persistencia.slice(persistencia.indexOf('// Copia remota de los mensajes'))), '10d. Sin credenciales privilegiadas ni borrados')
+
+  // 11. Ciclo real en AsistenteService: usuario → respuesta parcial →
+  // respuesta final → se guardan AMBOS mensajes, una sola vez, y nunca
+  // el texto parcial. (Defecto real: turnoAbierto sigue abierto tras la
+  // respuesta final y bloqueaba la copia de la respuesta.)
+  const espera = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const { AsistenteService } = await import('../lib/asistente/AsistenteService')
+  const chat = AsistenteService as unknown as { mensajes: { id: string; rol: string; texto: string }[]; conversacionActivaId: string | null; generando: boolean; turnoAbierto: string | null; copiaRemotaTimer: unknown; manejarEventoMotor(e: unknown): void }
+  sesion = DOCENTE_A
+  chat.conversacionActivaId = null
+  chat.mensajes = []
+  upserts.length = 0
+  const FINAL = 'Mensaje recibido correctamente.'
+  chat.manejarEventoMotor({ tipo: 'mensaje-usuario', texto: 'PRUEBA CICLO REAL' })
+  chat.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: 'Mensaje reci' })
+  await espera(2600)
+  verificar(upserts.length === 0 && chat.generando === true, '11a. Mientras se genera la respuesta: cero escrituras')
+  verificar(chat.copiaRemotaTimer === null, '11b. Durante la generación no queda ningún temporizador repitiéndose')
+  // Como el motor real: cada parcial trae el texto acumulado y la final repite el completo.
+  chat.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: FINAL })
+  chat.manejarEventoMotor({ tipo: 'respuesta-final', texto: FINAL })
+  verificar(chat.turnoAbierto !== null && chat.generando === false, '11c. Tras la respuesta final turnoAbierto sigue abierto (comportamiento del chat sin cambios)')
+  await espera(2600)
+  const filas11 = upserts.flatMap((u) => u.filas)
+  verificar(upserts.length === 1 && filas11.length === 2 && filas11.some((f) => f.rol === 'usuario' && f.texto === 'PRUEBA CICLO REAL') && filas11.some((f) => f.rol === 'asistente' && f.texto === FINAL), '11d. Tras la respuesta final: se guardan el mensaje del docente Y la respuesta final, en un solo envío')
+  verificar(!filas11.some((f) => f.texto === 'Mensaje reci') && filas11.every((f) => f.conversacion_id === filas11[0].conversacion_id && f.docente_id === DOCENTE_A), '11e. Nunca se guarda texto parcial; ambos en la misma conversación y del docente correcto')
+  await espera(2600)
+  verificar(upserts.length === 1 && chat.copiaRemotaTimer === null, '11f. Sin duplicados ni temporizadores pendientes después')
+  verificar(chat.mensajes.length === 2 && chat.mensajes[0].rol === 'usuario' && chat.mensajes[1].texto === FINAL, '11g. Lo que ve el docente no cambia (2 burbujas, respuesta final)')
+  chat.manejarEventoMotor({ tipo: 'mensaje-usuario', texto: 'Segundo turno' })
+  chat.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: 'Otra resp' })
+  chat.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: 'Otra respuesta.' })
+  chat.manejarEventoMotor({ tipo: 'respuesta-final', texto: 'Otra respuesta.' })
+  await espera(2600)
+  const segundo = upserts[1]?.filas ?? []
+  verificar(upserts.length === 2 && segundo.length === 2 && segundo.every((f) => f.texto === 'Segundo turno' || f.texto === 'Otra respuesta.') && segundo[0].conversacion_id === filas11[0].conversacion_id, '11h. Segundo turno: solo sus 2 mensajes nuevos, misma conversación, sin reenviar el primero')
 
   console.log('')
   if (fallos > 0) {
