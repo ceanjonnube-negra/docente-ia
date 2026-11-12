@@ -37,6 +37,9 @@ export type ArchivoGeneradoInfo = {
   nombre: string
   url: string
   tamanoBytes?: number
+  // Id del registro del archivo en archivos_generados (etapa 3B-2A). Solo
+  // en archivos nuevos; los anteriores no lo tienen.
+  archivoId?: string
   tipoDocumento?: TipoDocumentoPlaneacion
   descripcion?: string
   // urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar

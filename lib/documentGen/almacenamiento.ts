@@ -57,6 +57,9 @@ export type ArchivoGenerado = {
   // `url` sigue siendo, sin ningún cambio, la URL firmada de descarga
   // de siempre (con `download`).
   urlVer?: string
+  // Id del registro en archivos_generados (etapa 3B-2A). Solo lo traen
+  // los archivos nuevos generados por ejecutarHerramientaDocumento.
+  archivoId?: string
 }
 
 export function rutaArchivo(userId: string, nombreArchivo: string): string {

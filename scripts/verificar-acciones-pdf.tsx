@@ -48,7 +48,7 @@ async function main() {
   verificar(/compartirArchivo\(archivos\[0\]/.test(panel) && panel.includes("'📤 Compartir'"), '3d. Compartir sigue como acción independiente')
   const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')
   const almacenamiento = readFileSync('lib/documentGen/almacenamiento.ts', 'utf8')
-  verificar(/url = await medirEtapa\(`\$\{etiqueta\}:url-firmada`, \(\) => crearUrlFirmada\(sb, ruta, nombre\)\)/.test(herramientas) && /urlVer = await medirEtapa\(`\$\{etiqueta\}:url-firmada-ver`, \(\) => crearUrlFirmada\(sb, ruta\)\)/.test(herramientas), '3e. Pipeline: url se firma CON nombre de descarga; urlVer, sin él')
+  verificar(/url = await medirEtapa\(`\$\{etiqueta\}:url-firmada`, \(\) => reintentarEtapa\(\(\) => crearUrlFirmada\(sb, ruta, nombre\), 3\)\)/.test(herramientas) && /urlVer = await medirEtapa\(`\$\{etiqueta\}:url-firmada-ver`, \(\) => crearUrlFirmada\(sb, ruta\)\)/.test(herramientas), '3e. Pipeline: url se firma CON nombre de descarga; urlVer, sin él')
   verificar(/createSignedUrl\(ruta, VENCIMIENTO_URL_SEGUNDOS, nombreDescarga \? \{ download: nombreDescarga \} : undefined\)/.test(almacenamiento), '3f. crearUrlFirmada pide `download` (Content-Disposition: attachment) solo cuando hay nombre de descarga')
 
   console.log('')

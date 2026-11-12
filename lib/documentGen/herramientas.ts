@@ -33,6 +33,7 @@ import { generarPdfBuffer, nombreArchivoPdf } from './generarPdfServidor'
 import { generarPptxBuffer, nombreArchivoPptx } from './generarPptxServidor'
 import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
 import { subirBuffer, crearUrlFirmada, rutaArchivo, type ArchivoGenerado } from './almacenamiento'
+import { clasificarArchivo, confirmarArchivo, marcarArchivoFallido, registrarArchivo, type RegistroArchivoSolicitado } from './registroArchivos'
 import { extraerTitulo } from './parseContenido'
 
 export class HerramientaNoDisponibleError extends Error {}
@@ -117,7 +118,11 @@ export async function ejecutarHerramientaDocumento(
   userId: string,
   // Solo PowerPoint nuevo (CASO 3 en /api/chat): cantidad de secciones
   // pedida por el docente. Sin ella (conversiones), nada cambia.
-  opciones?: { seccionesEsperadas?: number }
+  // registro: clasificación del archivo en archivos_generados (etapa
+  // 3B-2A). Sin ella el archivo queda como 'conservar' (protegido); solo
+  // una señal estructurada ({ clase: 'efimero', conversacionId }) lo hace
+  // efímero, nunca el texto del documento (ver clasificarArchivo).
+  opciones?: { seccionesEsperadas?: number; registro?: RegistroArchivoSolicitado }
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -171,59 +176,101 @@ export async function ejecutarHerramientaDocumento(
     throw new ErrorHerramientaDocumento(`${etiqueta}-VERIF`, `El archivo ${tipo} generado no es válido`)
   }
 
-  // ETAPA 6: subida a Supabase Storage.
+  // ETAPA 5.5: registro previo (archivos_generados, 'subiendo'). Si no se
+  // puede registrar, no se sube nada: nunca hay archivos sin registro.
   const ruta = rutaArchivo(userId, nombre)
+  let archivoId: string
   try {
-    await medirEtapa(`${etiqueta}:subida`, () => subirBuffer(sb, ruta, buffer, CONTENT_TYPES[tipo]))
-    console.log(`[UPLOAD] ${etiqueta} — ${nombre} subido a Storage`)
+    ;({ id: archivoId } = await medirEtapa(`${etiqueta}:registro`, () => registrarArchivo({
+      docenteId: userId,
+      ruta,
+      nombre,
+      tipoMime: CONTENT_TYPES[tipo],
+      tamanoBytes: buffer.length,
+      ...clasificarArchivo(opciones?.registro),
+    })))
   } catch (err) {
-    console.error(`[UPLOAD] ${etiqueta} — fallo subiendo ${nombre}:`, err)
-    throw new ErrorHerramientaDocumento(`${etiqueta}-SUB`, `Fallo subiendo el archivo ${tipo}`)
+    console.error(`[REGISTRO] ${etiqueta} — no se pudo registrar ${nombre} (no se sube):`, err)
+    throw new ErrorHerramientaDocumento(`${etiqueta}-REG`, `Fallo registrando el archivo ${tipo}`)
   }
 
-  // ETAPA 7: obtención de la URL (firmada, nunca pública — ver
-  // almacenamiento.ts).
-  let url: string
+  // Desde aquí, cualquier fallo marca el registro como 'fallido' (nunca
+  // entregado). Cada etapa se recupera sobre la MISMA ruta antes de
+  // rendirse: un reintento nunca vuelve a generar ni a subir un archivo
+  // que ya está en Storage.
   try {
-    url = await medirEtapa(`${etiqueta}:url-firmada`, () => crearUrlFirmada(sb, ruta, nombre))
-    console.log(`[SIGNED_URL] ${etiqueta} — URL firmada obtenida para ${nombre}`)
-  } catch (err) {
-    console.error(`[SIGNED_URL] ${etiqueta} — fallo obteniendo la URL de ${nombre}:`, err)
-    throw new ErrorHerramientaDocumento(`${etiqueta}-URL`, `Fallo obteniendo la URL de descarga del ${tipo}`)
-  }
-
-  // ETAPA 7.5: verificación de accesibilidad real — nunca se responde
-  // éxito solo porque Storage aceptó la subida y devolvió una URL
-  // firmada; se comprueba que esa URL exacta, la que va a recibir el
-  // maestro, de verdad sirve el archivo antes de decir "listo".
-  try {
-    await medirEtapa(`${etiqueta}:verificacion-url`, async () => {
-      const res = await fetch(url, { method: 'HEAD' })
-      if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
-    })
-  } catch (err) {
-    console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible:`, err)
-    throw new ErrorHerramientaDocumento(`${etiqueta}-URL-VERIF`, `La URL de descarga del ${tipo} no quedó accesible`)
-  }
-
-  console.log(`[DOWNLOAD_READY] ${etiqueta} — ${nombre} verificado y listo para el maestro`)
-
-  // ETAPA 7.6 (solo pdf) — segunda URL firmada del MISMO archivo, SIN
-  // `download` (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
-  // PDF'"): TarjetaDescarga la usa para el botón "Ver PDF" (abre el
-  // pdf en el visor del navegador) — nunca sustituye a `url`, que
-  // sigue siendo la URL de descarga forzada de siempre. Mejor
-  // esfuerzo: si falla, se omite urlVer y el documento sigue siendo
-  // válido (solo con descarga, como antes de este ajuste) — nunca
-  // bloquea la entrega del archivo ya generado y verificado.
-  let urlVer: string | undefined
-  if (tipo === 'pdf') {
+    // ETAPA 6: subida a Supabase Storage.
     try {
-      urlVer = await medirEtapa(`${etiqueta}:url-firmada-ver`, () => crearUrlFirmada(sb, ruta))
+      await medirEtapa(`${etiqueta}:subida`, () => reintentarEtapa(async (intento) => {
+        try {
+          await subirBuffer(sb, ruta, buffer, CONTENT_TYPES[tipo])
+        } catch (err) {
+          // Una subida anterior de ESTA misma operación sí llegó (respuesta
+          // perdida): el objeto ya existe en esta ruta única. La
+          // verificación de la ETAPA 7.5 confirma que es accesible.
+          if (intento > 1 && /already exists|duplicate|409/i.test(String((err as { message?: string })?.message ?? err))) return
+          throw err
+        }
+      }, 2))
+      console.log(`[UPLOAD] ${etiqueta} — ${nombre} subido a Storage`)
     } catch (err) {
-      console.error(`[PIPELINE ${etiqueta}:url-firmada-ver] No se pudo generar la URL de visualización (no bloquea):`, err)
+      console.error(`[UPLOAD] ${etiqueta} — fallo subiendo ${nombre}:`, err)
+      throw new ErrorHerramientaDocumento(`${etiqueta}-SUB`, `Fallo subiendo el archivo ${tipo}`)
     }
-  }
+
+    // ETAPA 7: obtención de la URL (firmada, nunca pública — ver
+    // almacenamiento.ts).
+    let url: string
+    try {
+      url = await medirEtapa(`${etiqueta}:url-firmada`, () => reintentarEtapa(() => crearUrlFirmada(sb, ruta, nombre), 3))
+      console.log(`[SIGNED_URL] ${etiqueta} — URL firmada obtenida para ${nombre}`)
+    } catch (err) {
+      console.error(`[SIGNED_URL] ${etiqueta} — fallo obteniendo la URL de ${nombre}:`, err)
+      throw new ErrorHerramientaDocumento(`${etiqueta}-URL`, `Fallo obteniendo la URL de descarga del ${tipo}`)
+    }
+
+    // ETAPA 7.5: verificación de accesibilidad real — nunca se responde
+    // éxito solo porque Storage aceptó la subida y devolvió una URL
+    // firmada; se comprueba que esa URL exacta, la que va a recibir el
+    // maestro, de verdad sirve el archivo antes de decir "listo".
+    try {
+      await medirEtapa(`${etiqueta}:verificacion-url`, () => reintentarEtapa(async () => {
+        const res = await fetch(url, { method: 'HEAD' })
+        if (!res.ok) throw new Error(`HEAD a la URL firmada respondió ${res.status}`)
+      }, 3))
+    } catch (err) {
+      console.error(`[PIPELINE ${etiqueta}:verificacion-url] La URL firmada no quedó accesible:`, err)
+      throw new ErrorHerramientaDocumento(`${etiqueta}-URL-VERIF`, `La URL de descarga del ${tipo} no quedó accesible`)
+    }
+
+    // ETAPA 7.6 (solo pdf) — segunda URL firmada del MISMO archivo, SIN
+    // `download` (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
+    // PDF'"): TarjetaDescarga la usa para el botón "Ver PDF" (abre el
+    // pdf en el visor del navegador) — nunca sustituye a `url`, que
+    // sigue siendo la URL de descarga forzada de siempre. Mejor
+    // esfuerzo: si falla, se omite urlVer y el documento sigue siendo
+    // válido (solo con descarga, como antes de este ajuste) — nunca
+    // bloquea la entrega del archivo ya generado y verificado.
+    let urlVer: string | undefined
+    if (tipo === 'pdf') {
+      try {
+        urlVer = await medirEtapa(`${etiqueta}:url-firmada-ver`, () => crearUrlFirmada(sb, ruta))
+      } catch (err) {
+        console.error(`[PIPELINE ${etiqueta}:url-firmada-ver] No se pudo generar la URL de visualización (no bloquea):`, err)
+      }
+    }
+
+    // ETAPA 7.7: confirmación del registro ('activo'). confirmarArchivo
+    // ya reintenta y reconoce una confirmación previa cuya respuesta se
+    // perdió; si aun así no se confirma, el archivo NO se entrega.
+    try {
+      await medirEtapa(`${etiqueta}:confirmacion-registro`, () => confirmarArchivo(archivoId))
+    } catch (err) {
+      console.error(`[REGISTRO] ${etiqueta} — no se pudo confirmar el registro de ${nombre}:`, err)
+      throw new ErrorHerramientaDocumento(`${etiqueta}-REG-CONF`, `Fallo confirmando el registro del archivo ${tipo}`)
+    }
+
+    console.log(`[DOWNLOAD_READY] ${etiqueta} — ${nombre} verificado, registrado y listo para el maestro`)
 
   // ETAPA 8 (entrega al usuario) ocurre en app/api/chat/route.ts, al
   // devolver este resultado envuelto en el marcador
@@ -231,7 +278,26 @@ export async function ejecutarHerramientaDocumento(
   // gratis (buffer.length ya se calculó arriba para la verificación de
   // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
   // tamaño real sin pedirle nada más a Storage.
-  return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer }
+    return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer, archivoId }
+  } catch (err) {
+    await marcarArchivoFallido(archivoId, err)
+    throw err
+  }
+}
+
+// Repite una etapa sobre el MISMO archivo (sin regenerar nada) ante
+// fallos transitorios de red o de Storage.
+async function reintentarEtapa<T>(fn: (intento: number) => Promise<T>, intentos: number): Promise<T> {
+  let ultimo: unknown
+  for (let i = 1; i <= intentos; i++) {
+    try {
+      return await fn(i)
+    } catch (err) {
+      ultimo = err
+      if (i < intentos) await new Promise((r) => setTimeout(r, 250 * i))
+    }
+  }
+  throw ultimo
 }
 
 function medirEtapaSync<T>(etiqueta: string, fn: () => T): T {

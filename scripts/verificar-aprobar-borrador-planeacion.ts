@@ -20,6 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { extraerResumenBorrador, tieneBloqueResumen, type ResumenBorrador } from '../lib/planeacion/extraerBorrador'
 import { validarContenidoBorrador } from '../lib/planeacion/validarContenidoBorrador'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
+import { configurarClienteRegistroArchivos } from '../lib/documentGen/registroArchivos'
 import { listarPlaneaciones } from '../lib/planeacion/persistencia'
 import type { SesionContexto } from '../lib/sesionContexto'
 
@@ -323,6 +324,36 @@ const fetchSimulado: typeof fetch = async (entrada, init) => {
   if (url.hostname === 'fake-storage.local' && metodo === 'HEAD') return new Response(null, { status: 200 })
   throw new Error(`Red bloqueada en esta prueba: ${metodo} ${url.hostname}`)
 }
+
+// Registro de archivos (etapa 3B-2A): en producción lo escribe el servidor
+// con la llave de servicio; aquí, un doble en memoria que solo acepta lo
+// que acepta la tabla real (sin conversación salvo 'efimero').
+const registroArchivos: Record<string, unknown>[] = []
+configurarClienteRegistroArchivos({
+  from: () => {
+    let fila: Record<string, unknown> | null = null
+    let cambios: Record<string, unknown> | null = null
+    const filtros: [string, unknown][] = []
+    const consulta = {
+      insert: (d: Record<string, unknown>) => { fila = d; return consulta },
+      update: (d: Record<string, unknown>) => { cambios = d; return consulta },
+      select: () => consulta,
+      eq: (c: string, v: unknown) => { filtros.push([c, v]); return consulta },
+      maybeSingle: () => consulta,
+      then: (ok: (r: unknown) => unknown) => {
+        if (fila) {
+          if ((fila.clase === 'efimero') !== (fila.conversacion_id != null)) return Promise.resolve({ error: { code: '23514', message: 'check' } }).then(ok)
+          registroArchivos.push({ estado: 'subiendo', ...fila })
+          return Promise.resolve({ error: null }).then(ok)
+        }
+        const afectadas = registroArchivos.filter((f) => filtros.every(([c, v]) => f[c] === v))
+        if (cambios) afectadas.forEach((f) => Object.assign(f, cambios))
+        return Promise.resolve({ data: afectadas.map((f) => ({ id: f.id, estado: f.estado })), error: null }).then(ok)
+      },
+    }
+    return consulta
+  },
+} as never)
 
 async function main() {
   const fetchOriginal = globalThis.fetch
@@ -696,6 +727,8 @@ async function main() {
     const planWord = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.docx'))
     const planPdf = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.pdf'))
     verificar(!!hojaPdf && !!planWord && !!planPdf, 'AB2. Se subieron los 3 archivos: hoja PDF, Word y PDF de la planeación')
+    const registrados = registroArchivos.filter((f) => [planWord?.[0], planPdf?.[0]].includes(`documentos-generados-ia/${f.ruta}`))
+    verificar(registrados.length === 2 && registrados.every((f) => f.clase === 'conservar' && f.conversacion_id == null && f.estado === 'activo'), 'AB2b. Word y PDF de la planeación quedan registrados como conservar (protegidos), sin conversación')
     const textoWord = async (b: Buffer) => {
       const zip = await JSZip.loadAsync(b)
       const partes = Object.keys(zip.files).filter((n) => /^word\/(document|header\d*)\.xml$/.test(n))
