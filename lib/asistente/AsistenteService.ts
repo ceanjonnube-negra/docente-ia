@@ -186,12 +186,14 @@ export type PasoDebugVoz = {
 
 type Listener = () => void
 
-// Eliminar conversaciones queda desactivado SOLO en las Previews de
-// Vercel mientras no exista la eliminación global (etapa 3B): con la
-// recuperación entre dispositivos (etapa 3A), borrar solo la copia local
-// haría que la conversación reapareciera desde Supabase. En Production
-// (VERCEL_ENV = production) y en local no cambia nada.
-export const ELIMINAR_CONVERSACION_DISPONIBLE = process.env.NEXT_PUBLIC_VERCEL_ENV !== 'preview'
+// Eliminar conversaciones en las Previews de Vercel solo está disponible
+// en la rama cuya base E2E ya tiene la eliminación global (etapa 3B-1,
+// migración 20261112000000). Las Previews de otras ramas la mantienen
+// desactivada: allí borrar solo la copia local haría que la conversación
+// reapareciera desde Supabase. En Production y en local no cambia nada.
+const RAMA_CON_ELIMINACION_GLOBAL = 'fix/chat-documento-nuevo-contextual'
+export const ELIMINAR_CONVERSACION_DISPONIBLE =
+  process.env.NEXT_PUBLIC_VERCEL_ENV !== 'preview' || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF === RAMA_CON_ELIMINACION_GLOBAL
 
 // El sufijo aleatorio evita que dos dispositivos que continúan la misma
 // conversación generen el mismo id (mismo milisegundo y contador).

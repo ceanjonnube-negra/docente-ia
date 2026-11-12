@@ -242,12 +242,14 @@ async function main() {
   // ---- 9. Eliminar desactivado solo en Preview ----
   const { ELIMINAR_CONVERSACION_DISPONIBLE } = await import('../lib/asistente/AsistenteService')
   const { execFileSync } = await import('node:child_process')
-  const enPreview = execFileSync('npx', ['tsx', '-e', "import('./lib/asistente/AsistenteService').then((m) => { console.log('DISPONIBLE=' + m.ELIMINAR_CONVERSACION_DISPONIBLE); process.exit(0) })"], { env: { ...process.env, NEXT_PUBLIC_VERCEL_ENV: 'preview' }, encoding: 'utf8' })
-  const enProduction = execFileSync('npx', ['tsx', '-e', "import('./lib/asistente/AsistenteService').then((m) => { console.log('DISPONIBLE=' + m.ELIMINAR_CONVERSACION_DISPONIBLE); process.exit(0) })"], { env: { ...process.env, NEXT_PUBLIC_VERCEL_ENV: 'production' }, encoding: 'utf8' })
-  verificar(enPreview.includes('DISPONIBLE=false') && enProduction.includes('DISPONIBLE=true') && ELIMINAR_CONVERSACION_DISPONIBLE === true, '9a. Eliminar: desactivado en Preview; disponible en Production y en local')
+  const disponibleCon = (entorno: Record<string, string>) => execFileSync('npx', ['tsx', '-e', "import('./lib/asistente/AsistenteService').then((m) => { console.log('DISPONIBLE=' + m.ELIMINAR_CONVERSACION_DISPONIBLE); process.exit(0) })"], { env: { ...process.env, ...entorno }, encoding: 'utf8' })
+  const enPreviewOtraRama = disponibleCon({ NEXT_PUBLIC_VERCEL_ENV: 'preview', NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF: 'otra-rama' })
+  const enPreviewEstaRama = disponibleCon({ NEXT_PUBLIC_VERCEL_ENV: 'preview', NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF: 'fix/chat-documento-nuevo-contextual' })
+  const enProduction = disponibleCon({ NEXT_PUBLIC_VERCEL_ENV: 'production' })
+  verificar(enPreviewOtraRama.includes('DISPONIBLE=false') && enPreviewEstaRama.includes('DISPONIBLE=true') && enProduction.includes('DISPONIBLE=true') && ELIMINAR_CONVERSACION_DISPONIBLE === true, '9a. Eliminar: solo en las Previews de la rama con eliminación global (3B-1); desactivado en Previews de otras ramas; disponible en Production y en local')
   const servicio9 = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const panel9 = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
-  verificar(/eliminarConversacion\(id: string\) \{\s*\n\s*if \(!ELIMINAR_CONVERSACION_DISPONIBLE\) return/.test(servicio9) && /\{ELIMINAR_CONVERSACION_DISPONIBLE && \(\s*\n\s*<button\s*\n\s*onClick=\{\(e\) => \{ e\.stopPropagation\(\); asistente\.eliminarConversacion\(c\.id\) \}\}/.test(panel9), '9b. En Preview el botón no se muestra y la acción no hace nada; sin avisos ni ocultamiento local')
+  verificar(/eliminarConversacion\(id: string\) \{\s*\n\s*if \(!ELIMINAR_CONVERSACION_DISPONIBLE\) return/.test(servicio9) && /\{ELIMINAR_CONVERSACION_DISPONIBLE && \(\s*\n\s*<button\s*\n\s*onClick=\{\(e\) => \{ e\.stopPropagation\(\); asistente\.eliminarConversacion\(c\.id\) \}\}/.test(panel9), '9b. Donde no está disponible, el botón no se muestra y la acción no hace nada; sin avisos ni ocultamiento local')
 
   // ---- 7. Integración (código fuente) ----
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
