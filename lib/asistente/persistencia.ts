@@ -528,3 +528,183 @@ function programarReintento(docenteId: string, fallo: boolean) {
   }, espera)
   reintentos.set(docenteId, { timer, intento: actual.intento + 1 })
 }
+
+// ---------------------------------------------------------------------
+// Migración del historial local anterior (persistencia remota, etapa 2):
+// copia a Supabase los mensajes que la etapa 1 no envía (los creados
+// antes de su `desde`), una conversación a la vez. No borra ni cambia
+// nada local y no toca los mensajes que maneja la etapa 1.
+//
+// - Pertenencia: solo se migra una conversación cuya fila remota (id
+//   determinista docente + conversación local) YA existe y RLS la
+//   devuelve al docente actual. Sin esa prueba queda pendiente, intacta
+//   y sin atribuirse a nadie (no se crea la fila ni se fija el grupo).
+// - Mensajes: insert que ignora los existentes (nunca sobrescribe), en
+//   lotes pequeños. La conversación solo se marca migrada tras releer
+//   las filas y comprobar que coinciden con las locales.
+// - Contexto: título, documento activo y fecha se escriben con UPDATE
+//   condicionados a que la fila siga con su valor inicial (o una fecha
+//   anterior), así que nunca pisan un valor escrito por otro.
+// - Reanudable: lo pendiente se vuelve a intentar en la siguiente
+//   sesión; repetir cualquier paso es seguro.
+
+const PREFIJO_MIGRACION = 'docente-ia:migracion-historial:'
+const LOTE_MIGRACION = 20
+const TITULO_INICIAL = 'Nueva conversación'
+
+// 'migrada': mensajes y contexto confirmados. 'conflicto': algo remoto
+// difiere de lo local; nada se pisó y la conversación sigue sin migrar
+// (pendiente de resolver; no se reintenta sola para no repetir envíos).
+// Sin marca: pendiente y se reintenta en la siguiente sesión.
+type EstadoConversacionMigrada = 'migrada' | 'conflicto'
+export type ResultadoMigracion = { migradas: number; sinPertenencia: number; conflictos: number; fallidas: number }
+
+function leerEstadoMigracion(docenteId: string): Record<string, EstadoConversacionMigrada> {
+  try {
+    const datos = JSON.parse(leer(PREFIJO_MIGRACION + docenteId) ?? '{}')
+    return datos && typeof datos === 'object' ? datos : {}
+  } catch {
+    return {}
+  }
+}
+
+function marcarConversacionMigracion(docenteId: string, localId: string, estado: EstadoConversacionMigrada) {
+  const actual = leerEstadoMigracion(docenteId)
+  actual[localId] = estado
+  escribir(PREFIJO_MIGRACION + docenteId, JSON.stringify(actual))
+}
+
+// JSON con claves ordenadas: jsonb no conserva el orden de las claves.
+function canonico(valor: unknown): string {
+  if (Array.isArray(valor)) return `[${valor.map(canonico).join(',')}]`
+  if (valor && typeof valor === 'object') return `{${Object.keys(valor).sort().map((k) => `${JSON.stringify(k)}:${canonico((valor as Record<string, unknown>)[k])}`).join(',')}}`
+  return JSON.stringify(valor ?? null)
+}
+
+function filaCoincide(local: FilaMensajeRemoto, remota: Partial<FilaMensajeRemoto> | undefined): boolean {
+  return !!remota
+    && remota.conversacion_id === local.conversacion_id
+    && remota.docente_id === local.docente_id
+    && remota.rol === local.rol
+    && remota.texto === local.texto
+    && Date.parse(remota.creado_en ?? '') === Date.parse(local.creado_en)
+    && canonico(remota.contenido ?? {}) === canonico(local.contenido)
+}
+
+let migracionEnCurso: Promise<ResultadoMigracion> | null = null
+
+export function migrarHistorialLocal(docenteId: string): Promise<ResultadoMigracion> {
+  if (!migracionEnCurso) migracionEnCurso = ejecutarMigracion(docenteId).finally(() => { migracionEnCurso = null })
+  return migracionEnCurso
+}
+
+async function ejecutarMigracion(docenteId: string): Promise<ResultadoMigracion> {
+  const resultado: ResultadoMigracion = { migradas: 0, sinPertenencia: 0, conflictos: 0, fallidas: 0 }
+  const { desde } = leerEstadoSincronizacion(docenteId)
+  const estados = leerEstadoMigracion(docenteId)
+
+  // Candidatas (sin red): conversaciones locales no resueltas que tienen
+  // mensajes anteriores a la etapa 1.
+  const candidatas: { localId: string; remotoId: string; titulo: string; actualizadaEn: number; documentoActivo: DocumentoActivoGuardado | null; mensajes: MensajeConversacion[] }[] = []
+  for (const { id: localId } of listarConversaciones()) {
+    if (estados[localId]) continue
+    const datos = cargarConversacionPorId(localId)
+    const anteriores = datos?.mensajes.filter((m) => m.creadoEn < desde) ?? []
+    if (!datos || anteriores.length === 0) continue
+    const crudo = JSON.parse(leer(PREFIJO_CONVERSACION + localId) ?? '{}') as Partial<ConversacionGuardada>
+    candidatas.push({ localId, remotoId: await idConversacionRemota(docenteId, localId), titulo: datos.titulo, actualizadaEn: Number(crudo.actualizadaEn) || 0, documentoActivo: datos.documentoActivo, mensajes: anteriores })
+  }
+  if (candidatas.length === 0) return resultado
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.user?.id !== docenteId) return resultado
+
+    // Una sola consulta para la pertenencia de todas las candidatas.
+    const { data: propias, error } = await supabase
+      .from('conversaciones_chat')
+      .select('id, titulo, documento_activo, actualizado_en')
+      .in('id', candidatas.map((c) => c.remotoId))
+    if (error) throw error
+    const filasPropias = new Map((propias ?? []).map((f: { id: string; titulo: string; documento_activo: unknown; actualizado_en: string }) => [f.id, f]))
+
+    for (const c of candidatas) {
+      const remota = filasPropias.get(c.remotoId)
+      if (!remota) {
+        resultado.sinPertenencia++
+        continue
+      }
+      try {
+        const estado = await migrarConversacion(docenteId, c, remota)
+        marcarConversacionMigracion(docenteId, c.localId, estado)
+        if (estado === 'migrada') resultado.migradas++
+        else resultado.conflictos++
+      } catch (e) {
+        resultado.fallidas++
+        console.error('[MIGRACION_HISTORIAL] conversacion=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      }
+    }
+  } catch (e) {
+    resultado.fallidas++
+    console.error('[MIGRACION_HISTORIAL] fallo', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+  }
+  if (resultado.migradas || resultado.conflictos || resultado.fallidas) console.info('[MIGRACION_HISTORIAL]', JSON.stringify(resultado))
+  return resultado
+}
+
+async function migrarConversacion(
+  docenteId: string,
+  c: { remotoId: string; titulo: string; actualizadaEn: number; documentoActivo: DocumentoActivoGuardado | null; mensajes: MensajeConversacion[] },
+  remota: { titulo: string; documento_activo: unknown; actualizado_en: string },
+): Promise<EstadoConversacionMigrada> {
+  const filas = c.mensajes.map((m) => mensajeAFilaRemota(c.remotoId, docenteId, m))
+  for (let i = 0; i < filas.length; i += LOTE_MIGRACION) {
+    const lote = filas.slice(i, i + LOTE_MIGRACION)
+    const { error } = await supabase.from('mensajes_chat').upsert(lote, { onConflict: 'id', ignoreDuplicates: true })
+    if (error) throw error
+  }
+
+  // Integridad: cada mensaje debe existir en Supabase y coincidir con el
+  // local. Si una fila previa difiere, no se toca: queda en conflicto.
+  const remotas = new Map<string, Partial<FilaMensajeRemoto>>()
+  for (let i = 0; i < filas.length; i += LOTE_MIGRACION) {
+    const { data, error } = await supabase
+      .from('mensajes_chat')
+      .select('id, conversacion_id, docente_id, rol, texto, contenido, creado_en')
+      .in('id', filas.slice(i, i + LOTE_MIGRACION).map((f) => f.id))
+    if (error) throw error
+    for (const f of (data ?? []) as Partial<FilaMensajeRemoto>[]) if (f.id) remotas.set(f.id, f)
+  }
+  if (filas.some((f) => !remotas.has(f.id))) throw new Error('Faltan mensajes tras la inserción.')
+  if (filas.some((f) => !filaCoincide(f, remotas.get(f.id)))) return 'conflicto'
+
+  // Contexto: cada UPDATE solo aplica si la fila sigue con su valor
+  // inicial; si otro lo cambió antes, el filtro no coincide y no se pisa.
+  if (remota.titulo === TITULO_INICIAL && c.titulo && c.titulo !== TITULO_INICIAL) {
+    const { error } = await supabase.from('conversaciones_chat').update({ titulo: c.titulo }).eq('id', c.remotoId).eq('titulo', TITULO_INICIAL)
+    if (error) throw error
+  }
+  if (remota.documento_activo == null && c.documentoActivo) {
+    const { error } = await supabase.from('conversaciones_chat').update({ documento_activo: c.documentoActivo }).eq('id', c.remotoId).is('documento_activo', null)
+    if (error) throw error
+  }
+  const actualizada = c.actualizadaEn > 1e15 ? Math.floor(c.actualizadaEn / 1000) : c.actualizadaEn
+  if (actualizada > 0 && Date.parse(remota.actualizado_en) < actualizada) {
+    const iso = new Date(actualizada).toISOString()
+    const { error } = await supabase.from('conversaciones_chat').update({ actualizado_en: iso }).eq('id', c.remotoId).lt('actualizado_en', iso)
+    if (error) throw error
+  }
+
+  // Contexto confirmado: se relee la fila. Si el título o el documento
+  // activo remotos difieren de los locales (los escribió otro antes),
+  // no se pisan y la conversación queda en conflicto, no migrada.
+  const tituloLocal = c.titulo && c.titulo !== TITULO_INICIAL ? c.titulo : null
+  if (tituloLocal || c.documentoActivo) {
+    const { data: final, error } = await supabase.from('conversaciones_chat').select('titulo, documento_activo').eq('id', c.remotoId).maybeSingle()
+    if (error) throw error
+    if (!final) throw new Error('La conversación remota no se pudo releer.')
+    if (tituloLocal && final.titulo !== tituloLocal) return 'conflicto'
+    if (c.documentoActivo && canonico(final.documento_activo) !== canonico(c.documentoActivo)) return 'conflicto'
+  }
+  return 'migrada'
+}

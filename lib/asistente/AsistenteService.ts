@@ -25,6 +25,7 @@ import {
   guardarConversacion,
   guardarMensajesRemotos,
   listarConversaciones,
+  migrarHistorialLocal,
   reintentarMensajesRemotosPendientes,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
@@ -545,6 +546,20 @@ class AsistenteServiceImpl {
   // de onAuthStateChange: llamar a Supabase dentro de él puede bloquear.
   reintentarCopiaRemota(docenteId: string) {
     setTimeout(() => void reintentarMensajesRemotosPendientes(docenteId), 0)
+  }
+
+  // Migración del historial local anterior (etapa 2), en segundo plano
+  // y unos segundos después de entrar, para no competir con la carga.
+  // Una vez por página y docente; solo se repite si hubo un fallo.
+  private migracionesLanzadas = new Set<string>()
+  iniciarMigracionHistorial(docenteId: string) {
+    if (this.migracionesLanzadas.has(docenteId)) return
+    this.migracionesLanzadas.add(docenteId)
+    setTimeout(() => {
+      void migrarHistorialLocal(docenteId)
+        .then((r) => { if (r.fallidas > 0) this.migracionesLanzadas.delete(docenteId) })
+        .catch(() => this.migracionesLanzadas.delete(docenteId))
+    }, 5000)
   }
 
   // Descarta cualquier estado transitorio (turno abierto, edición o
@@ -1832,5 +1847,8 @@ supabase.auth.onAuthStateChange((evento, session) => {
   // recargar la pestaña — ambos casos pueden dejar EstadoAsistente.perfil
   // en null (sesión aún no existía cuando el constructor la pidió).
   if (evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION' || evento === 'TOKEN_REFRESHED') AsistenteService.recargarPerfil()
-  if ((evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION') && session?.user?.id) AsistenteService.reintentarCopiaRemota(session.user.id)
+  if ((evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION') && session?.user?.id) {
+    AsistenteService.reintentarCopiaRemota(session.user.id)
+    AsistenteService.iniciarMigracionHistorial(session.user.id)
+  }
 })
