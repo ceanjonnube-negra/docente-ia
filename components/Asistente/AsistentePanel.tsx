@@ -203,7 +203,30 @@ async function descargarArchivo(url: string, nombreSugerido: string) {
 // nativo a la ruta del MISMO origen /api/archivos/descargar, que devuelve
 // el archivo como application/octet-stream + attachment. La URL firmada
 // viaja en el cuerpo, no en la barra de direcciones.
-function descargarPdfDirecto(url: string) {
+//
+// Excepción: las vistas previas de planeación y hoja de evaluación ya son
+// rutas del MISMO origen (/api/planeaciones/vista-previa-documento y
+// /api/planeaciones/vista-previa-hoja) que responden attachment en modo
+// descargar; ahí basta el enlace con `download`, que Safari sí respeta.
+// Lista cerrada: nada más (ni "//", ni otros esquemas, ni otras rutas) se
+// toma como interno; todo lo demás va al formulario, que lo valida.
+const RUTA_INTERNA_PDF = /^\/api\/planeaciones\/vista-previa-(documento|hoja)\?[^\s\\]*$/
+
+export function mecanismoDescargaPdf(url: string): 'enlace-interno' | 'formulario' {
+  return RUTA_INTERNA_PDF.test(url) ? 'enlace-interno' : 'formulario'
+}
+
+export function descargarPdfDirecto(url: string, nombreSugerido: string) {
+  if (mecanismoDescargaPdf(url) === 'enlace-interno') {
+    const enlace = document.createElement('a')
+    enlace.href = url
+    enlace.download = nombreSugerido
+    enlace.rel = 'noopener'
+    document.body.appendChild(enlace)
+    enlace.click()
+    enlace.remove()
+    return
+  }
   const formulario = document.createElement('form')
   formulario.method = 'POST'
   formulario.action = '/api/archivos/descargar'
@@ -324,7 +347,7 @@ function TarjetaDescarga({
             const acciones = accionesDescargaArchivo(archivo)
             const ejecutar = (a: AccionArchivo) =>
               a.accion === 'ver' ? window.open(a.url, '_blank')
-                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url)
+                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)
                   : descargarArchivo(a.url, archivo.nombre)
             return (
               <div key={archivo.tipo} className="flex gap-1.5">

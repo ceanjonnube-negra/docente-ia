@@ -24,7 +24,8 @@ const URL_VER = 'https://e2e.supabase.co/storage/v1/object/sign/documentos/a.pdf
 async function main() {
   process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'http://supabase.invalid'
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'clave-ficticia'
-  const { accionesDescargaArchivo } = await import('../components/Asistente/AsistentePanel')
+  const { accionesDescargaArchivo, descargarPdfDirecto, mecanismoDescargaPdf } = await import('../components/Asistente/AsistentePanel')
+  const { validarUrlFirmadaPdf } = await import('../lib/documentGen/descargaPdf')
   const resumen = (a: ReturnType<typeof accionesDescargaArchivo>) => a.map((x) => `${x.accion}:${x.url === URL_VER ? 'VER' : x.url === URL_DESCARGA ? 'DESCARGA' : x.url}:${x.etiqueta}`).join(' | ')
 
   // 1. PDF genérico (CASO 3 / conversión), de planeación y de hoja de evaluación.
@@ -43,13 +44,51 @@ async function main() {
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   const directo = panel.slice(panel.indexOf('function descargarPdfDirecto('), panel.indexOf('async function compartirArchivo('))
   verificar(directo.length > 50 && !/fetch\(|Blob|createObjectURL|revokeObjectURL|window\.open/.test(directo) && /formulario\.method = 'POST'/.test(directo) && /formulario\.action = '\/api\/archivos\/descargar'/.test(directo) && /campo\.value = url/.test(directo) && /formulario\.submit\(\)/.test(directo), '3a. Descargar PDF: formulario POST nativo a la ruta del mismo origen, sin fetch, Blob, ObjectURL ni window.open')
-  verificar(/a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel), '3b. Cada acción ejecuta solo su mecanismo (Ver abre urlVer; Descargar, la URL de descarga)')
+  verificar(/a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url, archivo\.nombre\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel), '3b. Cada acción ejecuta solo su mecanismo (Ver abre urlVer; Descargar, la URL de descarga)')
   verificar(!panel.includes("'Ver / Descargar PDF'") && !/archivo\.tipoDocumento && archivo\.urlVer/.test(panel), '3c. Ya no existe el botón combinado ni la condición limitada a planeación/hoja')
   verificar(/compartirArchivo\(archivos\[0\]/.test(panel) && panel.includes("'📤 Compartir'"), '3d. Compartir sigue como acción independiente')
   const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')
   const almacenamiento = readFileSync('lib/documentGen/almacenamiento.ts', 'utf8')
   verificar(/url = await medirEtapa\(`\$\{etiqueta\}:url-firmada`, \(\) => reintentarEtapa\(\(\) => crearUrlFirmada\(sb, ruta, nombre\), 3\)\)/.test(herramientas) && /urlVer = await medirEtapa\(`\$\{etiqueta\}:url-firmada-ver`, \(\) => crearUrlFirmada\(sb, ruta\)\)/.test(herramientas), '3e. Pipeline: url se firma CON nombre de descarga; urlVer, sin él')
   verificar(/createSignedUrl\(ruta, VENCIMIENTO_URL_SEGUNDOS, nombreDescarga \? \{ download: nombreDescarga \} : undefined\)/.test(almacenamiento), '3f. crearUrlFirmada pide `download` (Content-Disposition: attachment) solo cuando hay nombre de descarga')
+
+  // 4. Mecanismo de descarga según el tipo REAL de URL que produce el Chat
+  // (comportamiento, con un document simulado que registra lo creado).
+  const BASE = 'https://e2eproyecto000000000.supabase.co'
+  const firmada = (bucket: string, ruta: string, nombre: string) => `${BASE}/storage/v1/object/sign/${bucket}/d0000000-0000-4000-8000-0000000000d0/1794524701227-${ruta}?token=t&download=${nombre}`
+  const reales = {
+    generico: firmada('documentos-generados-ia', 'CITATORIO.pdf', 'CITATORIO.pdf'),
+    planeacionDefinitiva: firmada('documentos-generados-ia', 'PLANEACION_DIDACTICA.pdf', 'PLANEACION_DIDACTICA.pdf'),
+    hojaDefinitiva: firmada('hojas-seguimiento', 'hoja-seguimiento-HS-001.pdf', 'hoja-seguimiento-HS-001.pdf'),
+    vistaPreviaPlaneacion: '/api/planeaciones/vista-previa-documento?tipoDocumento=planeacion&token=eyJ.ficticio&datos=H4sI%2Bficticio&modo=descargar',
+    vistaPreviaHoja: '/api/planeaciones/vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=eyJ.ficticio&datos=eyJ%3Dficticio&modo=descargar',
+  }
+  type Elemento = Record<string, unknown> & { tag: string; hijos: Elemento[]; clic: number; enviado: number }
+  const creados: Elemento[] = []
+  ;(globalThis as unknown as { document: unknown }).document = {
+    createElement: (tag: string) => {
+      const el: Elemento = { tag, hijos: [], clic: 0, enviado: 0, style: {} } as Elemento
+      Object.assign(el, { appendChild: (h: Elemento) => el.hijos.push(h), click: () => { el.clic++ }, submit: () => { el.enviado++ }, remove: () => {} })
+      creados.push(el)
+      return el
+    },
+    body: { appendChild: () => {} },
+  }
+  const descargar = (url: string, nombre = 'X.pdf') => { creados.length = 0; descargarPdfDirecto(url, nombre); return creados[0] }
+  for (const [tipo, url] of [['PDF genérico firmado', reales.generico], ['PDF definitivo de planeación', reales.planeacionDefinitiva], ['Hoja definitiva firmada', reales.hojaDefinitiva]] as const) {
+    const el = descargar(url)
+    verificar(el.tag === 'form' && el.method === 'POST' && el.action === '/api/archivos/descargar' && el.enviado === 1 && (el.hijos[0] as Elemento).value === url && validarUrlFirmadaPdf(url, BASE).ok, `4a. ${tipo}: formulario POST a /api/archivos/descargar, y el endpoint la acepta`)
+  }
+  for (const [tipo, url, nombre] of [['Vista previa de planeación', reales.vistaPreviaPlaneacion, 'vista-previa-planeacion.pdf'], ['Vista previa de hoja de evaluación', reales.vistaPreviaHoja, 'vista-previa-hoja-evaluacion.pdf']] as const) {
+    const el = descargar(url, nombre)
+    verificar(el.tag === 'a' && el.href === url && el.download === nombre && el.clic === 1 && creados.length === 1, `4b. ${tipo}: enlace del mismo origen con download (sin formulario)`)
+  }
+  const externos = ['//evil.example/x.pdf', '/\\evil.example/x.pdf', 'https://evil.example/api/planeaciones/vista-previa-hoja?x=1', 'javascript:alert(1)', 'data:application/pdf;base64,AAAA', '/api/planeaciones/vista-previa-documento-word?token=x', '/api/otra-ruta?x=1', ' /api/planeaciones/vista-previa-hoja?x=1', '/api/planeaciones/vista-previa-hoja?x=1 y']
+  verificar(externos.every((u) => mecanismoDescargaPdf(u) === 'formulario' && descargar(u).tag === 'form'), '4c. "//", "/\\", esquemas raros, externos y otras rutas nunca se tratan como internos (van al formulario, que los valida)')
+  verificar(externos.every((u) => !validarUrlFirmadaPdf(u, BASE).ok), '4d. ...y el endpoint los rechaza todos')
+  const rutaChat = readFileSync('app/api/chat/route.ts', 'utf8')
+  const plantillas = [...rutaChat.matchAll(/`(\/api\/planeaciones\/vista-previa-(?:documento|hoja)\?[^`]*modo=descargar)`/g)].map((m) => m[1].replace(/\$\{[^}]+\}/g, 'X'))
+  verificar(plantillas.length === 2 && plantillas.every((u) => mecanismoDescargaPdf(u) === 'enlace-interno'), `4e. Las URL de descarga que construye /api/chat para las vistas previas (${plantillas.length}) se reconocen como internas`)
 
   console.log('')
   if (fallos > 0) {
