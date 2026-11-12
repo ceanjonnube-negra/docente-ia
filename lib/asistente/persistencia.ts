@@ -324,3 +324,207 @@ export function asegurarConversacionRemota(localId: string, docenteId: string): 
   conversacionesRemotas.set(clave, promesa)
   return promesa
 }
+
+// ---------------------------------------------------------------------
+// Copia remota de los mensajes (persistencia remota, etapa 1): cada
+// mensaje nuevo se guarda también en mensajes_chat, en segundo plano.
+// localStorage sigue siendo lo único que se lee: aquí no se restaura
+// nada desde Supabase ni se reemplaza nada local.
+//
+// - Id remoto del mensaje: `<id remoto de la conversación>:<id local>`.
+//   El id local (msg-<ms>-<contador>) puede repetirse entre recargas o
+//   dispositivos; con la conversación delante, dos mensajes de
+//   conversaciones distintas nunca comparten fila, así que el upsert
+//   solo puede reescribir la MISMA fila del MISMO mensaje (su versión
+//   más reciente: respuesta final, archivo agregado, edición).
+// - Huella por mensaje: solo se envía lo nuevo o lo que cambió, y solo
+//   se marca como sincronizado con la confirmación de Supabase.
+// - Cola en localStorage (por docente) con reintentos: un fallo de red
+//   no pierde el mensaje y reenviarlo no lo duplica.
+// - Solo mensajes creados desde que esta etapa empezó a correr en el
+//   dispositivo (`desde`): el historial anterior no se migra aquí.
+// - RLS decide el dueño; además nunca se envía nada si la sesión
+//   actual no es del docente de la cola.
+
+const PREFIJO_SINCRONIZACION = 'docente-ia:mensajes-remotos:'
+const TOPE_PENDIENTES = 400
+const TOPE_HUELLAS = 3000
+const ESPERAS_REINTENTO_MS = [5_000, 15_000, 60_000, 300_000]
+
+export type FilaMensajeRemoto = {
+  id: string
+  conversacion_id: string
+  docente_id: string
+  rol: MensajeConversacion['rol']
+  texto: string
+  contenido: Record<string, unknown>
+  creado_en: string
+}
+type MensajePendiente = { localId: string; fila: FilaMensajeRemoto; huella: string }
+type EstadoSincronizacion = { desde: number; pendientes: MensajePendiente[]; huellas: Record<string, string> }
+
+export function idMensajeRemoto(conversacionRemotaId: string, mensajeId: string): string {
+  return `${conversacionRemotaId}:${mensajeId}`
+}
+
+// Igual que en localStorage (aligerarParaGuardar: sin base64), y el
+// token de una propuesta de lista nunca sale del dispositivo.
+export function mensajeAFilaRemota(conversacionRemotaId: string, docenteId: string, mensaje: MensajeConversacion): FilaMensajeRemoto {
+  const [ligero] = aligerarParaGuardar([mensaje])
+  const { id, rol, texto, creadoEn, ...contenido } = ligero
+  if (contenido.datosPropuestaLista) contenido.datosPropuestaLista = { ...contenido.datosPropuestaLista, token: undefined }
+  return {
+    id: idMensajeRemoto(conversacionRemotaId, id),
+    conversacion_id: conversacionRemotaId,
+    docente_id: docenteId,
+    rol,
+    texto,
+    contenido: JSON.parse(JSON.stringify(contenido)) as Record<string, unknown>,
+    creado_en: new Date(creadoEn).toISOString(),
+  }
+}
+
+// FNV-1a de 32 bits: solo detecta cambios, no es seguridad.
+function huellaDe(fila: FilaMensajeRemoto): string {
+  const texto = JSON.stringify(fila)
+  let h = 0x811c9dc5
+  for (let i = 0; i < texto.length; i++) {
+    h ^= texto.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `${(h >>> 0).toString(36)}-${texto.length.toString(36)}`
+}
+
+function leerEstadoSincronizacion(docenteId: string): EstadoSincronizacion {
+  const clave = PREFIJO_SINCRONIZACION + docenteId
+  try {
+    const crudo = leer(clave)
+    const datos = crudo ? (JSON.parse(crudo) as EstadoSincronizacion) : null
+    if (datos && typeof datos.desde === 'number' && Array.isArray(datos.pendientes) && datos.huellas && typeof datos.huellas === 'object') return datos
+  } catch {
+    // estado ilegible: se reinicia (solo puede reenviar, nunca borrar)
+  }
+  const nuevo: EstadoSincronizacion = { desde: Date.now(), pendientes: [], huellas: {} }
+  escribir(clave, JSON.stringify(nuevo))
+  return nuevo
+}
+
+function escribirEstadoSincronizacion(docenteId: string, estado: EstadoSincronizacion) {
+  const huellas = Object.entries(estado.huellas)
+  if (huellas.length > TOPE_HUELLAS) estado.huellas = Object.fromEntries(huellas.slice(-TOPE_HUELLAS))
+  if (estado.pendientes.length > TOPE_PENDIENTES) {
+    console.error(`[MENSAJES_REMOTOS] cola_llena descartados=${estado.pendientes.length - TOPE_PENDIENTES}`)
+    estado.pendientes = estado.pendientes.slice(-TOPE_PENDIENTES)
+  }
+  escribir(PREFIJO_SINCRONIZACION + docenteId, JSON.stringify(estado))
+}
+
+// Encola los mensajes nuevos o cambiados de una conversación local y
+// los envía. Nunca lanza: si algo falla, quedan en la cola.
+export async function guardarMensajesRemotos(localId: string, docenteId: string, mensajes: MensajeConversacion[]): Promise<void> {
+  const conversacionRemotaId = await idConversacionRemota(docenteId, localId)
+  const estado = leerEstadoSincronizacion(docenteId)
+  const nuevos: MensajePendiente[] = []
+  for (const mensaje of mensajes) {
+    if (mensaje.creadoEn < estado.desde) continue
+    const fila = mensajeAFilaRemota(conversacionRemotaId, docenteId, mensaje)
+    const huella = huellaDe(fila)
+    if (estado.huellas[fila.id] === huella) continue
+    nuevos.push({ localId, fila, huella })
+  }
+  if (nuevos.length > 0) {
+    const ids = new Set(nuevos.map((p) => p.fila.id))
+    estado.pendientes = [...estado.pendientes.filter((p) => !ids.has(p.fila.id)), ...nuevos]
+    escribirEstadoSincronizacion(docenteId, estado)
+  }
+  await reintentarMensajesRemotosPendientes(docenteId)
+}
+
+const envioEnCurso = new Map<string, Promise<void>>()
+const reintentos = new Map<string, { timer: ReturnType<typeof setTimeout> | null; intento: number }>()
+
+// Envía la cola del docente. Un solo envío a la vez por docente; si
+// llegan más mensajes mientras tanto, se envían en la siguiente vuelta.
+export function reintentarMensajesRemotosPendientes(docenteId: string): Promise<void> {
+  const enCurso = envioEnCurso.get(docenteId)
+  const siguiente = (enCurso ?? Promise.resolve()).then(() => enviarPendientes(docenteId))
+  const envio = siguiente.finally(() => {
+    if (envioEnCurso.get(docenteId) === envio) envioEnCurso.delete(docenteId)
+  })
+  envioEnCurso.set(docenteId, envio)
+  return envio
+}
+
+async function enviarPendientes(docenteId: string): Promise<void> {
+  const pendientes = leerEstadoSincronizacion(docenteId).pendientes
+  if (pendientes.length === 0) return
+  let fallo = false
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    // Sin sesión o con la de otro docente: la cola espera a su dueño.
+    if (session?.user?.id !== docenteId) return
+
+    const porConversacion = new Map<string, MensajePendiente[]>()
+    for (const p of pendientes) porConversacion.set(p.fila.conversacion_id, [...(porConversacion.get(p.fila.conversacion_id) ?? []), p])
+
+    for (const [conversacionRemotaId, grupo] of porConversacion) {
+      const filas = grupo.map((p) => p.fila)
+      // Defensa: cada fila es de ESTA conversación y de este docente.
+      if (filas.some((f) => f.docente_id !== docenteId || !f.id.startsWith(`${conversacionRemotaId}:`))) {
+        console.error('[MENSAJES_REMOTOS] fila_inconsistente descartada')
+        confirmar(docenteId, grupo, new Set(), true)
+        continue
+      }
+      const id = await asegurarConversacionRemota(grupo[0].localId, docenteId)
+      if (id !== conversacionRemotaId) {
+        fallo = true
+        continue
+      }
+      const { data, error } = await supabase.from('mensajes_chat').upsert(filas, { onConflict: 'id' }).select('id')
+      if (error) {
+        console.error('[MENSAJES_REMOTOS] guardado=false', error.code ?? error.message)
+        fallo = true
+        continue
+      }
+      const confirmados = new Set((data ?? []).map((f: { id: string }) => f.id))
+      if (confirmados.size < filas.length) fallo = true
+      confirmar(docenteId, grupo, confirmados, false)
+    }
+  } catch (e) {
+    console.error('[MENSAJES_REMOTOS] guardado=false', e instanceof Error ? e.message : String(e))
+    fallo = true
+  }
+  programarReintento(docenteId, fallo)
+}
+
+// Marca como sincronizado solo lo confirmado, y solo si en la cola
+// sigue la MISMA versión que se envió (una más nueva queda pendiente).
+function confirmar(docenteId: string, enviados: MensajePendiente[], confirmados: Set<string>, descartar: boolean) {
+  const estado = leerEstadoSincronizacion(docenteId)
+  const resueltos = new Map(enviados.filter((p) => descartar || confirmados.has(p.fila.id)).map((p) => [p.fila.id, p.huella]))
+  if (resueltos.size === 0) return
+  estado.pendientes = estado.pendientes.filter((p) => resueltos.get(p.fila.id) !== p.huella)
+  if (!descartar) {
+    for (const [id, huella] of resueltos) {
+      delete estado.huellas[id]
+      estado.huellas[id] = huella
+    }
+  }
+  escribirEstadoSincronizacion(docenteId, estado)
+}
+
+function programarReintento(docenteId: string, fallo: boolean) {
+  const actual = reintentos.get(docenteId) ?? { timer: null, intento: 0 }
+  if (actual.timer) clearTimeout(actual.timer)
+  if (!fallo) {
+    reintentos.delete(docenteId)
+    return
+  }
+  const espera = ESPERAS_REINTENTO_MS[Math.min(actual.intento, ESPERAS_REINTENTO_MS.length - 1)]
+  const timer = setTimeout(() => {
+    const r = reintentos.get(docenteId)
+    if (r) r.timer = null
+    void reintentarMensajesRemotosPendientes(docenteId)
+  }, espera)
+  reintentos.set(docenteId, { timer, intento: actual.intento + 1 })
+}

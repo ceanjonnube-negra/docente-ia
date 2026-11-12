@@ -23,7 +23,9 @@ import {
   eliminarConversacion as eliminarConversacionGuardada,
   establecerConversacionActiva,
   guardarConversacion,
+  guardarMensajesRemotos,
   listarConversaciones,
+  reintentarMensajesRemotosPendientes,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
 } from './persistencia'
@@ -489,6 +491,40 @@ class AsistenteServiceImpl {
     if (!this.conversacionActivaId || this.mensajes.length === 0) return
     guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo)
     this.listaConversaciones = listarConversaciones()
+    this.programarCopiaRemota(this.conversacionActivaId, this.mensajes)
+  }
+
+  // Copia remota de los mensajes (persistencia remota, etapa 1): en
+  // segundo plano y con su propio debounce, para no escribir en cada
+  // fragmento de una respuesta. Nunca bloquea ni cambia el chat; un
+  // fallo queda en la cola de persistencia.ts y se reintenta.
+  private copiaRemotaTimer: ReturnType<typeof setTimeout> | null = null
+  private copiasRemotasPendientes = new Map<string, MensajeConversacion[]>()
+  private programarCopiaRemota(localId: string, mensajes: MensajeConversacion[]) {
+    this.copiasRemotasPendientes.set(localId, mensajes)
+    if (this.copiaRemotaTimer) clearTimeout(this.copiaRemotaTimer)
+    this.copiaRemotaTimer = setTimeout(() => void this.enviarCopiaRemota(), 2000)
+  }
+
+  private async enviarCopiaRemota() {
+    if (this.copiaRemotaTimer) { clearTimeout(this.copiaRemotaTimer); this.copiaRemotaTimer = null }
+    // Turno en curso: se espera a que termine (solo versiones finales).
+    if (this.generando || this.turnoAbierto) {
+      this.copiaRemotaTimer = setTimeout(() => void this.enviarCopiaRemota(), 2000)
+      return
+    }
+    const lote = [...this.copiasRemotasPendientes]
+    this.copiasRemotasPendientes.clear()
+    if (lote.length === 0) return
+    const { data: { session } } = await supabase.auth.getSession()
+    const docenteId = session?.user?.id
+    if (!docenteId) return
+    // Solo conversaciones que siguen guardadas en este dispositivo: tras
+    // cerrar sesión ya no existen y nunca se copian a otro docente.
+    const vigentes = new Set(listarConversaciones().map((c) => c.id))
+    for (const [localId, mensajes] of lote) {
+      if (vigentes.has(localId)) await guardarMensajesRemotos(localId, docenteId, mensajes)
+    }
   }
 
   // Guardado inmediato, sin esperar el debounce — para el momento exacto
@@ -501,6 +537,14 @@ class AsistenteServiceImpl {
       this.persistenciaTimer = null
     }
     this.guardarAhora()
+    void this.enviarCopiaRemota()
+  }
+
+  // Envía lo que haya quedado en la cola de mensajes remotos (al
+  // restaurar la sesión o al recuperar la conexión). Fuera del callback
+  // de onAuthStateChange: llamar a Supabase dentro de él puede bloquear.
+  reintentarCopiaRemota(docenteId: string) {
+    setTimeout(() => void reintentarMensajesRemotosPendientes(docenteId), 0)
   }
 
   // Descarta cualquier estado transitorio (turno abierto, edición o
@@ -1770,6 +1814,11 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) AsistenteService.guardarInmediatamente()
   })
+  window.addEventListener('online', () => {
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.id) AsistenteService.reintentarCopiaRemota(session.user.id)
+    })
+  })
 }
 
 // Un dispositivo compartido entre dos docentes (equipo de la escuela)
@@ -1777,10 +1826,11 @@ if (typeof document !== 'undefined') {
 // entra después — el logout de esta app (ver app/dashboard/page.tsx) es
 // una navegación de cliente (router.push), no una recarga completa, así
 // que el singleton sigue vivo en memoria a menos que se limpie aquí.
-supabase.auth.onAuthStateChange((evento) => {
+supabase.auth.onAuthStateChange((evento, session) => {
   if (evento === 'SIGNED_OUT') AsistenteService.limpiarConversacionGuardada()
   // Cubre el login real y la restauración de sesión desde storage al
   // recargar la pestaña — ambos casos pueden dejar EstadoAsistente.perfil
   // en null (sesión aún no existía cuando el constructor la pidió).
   if (evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION' || evento === 'TOKEN_REFRESHED') AsistenteService.recargarPerfil()
+  if ((evento === 'SIGNED_IN' || evento === 'INITIAL_SESSION') && session?.user?.id) AsistenteService.reintentarCopiaRemota(session.user.id)
 })
