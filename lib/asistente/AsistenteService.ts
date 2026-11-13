@@ -213,6 +213,9 @@ const CODIGOS_PROPUESTA_REINTENTABLES = new Set(['SESION_INVALIDA', 'NO_DISPONIB
 // (en la práctica, en casi cada turno: 3 lecturas ligeras), esperando
 // como máximo ESPERA_SINCRONIZACION_ENVIO_MS.
 const VIGENCIA_SINCRONIZACION_MS = 15_000
+// Al volver a la app (fase 3B): una ausencia más corta que esto (cambio
+// breve de pestaña o de app) no consulta.
+const AUSENCIA_MINIMA_MS = 5_000
 const ESPERA_SINCRONIZACION_ENVIO_MS = 2_500
 const MENSAJE_DOCUMENTO_SIN_VERIFICAR = 'No se pudo comprobar si este documento cambió en otro dispositivo. Revisa tu conexión e intenta de nuevo.'
 
@@ -725,6 +728,30 @@ class AsistenteServiceImpl {
       console.error('[SINCRONIZAR_CONVERSACION] sincronizada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
       return 'fallo'
     }
+  }
+
+  // Al volver a la app (fase 3B): sincroniza en silencio la conversación
+  // activa con el mismo mecanismo que la apertura y el envío (comparten la
+  // sincronización en curso y la hora de la última exitosa). No consulta
+  // tras una ausencia breve ni si la última sincronización exitosa es
+  // reciente. La sesión, el cambio de conversación, la respuesta en curso
+  // y la conversación eliminada los resuelve ejecutarSincronizacion.
+  private ocultaDesde: number | null = null
+
+  alOcultarse() {
+    this.ocultaDesde = Date.now()
+    this.guardarInmediatamente()
+  }
+
+  alVolverAPrimerPlano() {
+    const id = this.conversacionActivaId
+    // ocultaDesde se conserva hasta la siguiente ocultación: si llegan
+    // visibilitychange y pageshow juntos, los dos ven la misma ausencia.
+    const ausencia = this.ocultaDesde === null ? Infinity : Date.now() - this.ocultaDesde
+    if (!id || ausencia < AUSENCIA_MINIMA_MS) return
+    if (this.sincronizacionesEnCurso.has(id)) return
+    if (Date.now() - (this.sincronizadaEn.get(id) ?? 0) < VIGENCIA_SINCRONIZACION_MS) return
+    void this.sincronizarConversacion(id)
   }
 
   // Antes de enviar a la IA: espera la sincronización en curso o hace una
@@ -2119,8 +2146,16 @@ if (typeof document !== 'undefined') {
   // debounce de 300ms; esto fuerza el guardado inmediato justo en ese
   // instante para no perder los últimos cambios si el sistema recarga la
   // página al volver.
+  // Al volver (fase 3B): la conversación activa trae en silencio lo
+  // escrito en otro dispositivo. pageshow con persisted: Safari/iOS
+  // restaura la página desde bfcache (puede no repetir visibilitychange);
+  // si llegan los dos, el segundo no consulta.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) AsistenteService.guardarInmediatamente()
+    if (document.hidden) AsistenteService.alOcultarse()
+    else AsistenteService.alVolverAPrimerPlano()
+  })
+  window.addEventListener('pageshow', (evento) => {
+    if (evento.persisted) AsistenteService.alVolverAPrimerPlano()
   })
   window.addEventListener('online', () => {
     void supabase.auth.getSession().then(({ data: { session } }) => {

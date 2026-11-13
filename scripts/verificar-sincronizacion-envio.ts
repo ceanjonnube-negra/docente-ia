@@ -325,7 +325,7 @@ async function main() {
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const enviar = servicio.slice(servicio.indexOf('  async enviarMensaje('), servicio.indexOf('  private async enviarConMultiplesImagenes('))
   verificar(enviar.indexOf('this.asegurarContextoActualizado(') > 0 && enviar.indexOf('this.asegurarContextoActualizado(') < Math.min(enviar.indexOf('esVerificacionCalendarioConImagen'), enviar.indexOf('enviarConMultiplesImagenes'), enviar.indexOf('this.documentoActivo &&')), '11a. La comprobación ocurre antes de todos los caminos de envío')
-  verificar(!/visibilitychange[\s\S]{0,200}sincronizar|pageshow/.test(servicio), '11b. Sin visibilitychange ni pageshow (fase 3B)')
+  verificar(/addEventListener\('visibilitychange'[\s\S]{0,200}alVolverAPrimerPlano\(\)/.test(servicio) && !/addEventListener\('(visibilitychange|pageshow)'[\s\S]{0,200}enviarMensaje/.test(servicio), '11b. Volver a la app sincroniza por alVolverAPrimerPlano (fase 3B), sin pasar por el envío')
 
   console.log('')
   if (fallos > 0) {

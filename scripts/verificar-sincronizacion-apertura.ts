@@ -352,8 +352,8 @@ async function main() {
   // ---- 8. Alcance ----
   const { readFileSync } = await import('node:fs')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-  const oyentes = servicio.slice(servicio.indexOf("addEventListener('visibilitychange'"))
-  verificar((servicio.match(/this\.sincronizarConversacion\(/g) ?? []).length === 2 && /if \(sincronizar\) void this\.sincronizarConversacion\(id\)/.test(servicio) && /enCurso \?\? this\.sincronizarConversacion\(id\)/.test(servicio) && !/sincroniz/i.test(oyentes.slice(0, oyentes.indexOf('})\n}') > 0 ? oyentes.indexOf('})\n}') : 600)), '8a. La sincronización se inicia al abrir y antes de enviar (fase 3A); no en visibilitychange ni online')
+  const online = servicio.slice(servicio.indexOf("addEventListener('online'"), servicio.indexOf("addEventListener('online'") + 250)
+  verificar((servicio.match(/this\.sincronizarConversacion\(/g) ?? []).length === 3 && /if \(sincronizar\) void this\.sincronizarConversacion\(id\)/.test(servicio) && /enCurso \?\? this\.sincronizarConversacion\(id\)/.test(servicio) && /alVolverAPrimerPlano\(\) \{[\s\S]{0,900}void this\.sincronizarConversacion\(id\)/.test(servicio) && !/sincroniz|alVolver/i.test(online), '8a. La sincronización se inicia al abrir, antes de enviar (3A) y al volver a la app (3B); no en online')
 
   console.log('')
   if (fallos > 0) {
