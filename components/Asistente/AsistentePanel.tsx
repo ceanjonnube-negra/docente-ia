@@ -825,11 +825,18 @@ export default function AsistentePanel() {
     if (adjuntos.length > 0) {
       console.log(`[IMAGEN][FRONTEND] imagen(es) enviada(s) — cantidad=${adjuntos.length} via=${adjuntos.length > 1 ? 'adjuntos[]' : 'adjunto'}`)
     }
-    if (adjuntos.length > 1) {
-      asistente.enviarMensaje(texto, undefined, adjuntos)
-    } else {
-      asistente.enviarMensaje(texto, adjuntos[0] || undefined)
-    }
+    const envio = adjuntos.length > 1
+      ? asistente.enviarMensaje(texto, undefined, adjuntos)
+      : asistente.enviarMensaje(texto, adjuntos[0] || undefined)
+    // Si la solicitud no se envió (documento sin verificar, conversación
+    // eliminada), el texto y las fotos vuelven al campo, sin pisar lo que
+    // se haya escrito mientras tanto. Si el docente cambió de conversación
+    // durante la espera, no: ese borrador era de la otra conversación.
+    void envio.then((resultado) => {
+      if (resultado !== 'no_enviado') return
+      setInput((actual) => actual || texto)
+      setAdjuntosPendientes((actuales) => (actuales.length > 0 ? actuales : adjuntos))
+    })
   }
 
   // --- Acciones sobre un documento generado ---

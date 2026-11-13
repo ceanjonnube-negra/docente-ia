@@ -352,7 +352,8 @@ async function main() {
   // ---- 8. Alcance ----
   const { readFileSync } = await import('node:fs')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-  verificar((servicio.match(/this\.sincronizarConversacion\(/g) ?? []).length === 1 && /if \(sincronizar\) void this\.sincronizarConversacion\(id\)/.test(servicio), '8a. Solo abrirConversacion inicia la sincronización (no visibilitychange, online ni el envío)')
+  const oyentes = servicio.slice(servicio.indexOf("addEventListener('visibilitychange'"))
+  verificar((servicio.match(/this\.sincronizarConversacion\(/g) ?? []).length === 2 && /if \(sincronizar\) void this\.sincronizarConversacion\(id\)/.test(servicio) && /enCurso \?\? this\.sincronizarConversacion\(id\)/.test(servicio) && !/sincroniz/i.test(oyentes.slice(0, oyentes.indexOf('})\n}') > 0 ? oyentes.indexOf('})\n}') : 600)), '8a. La sincronización se inicia al abrir y antes de enviar (fase 3A); no en visibilitychange ni online')
 
   console.log('')
   if (fallos > 0) {

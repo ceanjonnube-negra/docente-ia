@@ -8,6 +8,7 @@
 // — nunca lo posee.
 
 import { supabase } from '@/lib/supabaseClient'
+import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
@@ -206,6 +207,19 @@ const nuevoId = () => `msg-${Date.now()}-${contadorId++}-${sufijoAleatorio()}`
 // Propuestas de lista oficial (ver confirmarPropuestaLista): códigos de
 // /api/lista-oficial/aplicar que no invalidan la propuesta.
 const CODIGOS_PROPUESTA_REINTENTABLES = new Set(['SESION_INVALIDA', 'NO_DISPONIBLE', 'ERROR_TEMPORAL'])
+
+// Antes de enviar a la IA (fase 3A), la conversación se sincroniza si
+// su última sincronización exitosa tiene más de VIGENCIA_SINCRONIZACION_MS
+// (en la práctica, en casi cada turno: 3 lecturas ligeras), esperando
+// como máximo ESPERA_SINCRONIZACION_ENVIO_MS.
+const VIGENCIA_SINCRONIZACION_MS = 15_000
+const ESPERA_SINCRONIZACION_ENVIO_MS = 2_500
+const MENSAJE_DOCUMENTO_SIN_VERIFICAR = 'No se pudo comprobar si este documento cambió en otro dispositivo. Revisa tu conexión e intenta de nuevo.'
+
+// 'al_dia': Supabase respondió (con o sin novedades); 'fallo': no se
+// pudo consultar; 'sin_sesion': no hay docente con quien consultar.
+type EstadoSincronizacion = 'al_dia' | 'fallo' | 'eliminada' | 'sin_sesion'
+export type ResultadoEnvio = 'enviado' | 'no_enviado' | 'otra_conversacion'
 
 // Documento vigente tras incorporar mensajes de otro dispositivo: el
 // último documento formal del asistente en la conversación, solo si llegó
@@ -676,20 +690,56 @@ class AsistenteServiceImpl {
   // aplican en la notificación que cierra el turno. Un fallo solo se
   // registra: la copia local sigue siendo válida.
   private sincronizacionDiferida: { id: string; nuevos: MensajeConversacion[] } | null = null
+  // Una sola sincronización a la vez por conversación (la apertura y el
+  // envío comparten la misma) y la hora de la última exitosa: un fallo
+  // nunca cuenta como actualizada.
+  private sincronizacionesEnCurso = new Map<string, Promise<EstadoSincronizacion>>()
+  private sincronizadaEn = new Map<string, number>()
+  private preparandoEnvio = false
 
-  private async sincronizarConversacion(id: string) {
+  private sincronizarConversacion(id: string): Promise<EstadoSincronizacion> {
+    const enCurso = this.sincronizacionesEnCurso.get(id)
+    if (enCurso) return enCurso
+    const promesa = this.ejecutarSincronizacion(id).finally(() => this.sincronizacionesEnCurso.delete(id))
+    this.sincronizacionesEnCurso.set(id, promesa)
+    return promesa
+  }
+
+  private async ejecutarSincronizacion(id: string): Promise<EstadoSincronizacion> {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const docenteId = session?.user?.id
-      if (!docenteId || id !== this.conversacionActivaId) return
+      if (!docenteId) return 'sin_sesion'
+      if (id !== this.conversacionActivaId) return 'fallo'
       const resultado = await sincronizarConversacionRemota(docenteId, id)
       // 'eliminada': la retirada ya avisó a alRetirarConversacion.
-      if (resultado.estado !== 'actualizada' || id !== this.conversacionActivaId) return
-      const previos = this.sincronizacionDiferida?.id === id ? this.sincronizacionDiferida.nuevos : []
-      this.sincronizacionDiferida = { id, nuevos: [...previos, ...resultado.nuevos] }
-      this.notificar()
+      if (resultado.estado === 'eliminada') return 'eliminada'
+      this.sincronizadaEn.set(id, Date.now())
+      if (resultado.estado === 'actualizada' && id === this.conversacionActivaId) {
+        const previos = this.sincronizacionDiferida?.id === id ? this.sincronizacionDiferida.nuevos : []
+        this.sincronizacionDiferida = { id, nuevos: [...previos, ...resultado.nuevos] }
+        this.notificar()
+      }
+      return 'al_dia'
     } catch (e) {
       console.error('[SINCRONIZAR_CONVERSACION] sincronizada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      return 'fallo'
+    }
+  }
+
+  // Antes de enviar a la IA: espera la sincronización en curso o hace una
+  // si la última exitosa ya es vieja (o siempre, para operar sobre el
+  // documento activo). Sin respuesta generándose, los
+  // mensajes nuevos (y el documento activo) se aplican en ese mismo
+  // momento. 'tiempo': se agotó la espera (la consulta sigue y se aplica
+  // al llegar, como en la apertura).
+  private async asegurarContextoActualizado(id: string, siempre: boolean): Promise<EstadoSincronizacion | 'tiempo'> {
+    const enCurso = this.sincronizacionesEnCurso.get(id)
+    if (!enCurso && !siempre && Date.now() - (this.sincronizadaEn.get(id) ?? 0) < VIGENCIA_SINCRONIZACION_MS) return 'al_dia'
+    try {
+      return await conLimiteDeTiempoAccion(enCurso ?? this.sincronizarConversacion(id), ESPERA_SINCRONIZACION_ENVIO_MS, 'Tiempo de espera agotado sincronizando la conversación')
+    } catch {
+      return 'tiempo'
     }
   }
 
@@ -830,6 +880,7 @@ class AsistenteServiceImpl {
     this.documentoActivo = null
     this.limpiarEstadoTransitorio()
     borrarTodasLasConversaciones()
+    this.sincronizadaEn.clear()
     this.conversacionActivaId = null
     this.listaConversaciones = []
     this.notificar()
@@ -961,7 +1012,7 @@ class AsistenteServiceImpl {
       // botón Enviar. motorOpenAIRealtime.ts nunca vuelve a generar su
       // propia respuesta; solo capta/transcribe audio y entrega el
       // texto reconocido aquí.
-      motor.establecerCanalDeTexto((texto, turnId, voiceDebug) => this.enviarMensaje(texto, undefined, undefined, 'voz', turnId, voiceDebug))
+      motor.establecerCanalDeTexto(async (texto, turnId, voiceDebug) => { await this.enviarMensaje(texto, undefined, undefined, 'voz', turnId, voiceDebug) })
       // Si el docente vuelve a hablar mientras la respuesta del turno
       // anterior todavía está en camino, esto la cancela — sin esto,
       // enviarMensaje() ignoraría en silencio el turno nuevo mientras
@@ -1442,9 +1493,13 @@ class AsistenteServiceImpl {
   // --- Enviar un mensaje (texto ya resuelto, venga de teclado o de voz
   // ya transcrita) ---
 
-  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean) {
+  // 'no_enviado': la solicitud no salió y el borrador sigue siendo de la
+  // vista actual (el panel lo devuelve al campo). 'otra_conversacion': el
+  // docente cambió de conversación durante la espera; el borrador era de
+  // la anterior y no se traslada.
+  async enviarMensaje(texto: string, adjunto?: AdjuntoImagen, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean): Promise<ResultadoEnvio> {
     const limpio = texto.trim()
-    if (!limpio || this.generando) return
+    if (!limpio || this.generando || this.preparandoEnvio) return 'no_enviado'
 
     // Vista inicial (sin conversación seleccionada): escribir el primer
     // mensaje ES la acción que crea la conversación nueva — ver
@@ -1453,6 +1508,30 @@ class AsistenteServiceImpl {
     if (!this.conversacionActivaId) {
       this.conversacionActivaId = crearNuevaConversacion()
     }
+
+    // Contexto al día antes de decidir el camino y armar el historial:
+    // todos los envíos de abajo (texto, fotos, edición, conversión,
+    // finalización) usan this.mensajes y this.documentoActivo ya
+    // sincronizados. Si el docente cambió de conversación durante la
+    // espera, este mensaje no se envía a otra. Editar o convertir el
+    // documento activo siempre se comprueba, aunque la última
+    // sincronización sea reciente.
+    const conversacion = this.conversacionActivaId
+    this.preparandoEnvio = true
+    let contexto: EstadoSincronizacion | 'tiempo'
+    try {
+      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio))
+    } finally {
+      this.preparandoEnvio = false
+    }
+    if (contexto === 'eliminada') {
+      this.mostrarAvisoGeneracion(MENSAJE_CONVERSACION_ELIMINADA, true)
+      this.notificar()
+      return 'no_enviado'
+    }
+    if (conversacion !== this.conversacionActivaId) return 'otra_conversacion'
+    if (this.generando) return 'no_enviado'
+    const contextoSinVerificar = contexto === 'fallo' || contexto === 'tiempo'
 
     // Verificación de calendario con foto — antes de cualquier otra
     // regla (incluida "documento activo" abajo): una foto del
@@ -1468,7 +1547,7 @@ class AsistenteServiceImpl {
     // foto, ver RFC del calendario).
     if (esVerificacionCalendarioConImagen(limpio, adjunto) && adjunto) {
       await this.analizarCalendarioDesdeImagen(limpio, adjunto)
-      return
+      return 'enviado'
     }
 
     // Varias fotos en un mismo mensaje ("compara estas dos listas",
@@ -1479,7 +1558,7 @@ class AsistenteServiceImpl {
     // soporte completo para múltiples fotografías".
     if (adjuntos && adjuntos.length > 1) {
       await this.enviarConMultiplesImagenes(limpio, adjuntos)
-      return
+      return 'enviado'
     }
 
     // Con un documento activo: primero se revisa si el mensaje nombra un
@@ -1507,7 +1586,15 @@ class AsistenteServiceImpl {
     // Y otra: editar Y entregar un documento que NO es el activo ("corrige
     // el oficio de la semana pasada y pásalo a PDF") — va como mensaje
     // normal y /api/chat pide aclaración (ver referenciaCompatibleConDocumento).
-    if (this.documentoActivo && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(this.documentoActivo.texto) }) && !esPedidoDocumentoNuevo(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, this.documentoActivo.texto))) {
+    if (this.documentoActivo && this.trabajaSobreDocumentoActivo(limpio)) {
+      // Editar o convertir el documento activo sin haber podido comprobar
+      // si otro dispositivo generó uno más reciente: no se ejecuta sobre
+      // un documento posiblemente desactualizado.
+      if (contextoSinVerificar) {
+        this.mostrarAvisoGeneracion(MENSAJE_DOCUMENTO_SIN_VERIFICAR, true)
+        this.notificar()
+        return 'no_enviado'
+      }
       const tipoFinalizar = detectarHerramientaDocumento(limpio)
       if (tipoFinalizar) {
         // Resolución del archivo referenciado: si el maestro nombró un
@@ -1528,13 +1615,13 @@ class AsistenteServiceImpl {
         // así que es una edición normal, sin formato.
         if (esEdicionConFormato(limpio) && tipoResuelto !== 'imagen' && tipoResuelto !== 'audio' && tipoResuelto !== 'video') {
           await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, formatoExplicito ? tipoResuelto : undefined)
-          return
+          return 'enviado'
         }
         await this.ejecutarConversionFormato(tipoResuelto, limpio)
-        return
+        return 'enviado'
       }
       await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
-      return
+      return 'enviado'
     }
 
     await this.asegurarMotor()
@@ -1549,6 +1636,15 @@ class AsistenteServiceImpl {
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
+    return 'enviado'
+  }
+
+  // El mensaje trabaja sobre el documento activo (edición o conversión),
+  // con las mismas excepciones de siempre: aprobar la planeación, pedir
+  // un documento nuevo o editar y entregar otro documento.
+  private trabajaSobreDocumentoActivo(limpio: string): boolean {
+    const documento = this.documentoActivo
+    return !!documento && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(documento.texto) }) && !esPedidoDocumentoNuevo(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, documento.texto))
   }
 
   // Mismo camino que el envío normal de arriba (asegurarMotor,
