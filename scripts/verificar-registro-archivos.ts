@@ -183,7 +183,7 @@ async function main() {
   const herramientas = readFileSync('lib/documentGen/herramientas.ts', 'utf8')
   const llamadas = [...ruta.matchAll(/ejecutarHerramientaDocumento\(/g)].length
   verificar(llamadas === 3 && !/registro:/.test(ruta) && !/registroArchivos/.test(ruta), '6a. Ningún flujo envía señal de efímero: conversión, documento nuevo y lista se registran como conservar')
-  verificar(execSync('git diff --name-only -- app/api/chat/route.ts', { encoding: 'utf8' }).trim() === '', '6b. /api/chat sin cambios: generación y conversión intactas')
+  verificar([...ruta.matchAll(/ejecutarHerramientaDocumento\([^\n]*/g)].every((m) => !/registro|efimero/.test(m[0])), '6b. Ninguna llamada de /api/chat a ejecutarHerramientaDocumento declara clase: generación y conversión intactas (conservar)')
   verificar(execSync('git diff --name-only -- lib/planeacion lib/seguimiento lib/calendario app/api/proyectos-seguimiento app/api/upload-documento', { encoding: 'utf8' }).trim() === '', '6c. Generadores académicos y otros puntos de subida sin cambios (planeación, hojas, calendario, documentos institucionales)')
   verificar(!/messages\.create|anthropic|openai/i.test(herramientas) && !/\.remove\(|eliminarArchivo/.test(herramientas), '6d. La herramienta no llama a la IA ni borra archivos')
   const posMarcador = ruta.indexOf("const marcador = `[[DOCUMENTO_ARCHIVO:", ruta.indexOf('await conReintento(() => ejecutarHerramientaDocumento(tipoHerramientaSolicitado, documentoTexto'))

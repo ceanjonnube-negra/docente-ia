@@ -80,17 +80,17 @@ async function main() {
   //    (ruta HTTP del propio servidor o la URL firmada de Storage),
   //    nunca una variable de blob local.
   // ============================================================
-  verificar(/enlace\.href\s*=\s*url\b/.test(cuerpoDescargarPdfDirecto), '4. enlace.href se asigna directamente al parámetro `url` real — nunca a un objectUrl/blob local')
-  verificar(/enlace\.download\s*=\s*nombreSugerido/.test(cuerpoDescargarPdfDirecto), '4b. enlace.download conserva el nombre real sugerido (soporte adicional, nunca el mecanismo principal)')
-  verificar(/enlace\.rel\s*=\s*'noopener'/.test(cuerpoDescargarPdfDirecto), '4c. enlace.rel="noopener" presente, tal como se pidió')
-  verificar(/document\.body\.appendChild\(enlace\)/.test(cuerpoDescargarPdfDirecto) && /enlace\.click\(\)/.test(cuerpoDescargarPdfDirecto) && /enlace\.remove\(\)/.test(cuerpoDescargarPdfDirecto), '4d. Patrón exacto: <a> temporal agregado al DOM, click(), remove()')
+  verificar(/campo\.value\s*=\s*url\b/.test(cuerpoDescargarPdfDirecto) && /formulario\.method = 'POST'/.test(cuerpoDescargarPdfDirecto) && /formulario\.action = '\/api\/archivos\/descargar'/.test(cuerpoDescargarPdfDirecto), '4. El formulario envía la URL real recibida (nunca un objectUrl/blob local) a la ruta del mismo origen')
+  verificar(/contentDispositionAdjunto\(/.test(readFileSync('app/api/archivos/descargar/route.ts', 'utf8')), '4b. El nombre del archivo lo fija el servidor (Content-Disposition attachment), no el navegador')
+  verificar(!/\.target\s*=/.test(cuerpoDescargarPdfDirecto), '4c. Sin target: la descarga no abre pestañas nuevas')
+  verificar(/document\.body\.appendChild\(formulario\)/.test(cuerpoDescargarPdfDirecto) && /formulario\.submit\(\)/.test(cuerpoDescargarPdfDirecto) && /formulario\.remove\(\)/.test(cuerpoDescargarPdfDirecto), '4d. Patrón exacto: <form> temporal agregado al DOM, submit(), remove()')
 
   // ============================================================
   // 5-6b. El botón "Descargar PDF" llama a descargarPdfDirecto con
   //       archivo.url (la URL de descarga real) — nunca con una
   //       versión ya envuelta en blob.
   // ============================================================
-  verificar(cuerpoPanel.includes("a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)") && cuerpoPanel.includes("{ accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }"), '5. El botón "Descargar PDF" llama a descargarPdfDirecto con la URL de descarga (archivo.url), de forma síncrona y directa')
+  verificar(cuerpoPanel.includes("a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url)") && cuerpoPanel.includes("{ accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }"), '5. El botón "Descargar PDF" llama a descargarPdfDirecto con la URL de descarga (archivo.url), de forma síncrona y directa')
   verificar(cuerpoPanel.includes("a.accion === 'ver' ? window.open(a.url, '_blank')") && cuerpoPanel.includes("{ accion: 'ver', url: archivo.urlVer, etiqueta: '👁️ Ver PDF' }"), '6. El botón "Ver PDF" abre archivo.urlVer en una pestaña nueva')
   verificar(!cuerpoPanel.includes('descargarArchivoForzado'), '6b. La variante anterior basada en Blob (descargarArchivoForzado) fue eliminada por completo — no queda ningún rastro')
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { gunzipSync } from 'node:zlib'
-import { autenticarRequestApi } from '@/lib/server/authApi'
+import { autenticarRequestApi, leerFormularioPost, respuestaErrorNavegacion } from '@/lib/server/authApi'
 import { generarPdfBuffer, nombreArchivoPdf } from '@/lib/documentGen/generarPdfServidor'
 import { extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -30,22 +30,30 @@ const IDENTIFICADOR_VISTA_PREVIA = 'VISTA PREVIA — PENDIENTE DE APROBACIÓN'
 // comprime con gzip antes de codificar en base64url para mantener la
 // URL dentro de límites seguros, sin depender de ninguna persistencia
 // ni de un segundo viaje al servidor para "guardar" el borrador.
-export async function GET(req: NextRequest) {
+// Solo POST: la credencial viaja en el CUERPO del formulario, nunca en la
+// URL (historial, logs, enlaces compartidos). GET se rechaza siempre.
+export function GET() {
+  return respuestaErrorNavegacion('Abre la vista previa desde el Chat.', 405, { Allow: 'POST' })
+}
+
+export async function POST(req: NextRequest) {
   try {
-    const token = req.nextUrl.searchParams.get('token')
-    const datosComprimidos = req.nextUrl.searchParams.get('datos')
+    const parametros = await leerFormularioPost(req)
+    if (!parametros) return respuestaErrorNavegacion('Solicitud de vista previa inválida.', 400)
+    const token = parametros.get('token')
+    const datosComprimidos = parametros.get('datos')
     // Validación explícita del tipo de documento (corrección "el
     // adjunto de planeación abre la hoja de evaluación") — esta ruta
     // SOLO genera la planeación completa; nunca decide qué generar
     // solo por a qué endpoint llegó la petición ni por el nombre del
     // archivo. Un tipoDocumento ausente o distinto de "planeacion" es
     // un error controlado, nunca un valor por defecto silencioso.
-    const tipoDocumento = req.nextUrl.searchParams.get('tipoDocumento')
+    const tipoDocumento = parametros.get('tipoDocumento')
     if (tipoDocumento !== 'planeacion') {
-      return NextResponse.json({ error: 'Tipo de documento inválido para esta vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Tipo de documento inválido para esta vista previa.', 400)
     }
     if (!token || !datosComprimidos) {
-      return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Faltan parámetros para generar la vista previa.', 400)
     }
     // modo (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar
     // PDF'"): 'ver' sirve el MISMO pdf en línea (para abrir en una
@@ -55,11 +63,11 @@ export async function GET(req: NextRequest) {
     // Content-Type como binario genérico en vez de intentar mostrarlo
     // en su visor integrado. Nunca cambia el buffer generado, solo las
     // cabeceras de la respuesta.
-    const modo = req.nextUrl.searchParams.get('modo') === 'ver' ? 'ver' : 'descargar'
+    const modo = parametros.get('modo') === 'ver' ? 'ver' : 'descargar'
 
     const auth = await autenticarRequestApi(token)
     if (!auth.ok) {
-      return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
+      return respuestaErrorNavegacion(auth.mensaje, auth.status)
     }
     const docenteId = auth.user.id
     const supabase = auth.supabase
@@ -76,7 +84,7 @@ export async function GET(req: NextRequest) {
       zonaHoraria = datos.zonaHoraria ?? null
       grupoId = datos.grupoId ?? null
     } catch {
-      return NextResponse.json({ error: 'Datos de la vista previa inválidos.' }, { status: 400 })
+      return respuestaErrorNavegacion('Datos de la vista previa inválidos.', 400)
     }
 
     // Planeación de un grupo (grupoId, desde la sesión del Chat): grado y
@@ -88,8 +96,8 @@ export async function GET(req: NextRequest) {
     // sesión). Enlaces anteriores sin grupoId no tienen asociación académica
     // verificable y conservan el encabezado del perfil, por compatibilidad.
     const grupo = grupoId ? await leerGrupoDelDocente(supabase, grupoId, docenteId) : null
-    if (grupo === 'error') return NextResponse.json({ error: 'No se pudo verificar el grupo.' }, { status: 500 })
-    if (grupo === 'ajeno') return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
+    if (grupo === 'error') return respuestaErrorNavegacion('No se pudo verificar el grupo.', 500)
+    if (grupo === 'ajeno') return respuestaErrorNavegacion('No tienes acceso a este grupo.', 403)
     const { data: perfilDocente } = await supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single()
     const perfil = perfilConGrupoAcademico(perfilDocente, grupo)
 
@@ -120,7 +128,7 @@ export async function GET(req: NextRequest) {
           },
     })
   } catch (err) {
-    console.error('Error en GET /api/planeaciones/vista-previa-documento:', err)
-    return NextResponse.json({ error: 'No fue posible generar la vista previa.' }, { status: 500 })
+    console.error('Error en POST /api/planeaciones/vista-previa-documento:', err instanceof Error ? err.message : 'desconocido')
+    return respuestaErrorNavegacion('No fue posible generar la vista previa.', 500)
   }
 }

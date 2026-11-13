@@ -212,9 +212,35 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
 // (plural, ver "Implementar soporte completo para múltiples
 // fotografías") se aligera igual, una por una — un mensaje de varias
 // fotos puede pesar varios MB de base64, mucho más que una sola.
+// Vistas previas de planeación/hoja: su URL es solo una REFERENCIA (ruta
+// + tipoDocumento + datos + modo). Un `token=` (credencial de sesión de
+// mensajes anteriores a esta corrección) nunca se guarda — ni en el
+// navegador ni en mensajes_chat —; la tarjeta las abre con la sesión
+// VIGENTE. Las URL firmadas de Supabase (otro origen) no se tocan.
+export function sinTokenVistaPrevia<T extends string | undefined>(url: T): T {
+  if (!url || !url.startsWith('/api/planeaciones/vista-previa-') || !url.includes('?')) return url
+  const [ruta, consulta] = [url.slice(0, url.indexOf('?')), url.slice(url.indexOf('?') + 1)]
+  const parametros = consulta.split('&').filter((par) => par !== '' && !/^token(=|$)/i.test(par))
+  return (parametros.length > 0 ? `${ruta}?${parametros.join('&')}` : ruta) as T
+}
+
+function archivoSinTokenVistaPrevia(archivo: ArchivoGeneradoInfo): ArchivoGeneradoInfo {
+  const url = sinTokenVistaPrevia(archivo.url)
+  const urlVer = sinTokenVistaPrevia(archivo.urlVer)
+  return url === archivo.url && urlVer === archivo.urlVer ? archivo : { ...archivo, url, ...(archivo.urlVer !== undefined ? { urlVer } : {}) }
+}
+
+export function documentoActivoSinTokenVistaPrevia(documentoActivo: DocumentoActivoGuardado | null): DocumentoActivoGuardado | null {
+  if (!documentoActivo?.archivosGenerados) return documentoActivo
+  const archivosGenerados = Object.fromEntries(Object.entries(documentoActivo.archivosGenerados).map(([tipo, archivo]) => [tipo, archivoSinTokenVistaPrevia(archivo)]))
+  return { ...documentoActivo, archivosGenerados }
+}
+
 function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversacion[] {
   return mensajes.map((m) => {
     let ligero = m
+    if (ligero.archivo) ligero = { ...ligero, archivo: archivoSinTokenVistaPrevia(ligero.archivo) }
+    if (ligero.archivos) ligero = { ...ligero, archivos: ligero.archivos.map(archivoSinTokenVistaPrevia) }
     if (ligero.imagen) ligero = { ...ligero, imagen: { base64: '', tipo: ligero.imagen.tipo, nombreArchivo: ligero.imagen.nombreArchivo } }
     if (ligero.imagenes) ligero = { ...ligero, imagenes: ligero.imagenes.map((img) => ({ base64: '', tipo: img.tipo })) }
     // Propuesta de lista oficial: el token y la vista solo se
@@ -234,7 +260,7 @@ export function guardarConversacion(id: string, mensajes: MensajeConversacion[],
     version: VERSION,
     titulo,
     mensajes: aligerarParaGuardar(mensajesRecortados),
-    documentoActivo,
+    documentoActivo: documentoActivoSinTokenVistaPrevia(documentoActivo),
     actualizadaEn,
   }
   escribir(PREFIJO_CONVERSACION + id, JSON.stringify(datos))
@@ -731,7 +757,7 @@ async function migrarConversacion(
     if (error) throw error
   }
   if (remota.documento_activo == null && c.documentoActivo) {
-    const { error } = await supabase.from('conversaciones_chat').update({ documento_activo: c.documentoActivo }).eq('id', c.remotoId).is('documento_activo', null)
+    const { error } = await supabase.from('conversaciones_chat').update({ documento_activo: documentoActivoSinTokenVistaPrevia(c.documentoActivo) }).eq('id', c.remotoId).is('documento_activo', null)
     if (error) throw error
   }
   const actualizada = c.actualizadaEn > 1e15 ? Math.floor(c.actualizadaEn / 1000) : c.actualizadaEn

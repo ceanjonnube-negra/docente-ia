@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { autenticarRequestApi } from '@/lib/server/authApi'
+import { autenticarRequestApi, leerFormularioPost, respuestaErrorNavegacion } from '@/lib/server/authApi'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 import { generarHojaSeguimientoPdfBuffer } from '@/lib/documentGen/generarHojaSeguimientoPdf'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -38,33 +38,41 @@ type DatosVistaPrevia = {
 // cuerpos de petición, solo reubicado aquí por esa restricción del
 // navegador. No hay alumnos ni ningún otro dato de un alumno en la
 // URL — el roster real se obtiene aquí mismo, server-side, con RLS.
-export async function GET(req: NextRequest) {
+// Solo POST: la credencial viaja en el CUERPO del formulario, nunca en la
+// URL (historial, logs, enlaces compartidos). GET se rechaza siempre.
+export function GET() {
+  return respuestaErrorNavegacion('Abre la vista previa desde el Chat.', 405, { Allow: 'POST' })
+}
+
+export async function POST(req: NextRequest) {
   try {
-    const token = req.nextUrl.searchParams.get('token')
-    const datosCodificados = req.nextUrl.searchParams.get('datos')
+    const parametros = await leerFormularioPost(req)
+    if (!parametros) return respuestaErrorNavegacion('Solicitud de vista previa inválida.', 400)
+    const token = parametros.get('token')
+    const datosCodificados = parametros.get('datos')
     // Validación explícita del tipo de documento (corrección "el
     // adjunto de planeación abre la hoja de evaluación") — esta ruta
     // SOLO genera el instrumento grupal; nunca decide qué generar solo
     // por a qué endpoint llegó la petición ni por el nombre del
     // archivo. Un tipoDocumento ausente o distinto de "hoja_evaluacion"
     // es un error controlado, nunca un valor por defecto silencioso.
-    const tipoDocumento = req.nextUrl.searchParams.get('tipoDocumento')
+    const tipoDocumento = parametros.get('tipoDocumento')
     if (tipoDocumento !== 'hoja_evaluacion') {
-      return NextResponse.json({ error: 'Tipo de documento inválido para esta vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Tipo de documento inválido para esta vista previa.', 400)
     }
     if (!token || !datosCodificados) {
-      return NextResponse.json({ error: 'Faltan parámetros para generar la vista previa.' }, { status: 400 })
+      return respuestaErrorNavegacion('Faltan parámetros para generar la vista previa.', 400)
     }
     // modo — mismo criterio que la hermana vista-previa-documento
     // (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar PDF'"):
     // 'ver' sirve el mismo pdf en línea; 'descargar' (default) fuerza
     // la descarga con application/octet-stream. Nunca cambia el
     // buffer generado, solo las cabeceras de la respuesta.
-    const modo = req.nextUrl.searchParams.get('modo') === 'ver' ? 'ver' : 'descargar'
+    const modo = parametros.get('modo') === 'ver' ? 'ver' : 'descargar'
 
     const auth = await autenticarRequestApi(token)
     if (!auth.ok) {
-      return NextResponse.json({ error: auth.mensaje }, { status: auth.status })
+      return respuestaErrorNavegacion(auth.mensaje, auth.status)
     }
     const docenteId = auth.user.id
     const supabase = auth.supabase
@@ -73,10 +81,10 @@ export async function GET(req: NextRequest) {
     try {
       datos = JSON.parse(Buffer.from(datosCodificados, 'base64').toString('utf-8'))
     } catch {
-      return NextResponse.json({ error: 'Datos de la vista previa inválidos.' }, { status: 400 })
+      return respuestaErrorNavegacion('Datos de la vista previa inválidos.', 400)
     }
     if (!datos.grupoId || !REGEX_UUID.test(datos.grupoId) || !datos.nombreProyecto?.trim()) {
-      return NextResponse.json({ error: 'Datos de la vista previa inválidos.' }, { status: 400 })
+      return respuestaErrorNavegacion('Datos de la vista previa inválidos.', 400)
     }
 
     // El grupo se verifica explícitamente contra el docente real de la
@@ -88,10 +96,10 @@ export async function GET(req: NextRequest) {
       .eq('id', datos.grupoId)
       .maybeSingle()
     if (errorGrupo) {
-      return NextResponse.json({ error: 'No se pudo verificar el grupo.' }, { status: 500 })
+      return respuestaErrorNavegacion('No se pudo verificar el grupo.', 500)
     }
     if (!grupo || grupo.docente_id !== docenteId) {
-      return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
+      return respuestaErrorNavegacion('No tienes acceso a este grupo.', 403)
     }
 
     const [{ data: roster, error: errorRoster }, { data: perfil }] = await Promise.all([
@@ -99,7 +107,7 @@ export async function GET(req: NextRequest) {
       supabase.from('perfiles_docentes').select('*').eq('id', docenteId).single(),
     ])
     if (errorRoster) {
-      return NextResponse.json({ error: 'No se pudo leer la lista del grupo para generar la vista previa.' }, { status: 500 })
+      return respuestaErrorNavegacion('No se pudo leer la lista del grupo para generar la vista previa.', 500)
     }
 
     // Los indicadores del borrador son texto libre (extraídos del bloque
@@ -143,7 +151,7 @@ export async function GET(req: NextRequest) {
           },
     })
   } catch (err) {
-    console.error('Error en GET /api/planeaciones/vista-previa-hoja:', err)
-    return NextResponse.json({ error: 'No fue posible generar la vista previa.' }, { status: 500 })
+    console.error('Error en POST /api/planeaciones/vista-previa-hoja:', err instanceof Error ? err.message : 'desconocido')
+    return respuestaErrorNavegacion('No fue posible generar la vista previa.', 500)
   }
 }

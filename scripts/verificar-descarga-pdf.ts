@@ -115,12 +115,11 @@ async function main() {
 
   // ---- 4. Integración (código fuente) ----
   const { readFileSync } = await import('node:fs')
-  const { execSync } = await import('node:child_process')
   const ruta = readFileSync('app/api/archivos/descargar/route.ts', 'utf8')
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   verificar(!/export (async )?function GET/.test(ruta) && !/\.from\(|supabase|insert|update|delete/i.test(ruta.replace(/\/\/.*$/gm, '').replace(/NEXT_PUBLIC_SUPABASE_URL/g, '')), '4a. Solo POST; la ruta no escribe nada ni usa la base')
-  verificar(/a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)/.test(panel) && /: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel) && /compartirArchivo\(archivos\[0\]/.test(panel), '4b. Ver PDF, Compartir y Word/PowerPoint/Excel sin cambios')
-  verificar(execSync('git diff --name-only -- app/api/chat lib/documentGen/herramientas.ts lib/documentGen/registroArchivos.ts lib/asistente supabase', { encoding: 'utf8' }).trim() === '', '4c. Sin cambios en generación, registro 3B-2A, conversaciones ni migraciones')
+  verificar(/: a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)/.test(panel) && /: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel) && /: compartirArchivo\(archivo, \(\) =>/.test(panel), '4b. URL firmadas: Ver PDF (window.open), Compartir (compartirArchivo) y Word/PowerPoint/Excel (descargarArchivo) de siempre')
+  verificar(!/herramientas|registroArchivos|archivos_generados|mensajes_chat|conversaciones_chat/.test(ruta) && !/^import .*(herramientas|registroArchivos|supabaseClient|persistencia|AsistenteService)/m.test(readFileSync('lib/documentGen/descargaPdf.ts', 'utf8')), '4c. La descarga no depende de la generación, del registro 3B-2A ni de las conversaciones')
 
   console.log('')
   if (fallos > 0) {

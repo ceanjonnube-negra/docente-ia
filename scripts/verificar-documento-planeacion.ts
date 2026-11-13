@@ -21,8 +21,14 @@ import { NextRequest } from 'next/server'
 import { extraerTextoCompletoBorrador } from '../lib/planeacion/extraerBorrador'
 import { generarPdfBuffer } from '../lib/documentGen/generarPdfServidor'
 import { generarHojaSeguimientoPdfBuffer } from '../lib/documentGen/generarHojaSeguimientoPdf'
-import { GET as GET_vistaPreviaDocumento } from '../app/api/planeaciones/vista-previa-documento/route'
-import { GET as GET_vistaPreviaHoja } from '../app/api/planeaciones/vista-previa-hoja/route'
+import { POST as POST_vistaPreviaDocumento } from '../app/api/planeaciones/vista-previa-documento/route'
+import { POST as POST_vistaPreviaHoja } from '../app/api/planeaciones/vista-previa-hoja/route'
+
+// Las vistas previas se piden por POST con los campos en el cuerpo (el
+// token de sesión nunca viaja en la URL) — ver las rutas vista-previa-documento y vista-previa-hoja.
+function formularioPost(ruta: string, campos: Record<string, string>): NextRequest {
+  return new NextRequest(`http://localhost${ruta}`, { method: 'POST', body: new URLSearchParams(campos) })
+}
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -132,8 +138,8 @@ async function main() {
   //    nunca impide el otro).
   // ============================================================
   {
-    const iPlaneacion = rutaChat.indexOf('vista-previa-documento?tipoDocumento=planeacion&token=')
-    const iHoja = rutaChat.indexOf('vista-previa-hoja?tipoDocumento=hoja_evaluacion&token=')
+    const iPlaneacion = rutaChat.indexOf('vista-previa-documento?tipoDocumento=planeacion&datos=')
+    const iHoja = rutaChat.indexOf('vista-previa-hoja?tipoDocumento=hoja_evaluacion&datos=')
     verificar(iPlaneacion !== -1 && iHoja !== -1, '5a. route.ts construye una URL de vista previa para AMBOS documentos (planeación y hoja)')
     verificar(iPlaneacion < iHoja, '5b. El adjunto de la planeación se construye ANTES que el de la hoja (aparece primero en pantalla)')
 
@@ -189,8 +195,8 @@ async function main() {
   {
     verificar(rutaChat.includes("tipoDocumento: 'planeacion' as const"), '8a. El descriptor de la planeación declara tipoDocumento="planeacion" explícitamente')
     verificar(rutaChat.includes("tipoDocumento: 'hoja_evaluacion' as const"), '8b. El descriptor de la hoja declara tipoDocumento="hoja_evaluacion" explícitamente')
-    verificar(rutaChat.includes('tipoDocumento=planeacion&token='), '8c. La URL de la planeación lleva tipoDocumento=planeacion como parámetro explícito, no solo en el descriptor')
-    verificar(rutaChat.includes('tipoDocumento=hoja_evaluacion&token='), '8d. La URL de la hoja lleva tipoDocumento=hoja_evaluacion como parámetro explícito')
+    verificar(rutaChat.includes('tipoDocumento=planeacion&datos='), '8c. La URL de la planeación lleva tipoDocumento=planeacion como parámetro explícito, no solo en el descriptor')
+    verificar(rutaChat.includes('tipoDocumento=hoja_evaluacion&datos='), '8d. La URL de la hoja lleva tipoDocumento=hoja_evaluacion como parámetro explícito')
   }
 
   // 9. Cada ruta de vista previa VALIDA explícitamente su tipoDocumento
@@ -200,20 +206,20 @@ async function main() {
   //    llamar a autenticarRequestApi, así que un token falso basta
   //    para probar que el rechazo ocurre primero).
   {
-    const reqSinTipo = new NextRequest('http://localhost/api/planeaciones/vista-previa-documento?token=falso&datos=falso')
-    const resSinTipo = await GET_vistaPreviaDocumento(reqSinTipo)
+    const reqSinTipo = formularioPost('/api/planeaciones/vista-previa-documento', { token: 'falso', datos: 'falso' })
+    const resSinTipo = await POST_vistaPreviaDocumento(reqSinTipo)
     verificar(resSinTipo.status === 400, '9a. vista-previa-documento responde 400 si falta tipoDocumento — nunca genera nada por defecto')
 
-    const reqTipoIncorrecto = new NextRequest('http://localhost/api/planeaciones/vista-previa-documento?tipoDocumento=hoja_evaluacion&token=falso&datos=falso')
-    const resTipoIncorrecto = await GET_vistaPreviaDocumento(reqTipoIncorrecto)
+    const reqTipoIncorrecto = formularioPost('/api/planeaciones/vista-previa-documento', { tipoDocumento: 'hoja_evaluacion', token: 'falso', datos: 'falso' })
+    const resTipoIncorrecto = await POST_vistaPreviaDocumento(reqTipoIncorrecto)
     verificar(resTipoIncorrecto.status === 400, '9b. vista-previa-documento rechaza tipoDocumento="hoja_evaluacion" — nunca genera la hoja bajo esta ruta')
 
-    const reqHojaSinTipo = new NextRequest('http://localhost/api/planeaciones/vista-previa-hoja?token=falso&datos=falso')
-    const resHojaSinTipo = await GET_vistaPreviaHoja(reqHojaSinTipo)
+    const reqHojaSinTipo = formularioPost('/api/planeaciones/vista-previa-hoja', { token: 'falso', datos: 'falso' })
+    const resHojaSinTipo = await POST_vistaPreviaHoja(reqHojaSinTipo)
     verificar(resHojaSinTipo.status === 400, '9c. vista-previa-hoja responde 400 si falta tipoDocumento')
 
-    const reqHojaTipoIncorrecto = new NextRequest('http://localhost/api/planeaciones/vista-previa-hoja?tipoDocumento=planeacion&token=falso&datos=falso')
-    const resHojaTipoIncorrecto = await GET_vistaPreviaHoja(reqHojaTipoIncorrecto)
+    const reqHojaTipoIncorrecto = formularioPost('/api/planeaciones/vista-previa-hoja', { tipoDocumento: 'planeacion', token: 'falso', datos: 'falso' })
+    const resHojaTipoIncorrecto = await POST_vistaPreviaHoja(reqHojaTipoIncorrecto)
     verificar(resHojaTipoIncorrecto.status === 400, '9d. vista-previa-hoja rechaza tipoDocumento="planeacion" — nunca genera la planeación bajo esta ruta')
   }
 

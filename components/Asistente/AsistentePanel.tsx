@@ -20,6 +20,7 @@ import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { supabase } from '@/lib/supabaseClient'
 import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE } from '@/lib/asistente/AsistenteService'
 import { esDocumentoFormal } from '@/lib/asistente/documentos'
 import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
@@ -203,30 +204,8 @@ async function descargarArchivo(url: string, nombreSugerido: string) {
 // nativo a la ruta del MISMO origen /api/archivos/descargar, que devuelve
 // el archivo como application/octet-stream + attachment. La URL firmada
 // viaja en el cuerpo, no en la barra de direcciones.
-//
-// Excepción: las vistas previas de planeación y hoja de evaluación ya son
-// rutas del MISMO origen (/api/planeaciones/vista-previa-documento y
-// /api/planeaciones/vista-previa-hoja) que responden attachment en modo
-// descargar; ahí basta el enlace con `download`, que Safari sí respeta.
-// Lista cerrada: nada más (ni "//", ni otros esquemas, ni otras rutas) se
-// toma como interno; todo lo demás va al formulario, que lo valida.
-const RUTA_INTERNA_PDF = /^\/api\/planeaciones\/vista-previa-(documento|hoja)\?[^\s\\]*$/
 
-export function mecanismoDescargaPdf(url: string): 'enlace-interno' | 'formulario' {
-  return RUTA_INTERNA_PDF.test(url) ? 'enlace-interno' : 'formulario'
-}
-
-export function descargarPdfDirecto(url: string, nombreSugerido: string) {
-  if (mecanismoDescargaPdf(url) === 'enlace-interno') {
-    const enlace = document.createElement('a')
-    enlace.href = url
-    enlace.download = nombreSugerido
-    enlace.rel = 'noopener'
-    document.body.appendChild(enlace)
-    enlace.click()
-    enlace.remove()
-    return
-  }
+export function descargarPdfDirecto(url: string) {
   const formulario = document.createElement('form')
   formulario.method = 'POST'
   formulario.action = '/api/archivos/descargar'
@@ -239,6 +218,119 @@ export function descargarPdfDirecto(url: string, nombreSugerido: string) {
   document.body.appendChild(formulario)
   formulario.submit()
   formulario.remove()
+}
+
+// VISTAS PREVIAS DE PLANEACIÓN (Word/PDF de la planeación y PDF de la hoja)
+// — se regeneran en el servidor a partir de `datos` y se abren SIEMPRE con
+// un <form> POST: el token de la sesión VIGENTE (supabase.auth.getSession(),
+// que lo renueva si hace falta) viaja como campo del cuerpo, nunca en la
+// URL (historial, logs, enlaces compartidos). La URL guardada en el
+// mensaje es solo una referencia: de ella se toman la ruta y sus campos, y
+// un `token` histórico que todavía traiga se DESCARTA siempre — nunca se
+// reutiliza ni se reenvía. Lista cerrada de rutas relativas exactas: nada
+// con "//", otros esquemas u orígenes se toma como vista previa.
+const RUTAS_VISTA_PREVIA = new Set([
+  '/api/planeaciones/vista-previa-documento',
+  '/api/planeaciones/vista-previa-documento-word',
+  '/api/planeaciones/vista-previa-hoja',
+])
+const TIPO_MIME_VISTA_PREVIA: Record<string, string> = {
+  pdf: 'application/pdf',
+  word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
+export type ReferenciaVistaPrevia = { ruta: string; campos: [string, string][] }
+
+export function referenciaVistaPrevia(url: string | undefined): ReferenciaVistaPrevia | null {
+  if (!url || /[\s\\]/.test(url)) return null
+  const separador = url.indexOf('?')
+  const ruta = separador === -1 ? url : url.slice(0, separador)
+  if (!RUTAS_VISTA_PREVIA.has(ruta)) return null
+  const consulta = separador === -1 ? '' : url.slice(separador + 1)
+  return { ruta, campos: [...new URLSearchParams(consulta).entries()].filter(([clave]) => clave.toLowerCase() !== 'token') }
+}
+
+async function tokenSesionVigente(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token ?? null
+  } catch {
+    return null
+  }
+}
+
+// action = SOLO la ruta: ni el borrador ni la credencial forman parte de
+// la URL — ambos van como campos ocultos del cuerpo del POST.
+function enviarFormularioVistaPrevia(referencia: ReferenciaVistaPrevia, token: string, destino?: string) {
+  const formulario = document.createElement('form')
+  formulario.method = 'POST'
+  formulario.action = referencia.ruta
+  formulario.style.display = 'none'
+  if (destino) formulario.target = destino
+  for (const [clave, valor] of [...referencia.campos, ['token', token] as [string, string]]) {
+    const campo = document.createElement('input')
+    campo.type = 'hidden'
+    campo.name = clave
+    campo.value = valor
+    formulario.appendChild(campo)
+  }
+  document.body.appendChild(formulario)
+  formulario.submit()
+  formulario.remove()
+}
+
+// VER — la pestaña se abre DENTRO del clic (Safari en iPhone bloquea
+// window.open después de un await) y el formulario se envía a esa misma
+// pestaña en cuanto se tiene la sesión vigente. Sin sesión, la pestaña
+// vacía se cierra y la tarjeta lo avisa — nunca una pestaña en blanco.
+export function verVistaPrevia(url: string, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(url)
+  if (!referencia) { alFallar(); return }
+  const nombreVentana = `vista-previa-${Date.now()}`
+  const ventana = window.open('', nombreVentana)
+  if (!ventana) { alFallar(); return }
+  void tokenSesionVigente().then((token) => {
+    if (!token) { ventana.close(); alFallar(); return }
+    enviarFormularioVistaPrevia(referencia, token, nombreVentana)
+  })
+}
+
+// DESCARGAR (PDF y Word) — el mismo formulario en la pestaña actual: la
+// respuesta es attachment, así que el navegador guarda el archivo sin
+// salir del Chat IA. Sin sesión vigente no se envía nada.
+export async function descargarVistaPrevia(url: string, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(url)
+  const token = referencia ? await tokenSesionVigente() : null
+  if (!referencia || !token) { alFallar(); return }
+  enviarFormularioVistaPrevia(referencia, token)
+}
+
+// COMPARTIR — solo el ARCHIVO (Web Share con files), nunca una URL: la
+// referencia lleva el borrador y no sirve sin la sesión del docente. Si
+// el dispositivo no puede compartir archivos, se descarga.
+export async function compartirVistaPrevia(archivo: { tipo: string; nombre: string; url: string }, alFallar: () => void) {
+  const referencia = referenciaVistaPrevia(archivo.url)
+  const token = referencia ? await tokenSesionVigente() : null
+  if (!referencia || !token) { alFallar(); return }
+  const nav = navigator as Navigator & { canShare?: (data?: ShareData) => boolean }
+  try {
+    const cuerpo = new FormData()
+    for (const [clave, valor] of referencia.campos) cuerpo.append(clave, valor)
+    if (cuerpo.has('modo')) cuerpo.set('modo', 'descargar')
+    cuerpo.append('token', token)
+    const res = await fetch(referencia.ruta, { method: 'POST', body: cuerpo })
+    if (!res.ok) { alFallar(); return }
+    const blob = await res.blob()
+    const archivoCompartido = new File([blob], archivo.nombre, { type: TIPO_MIME_VISTA_PREVIA[archivo.tipo] || 'application/octet-stream' })
+    if (nav.canShare?.({ files: [archivoCompartido] })) {
+      await nav.share({ files: [archivoCompartido], title: archivo.nombre })
+      return
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return // el docente canceló la hoja de compartir, no es un error
+    alFallar()
+    return
+  }
+  enviarFormularioVistaPrevia(referencia, token)
 }
 
 async function compartirArchivo(archivo: { tipo: string; nombre: string; url: string }, alCopiarEnlace: () => void) {
@@ -312,6 +404,16 @@ function TarjetaDescarga({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- valor derivado de Date.now() (impuro por definición); solo se necesita una vez al montar, no reactividad continua.
     setVencido(Date.now() - creadoEn > VENCIMIENTO_URL_MS)
   }, [creadoEn])
+  // Las vistas previas de planeación nunca "vencen": se regeneran desde
+  // sus datos con la sesión vigente, así que las históricas siguen
+  // pudiéndose abrir.
+  const soloVistasPrevias = archivos.every((archivo) => referenciaVistaPrevia(archivo.url) !== null)
+  const ocultarPorVencido = vencido && !soloVistasPrevias
+  const [fallaVistaPrevia, setFallaVistaPrevia] = useState(false)
+  const avisarFallaVistaPrevia = () => { setFallaVistaPrevia(true); setTimeout(() => setFallaVistaPrevia(false), 4000) }
+  const compartir = (archivo: ArchivoGeneradoInfo) => (referenciaVistaPrevia(archivo.url)
+    ? void compartirVistaPrevia(archivo, avisarFallaVistaPrevia)
+    : compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) }))
   const principal = archivos[0]
   const tamano = formatearTamano(principal.tamanoBytes)
   const fecha = formatearFecha(new Date(creadoEn), obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short' })
@@ -334,21 +436,26 @@ function TarjetaDescarga({
             )}
             {esActivo && <span className="text-purple-600 font-semibold">· Documento activo</span>}
           </p>
-          <p className={`text-xs ${vencido ? 'text-amber-600' : 'text-green-600'}`}>
-            {vencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
+          <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : 'text-green-600'}`}>
+            {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
           </p>
+          {fallaVistaPrevia && (
+            <p className="text-xs text-amber-600">No fue posible abrir la vista previa. Revisa tu sesión e inténtalo de nuevo.</p>
+          )}
         </div>
       </div>
-      {!vencido && (
+      {!ocultarPorVencido && (
         <div className="px-3 pb-3 space-y-1.5">
           {archivos.map((archivo) => {
             // Ver, Descargar (ver accionesDescargaArchivo) y, abajo,
             // Compartir: tres acciones independientes.
             const acciones = accionesDescargaArchivo(archivo)
             const ejecutar = (a: AccionArchivo) =>
-              a.accion === 'ver' ? window.open(a.url, '_blank')
-                : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)
-                  : descargarArchivo(a.url, archivo.nombre)
+              referenciaVistaPrevia(a.url)
+                ? (a.accion === 'ver' ? verVistaPrevia(a.url, avisarFallaVistaPrevia) : void descargarVistaPrevia(a.url, avisarFallaVistaPrevia))
+                : a.accion === 'ver' ? window.open(a.url, '_blank')
+                  : a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url)
+                    : descargarArchivo(a.url, archivo.nombre)
             return (
               <div key={archivo.tipo} className="flex gap-1.5">
                 {acciones.map((a) => (
@@ -369,7 +476,7 @@ function TarjetaDescarga({
           })}
           {archivos.length === 1 ? (
             <button
-              onClick={() => compartirArchivo(archivos[0], () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+              onClick={() => compartir(archivos[0])}
               className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
             >
               {enlaceCopiado ? '✅ Enlace copiado' : '📤 Compartir'}
@@ -387,7 +494,7 @@ function TarjetaDescarga({
                   {archivos.map((archivo) => (
                     <button
                       key={archivo.tipo}
-                      onClick={() => compartirArchivo(archivo, () => { setEnlaceCopiado(true); setTimeout(() => setEnlaceCopiado(false), 2000) })}
+                      onClick={() => compartir(archivo)}
                       className="flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
                     >
                       {enlaceCopiado ? '✅ Enlace copiado' : `Compartir ${NOMBRE_FORMATO[archivo.tipo] || archivo.tipo}`}

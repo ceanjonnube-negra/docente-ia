@@ -133,7 +133,7 @@ async function main() {
   // ============================================================
   verificar(cuerpoPanel.includes('async function descargarArchivo(url: string, nombreSugerido: string)'), '10a. descargarArchivo (mecanismo real de "Descargar Word") sigue existiendo sin cambios')
   verificar(cuerpoPanel.includes("a.accion === 'ver' ? window.open(a.url, '_blank')") && cuerpoPanel.includes("{ accion: 'ver', url: archivo.urlVer, etiqueta: '👁️ Ver PDF' }"), '10b. "Ver PDF" abre archivo.urlVer')
-  verificar(cuerpoPanel.includes('function descargarPdfDirecto(') && cuerpoPanel.includes("a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url, archivo.nombre)") && cuerpoPanel.includes("{ accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }"), '10c. "Descargar PDF" usa descargarPdfDirecto con la URL de descarga')
+  verificar(cuerpoPanel.includes('function descargarPdfDirecto(') && cuerpoPanel.includes("a.accion === 'descargar-directo' ? descargarPdfDirecto(a.url)") && cuerpoPanel.includes("{ accion: 'descargar-directo', url: archivo.url, etiqueta: '⬇️ Descargar PDF' }"), '10c. "Descargar PDF" usa descargarPdfDirecto con la URL de descarga')
   verificar(cuerpoPanel.includes('async function compartirArchivo('), '10d. Compartir (compartirArchivo) sigue existiendo sin cambios')
   {
     const bloqueTarjeta = cuerpoPanel
