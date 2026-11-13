@@ -864,6 +864,35 @@ export function combinarConversaciones(locales: ConversacionResumen[], remotasSi
   return [...locales, ...remotasSinCopia.filter((r) => !ids.has(r.id))].sort((a, b) => b.actualizadaEn - a.actualizadaEn)
 }
 
+type FilaMensajeLeida = { id: string; rol: MensajeConversacion['rol']; texto: string; contenido: Record<string, unknown> | null; creado_en: string }
+
+// Filas de mensajes_chat → mensajes locales, solo las de esa conversación
+// (id `<remoto>:<id local>`), en el orden recibido.
+function filasAMensajes(remotoId: string, filas: FilaMensajeLeida[]): MensajeConversacion[] {
+  const prefijo = `${remotoId}:`
+  return filas
+    .filter((f) => f.id.startsWith(prefijo))
+    .map((f) => ({ ...(f.contenido ?? {}), id: f.id.slice(prefijo.length), rol: f.rol, texto: f.texto, creadoEn: Date.parse(f.creado_en) }) as MensajeConversacion)
+}
+
+function ultimoDocumentoFormal(mensajes: MensajeConversacion[]): MensajeConversacion | undefined {
+  return [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
+}
+
+// Mensajes que ya están en Supabase (descargados): se registran como
+// enviados (sin reenvío) y de solo inserción. Recibe la copia YA guardada
+// (aligerada), la misma que después ve la etapa 1.
+function registrarComoEnviados(docenteId: string, remotoId: string, guardados: MensajeConversacion[]) {
+  const estado = leerEstadoSincronizacion(docenteId)
+  estado.soloInsercion = estado.soloInsercion ?? {}
+  for (const m of guardados) {
+    const fila = mensajeAFilaRemota(remotoId, docenteId, m)
+    estado.huellas[fila.id] = huellaDe(fila)
+    estado.soloInsercion[fila.id] = true
+  }
+  escribirEstadoSincronizacion(docenteId, estado)
+}
+
 // Descarga una conversación remota al navegador. Devuelve false si no
 // existe, no es del docente o no tiene mensajes. Nunca pisa una copia
 // local existente (y solo la acepta si su relación es de este docente).
@@ -884,11 +913,7 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
     .order('creado_en', { ascending: false })
     .limit(TOPE_MENSAJES)
   if (errorMensajes) throw errorMensajes
-  const prefijo = `${remotoId}:`
-  const mensajes = ((filas ?? []) as { id: string; rol: MensajeConversacion['rol']; texto: string; contenido: Record<string, unknown> | null; creado_en: string }[])
-    .filter((f) => f.id.startsWith(prefijo))
-    .reverse()
-    .map((f) => ({ ...(f.contenido ?? {}), id: f.id.slice(prefijo.length), rol: f.rol, texto: f.texto, creadoEn: Date.parse(f.creado_en) }) as MensajeConversacion)
+  const mensajes = filasAMensajes(remotoId, (filas ?? []) as FilaMensajeLeida[]).reverse()
   if (mensajes.length === 0) return false
 
   // Relación primero: desde aquí el motor y la etapa 1 usan este id.
@@ -897,7 +922,7 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
   // no hay, el último documento formal del asistente (mismo criterio con
   // el que el chat lo fija al terminar un documento).
   const documentoRemoto = conversacion.documento_activo as DocumentoActivoGuardado | null
-  const ultimoDocumento = [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
+  const ultimoDocumento = ultimoDocumentoFormal(mensajes)
   const documentoActivo = documentoRemoto && mensajes.some((m) => m.id === documentoRemoto.id)
     ? documentoRemoto
     : ultimoDocumento ? { id: ultimoDocumento.id, texto: ultimoDocumento.texto } : null
@@ -906,18 +931,149 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
 
   // Ya están en Supabase: se registran como enviados (sin reenvío) y de
   // solo inserción; la etapa 2 no los vuelve a procesar.
-  const guardados = cargarConversacionPorId(remotoId)?.mensajes ?? []
-  const estado = leerEstadoSincronizacion(docenteId)
-  estado.soloInsercion = estado.soloInsercion ?? {}
-  for (const m of guardados) {
-    const fila = mensajeAFilaRemota(remotoId, docenteId, m)
-    estado.huellas[fila.id] = huellaDe(fila)
-    estado.soloInsercion[fila.id] = true
-  }
-  escribirEstadoSincronizacion(docenteId, estado)
+  registrarComoEnviados(docenteId, remotoId, cargarConversacionPorId(remotoId)?.mensajes ?? [])
   marcarConversacionMigracion(docenteId, remotoId, 'migrada')
   recordarTituloRemoto(docenteId, remotoId, conversacion.titulo)
   return true
+}
+
+// ---------------------------------------------------------------------
+// Sincronización de una conversación que YA tiene copia local (mensajes
+// escritos en otro dispositivo). Fase 1: solo la función; todavía no se
+// llama desde el chat.
+//
+// - Eliminada en Supabase: se retira la copia local (mecanismo 3B-1).
+// - Detección: se leen TODOS los ids y fechas de la conversación (sin
+//   textos), por páginas ordenadas por id, así que no depende del largo.
+//   Solo se descargan completos los que faltan y caben en la copia local
+//   (sus últimos TOPE_MENSAJES, el mismo recorte que guardarConversacion).
+// - Combinación por id: lo local nunca se quita, reemplaza ni reordena
+//   (ediciones y mensajes pendientes de subida incluidos); lo remoto
+//   nuevo se intercala por fecha.
+// - Sin carreras: la copia local se vuelve a leer justo antes de
+//   escribir, sin ninguna espera entre esa lectura y la escritura; lo
+//   creado mientras corría la consulta se conserva.
+// - Lo traído queda como ya enviado y de solo inserción (la etapa 1 no
+//   lo reenvía). Ninguna escritura remota.
+//
+// Quien muestre la conversación en memoria debe guardar antes lo que
+// tenga sin guardar y aplicar `nuevos` con combinarMensajes.
+
+// Filas pedidas por página. El servidor puede devolver menos (límite de
+// filas de PostgREST): la lectura solo termina con una página vacía.
+const PAGINA_IDS = 1000
+
+export type ResultadoSincronizacion =
+  | { estado: 'sin_cambios' | 'sin_remota' | 'sin_copia_local' | 'eliminada' }
+  | { estado: 'actualizada'; nuevos: MensajeConversacion[] }
+
+type ClaveOrden = Pick<MensajeConversacion, 'id' | 'creadoEn'>
+function ordenAntes(a: ClaveOrden, b: ClaveOrden): boolean {
+  return a.creadoEn !== b.creadoEn ? a.creadoEn < b.creadoEn : a.id < b.id
+}
+
+// Intercala por fecha (y id) los remotos cuyo id no existe localmente.
+// Los locales conservan su contenido y su orden relativo.
+export function combinarMensajes<T extends ClaveOrden>(locales: T[], remotos: T[]): T[] {
+  const ids = new Set(locales.map((m) => m.id))
+  const nuevos = [...new Map(remotos.filter((m) => !ids.has(m.id)).map((m) => [m.id, m])).values()]
+    .sort((a, b) => (ordenAntes(a, b) ? -1 : ordenAntes(b, a) ? 1 : 0))
+  if (nuevos.length === 0) return locales
+  const combinados: T[] = []
+  let i = 0
+  for (const local of locales) {
+    while (i < nuevos.length && ordenAntes(nuevos[i], local)) combinados.push(nuevos[i++])
+    combinados.push(local)
+  }
+  return [...combinados, ...nuevos.slice(i)]
+}
+
+// Una sola sincronización a la vez por conversación.
+const sincronizacionesEnCurso = new Map<string, Promise<ResultadoSincronizacion>>()
+
+// Lanza si Supabase falla; en ese caso no se escribió nada.
+export function sincronizarConversacionRemota(docenteId: string, localId: string): Promise<ResultadoSincronizacion> {
+  const clave = `${docenteId}:${localId}`
+  const enCurso = sincronizacionesEnCurso.get(clave)
+  if (enCurso) return enCurso
+  const promesa = ejecutarSincronizacion(docenteId, localId).finally(() => sincronizacionesEnCurso.delete(clave))
+  sincronizacionesEnCurso.set(clave, promesa)
+  return promesa
+}
+
+async function ejecutarSincronizacion(docenteId: string, localId: string): Promise<ResultadoSincronizacion> {
+  if (!cargarConversacionPorId(localId)) return { estado: 'sin_copia_local' }
+  const remotoId = await idRemotoDe(docenteId, localId)
+  const { data: conversacion, error } = await supabase
+    .from('conversaciones_chat')
+    .select('id, eliminada_en')
+    .eq('id', remotoId)
+    .eq('docente_id', docenteId)
+    .maybeSingle()
+  if (error) throw error
+  if (!conversacion) return { estado: 'sin_remota' }
+  if (conversacion.eliminada_en) {
+    await retirarConversacionLocal(docenteId, localId, remotoId)
+    return { estado: 'eliminada' }
+  }
+
+  // Todos los ids y fechas remotos (paginación por id: estable aunque
+  // lleguen mensajes nuevos durante la lectura, y correcta aunque el
+  // servidor devuelva menos filas de las pedidas).
+  const prefijo = `${remotoId}:`
+  const remotos: ClaveOrden[] = []
+  for (let ultimo = ''; ;) {
+    const { data, error: errorIds } = await supabase
+      .from('mensajes_chat')
+      .select('id, creado_en')
+      .eq('conversacion_id', remotoId)
+      .gt('id', ultimo)
+      .order('id', { ascending: true })
+      .limit(PAGINA_IDS)
+    if (errorIds) throw errorIds
+    const pagina = (data ?? []) as { id: string; creado_en: string }[]
+    for (const f of pagina) if (f.id.startsWith(prefijo)) remotos.push({ id: f.id.slice(prefijo.length), creadoEn: Date.parse(f.creado_en) })
+    if (pagina.length === 0) break
+    ultimo = pagina[pagina.length - 1].id
+  }
+
+  // Faltantes que quedarían dentro de la copia local tras combinar.
+  const local = cargarConversacionPorId(localId)
+  if (!local) return { estado: 'sin_copia_local' }
+  const idsLocales = new Set(local.mensajes.map((m) => m.id))
+  const faltantes = combinarMensajes<ClaveOrden>(local.mensajes, remotos)
+    .slice(-TOPE_MENSAJES)
+    .filter((m) => !idsLocales.has(m.id))
+    .map((m) => idMensajeRemoto(remotoId, m.id))
+  if (faltantes.length === 0) return { estado: 'sin_cambios' }
+
+  const filas: FilaMensajeLeida[] = []
+  for (let i = 0; i < faltantes.length; i += LOTE_MIGRACION) {
+    const { data, error: errorMensajes } = await supabase
+      .from('mensajes_chat')
+      .select('id, rol, texto, contenido, creado_en')
+      .eq('conversacion_id', remotoId)
+      .in('id', faltantes.slice(i, i + LOTE_MIGRACION))
+    if (errorMensajes) throw errorMensajes
+    filas.push(...((data ?? []) as FilaMensajeLeida[]))
+  }
+  const traidos = filasAMensajes(remotoId, filas)
+
+  // Desde aquí no hay esperas: se combina con la copia local VIGENTE.
+  const actual = cargarConversacionPorId(localId)
+  if (!actual) return { estado: 'sin_copia_local' }
+  const idsActuales = new Set(actual.mensajes.map((m) => m.id))
+  const agregados = new Set(traidos.filter((m) => !idsActuales.has(m.id)).map((m) => m.id))
+  if (agregados.size === 0) return { estado: 'sin_cambios' }
+  const combinados = combinarMensajes(actual.mensajes, traidos)
+  // Documento activo: pasa al documento formal nuevo solo si el último
+  // de la conversación es uno de los traídos (criterio de la 3A).
+  const ultimoDocumento = ultimoDocumentoFormal(combinados)
+  const documentoActivo = ultimoDocumento && agregados.has(ultimoDocumento.id) ? { id: ultimoDocumento.id, texto: ultimoDocumento.texto } : actual.documentoActivo
+  guardarConversacion(localId, combinados, documentoActivo, actual.titulo)
+  const nuevos = (cargarConversacionPorId(localId)?.mensajes ?? []).filter((m) => agregados.has(m.id))
+  registrarComoEnviados(docenteId, remotoId, nuevos)
+  return { estado: 'actualizada', nuevos }
 }
 
 // ---------------------------------------------------------------------
