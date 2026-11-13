@@ -697,18 +697,27 @@ class AsistenteServiceImpl {
   // envío comparten la misma) y la hora de la última exitosa: un fallo
   // nunca cuenta como actualizada.
   private sincronizacionesEnCurso = new Map<string, Promise<EstadoSincronizacion>>()
+  // sincronizadaEn guarda cuándo EMPEZÓ la última sincronización exitosa
+  // (lo que consultó es lo que había en Supabase a partir de entonces);
+  // iniciadaEn, cuándo empezó la que está en curso.
   private sincronizadaEn = new Map<string, number>()
+  private iniciadaEn = new Map<string, number>()
   private preparandoEnvio = false
 
   private sincronizarConversacion(id: string): Promise<EstadoSincronizacion> {
     const enCurso = this.sincronizacionesEnCurso.get(id)
     if (enCurso) return enCurso
-    const promesa = this.ejecutarSincronizacion(id).finally(() => this.sincronizacionesEnCurso.delete(id))
+    const inicio = Date.now()
+    const promesa = this.ejecutarSincronizacion(id, inicio).finally(() => {
+      this.sincronizacionesEnCurso.delete(id)
+      this.iniciadaEn.delete(id)
+    })
     this.sincronizacionesEnCurso.set(id, promesa)
+    this.iniciadaEn.set(id, inicio)
     return promesa
   }
 
-  private async ejecutarSincronizacion(id: string): Promise<EstadoSincronizacion> {
+  private async ejecutarSincronizacion(id: string, inicio: number): Promise<EstadoSincronizacion> {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const docenteId = session?.user?.id
@@ -717,7 +726,7 @@ class AsistenteServiceImpl {
       const resultado = await sincronizarConversacionRemota(docenteId, id)
       // 'eliminada': la retirada ya avisó a alRetirarConversacion.
       if (resultado.estado === 'eliminada') return 'eliminada'
-      this.sincronizadaEn.set(id, Date.now())
+      this.sincronizadaEn.set(id, inicio)
       if (resultado.estado === 'actualizada' && id === this.conversacionActivaId) {
         const previos = this.sincronizacionDiferida?.id === id ? this.sincronizacionDiferida.nuevos : []
         this.sincronizacionDiferida = { id, nuevos: [...previos, ...resultado.nuevos] }
@@ -732,10 +741,12 @@ class AsistenteServiceImpl {
 
   // Al volver a la app (fase 3B): sincroniza en silencio la conversación
   // activa con el mismo mecanismo que la apertura y el envío (comparten la
-  // sincronización en curso y la hora de la última exitosa). No consulta
-  // tras una ausencia breve ni si la última sincronización exitosa es
-  // reciente. La sesión, el cambio de conversación, la respuesta en curso
-  // y la conversación eliminada los resuelve ejecutarSincronizacion.
+  // sincronización en curso y la hora de la última exitosa). Tras una
+  // ausencia de AUSENCIA_MINIMA_MS o más, consulta salvo que ya haya una
+  // sincronización EMPEZADA después de ocultarse (exitosa o en curso);
+  // una empezada antes no cubre lo escrito durante la ausencia. La
+  // sesión, el cambio de conversación, la respuesta en curso y la
+  // conversación eliminada los resuelve ejecutarSincronizacion.
   private ocultaDesde: number | null = null
 
   alOcultarse() {
@@ -747,10 +758,19 @@ class AsistenteServiceImpl {
     const id = this.conversacionActivaId
     // ocultaDesde se conserva hasta la siguiente ocultación: si llegan
     // visibilitychange y pageshow juntos, los dos ven la misma ausencia.
+    // Sin ocultación registrada (nunca se ocultó en esta página) no hay
+    // ausencia que cubrir: basta cualquier sincronización exitosa.
     const ausencia = this.ocultaDesde === null ? Infinity : Date.now() - this.ocultaDesde
     if (!id || ausencia < AUSENCIA_MINIMA_MS) return
-    if (this.sincronizacionesEnCurso.has(id)) return
-    if (Date.now() - (this.sincronizadaEn.get(id) ?? 0) < VIGENCIA_SINCRONIZACION_MS) return
+    const ocultaDesde = this.ocultaDesde ?? 0
+    const enCurso = this.sincronizacionesEnCurso.get(id)
+    if (enCurso) {
+      // Empezada antes de ocultarse: al terminar se vuelve a evaluar (y,
+      // si sigue siendo necesario, se consulta una vez más).
+      if ((this.iniciadaEn.get(id) ?? 0) < ocultaDesde) void enCurso.then(() => this.alVolverAPrimerPlano())
+      return
+    }
+    if ((this.sincronizadaEn.get(id) ?? -1) >= ocultaDesde) return
     void this.sincronizarConversacion(id)
   }
 

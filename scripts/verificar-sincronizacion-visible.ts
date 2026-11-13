@@ -224,7 +224,54 @@ async function main() {
   lecturas.length = 0
   volver()
   await esperar()
-  verificar(lecturas.length === 0, '4b. Última sincronización exitosa reciente: no se consulta')
+  verificar(lecturas.length === 0, '4b. Ya hubo una sincronización exitosa empezada después de ocultarse: no se consulta')
+
+  // ---- 4c-4e. Última sincronización anterior a ocultarse (fallo E2E de la fase 3B) ----
+  // Abrió hace 10 s (sincronizó), se ocultó 2 s después, A escribe y vuelve:
+  // menos de 15 s desde la apertura, pero esa sincronización no cubre la ausencia.
+  const tras4c = m(25, 'asistente', 'Desde A antes de 15 s desde la apertura')
+  desdeA(X, tras4c)
+  salir()
+  chat.sincronizadaEn.set(X, Date.now() - 10_000)
+  interno.ocultaDesde = Date.now() - 8_000
+  lecturas.length = 0
+  volver()
+  await esperar()
+  verificar(consultasDeEstado() === 1 && chat.mensajes.some((x) => x.id === tras4c.id) && sinDuplicados(), '4c. Regreso antes de 15 s desde la apertura: consulta y aparecen los mensajes de A')
+  // Un regreso sin novedades y, dentro de 15 s, otra salida y regreso con novedades.
+  const tras4d = m(26, 'asistente', 'Desde A tras un regreso sin novedades')
+  desdeA(X, tras4d)
+  salir()
+  chat.sincronizadaEn.set(X, Date.now() - 8_000) // el regreso anterior (sin novedades) fue hace 8 s
+  interno.ocultaDesde = Date.now() - 6_000
+  lecturas.length = 0
+  volver()
+  disparar('pageshow', { persisted: true })
+  await esperar()
+  verificar(consultasDeEstado() === 1 && chat.mensajes.some((x) => x.id === tras4d.id) && sinDuplicados(), '4d. Segundo regreso dentro de 15 s del primero: vuelve a consultar, una sola vez aunque llegue pageshow')
+  // Sincronización empezada ANTES de ocultarse y todavía en curso al volver
+  // (tiempos reales: cada lectura tarda 2 s). A escribe después de la última
+  // página leída por esa consulta, que por eso no lo trae.
+  chat.abrirConversacion('conv-otra')
+  await esperar()
+  const tras4e = m(27, 'asistente', 'Desde A después de que empezó la consulta')
+  let paginas4e = 0
+  alLeer = (_tabla, columnas) => { if (columnas === 'id, creado_en' && ++paginas4e === 2) { alLeer = null; desdeA(X, tras4e) } }
+  retrasoLecturas = 2_000
+  lecturas.length = 0
+  chat.abrirConversacion(X) // empieza la sincronización de la apertura
+  await esperar()
+  salir(0) // se oculta justo después de que empezó
+  await esperar(5_200)
+  const enCursoAlVolver = (interno.sincronizacionesEnCurso as Map<string, unknown>).size === 1
+  volver()
+  disparar('pageshow', { persisted: true })
+  retrasoLecturas = 0
+  for (let ronda = 0; ronda < 2; ronda++) {
+    for (let i = 0; i < 200 && (interno.sincronizacionesEnCurso as Map<string, unknown>).size > 0; i++) await esperar()
+    await esperar()
+  }
+  verificar(enCursoAlVolver && consultasDeEstado() === 2 && chat.mensajes.some((x) => x.id === tras4e.id) && sinDuplicados(), '4e. Sincronización empezada antes de ocultarse: al terminar se consulta una vez más (no dos, aunque llegue pageshow) y llega lo escrito durante la ausencia')
 
   // ---- 5. Sincronización en curso ----
   desdeA(X, m(30, 'asistente', 'Desde A con red lenta'))
@@ -331,7 +378,7 @@ async function main() {
 
   // ---- 12. Sin escrituras de lo traído ----
   await esperar(2300) // copia remota de la etapa 1 (2 s de espera)
-  verificar(traidosEscritos([nuevo1.id, respuesta1.id, m(20, 'asistente', '').id, m(30, 'asistente', '').id, durante6.id, durante7.id, doc.id, sinRed.id, m(80, 'asistente', '').id, m(90, 'asistente', '').id]).length === 0, '12a. Ningún mensaje traído de A se escribe en Supabase')
+  verificar(traidosEscritos([tras4c.id, tras4d.id, tras4e.id, nuevo1.id, respuesta1.id, m(20, 'asistente', '').id, m(30, 'asistente', '').id, durante6.id, durante7.id, doc.id, sinRed.id, m(80, 'asistente', '').id, m(90, 'asistente', '').id]).length === 0, '12a. Ningún mensaje traído de A se escribe en Supabase')
 
   // ---- 13. Conversación eliminada ----
   p.guardarConversacion('conv-z', [m(100, 'usuario', 'Z')] as never, null)
