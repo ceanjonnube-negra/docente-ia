@@ -20,6 +20,7 @@ import {
   borrarTodasLasConversaciones,
   cargarConversacionPorId,
   combinarConversaciones,
+  combinarMensajes,
   conversacionesLocalesEliminadas,
   conversacionesRemotasSinCopiaLocal,
   crearNuevaConversacion,
@@ -33,6 +34,7 @@ import {
   registrarAlRetirarConversacion,
   reintentarMensajesRemotosPendientes,
   retirarConversacionLocal,
+  sincronizarConversacionRemota,
   type ConversacionResumen,
   type DocumentoActivoGuardado,
 } from './persistencia'
@@ -204,6 +206,16 @@ const nuevoId = () => `msg-${Date.now()}-${contadorId++}-${sufijoAleatorio()}`
 // Propuestas de lista oficial (ver confirmarPropuestaLista): códigos de
 // /api/lista-oficial/aplicar que no invalidan la propuesta.
 const CODIGOS_PROPUESTA_REINTENTABLES = new Set(['SESION_INVALIDA', 'NO_DISPONIBLE', 'ERROR_TEMPORAL'])
+
+// Documento vigente tras incorporar mensajes de otro dispositivo: el
+// último documento formal del asistente en la conversación, solo si llegó
+// con esos mensajes (si el último es local —pendiente o en curso— el
+// documento activo no cambia).
+function documentoFormalSincronizado(mensajes: MensajeConversacion[], nuevos: MensajeConversacion[]): MensajeConversacion | null {
+  if (nuevos.length === 0) return null
+  const ultimo = [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
+  return ultimo && nuevos.some((m) => m.id === ultimo.id) ? ultimo : null
+}
 
 class AsistenteServiceImpl {
   // null = sin conversación seleccionada (vista inicial) — nunca se
@@ -482,6 +494,7 @@ class AsistenteServiceImpl {
   }
 
   private notificar() {
+    if (this.sincronizacionDiferida && !this.generando) this.incorporarSincronizacion()
     this.snapshot = this.construirSnapshot()
     this.listeners.forEach(listener => listener())
     this.persistirConversacion()
@@ -513,7 +526,14 @@ class AsistenteServiceImpl {
     // sin mensajes: no hay nada que guardar — nunca se le pasa null a
     // guardarConversacion().
     if (!this.conversacionActivaId || this.mensajes.length === 0) return
-    guardarConversacion(this.conversacionActivaId, this.mensajes, this.documentoActivo)
+    // Mensajes de otro dispositivo que esperan a que termine la respuesta
+    // en curso: ya están en la copia local y ningún guardado los quita
+    // (en pantalla se incorporan después, ver incorporarSincronizacion),
+    // con el documento activo que tendrán al incorporarse.
+    const diferidos = this.sincronizacionDiferida?.id === this.conversacionActivaId ? this.sincronizacionDiferida.nuevos : []
+    const mensajes = combinarMensajes(this.mensajes, diferidos)
+    const documentoNuevo = documentoFormalSincronizado(mensajes, diferidos)
+    guardarConversacion(this.conversacionActivaId, mensajes, documentoNuevo ? { id: documentoNuevo.id, texto: documentoNuevo.texto } : this.documentoActivo)
     this.recalcularLista()
     this.programarCopiaRemota(this.conversacionActivaId, this.mensajes)
   }
@@ -608,6 +628,7 @@ class AsistenteServiceImpl {
     this.turnoUsuarioPendiente = false
     this.textoAsistentePendiente = ''
     this.finalPendiente = false
+    this.sincronizacionDiferida = null
   }
 
   // Empieza una conversación nueva y vacía sin perder la actual — sigue
@@ -625,8 +646,10 @@ class AsistenteServiceImpl {
   }
 
   // Cambia a una conversación ya guardada — la restaura completa
-  // (mensajes, documento activo) y la deja como la activa.
-  abrirConversacion(id: string) {
+  // (mensajes, documento activo) y la deja como la activa. Después trae
+  // en segundo plano los mensajes escritos en otro dispositivo (salvo
+  // si se acaba de descargar).
+  abrirConversacion(id: string, sincronizar = true) {
     if (id === this.conversacionActivaId) return
     if (this.persistenciaTimer) { clearTimeout(this.persistenciaTimer); this.persistenciaTimer = null }
     this.guardarAhora() // no perder los últimos cambios de la conversación que se deja
@@ -641,6 +664,48 @@ class AsistenteServiceImpl {
     this.documentoActivo = datos.documentoActivo && datos.mensajes.some((m) => m.id === datos.documentoActivo!.id) ? datos.documentoActivo : null
     this.limpiarEstadoTransitorio()
     this.notificar()
+    if (sincronizar) void this.sincronizarConversacion(id)
+  }
+
+  // --- Mensajes de otros dispositivos en una conversación con copia local ---
+  // sincronizarConversacionRemota (persistencia.ts) combina con la copia
+  // del navegador; aquí solo se aplican los mensajes nuevos a la
+  // conversación en pantalla. Se descartan si el docente ya cambió de
+  // conversación (quedan en la copia local para la próxima apertura) y
+  // esperan, sin volver a consultar, si hay una respuesta en curso: se
+  // aplican en la notificación que cierra el turno. Un fallo solo se
+  // registra: la copia local sigue siendo válida.
+  private sincronizacionDiferida: { id: string; nuevos: MensajeConversacion[] } | null = null
+
+  private async sincronizarConversacion(id: string) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId || id !== this.conversacionActivaId) return
+      const resultado = await sincronizarConversacionRemota(docenteId, id)
+      // 'eliminada': la retirada ya avisó a alRetirarConversacion.
+      if (resultado.estado !== 'actualizada' || id !== this.conversacionActivaId) return
+      const previos = this.sincronizacionDiferida?.id === id ? this.sincronizacionDiferida.nuevos : []
+      this.sincronizacionDiferida = { id, nuevos: [...previos, ...resultado.nuevos] }
+      this.notificar()
+    } catch (e) {
+      console.error('[SINCRONIZAR_CONVERSACION] sincronizada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    }
+  }
+
+  // Solo agrega los ids que no están en pantalla (lo creado mientras
+  // tanto se conserva tal cual). El documento activo pasa al documento
+  // formal nuevo solo si es el último de la conversación (ver
+  // documentoFormalSincronizado).
+  private incorporarSincronizacion() {
+    const { id, nuevos } = this.sincronizacionDiferida!
+    this.sincronizacionDiferida = null
+    if (id !== this.conversacionActivaId) return
+    const combinados = combinarMensajes(this.mensajes, nuevos)
+    if (combinados === this.mensajes) return
+    this.mensajes = combinados
+    const documentoNuevo = documentoFormalSincronizado(combinados, nuevos)
+    if (documentoNuevo) this.actualizarDocumentoActivo(documentoNuevo.id, documentoNuevo.texto)
   }
 
   // --- Conversaciones de otros dispositivos (persistencia remota, etapa 3A) ---
@@ -689,7 +754,7 @@ class AsistenteServiceImpl {
       if (!docenteId || docenteId !== this.remotasDe) return
       const descargada = await descargarConversacionRemota(docenteId, id)
       this.remotasSinCopia = this.remotasSinCopia.filter((c) => c.id !== id)
-      if (descargada) this.abrirConversacion(id)
+      if (descargada) this.abrirConversacion(id, false)
       else {
         this.recalcularLista()
         this.notificar()

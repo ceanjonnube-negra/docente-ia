@@ -352,7 +352,7 @@ async function main() {
   verificar(!/\.(insert|upsert|update)\(|\.delete\(\)|\.rpc\(|fetch\(|setInterval|setTimeout/.test(seccion), '8a. La sincronización no escribe en Supabase, no llama IA ni programa sondeos')
   verificar((fuente.match(/f\.id\.slice\(prefijo\.length\), rol: f\.rol/g) ?? []).length === 1 && (fuente.match(/estado\.soloInsercion\[fila\.id\] = true/g) ?? []).length === 1, '8b. Mapeo y registro de mensajes en un solo lugar (compartidos con la 3A)')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-  verificar(!servicio.includes('sincronizarConversacionRemota'), '8c. Fase 1: todavía no se llama desde el chat')
+  verificar((servicio.match(/sincronizarConversacionRemota\(/g) ?? []).length === 1, '8c. El chat la llama desde un solo lugar (fase 2: al abrir una conversación)')
 
   console.log('')
   if (fallos > 0) {
