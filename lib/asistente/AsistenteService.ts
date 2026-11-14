@@ -25,6 +25,7 @@ import {
   conversacionesLocalesEliminadas,
   conversacionesRemotasSinCopiaLocal,
   crearNuevaConversacion,
+  contenidoDocumentoDe,
   descargarConversacionRemota,
   documentoVigente,
   eliminarConversacionGlobal,
@@ -218,6 +219,12 @@ const VIGENCIA_SINCRONIZACION_MS = 15_000
 // breve de pestaña o de app) no consulta.
 const AUSENCIA_MINIMA_MS = 5_000
 const ESPERA_SINCRONIZACION_ENVIO_MS = 2_500
+// Respuesta que entrega un archivo de un documento ya existente (conversión
+// o archivo reutilizado): la tarjeta del mensaje muestra el archivo.
+const TEXTO_ARCHIVO_LISTO = 'Ya puedes abrirlo, compartirlo o descargarlo.'
+// Único error que emite MotorOpenAIRealtime (conexión de voz): no es la
+// respuesta de una solicitud.
+const MENSAJE_VOZ_PERDIDA = 'Se perdió la conexión de voz. Toca para reintentar.'
 const MENSAJE_DOCUMENTO_SIN_VERIFICAR = 'No se pudo comprobar si este documento cambió en otro dispositivo. Revisa tu conexión e intenta de nuevo.'
 
 // 'al_dia': Supabase respondió (con o sin novedades); 'fallo': no se
@@ -628,6 +635,8 @@ class AsistenteServiceImpl {
   // conversación o vaciar la actual — ninguno de esos estados tiene
   // sentido fuera de la conversación en la que empezaron.
   private limpiarEstadoTransitorio() {
+    // Vista nueva: cualquier respuesta pendiente de la anterior ya no es de aquí.
+    this.vista++
     if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
     if (this.avisoVozTimer) { clearTimeout(this.avisoVozTimer); this.avisoVozTimer = null }
     if (this.archivoReutilizadoTimer) { clearTimeout(this.archivoReutilizadoTimer); this.archivoReutilizadoTimer = null }
@@ -1180,7 +1189,35 @@ class AsistenteServiceImpl {
     }
   }
 
+  // --- Respuestas ligadas a la conversación que las pidió ---
+  // Cada solicitud al motor guarda la vista (conversación y turno) en que
+  // se hizo; limpiarEstadoTransitorio abre una vista nueva al cambiar de
+  // conversación, empezar una nueva, retirarla o cerrar sesión. Una
+  // respuesta de otra vista nunca se muestra ni toca el documento activo:
+  // si es la última de esa solicitud (respuesta final o error), solo
+  // libera el estado de generación. El motor de texto, además, solo emite
+  // los eventos de su solicitud vigente (ver MotorTextoClaude.enviarTexto).
+  private vista = 0
+  private vistaSolicitud: number | null = null
+
+  private marcarSolicitud() {
+    this.vistaSolicitud = this.vista
+  }
+
+  private esRespuestaDeOtraVista(evento: EventoMotor): boolean {
+    const deSolicitud = evento.tipo === 'respuesta-parcial' || evento.tipo === 'respuesta-final'
+      || (evento.tipo === 'error' && evento.mensaje !== MENSAJE_VOZ_PERDIDA)
+    if (!deSolicitud || this.vistaSolicitud === null || this.vistaSolicitud === this.vista) return false
+    if (evento.tipo !== 'respuesta-parcial') {
+      this.vistaSolicitud = null
+      this.generando = false
+      this.notificar()
+    }
+    return true
+  }
+
   private manejarEventoMotor(evento: EventoMotor) {
+    if (this.esRespuestaDeOtraVista(evento)) return
     switch (evento.tipo) {
       case 'estado':
         this.estadoMotor = evento.estado
@@ -1245,27 +1282,14 @@ class AsistenteServiceImpl {
           break
         }
 
-        // FINALIZAR ARCHIVO: el texto que llega reemplaza el mensaje del
-        // documento, nunca abre una burbuja nueva. Una edición de
-        // contenido NO entra aquí (append-only, ver enviarComoEdicion): su
-        // respuesta — documento nuevo, aclaración o error en texto — cae
-        // al turno normal de abajo en una burbuja propia, sin pisar el
-        // documento fuente.
+        // FINALIZAR ARCHIVO: el servidor solo transmite "Documento
+        // generado correctamente." + marcadores técnicos. El mensaje del
+        // documento no se toca y el archivo llega en una respuesta nueva
+        // (ver 'respuesta-final'). Una edición de contenido NO entra aquí
+        // (append-only, ver enviarComoEdicion): su respuesta — documento
+        // nuevo, aclaración o error en texto — cae al turno normal de
+        // abajo en una burbuja propia, sin pisar el documento fuente.
         if (this.editandoDocumentoId && this.documentoFinalizandoId === this.editandoDocumentoId) {
-          const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
-          if (idx !== -1) {
-            // FINALIZAR ARCHIVO (no una edición de contenido real): el
-            // servidor transmite "Documento generado correctamente." +
-            // el marcador técnico, nunca el documento — la burbuja debe
-            // seguir mostrando el documento real (ver
-            // textoDocumentoFinalizando) para que la vista previa nunca
-            // desaparezca ni se reemplace por ese texto genérico.
-            const texto = this.documentoFinalizandoId === this.editandoDocumentoId && this.textoDocumentoFinalizando
-              ? this.textoDocumentoFinalizando
-              : evento.texto
-            const actualizado = { ...this.mensajes[idx], texto }
-            this.mensajes = [...this.mensajes.slice(0, idx), actualizado, ...this.mensajes.slice(idx + 1)]
-          }
           this.notificar()
           break
         }
@@ -1344,24 +1368,26 @@ class AsistenteServiceImpl {
             }
             // FINALIZAR ARCHIVO: el marcador [[DOCUMENTO_ARCHIVO:...]] ya
             // se procesó en el motor (ver motorTextoClaude) y llega aquí
-            // como evento.archivo — se adjunta al mensaje para que la
-            // tarjeta muestre el botón de descarga real.
+            // como evento.archivo. Se entrega en una respuesta NUEVA del
+            // asistente, igual que al reutilizar un archivo ya generado
+            // (reutilizarArchivoExistente): el mensaje del documento no se
+            // modifica, la entrega se ve aunque sea el mismo formato y se
+            // sincroniza a otros dispositivos como cualquier mensaje.
             if (evento.archivo) {
-              const idx = this.mensajes.findIndex(m => m.id === this.editandoDocumentoId)
-              if (idx !== -1) {
-                this.mensajes = [
-                  ...this.mensajes.slice(0, idx),
-                  { ...this.mensajes[idx], archivo: evento.archivo, archivos: evento.archivos },
-                  ...this.mensajes.slice(idx + 1),
-                ]
-              }
+              const idMensaje = nuevoId()
+              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: TEXTO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}) }]
+              this.turnoAbierto = null
+              this.mostrarArchivoReutilizado(idMensaje)
             }
-            // El documento sigue activo (con su texto real intacto, ver
-            // arriba) — así un segundo formato ("también en PDF") o una
-            // nueva edición reutilizan el contenido real en vez de partir
-            // de cero o de "Documento generado correctamente.".
+            // El documento sigue activo con el texto que se convirtió
+            // (también el de un documento CASO 3, cuyo mensaje solo dice
+            // "Documento generado correctamente.") — así un segundo
+            // formato ("también en PDF") o una nueva edición reutilizan el
+            // contenido real; la caché de archivos solo se conserva si es
+            // esa misma versión (actualizarDocumentoActivo).
             const doc = this.mensajes.find(m => m.id === this.editandoDocumentoId)
-            if (doc) this.actualizarDocumentoActivo(doc.id, doc.texto, evento.archivo)
+            const textoConvertido = this.textoDocumentoFinalizando ?? (doc ? contenidoDocumentoDe(doc) : null)
+            if (doc && textoConvertido) this.actualizarDocumentoActivo(doc.id, textoConvertido, evento.archivo)
             this.editandoDocumentoId = null
             this.documentoFinalizandoId = null
             this.textoDocumentoFinalizando = null
@@ -1475,7 +1501,7 @@ class AsistenteServiceImpl {
         // por el texto exacto — solo MotorOpenAIRealtime emite este
         // mensaje — y aquí se termina la sesión de verdad, sin ensuciar
         // el historial con un "mensaje" que Claude nunca dijo.
-        if (this.modoVoz && evento.mensaje === 'Se perdió la conexión de voz. Toca para reintentar.') {
+        if (this.modoVoz && evento.mensaje === MENSAJE_VOZ_PERDIDA) {
           this.motorVoz?.detener().catch(() => {})
           this.motorVoz = null
           this.modoVoz = false
@@ -1687,6 +1713,7 @@ class AsistenteServiceImpl {
     this.notificar()
 
     try {
+      this.marcarSolicitud()
       await (await this.motorDeContenido())?.enviarTexto(limpio, adjunto, undefined, undefined, undefined, canal, turnId, voiceDebug)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
@@ -1721,6 +1748,7 @@ class AsistenteServiceImpl {
     this.notificar()
 
     try {
+      this.marcarSolicitud()
       await (await this.motorDeContenido())?.enviarTexto(texto, undefined, undefined, false, adjuntos)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
@@ -2061,6 +2089,7 @@ class AsistenteServiceImpl {
       // (construirPromptEdicion en documentos.ts), no algo que el maestro escribió — jamás
       // debe interpretarse en /api/chat como una solicitud de archivo
       // (ver esEdicionDocumento en app/api/chat/route.ts).
+      this.marcarSolicitud()
       await (await this.motorDeContenido())?.enviarTexto(textoParaModelo, adjunto, undefined, true, undefined, undefined, undefined, undefined, formatoEntrega)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })
@@ -2077,7 +2106,7 @@ class AsistenteServiceImpl {
     this.mensajes = [
       ...this.mensajes,
       { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
-      { id: idMensaje, rol: 'asistente', texto: 'Ya puedes abrirlo, compartirlo o descargarlo.', creadoEn: Date.now(), archivo },
+      { id: idMensaje, rol: 'asistente', texto: TEXTO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo },
     ]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje
@@ -2118,6 +2147,7 @@ class AsistenteServiceImpl {
   private async ejecutarFinalizacion(tipo: TipoHerramienta, documentoTexto: string, textoOriginal: string) {
     try {
       const motorTexto = await this.asegurarMotorTexto()
+      this.marcarSolicitud()
       await motorTexto.enviarTexto(textoOriginal, undefined, { tipo, documentoTexto })
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No pude generar el archivo. Toca para reintentar.' })

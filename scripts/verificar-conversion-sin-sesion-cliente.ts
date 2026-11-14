@@ -95,7 +95,7 @@ async function main() {
   const PDF = { tipo: 'pdf', nombre: 'CITATORIO.pdf', url: 'https://ejemplo.invalid/a.pdf' }
   servicio.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: 'Documento generado correctamente.' })
   servicio.manejarEventoMotor({ tipo: 'respuesta-final', texto: 'Documento generado correctamente.', archivo: PDF })
-  verificar(servicio.mensajes.length === 3 && JSON.stringify(servicio.mensajes[1].archivo) === JSON.stringify(PDF) && servicio.mensajes[1].texto === CITATORIO && servicio.documentoActivo?.ultimoFormatoGenerado === 'pdf', '3a. Con sesión: el PDF se adjunta al documento y queda como último formato (sin cambios)')
+  verificar(servicio.mensajes.length === 4 && JSON.stringify(servicio.mensajes[3].archivo) === JSON.stringify(PDF) && servicio.mensajes[1].archivo === undefined && servicio.mensajes[1].texto === CITATORIO && servicio.documentoActivo?.ultimoFormatoGenerado === 'pdf', '3a. Con sesión: el PDF llega en una respuesta nueva (el documento no se modifica) y queda como último formato')
 
   console.log('')
   if (fallos > 0) {

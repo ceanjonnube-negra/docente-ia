@@ -118,7 +118,8 @@ async function main() {
   verificar(svc.documentoActivo?.id === ultimo().id && svc.documentoActivo?.texto === TEXTO_DOC_EDITADO && svc.documentoActivo?.archivosGenerados?.word?.url === ARCHIVO_WORD.url, '3c. documentoActivo usa el contenido real y registra el archivo')
   verificar(svc.editandoDocumentoId === null, '3d. Estado de edición limpio')
 
-  // 4. Finalizar archivo (Word) — comportamiento sin cambios.
+  // 4. Finalizar archivo (Word): el archivo llega en una respuesta NUEVA
+  // del asistente; el mensaje del documento no se modifica.
   reiniciar()
   await svc.enviarComoFinalizacion(DOC_ID, 'Pásalo a Word', 'word', TEXTO_DOC)
   const cantidadAntes = svc.mensajes.length
@@ -126,8 +127,8 @@ async function main() {
   verificar(doc()?.texto === TEXTO_DOC, '4a. El texto técnico no reemplaza el documento')
   verificar(svc.mensajes.length === cantidadAntes, '4b. No se abre burbuja nueva durante la finalización')
   evento({ tipo: 'respuesta-final', texto: 'Documento generado correctamente.', archivo: ARCHIVO_WORD, archivos: [ARCHIVO_WORD] })
-  verificar(doc()?.archivo?.url === ARCHIVO_WORD.url && doc()?.texto === TEXTO_DOC, '4c. El archivo se adjunta al mismo mensaje del documento')
-  verificar(svc.mensajes.length === cantidadAntes, '4d. Sin burbujas nuevas al terminar')
+  verificar(!doc()?.archivo && doc()?.texto === TEXTO_DOC && ultimo().id !== DOC_ID && ultimo().archivo?.url === ARCHIVO_WORD.url && ultimo().texto === 'Ya puedes abrirlo, compartirlo o descargarlo.', '4c. El archivo llega en una respuesta nueva; el documento no se modifica')
+  verificar(svc.mensajes.length === cantidadAntes + 1, '4d. Al terminar se agrega exactamente una respuesta (la entrega)')
   verificar(svc.documentoActivo?.id === DOC_ID && svc.documentoActivo?.archivosGenerados?.word?.url === ARCHIVO_WORD.url, '4e. documentoActivo conserva el documento y registra el archivo')
   verificar(svc.editandoDocumentoId === null && svc.documentoFinalizandoId === null && svc.textoDocumentoFinalizando === null && svc.ultimoIntentoEdicion === null, '4f. Estado de finalización limpio')
 

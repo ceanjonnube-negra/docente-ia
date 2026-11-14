@@ -99,7 +99,7 @@ async function main() {
   verificar(/copiarAlPortapapeles\(texto\)\.then\(\(ok\) => \{\s*\n\s*if \(!ok\) return\s*\n\s*setCopiado\(true\)/.test(panel), '4c. "Copiado" aparece solo si la copia se confirmó')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   verificar(/\{ \.\.\.msg, archivo: evento\.archivo, archivos: evento\.archivos, \.\.\.\(evento\.contenidoOriginal \? \{ contenidoDocumento: evento\.contenidoOriginal \} : \{\}\) \}/.test(servicio) && /this\.actualizarDocumentoActivo\(msg\.id, evento\.contenidoOriginal \?\? msg\.texto, evento\.archivo\)/.test(servicio), '4d. El documento entregado como archivo guarda su contenido en el mensaje; documentoActivo se actualiza igual que antes')
-  verificar((servicio.match(/contenidoDocumento/g) ?? []).length === 1, '4e. contenidoDocumento solo se escribe en ese punto (no afecta historial del modelo ni otros flujos)')
+  verificar((servicio.match(/contenidoDocumento:/g) ?? []).length === 1, '4e. contenidoDocumento solo se escribe en ese punto (no afecta historial del modelo ni otros flujos); leerlo con contenidoDocumentoDe no es escribirlo')
 
   console.log('')
   if (fallos > 0) {

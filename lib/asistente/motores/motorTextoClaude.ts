@@ -109,6 +109,9 @@ export class MotorTextoClaude implements MotorConversacional {
   // Conversación local activa (AsistenteService la sincroniza antes de
   // cada envío) — de ella se deriva el conversacionId remoto.
   private conversacionLocalId: string | null = null
+  // Solicitud vigente: si empieza otra antes de que esta termine, la
+  // anterior ya no emite eventos (nunca se mezclan dos respuestas).
+  private solicitudVigente = 0
 
   // AsistenteService llama esto con los mensajes previos de la
   // conversación (nunca el que se está por enviar) justo antes de cada
@@ -156,7 +159,13 @@ export class MotorTextoClaude implements MotorConversacional {
   }
 
   async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega) {
-    this.controlador = new AbortController()
+    // Controlador y número propios de ESTA solicitud: el límite de tiempo
+    // de una anterior nunca aborta esta, y una anterior que siga viva ya
+    // no emite nada.
+    const controlador = new AbortController()
+    this.controlador = controlador
+    const solicitud = ++this.solicitudVigente
+    const emitir = (evento: EventoMotor) => { if (solicitud === this.solicitudVigente) this.emitir(evento) }
     this.interrumpidoManualmente = false
 
     // CAUSA RAÍZ del chat "colgado" después de generar o descargar un
@@ -191,7 +200,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // documento: el servidor procesa varios MB y Claude analiza
       // varias fotos a la vez, más lento que un turno de solo texto.
       const esVariasImagenes = !!adjuntos && adjuntos.length > 1
-      temporizadorFetch = setTimeout(() => this.controlador?.abort(), finalizarArchivo || formatoEntrega || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
+      temporizadorFetch = setTimeout(() => controlador.abort(), finalizarArchivo || formatoEntrega || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -226,7 +235,7 @@ export class MotorTextoClaude implements MotorConversacional {
           turnId: turnId || undefined,
           voiceDebug: voiceDebug === true ? true : undefined,
         }),
-        signal: this.controlador.signal,
+        signal: controlador.signal,
       })
 
       // El límite de arriba solo protege contra una conexión que nunca
@@ -262,7 +271,7 @@ export class MotorTextoClaude implements MotorConversacional {
         } catch {
           // el cuerpo no era JSON — se usa el mensaje genérico
         }
-        this.emitir({ tipo: 'error', mensaje: mensajeError })
+        emitir({ tipo: 'error', mensaje: mensajeError })
         return
       }
 
@@ -276,7 +285,7 @@ export class MotorTextoClaude implements MotorConversacional {
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
           // El marcador de propuesta (largo, en base64) nunca se pinta.
-          this.emitir({ tipo: 'respuesta-parcial', texto: respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '').trim() })
+          emitir({ tipo: 'respuesta-parcial', texto: respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '').trim() })
         }
       }
 
@@ -286,20 +295,20 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinPerfil, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
       const { texto: respuestaLimpia, propuestaLista } = this.procesarMarcadorDePropuestaLista(sinPerfil)
-      this.emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      this.emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
+      emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
+      emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
 
       if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
         console.error('[CHAT] /api/chat no respondió dentro del tiempo límite — abortado automáticamente')
-        this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
+        emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
       }
       if (err instanceof ErrorLimiteDeTiempo) {
         console.error('[CHAT]', err.message)
-        this.emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
+        emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
       }
       // Señal explícita del servidor (ver app/api/chat/route.ts,
@@ -313,10 +322,10 @@ export class MotorTextoClaude implements MotorConversacional {
       // problema de conexión que no existió.
       if (err instanceof Error && err.message === 'RESPUESTA_INTERRUMPIDA') {
         console.error('[CHAT] La respuesta se interrumpió a mitad de la transmisión')
-        this.emitir({ tipo: 'error', mensaje: 'La respuesta se interrumpió antes de terminar. Vuelve a pedir la planeación.' })
+        emitir({ tipo: 'error', mensaje: 'La respuesta se interrumpió antes de terminar. Vuelve a pedir la planeación.' })
         return
       }
-      this.emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
+      emitir({ tipo: 'error', mensaje: 'Error al conectar con la IA.' })
     } finally {
       if (temporizadorFetch) clearTimeout(temporizadorFetch)
     }
