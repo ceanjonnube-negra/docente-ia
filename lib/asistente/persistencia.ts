@@ -875,8 +875,32 @@ function filasAMensajes(remotoId: string, filas: FilaMensajeLeida[]): MensajeCon
     .map((f) => ({ ...(f.contenido ?? {}), id: f.id.slice(prefijo.length), rol: f.rol, texto: f.texto, creadoEn: Date.parse(f.creado_en) }) as MensajeConversacion)
 }
 
-function ultimoDocumentoFormal(mensajes: MensajeConversacion[]): MensajeConversacion | undefined {
-  return [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
+// Contenido documental real de un mensaje del asistente:
+// - el texto visible si es un documento formal (los de siempre; también
+//   refleja una edición manual);
+// - si no, el dato estructurado de un documento entregado directo como
+//   archivo (CASO 3 del chat): muestra "Documento generado
+//   correctamente." y guarda su texto real en contenidoDocumento junto al
+//   archivo.
+// Ningún otro mensaje es documento.
+export function contenidoDocumentoDe(m: MensajeConversacion): string | null {
+  if (m.rol !== 'asistente') return null
+  if (esDocumentoFormal(m.texto)) return m.texto
+  return m.contenidoDocumento?.trim() && (m.archivo || m.archivos?.length) ? m.contenidoDocumento : null
+}
+
+// Documento vigente de una conversación: el último mensaje con documento
+// (cada edición agrega su versión al final). Con su formato ya generado,
+// si lo tiene; la caché de archivos no se reconstruye (es por versión
+// exacta y vive solo en el documento activo del dispositivo).
+export function documentoVigente(mensajes: MensajeConversacion[]): DocumentoActivoGuardado | null {
+  for (let i = mensajes.length - 1; i >= 0; i--) {
+    const texto = contenidoDocumentoDe(mensajes[i])
+    if (!texto) continue
+    const formato = mensajes[i].archivo?.tipo
+    return { id: mensajes[i].id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }
+  }
+  return null
 }
 
 // Mensajes que ya están en Supabase (descargados): se registran como
@@ -918,14 +942,12 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
 
   // Relación primero: desde aquí el motor y la etapa 1 usan este id.
   guardarVinculoRemoto(remotoId, docenteId, remotoId)
-  // Documento activo: el guardado en la fila si sigue en los mensajes; si
-  // no hay, el último documento formal del asistente (mismo criterio con
-  // el que el chat lo fija al terminar un documento).
+  // Documento activo: el documento vigente de los mensajes (también uno
+  // entregado directo como archivo). El guardado en la fila solo se usa si
+  // es ese mismo; uno anterior nunca lo sustituye.
   const documentoRemoto = conversacion.documento_activo as DocumentoActivoGuardado | null
-  const ultimoDocumento = ultimoDocumentoFormal(mensajes)
-  const documentoActivo = documentoRemoto && mensajes.some((m) => m.id === documentoRemoto.id)
-    ? documentoRemoto
-    : ultimoDocumento ? { id: ultimoDocumento.id, texto: ultimoDocumento.texto } : null
+  const vigente = documentoVigente(mensajes)
+  const documentoActivo = documentoRemoto && vigente && documentoRemoto.id === vigente.id ? documentoRemoto : vigente
   const titulo = conversacion.titulo && conversacion.titulo !== TITULO_INICIAL ? conversacion.titulo : undefined
   guardarConversacion(remotoId, mensajes, documentoActivo, titulo)
 
@@ -1066,10 +1088,10 @@ async function ejecutarSincronizacion(docenteId: string, localId: string): Promi
   const agregados = new Set(traidos.filter((m) => !idsActuales.has(m.id)).map((m) => m.id))
   if (agregados.size === 0) return { estado: 'sin_cambios' }
   const combinados = combinarMensajes(actual.mensajes, traidos)
-  // Documento activo: pasa al documento formal nuevo solo si el último
-  // de la conversación es uno de los traídos (criterio de la 3A).
-  const ultimoDocumento = ultimoDocumentoFormal(combinados)
-  const documentoActivo = ultimoDocumento && agregados.has(ultimoDocumento.id) ? { id: ultimoDocumento.id, texto: ultimoDocumento.texto } : actual.documentoActivo
+  // Documento activo: pasa al documento vigente solo si es uno de los
+  // traídos (criterio de la 3A).
+  const vigente = documentoVigente(combinados)
+  const documentoActivo = vigente && agregados.has(vigente.id) ? vigente : actual.documentoActivo
   guardarConversacion(localId, combinados, documentoActivo, actual.titulo)
   const nuevos = (cargarConversacionPorId(localId)?.mensajes ?? []).filter((m) => agregados.has(m.id))
   registrarComoEnviados(docenteId, remotoId, nuevos)

@@ -26,6 +26,7 @@ import {
   conversacionesRemotasSinCopiaLocal,
   crearNuevaConversacion,
   descargarConversacionRemota,
+  documentoVigente,
   eliminarConversacionGlobal,
   establecerConversacionActiva,
   guardarConversacion,
@@ -225,13 +226,13 @@ type EstadoSincronizacion = 'al_dia' | 'fallo' | 'eliminada' | 'sin_sesion'
 export type ResultadoEnvio = 'enviado' | 'no_enviado' | 'otra_conversacion'
 
 // Documento vigente tras incorporar mensajes de otro dispositivo: el
-// último documento formal del asistente en la conversación, solo si llegó
-// con esos mensajes (si el último es local —pendiente o en curso— el
+// último documento de la conversación (documentoVigente, también uno
+// entregado directo como archivo), solo si llegó con esos mensajes (si el último es local —pendiente o en curso— el
 // documento activo no cambia).
-function documentoFormalSincronizado(mensajes: MensajeConversacion[], nuevos: MensajeConversacion[]): MensajeConversacion | null {
+function documentoFormalSincronizado(mensajes: MensajeConversacion[], nuevos: MensajeConversacion[]): DocumentoActivoGuardado | null {
   if (nuevos.length === 0) return null
-  const ultimo = [...mensajes].reverse().find((m) => m.rol === 'asistente' && esDocumentoFormal(m.texto))
-  return ultimo && nuevos.some((m) => m.id === ultimo.id) ? ultimo : null
+  const vigente = documentoVigente(mensajes)
+  return vigente && nuevos.some((m) => m.id === vigente.id) ? vigente : null
 }
 
 class AsistenteServiceImpl {
@@ -550,7 +551,7 @@ class AsistenteServiceImpl {
     const diferidos = this.sincronizacionDiferida?.id === this.conversacionActivaId ? this.sincronizacionDiferida.nuevos : []
     const mensajes = combinarMensajes(this.mensajes, diferidos)
     const documentoNuevo = documentoFormalSincronizado(mensajes, diferidos)
-    guardarConversacion(this.conversacionActivaId, mensajes, documentoNuevo ? { id: documentoNuevo.id, texto: documentoNuevo.texto } : this.documentoActivo)
+    guardarConversacion(this.conversacionActivaId, mensajes, documentoNuevo ?? this.documentoActivo)
     this.recalcularLista()
     this.programarCopiaRemota(this.conversacionActivaId, this.mensajes)
   }
@@ -678,7 +679,11 @@ class AsistenteServiceImpl {
     this.conversacionActivaId = id
     establecerConversacionActiva(id)
     this.mensajes = datos.mensajes
-    this.documentoActivo = datos.documentoActivo && datos.mensajes.some((m) => m.id === datos.documentoActivo!.id) ? datos.documentoActivo : null
+    // El documento vigente de los mensajes (también uno entregado directo
+    // como archivo). El guardado se conserva (con su caché de archivos) si
+    // es ese mismo; uno anterior nunca lo sustituye.
+    const vigente = documentoVigente(datos.mensajes)
+    this.documentoActivo = datos.documentoActivo && vigente && datos.documentoActivo.id === vigente.id ? datos.documentoActivo : vigente
     this.limpiarEstadoTransitorio()
     this.notificar()
     if (sincronizar) void this.sincronizarConversacion(id)
@@ -802,7 +807,10 @@ class AsistenteServiceImpl {
     if (combinados === this.mensajes) return
     this.mensajes = combinados
     const documentoNuevo = documentoFormalSincronizado(combinados, nuevos)
-    if (documentoNuevo) this.actualizarDocumentoActivo(documentoNuevo.id, documentoNuevo.texto)
+    if (documentoNuevo) {
+      this.actualizarDocumentoActivo(documentoNuevo.id, documentoNuevo.texto)
+      if (!this.documentoActivo!.ultimoFormatoGenerado && documentoNuevo.ultimoFormatoGenerado) this.documentoActivo = { ...this.documentoActivo!, ultimoFormatoGenerado: documentoNuevo.ultimoFormatoGenerado }
+    }
   }
 
   // --- Conversaciones de otros dispositivos (persistencia remota, etapa 3A) ---
