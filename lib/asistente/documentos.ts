@@ -337,6 +337,13 @@ export const AVISO_ARCHIVO_GENERADO = 'Documento generado correctamente.'
 // el mensaje (un turno del asistente nunca puede ir vacío en el historial
 // del modelo), pero el panel no lo muestra: solo la tarjeta del archivo.
 export const AVISO_ARCHIVO_LISTO = 'Ya puedes abrirlo, compartirlo o descargarlo.'
+// Aviso técnico exacto que acompaña a un archivo (generado directo o
+// entregado de un documento existente). El panel no lo muestra junto a la
+// tarjeta ni se copia; cualquier otro texto (respuestas, errores) sí.
+export function esAvisoTecnicoDeArchivo(texto: string): boolean {
+  const limpio = texto.trim()
+  return limpio === AVISO_ARCHIVO_GENERADO || limpio === AVISO_ARCHIVO_LISTO
+}
 
 export function contenidoParaArchivo(e: { mensaje: string; finalizarArchivo: unknown; historial: { role: 'user' | 'assistant'; content: string }[]; adjuntoPresente?: boolean }): ContenidoParaArchivo {
   if (esFinalizarArchivo(e.finalizarArchivo)) return { fuente: 'cliente', texto: e.finalizarArchivo.documentoTexto }

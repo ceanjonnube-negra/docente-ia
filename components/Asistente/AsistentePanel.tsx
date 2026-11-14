@@ -22,7 +22,7 @@ import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { supabase } from '@/lib/supabaseClient'
 import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE } from '@/lib/asistente/AsistenteService'
-import { AVISO_ARCHIVO_LISTO, esDocumentoFormal } from '@/lib/asistente/documentos'
+import { esAvisoTecnicoDeArchivo, esDocumentoFormal } from '@/lib/asistente/documentos'
 import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
 import { formatearFecha, obtenerFechaHora, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
@@ -1055,10 +1055,11 @@ export default function AsistentePanel() {
                       documento formal con título — esDoc solo cubre el
                       caso de planeación/lista/ficha/oficio. Sin esto, el
                       texto real (el resumen "✅ Calendario actualizado...")
-                      desaparecería en silencio detrás de la tarjeta. La
-                      entrega de un archivo de un documento ya existente
-                      (AVISO_ARCHIVO_LISTO) solo muestra su tarjeta. */}
-                  {!esDoc && m.texto && m.texto !== AVISO_ARCHIVO_LISTO && (
+                      desaparecería en silencio detrás de la tarjeta. Un aviso
+                      técnico exacto ("Documento generado correctamente.",
+                      "Ya puedes abrirlo...") junto a su archivo no se
+                      muestra: solo la tarjeta (esAvisoTecnicoDeArchivo). */}
+                  {!esDoc && m.texto && !esAvisoTecnicoDeArchivo(m.texto) && (
                     <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed bg-white text-gray-800 shadow-sm rounded-bl-sm w-full">
                       <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>

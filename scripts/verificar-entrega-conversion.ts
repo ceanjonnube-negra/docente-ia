@@ -268,7 +268,15 @@ async function main() {
   verificar(entregasEnHistorial.length > 0 && historialEnviado.every((x) => x.texto.trim().length > 0), '7b. En el historial para la IA la entrega conserva su texto técnico: ningún turno va vacío')
   const { readFileSync } = await import('node:fs')
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
-  verificar(/\{!esDoc && m\.texto && m\.texto !== AVISO_ARCHIVO_LISTO && \(/.test(panel) && /\{esDoc \|\| \(m\.rol === 'asistente' && m\.archivo\?\.url\) \? \(/.test(panel) && (panel.match(/<TarjetaDescarga\b/g) ?? []).length === 1, '7c. Panel: la entrega muestra solo su tarjeta (sin burbuja de texto) con las mismas acciones de siempre')
+  const ramaArchivo = panel.slice(panel.indexOf("{esDoc || (m.rol === 'asistente' && m.archivo?.url) ? ("), panel.indexOf('<TarjetaDescarga'))
+  verificar(/\{!esDoc && m\.texto && !esAvisoTecnicoDeArchivo\(m\.texto\) && \(/.test(ramaArchivo) && (panel.match(/esAvisoTecnicoDeArchivo\(/g) ?? []).length === 1 && (panel.match(/<TarjetaDescarga\b/g) ?? []).length === 1, '7c. Panel: el aviso técnico solo se oculta dentro de la rama de mensajes con archivo; la tarjeta y sus acciones son las de siempre')
+
+  // ---- 7d-7f. Generación directa (CASO 3): "Documento generado correctamente." ----
+  const { esAvisoTecnicoDeArchivo, AVISO_ARCHIVO_GENERADO, MENSAJE_ARCHIVO_SIN_SESION } = await import('../lib/asistente/documentos')
+  verificar(esAvisoTecnicoDeArchivo(AVISO_ARCHIVO_GENERADO) && esAvisoTecnicoDeArchivo(` ${LISTO}\n`) && esAvisoTecnicoDeArchivo(caso3.texto), '7d. Se reconocen los dos avisos técnicos exactos (incluido el del CASO 3)')
+  verificar(!esAvisoTecnicoDeArchivo('Documento generado correctamente. Revisa la fecha antes de imprimir.') && !esAvisoTecnicoDeArchivo(MENSAJE_ARCHIVO_SIN_SESION) && !esAvisoTecnicoDeArchivo('No pude generar el archivo. Toca para reintentar.') && !esAvisoTecnicoDeArchivo('Claro, aquí está el resumen.') && !esAvisoTecnicoDeArchivo(''), '7e. Respuestas normales, avisos de sesión, errores y textos parecidos no se ocultan')
+  const caso3EnPantalla = chat.mensajes.find((x) => x.id === caso3.id) ?? caso3
+  verificar(caso3EnPantalla.texto === AVISO_ARCHIVO_GENERADO && !!caso3EnPantalla.archivo && textoParaCopiar(caso3EnPantalla as never) === AVISO && textoParaCopiar({ rol: 'asistente', texto: AVISO_ARCHIVO_GENERADO } as never) === null, '7f. CASO 3: el texto técnico sigue guardado; "Copiar" copia el documento real (nunca el aviso) y uno antiguo sin contenido no ofrece "Copiar"')
 
   // ---- 8. Alcance ----
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')

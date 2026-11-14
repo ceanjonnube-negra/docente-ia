@@ -7,7 +7,7 @@
 // marcadores internos ([[...]], que el motor ya quita; aquí se quitan de
 // nuevo por seguridad).
 
-import { AVISO_ARCHIVO_GENERADO, AVISO_ARCHIVO_LISTO, esDocumentoFormal } from './documentos'
+import { esAvisoTecnicoDeArchivo, esDocumentoFormal } from './documentos'
 import type { MensajeConversacion } from './tipos'
 
 const MARCADOR_INTERNO = /\[\[[A-Z_]+(:[^\]]*)?\]\]/g
@@ -74,7 +74,7 @@ export function textoParaCopiar(mensaje: Pick<MensajeConversacion, 'rol' | 'text
   const contenidoDocumento = mensaje.contenidoDocumento?.trim()
   if (contenidoDocumento) return ordenarEspacios(sinElementosInternos(contenidoDocumento)) || null
   const texto = sinElementosInternos(mensaje.texto ?? '')
-  if (!texto.trim() || texto.trim() === AVISO_ARCHIVO_GENERADO || texto.trim() === AVISO_ARCHIVO_LISTO) return null
+  if (!texto.trim() || esAvisoTecnicoDeArchivo(texto)) return null
   // Un documento formal ya es texto plano estructurado (MODO DOCUMENTO):
   // se copia tal cual. El resto de respuestas viene en Markdown.
   const plano = esDocumentoFormal(texto) ? texto : markdownATexto(texto)
