@@ -332,6 +332,11 @@ export type ContenidoParaArchivo =
 // Texto que queda en el historial cuando un documento se generó directo
 // como archivo (CASO 3 en /api/chat): su contenido no está en el historial.
 export const AVISO_ARCHIVO_GENERADO = 'Documento generado correctamente.'
+// Texto técnico del mensaje que entrega el archivo de un documento ya
+// existente (conversión o archivo reutilizado). Se guarda y sincroniza con
+// el mensaje (un turno del asistente nunca puede ir vacío en el historial
+// del modelo), pero el panel no lo muestra: solo la tarjeta del archivo.
+export const AVISO_ARCHIVO_LISTO = 'Ya puedes abrirlo, compartirlo o descargarlo.'
 
 export function contenidoParaArchivo(e: { mensaje: string; finalizarArchivo: unknown; historial: { role: 'user' | 'assistant'; content: string }[]; adjuntoPresente?: boolean }): ContenidoParaArchivo {
   if (esFinalizarArchivo(e.finalizarArchivo)) return { fuente: 'cliente', texto: e.finalizarArchivo.documentoTexto }

@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -219,9 +219,6 @@ const VIGENCIA_SINCRONIZACION_MS = 15_000
 // breve de pestaña o de app) no consulta.
 const AUSENCIA_MINIMA_MS = 5_000
 const ESPERA_SINCRONIZACION_ENVIO_MS = 2_500
-// Respuesta que entrega un archivo de un documento ya existente (conversión
-// o archivo reutilizado): la tarjeta del mensaje muestra el archivo.
-const TEXTO_ARCHIVO_LISTO = 'Ya puedes abrirlo, compartirlo o descargarlo.'
 // Único error que emite MotorOpenAIRealtime (conexión de voz): no es la
 // respuesta de una solicitud.
 const MENSAJE_VOZ_PERDIDA = 'Se perdió la conexión de voz. Toca para reintentar.'
@@ -1375,7 +1372,7 @@ class AsistenteServiceImpl {
             // sincroniza a otros dispositivos como cualquier mensaje.
             if (evento.archivo) {
               const idMensaje = nuevoId()
-              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: TEXTO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}) }]
+              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}) }]
               this.turnoAbierto = null
               this.mostrarArchivoReutilizado(idMensaje)
             }
@@ -2106,7 +2103,7 @@ class AsistenteServiceImpl {
     this.mensajes = [
       ...this.mensajes,
       { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
-      { id: idMensaje, rol: 'asistente', texto: TEXTO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo },
+      { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo },
     ]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje

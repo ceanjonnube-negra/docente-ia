@@ -161,8 +161,9 @@ async function main() {
     chat.manejarEventoMotor({ tipo: 'respuesta-parcial', texto: 'Documento generado correctamente.' })
     chat.manejarEventoMotor({ tipo: 'respuesta-final', texto: 'Documento generado correctamente.', archivo: a, archivos: [a] })
   }
+  let historialEnviado: { rol: string; texto: string }[] = []
   const motor = {
-    establecerHistorial: () => {},
+    establecerHistorial: (mensajes: { rol: string; texto: string }[]) => { historialEnviado = mensajes },
     establecerConversacion: () => {},
     enviarTexto: async (_texto: string, _adjunto: unknown, fin?: { tipo: string; documentoTexto: string }) => {
       if (!fin) return
@@ -258,11 +259,21 @@ async function main() {
   verificar(JSON.stringify(enA.mensajes.find((x) => x.id === caso3.id)) === JSON.stringify(caso3) && enA.documentoActivo?.id === formal.id && p.documentoVigente(enA.mensajes as never)?.id === formal.id, '6c. En A el documento original no cambia; el vigente es el último documento (el examen de la sección 4), no una entrega')
   verificar(new Set(enA.mensajes.map((x) => x.id)).size === enA.mensajes.length, '6d. Sin duplicados')
 
-  // ---- 7. Alcance ----
+  // ---- 7. Presentación: solo la tarjeta (el texto técnico no se muestra) ----
+  const { textoParaCopiar } = await import('../lib/asistente/copiarRespuesta')
+  const { AVISO_ARCHIVO_LISTO } = await import('../lib/asistente/documentos')
+  verificar(AVISO_ARCHIVO_LISTO === LISTO && pdf[0].texto === AVISO_ARCHIVO_LISTO && textoParaCopiar(pdf[0] as never) === null && textoParaCopiar(word[0] as never) === null, '7a. La entrega no ofrece "Copiar" (no tiene texto visible)')
+  ;(interno.sincronizarHistorialTexto as () => void).call(chat)
+  const entregasEnHistorial = historialEnviado.filter((x) => x.texto === LISTO)
+  verificar(entregasEnHistorial.length > 0 && historialEnviado.every((x) => x.texto.trim().length > 0), '7b. En el historial para la IA la entrega conserva su texto técnico: ningún turno va vacío')
   const { readFileSync } = await import('node:fs')
+  const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
+  verificar(/\{!esDoc && m\.texto && m\.texto !== AVISO_ARCHIVO_LISTO && \(/.test(panel) && /\{esDoc \|\| \(m\.rol === 'asistente' && m\.archivo\?\.url\) \? \(/.test(panel) && (panel.match(/<TarjetaDescarga\b/g) ?? []).length === 1, '7c. Panel: la entrega muestra solo su tarjeta (sin burbuja de texto) con las mismas acciones de siempre')
+
+  // ---- 8. Alcance ----
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
   const parcial = servicio.slice(servicio.indexOf("case 'respuesta-parcial': {"), servicio.indexOf("case 'respuesta-final': {"))
-  verificar(!/textoDocumentoFinalizando/.test(parcial) && /actualizarDocumentoActivo\(msg\.id, evento\.contenidoOriginal \?\? msg\.texto, evento\.archivo\)/.test(servicio), '7a. Durante la conversión no se reescribe el documento; la generación directa (CASO 3) no cambia')
+  verificar(!/textoDocumentoFinalizando/.test(parcial) && /actualizarDocumentoActivo\(msg\.id, evento\.contenidoOriginal \?\? msg\.texto, evento\.archivo\)/.test(servicio), '8a. Durante la conversión no se reescribe el documento; la generación directa (CASO 3) no cambia')
 
   console.log('')
   if (fallos > 0) {
