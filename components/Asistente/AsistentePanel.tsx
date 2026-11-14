@@ -572,12 +572,12 @@ function BotonCopiar({ texto }: { texto: string }) {
   )
 }
 
-function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo }: { texto: string; escribiendo: boolean; generandoArchivo: boolean }) {
+function VistaPreviaDocumento({ texto, escribiendo, generandoArchivo, resaltado = false }: { texto: string; escribiendo: boolean; generandoArchivo: boolean; resaltado?: boolean }) {
   const lineas = analizarContenido(texto)
   const titulo = extraerTitulo(texto)
   const etapaGeneracion = useEtapaGeneracion(generandoArchivo)
   return (
-    <div className="w-full max-w-sm bg-white rounded-2xl shadow-md border border-gray-200 rounded-bl-sm overflow-hidden">
+    <div className={`w-full max-w-sm bg-white rounded-2xl shadow-md border rounded-bl-sm overflow-hidden transition-shadow ${resaltado ? 'border-purple-300 ring-2 ring-purple-300' : 'border-gray-200'}`}>
       <div className="px-3 pt-2 pb-1.5 bg-gray-50 border-b border-gray-100 flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0" aria-hidden="true" />
         <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide truncate">Vista previa · {titulo}</p>
@@ -681,9 +681,21 @@ export default function AsistentePanel() {
     AsistenteService.limpiarNavegacionPendiente()
   }, [asistente.accionNavegacionPendiente, router])
 
+  // Baja al final al abrir el panel y con cada mensaje nuevo, salvo
+  // mientras hay un mensaje resaltado (archivo reutilizado o versión
+  // consultada): ahí manda el desplazamiento hacia ese mensaje, y cuando el
+  // resaltado se apaga solo no se vuelve a bajar (los mensajes no
+  // cambiaron).
+  const mensajesAlFinalRef = useRef<unknown>(null)
   useEffect(() => {
-    if (asistente.panelAbierto) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [asistente.mensajes, asistente.panelAbierto])
+    if (!asistente.panelAbierto) {
+      mensajesAlFinalRef.current = null
+      return
+    }
+    if (mensajesAlFinalRef.current === asistente.mensajes) return
+    mensajesAlFinalRef.current = asistente.mensajes
+    if (!asistente.archivoReutilizadoId) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [asistente.mensajes, asistente.panelAbierto, asistente.archivoReutilizadoId])
 
   // "No regenerar archivos existentes" (reutilizarArchivoExistente en
   // AsistenteService): en vez de esperar a que el nuevo mensaje quede
@@ -1048,6 +1060,7 @@ export default function AsistentePanel() {
                       texto={m.texto}
                       escribiendo={esUltimoGenerando}
                       generandoArchivo={asistente.documentoFinalizandoId === m.id}
+                      resaltado={asistente.archivoReutilizadoId === m.id}
                     />
                   )}
                   {/* Un mensaje puede traer archivo (ej. el respaldo del

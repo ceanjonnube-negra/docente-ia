@@ -253,7 +253,7 @@ async function main() {
   const { readFileSync } = await import('node:fs')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
   const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-  verificar(!persistencia.includes('ultimoDocumentoFormal') && (persistencia.match(/documentoVigente\(/g) ?? []).length === 3 && (servicio.match(/documentoVigente\(/g) ?? []).length === 2, '4a. Un solo criterio: la descarga, la sincronización, la apertura y la incorporación usan documentoVigente')
+  verificar(!persistencia.includes('ultimoDocumentoFormal') && /const documentoActivo = elegirDocumentoActivo\(documentoRemoto, documentoVigente\(mensajes\)\)/.test(persistencia) && /const vigente = resolverDocumentoVigente\(combinados\)/.test(persistencia) && /elegirDocumentoActivo\(datos\.documentoActivo, documentoVigente\(datos\.mensajes\)\)/.test(servicio) && /const vigente = resolverDocumentoVigente\(mensajes\)/.test(servicio) && (persistencia.match(/contenidoDocumentoDe\(m\)|contenidoDocumentoDe\(version\)/g) ?? []).length >= 2, '4a. Un solo criterio: la descarga, la sincronización, la apertura y la incorporación usan resolverDocumentoVigente / documentoVigente')
   verificar(/actualizarDocumentoActivo\(msg\.id, evento\.contenidoOriginal \?\? msg\.texto, evento\.archivo\)/.test(servicio) && /else if \(msg && esDocumentoFormal\(msg\.texto\)\)/.test(servicio), '4b. Generación, conversión y edición sin cambios')
 
   console.log('')

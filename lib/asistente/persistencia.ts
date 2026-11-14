@@ -39,7 +39,7 @@ const CLAVE_FORMATO_VIEJO = 'docente-ia:conversacion'
 // explícita, no a que la lista sea infinita; las más viejas nunca
 // tocadas se recortan igual que ya se recortaban los mensajes).
 const TOPE_CONVERSACIONES = 30
-const TOPE_MENSAJES = 80
+export const TOPE_MENSAJES = 80
 
 export type DocumentoActivoGuardado = {
   id: string
@@ -53,6 +53,9 @@ export type DocumentoActivoGuardado = {
   // los lee como undefined y arranca con la caché vacía.
   archivosGenerados?: Record<string, ArchivoGeneradoInfo>
   ultimoFormatoGenerado?: string
+  // La restauración vigente apunta a una versión que no está (o no es
+  // válida) en este dispositivo: nunca se opera sobre otro documento.
+  noRecuperado?: true
 }
 export type ConversacionResumen = { id: string; titulo: string; actualizadaEn: number }
 
@@ -252,7 +255,7 @@ function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversaci
 
 export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado?: string) {
   if (mensajes.length === 0) return // conversación vacía: nada que guardar todavía
-  const mensajesRecortados = mensajes.slice(-TOPE_MENSAJES)
+  const mensajesRecortados = conVersionRestauradaFijada(mensajes, mensajes.slice(-TOPE_MENSAJES))
   const titulo = tituloForzado ?? derivarTitulo(mensajesRecortados)
   const actualizadaEn = marcaDeTiempo()
 
@@ -889,18 +892,59 @@ export function contenidoDocumentoDe(m: MensajeConversacion): string | null {
   return m.contenidoDocumento?.trim() && (m.archivo || m.archivos?.length) ? m.contenidoDocumento : null
 }
 
-// Documento vigente de una conversación: el último mensaje con documento
-// (cada edición agrega su versión al final). Con su formato ya generado,
-// si lo tiene; la caché de archivos no se reconstruye (es por versión
-// exacta y vive solo en el documento activo del dispositivo).
-export function documentoVigente(mensajes: MensajeConversacion[]): DocumentoActivoGuardado | null {
+// Identidad estable del documento al que pertenece un mensaje (P2b): la del
+// documento original de sus versiones; sin vínculo, el propio mensaje.
+export function documentoRaizDe(m: Pick<MensajeConversacion, 'id' | 'documentoRaizId'>): string {
+  return m.documentoRaizId ?? m.id
+}
+
+// Documento vigente de una conversación: lo determina el último evento
+// documental — un mensaje con documento (cada edición agrega su versión al
+// final) o una restauración (restauraVersion, P2c), que vuelve vigente la
+// versión referida sin copiarla. origenId es el mensaje que lo determinó
+// (la versión o el marcador): con él se sabe si llegó algo nuevo al
+// sincronizar. Una restauración cuya versión no está en los mensajes, no
+// es un documento o no es del mismo documento (otra raíz) queda como
+// noRecuperado: nunca se elige otra versión en su lugar. Con su formato ya
+// generado, si lo tiene; la caché de archivos no se reconstruye (es por
+// versión exacta y vive solo en el documento activo del dispositivo).
+export function resolverDocumentoVigente(mensajes: MensajeConversacion[]): { documento: DocumentoActivoGuardado; origenId: string } | null {
   for (let i = mensajes.length - 1; i >= 0; i--) {
-    const texto = contenidoDocumentoDe(mensajes[i])
+    const m = mensajes[i]
+    if (m.rol === 'asistente' && m.restauraVersion) {
+      const version = mensajes.find((x) => x.id === m.restauraVersion)
+      const texto = version ? contenidoDocumentoDe(version) : null
+      if (!version || !texto || documentoRaizDe(version) !== m.documentoRaizId) return { documento: { id: m.restauraVersion, texto: '', noRecuperado: true }, origenId: m.id }
+      const formato = version.archivo?.tipo
+      return { documento: { id: version.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
+    }
+    const texto = contenidoDocumentoDe(m)
     if (!texto) continue
-    const formato = mensajes[i].archivo?.tipo
-    return { id: mensajes[i].id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }
+    const formato = m.archivo?.tipo
+    return { documento: { id: m.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
   }
   return null
+}
+
+export function documentoVigente(mensajes: MensajeConversacion[]): DocumentoActivoGuardado | null {
+  return resolverDocumentoVigente(mensajes)?.documento ?? null
+}
+
+// Documento activo al abrir o combinar: el guardado (con su caché y su
+// texto) si es esa misma versión y está disponible; si no, el vigente.
+export function elegirDocumentoActivo(guardado: DocumentoActivoGuardado | null, vigente: DocumentoActivoGuardado | null): DocumentoActivoGuardado | null {
+  return guardado && vigente && guardado.id === vigente.id && !guardado.noRecuperado ? guardado : vigente
+}
+
+// La versión que la restauración vigente referencia se conserva en la
+// copia local aunque quede fuera de los últimos TOPE_MENSAJES (así se
+// resuelve al reabrir sin red).
+function conVersionRestauradaFijada(mensajes: MensajeConversacion[], recortados: MensajeConversacion[]): MensajeConversacion[] {
+  const vigente = resolverDocumentoVigente(mensajes)
+  if (!vigente || vigente.origenId === vigente.documento.id || vigente.documento.noRecuperado) return recortados
+  if (recortados.some((m) => m.id === vigente.documento.id)) return recortados
+  const version = mensajes.find((m) => m.id === vigente.documento.id)
+  return version ? [version, ...recortados] : recortados
 }
 
 // Mensajes que ya están en Supabase (descargados): se registran como
@@ -937,8 +981,19 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
     .order('creado_en', { ascending: false })
     .limit(TOPE_MENSAJES)
   if (errorMensajes) throw errorMensajes
-  const mensajes = filasAMensajes(remotoId, (filas ?? []) as FilaMensajeLeida[]).reverse()
+  let mensajes = filasAMensajes(remotoId, (filas ?? []) as FilaMensajeLeida[]).reverse()
   if (mensajes.length === 0) return false
+  // La versión que una restauración vigente referencia puede ser más vieja
+  // que los últimos mensajes: se trae por su id (P2c-2). Si falla, la copia
+  // queda con la restauración noRecuperado (se reintenta al sincronizar).
+  const pendiente = resolverDocumentoVigente(mensajes)
+  if (pendiente?.documento.noRecuperado) {
+    try {
+      mensajes = combinarMensajes(mensajes, await leerMensajesRemotosPorId(docenteId, remotoId, [pendiente.documento.id]))
+    } catch (e) {
+      console.error('[VERSION_RESTAURADA] recuperada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    }
+  }
 
   // Relación primero: desde aquí el motor y la etapa 1 usan este id.
   guardarVinculoRemoto(remotoId, docenteId, remotoId)
@@ -946,8 +1001,7 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
   // entregado directo como archivo). El guardado en la fila solo se usa si
   // es ese mismo; uno anterior nunca lo sustituye.
   const documentoRemoto = conversacion.documento_activo as DocumentoActivoGuardado | null
-  const vigente = documentoVigente(mensajes)
-  const documentoActivo = documentoRemoto && vigente && documentoRemoto.id === vigente.id ? documentoRemoto : vigente
+  const documentoActivo = elegirDocumentoActivo(documentoRemoto, documentoVigente(mensajes))
   const titulo = conversacion.titulo && conversacion.titulo !== TITULO_INICIAL ? conversacion.titulo : undefined
   guardarConversacion(remotoId, mensajes, documentoActivo, titulo)
 
@@ -1023,7 +1077,18 @@ export function sincronizarConversacionRemota(docenteId: string, localId: string
   return promesa
 }
 
+// Después de los mensajes nuevos, la versión que una restauración vigente
+// referencia y no está en la copia local (P2c-2): se trae por su id antes
+// de permitir operaciones con el documento.
 async function ejecutarSincronizacion(docenteId: string, localId: string): Promise<ResultadoSincronizacion> {
+  const resultado = await sincronizarMensajesNuevos(docenteId, localId)
+  if (resultado.estado !== 'actualizada' && resultado.estado !== 'sin_cambios') return resultado
+  const version = await recuperarVersionRestaurada(docenteId, localId)
+  if (!version) return resultado
+  return { estado: 'actualizada', nuevos: [...(resultado.estado === 'actualizada' ? resultado.nuevos : []), version] }
+}
+
+async function sincronizarMensajesNuevos(docenteId: string, localId: string): Promise<ResultadoSincronizacion> {
   if (!cargarConversacionPorId(localId)) return { estado: 'sin_copia_local' }
   const remotoId = await idRemotoDe(docenteId, localId)
   const { data: conversacion, error } = await supabase
@@ -1069,17 +1134,7 @@ async function ejecutarSincronizacion(docenteId: string, localId: string): Promi
     .map((m) => idMensajeRemoto(remotoId, m.id))
   if (faltantes.length === 0) return { estado: 'sin_cambios' }
 
-  const filas: FilaMensajeLeida[] = []
-  for (let i = 0; i < faltantes.length; i += LOTE_MIGRACION) {
-    const { data, error: errorMensajes } = await supabase
-      .from('mensajes_chat')
-      .select('id, rol, texto, contenido, creado_en')
-      .eq('conversacion_id', remotoId)
-      .in('id', faltantes.slice(i, i + LOTE_MIGRACION))
-    if (errorMensajes) throw errorMensajes
-    filas.push(...((data ?? []) as FilaMensajeLeida[]))
-  }
-  const traidos = filasAMensajes(remotoId, filas)
+  const traidos = filasAMensajes(remotoId, await leerFilasPorId(remotoId, faltantes))
 
   // Desde aquí no hay esperas: se combina con la copia local VIGENTE.
   const actual = cargarConversacionPorId(localId)
@@ -1088,14 +1143,79 @@ async function ejecutarSincronizacion(docenteId: string, localId: string): Promi
   const agregados = new Set(traidos.filter((m) => !idsActuales.has(m.id)).map((m) => m.id))
   if (agregados.size === 0) return { estado: 'sin_cambios' }
   const combinados = combinarMensajes(actual.mensajes, traidos)
-  // Documento activo: pasa al documento vigente solo si es uno de los
-  // traídos (criterio de la 3A).
-  const vigente = documentoVigente(combinados)
-  const documentoActivo = vigente && agregados.has(vigente.id) ? vigente : actual.documentoActivo
+  // Documento activo: pasa al documento vigente solo si lo determinó uno
+  // de los traídos (una versión o una restauración; criterio de la 3A).
+  const vigente = resolverDocumentoVigente(combinados)
+  const documentoActivo = vigente && agregados.has(vigente.origenId) ? elegirDocumentoActivo(actual.documentoActivo, vigente.documento) : actual.documentoActivo
   guardarConversacion(localId, combinados, documentoActivo, actual.titulo)
   const nuevos = (cargarConversacionPorId(localId)?.mensajes ?? []).filter((m) => agregados.has(m.id))
   registrarComoEnviados(docenteId, remotoId, nuevos)
   return { estado: 'actualizada', nuevos }
+}
+
+// ---------------------------------------------------------------------
+// Versiones fuera de la ventana local (P2c-2): lectura por ids exactos,
+// siempre de ESTA conversación (conversacion_id) y con la sesión del
+// docente (RLS); nunca se carga el historial completo.
+
+// Filas de mensajes_chat por id remoto, en lotes (la misma lectura con la
+// que la sincronización trae los mensajes que faltan).
+async function leerFilasPorId(remotoId: string, idsRemotos: string[]): Promise<FilaMensajeLeida[]> {
+  const filas: FilaMensajeLeida[] = []
+  for (let i = 0; i < idsRemotos.length; i += LOTE_MIGRACION) {
+    const { data, error } = await supabase
+      .from('mensajes_chat')
+      .select('id, rol, texto, contenido, creado_en')
+      .eq('conversacion_id', remotoId)
+      .in('id', idsRemotos.slice(i, i + LOTE_MIGRACION))
+    if (error) throw error
+    filas.push(...((data ?? []) as FilaMensajeLeida[]))
+  }
+  return filas
+}
+
+// Mensajes de una conversación por su id local. Una sola lectura en curso
+// por conversación e ids (las peticiones simultáneas comparten la misma).
+// Vienen de Supabase: quedan registrados como ya enviados (la etapa 1 no
+// los reescribe). Lanza si Supabase falla.
+const lecturasPorIdEnCurso = new Map<string, Promise<MensajeConversacion[]>>()
+export function leerMensajesRemotosPorId(docenteId: string, remotoId: string, ids: string[]): Promise<MensajeConversacion[]> {
+  const unicos = [...new Set(ids)].sort()
+  const clave = `${docenteId}:${remotoId}:${unicos.join(',')}`
+  const enCurso = lecturasPorIdEnCurso.get(clave)
+  if (enCurso) return enCurso
+  const promesa = (async () => {
+    const mensajes = filasAMensajes(remotoId, await leerFilasPorId(remotoId, unicos.map((id) => idMensajeRemoto(remotoId, id))))
+    if (mensajes.length > 0) registrarComoEnviados(docenteId, remotoId, mensajes)
+    return mensajes
+  })().finally(() => lecturasPorIdEnCurso.delete(clave))
+  lecturasPorIdEnCurso.set(clave, promesa)
+  return promesa
+}
+
+// Si la restauración vigente de la copia local apunta a una versión que no
+// está, la trae por su id y, solo si resuelve esa misma restauración (es un
+// documento de la misma raíz), la combina y la guarda (queda fijada en la
+// copia). Nunca usa otra versión; si algo falla, queda noRecuperado.
+async function recuperarVersionRestaurada(docenteId: string, localId: string): Promise<MensajeConversacion | null> {
+  const local = cargarConversacionPorId(localId)
+  const pendiente = local ? resolverDocumentoVigente(local.mensajes) : null
+  if (!pendiente?.documento.noRecuperado) return null
+  let traidos: MensajeConversacion[]
+  try {
+    traidos = await leerMensajesRemotosPorId(docenteId, await idRemotoDe(docenteId, localId), [pendiente.documento.id])
+  } catch (e) {
+    console.error('[VERSION_RESTAURADA] recuperada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    return null
+  }
+  // Desde aquí no hay esperas: se combina con la copia local VIGENTE.
+  const actual = cargarConversacionPorId(localId)
+  if (!actual || traidos.length === 0) return null
+  const combinados = combinarMensajes(actual.mensajes, traidos)
+  const resuelto = resolverDocumentoVigente(combinados)
+  if (!resuelto || resuelto.documento.noRecuperado || resuelto.documento.id !== pendiente.documento.id || resuelto.origenId !== pendiente.origenId) return null
+  guardarConversacion(localId, combinados, elegirDocumentoActivo(actual.documentoActivo, resuelto.documento), actual.titulo)
+  return cargarConversacionPorId(localId)?.mensajes.find((m) => m.id === resuelto.documento.id) ?? null
 }
 
 // ---------------------------------------------------------------------

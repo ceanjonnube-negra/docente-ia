@@ -202,6 +202,75 @@ export function clasificarIntencionConFormato(texto: string): IntencionConFormat
   return 'convertir'
 }
 
+// --- Solicitudes sobre versiones anteriores de un documento (P2a) ---
+// "Regresa al documento anterior", "Muéstrame cómo estaba antes", "Recupera
+// la primera versión": no son una conversión (aunque digan "documento") ni
+// una edición. Detección determinista; solo reconoce la intención, no
+// elige la versión.
+// Toda referencia explícita a un documento o versión anterior ("el
+// documento anterior", "la versión anterior", "la primera versión", "cómo
+// estaba antes", "deshaz el último cambio") cuenta: nunca se opera sobre
+// el documento vigente sin resolver antes ese referente. Lo que se pide:
+// - 'restaurar': volver a usarla.
+// - 'consultar': solo verla.
+// - 'convertir': su archivo en un formato ("convierte el documento
+//   anterior a Word").
+// - 'editar': cambiarla ("corrige el documento anterior").
+// - 'ambigua': no dice qué hacer con ella, o pide restaurar y consultar.
+// Sin esa referencia ("pásalo a Word", "convierte la última versión a
+// PDF", "agrégale una conclusión"), devuelve null y todo sigue igual.
+// referencia: 'version' si nombra sin duda una versión del mismo documento
+// ("versión anterior", "primera versión", "cómo estaba antes", "deshaz el
+// cambio"); 'documento' si dice "el documento anterior" (puede ser otro).
+export type SolicitudVersion = { accion: 'restaurar' | 'consultar' | 'convertir' | 'editar' | 'ambigua'; objetivo: 'anterior' | 'primera'; referencia: 'version' | 'documento'; tipo?: string }
+const DOCUMENTO_VERSIONADO = '(documento|archivo|texto|borrador|contenido|oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)'
+const VERSION_EXPLICITA = new RegExp(`\\b(version|borrador)\\s+(anterior|previa|original|inicial|pasada|de\\s+antes)\\b|\\b(primera|primer|penultima)\\s+(version|borrador)\\b|\\bcomo\\s+(estaba|era|quedo|quedaba)\\s+antes\\b|\\b(la|el)\\s+de\\s+antes\\b`)
+const DOCUMENTO_ANTERIOR = new RegExp(`\\b${DOCUMENTO_VERSIONADO}\\s+(anterior|previo|previa|original)\\b`)
+const DESHACER_CAMBIO = /\b(deshaz|deshacer|revierte|revertir)\b[\s\S]*\bcambios?\b/
+const VERBO_RESTAURAR = /\b(regresa|regresame|regresar|regresemos|vuelve|volver|volvamos|recupera|recuperame|recuperar|restaura|restaurar|restablece|revierte|revertir|deshaz|deshacer|retoma|retomemos|usa|utiliza|dejalo|dejala|ponlo|ponla)\b|\bquedate\s+con\b/
+const VERBO_CONSULTAR = /\b(muestra|muestrame|ensena|ensename|ver|verla|verlo|veamos|mira|recuerdame)\b|\bcual\s+era\b/
+const TIPO_VERSION = new RegExp(`\\b(?:del|de\\s+la|de\\s+el)\\s+(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)\\b|\\b(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)\\s+(?:anterior|previo|previa|original)\\b`)
+// ¿El título (primera línea) del documento nombra ese tipo ("citatorio",
+// "examen"...)? Solo VALIDA una referencia contra el documento vigente;
+// nunca sirve para elegir otro documento ni para relacionar versiones.
+export function tituloNombraTipo(documentoTexto: string, tipo: string): boolean {
+  return normalizar(documentoTexto.trim().split('\n')[0] ?? '').includes(tipo)
+}
+
+// Respuesta a una aclaración sobre versiones ("A la versión anterior", "Al
+// otro documento", "La que usaba antes de restaurarla"). 'imprecisa' si
+// nombra más de una opción ("la versión o el otro"); null si no elige
+// ninguna (la aclaración se descarta y el mensaje sigue el camino normal,
+// p. ej. "Cambia la fecha del documento").
+export function respuestaAclaracionVersion(texto: string): { eleccion: 'version' | 'otro' | 'previa'; primera: boolean } | 'imprecisa' | null {
+  const n = normalizar(texto)
+  const previa = /\bantes\s+de\s+restaurar|\bla\s+que\s+(usaba|tenia|estaba\s+usando)\b/.test(n)
+  const otro = /\botr[oa]\b|\bdocumento\s+distinto\b/.test(n)
+  const version = /\bversion\b|\bhistorial\b|\b(mismo|este)\s+documento\b/.test(n)
+  const elegidas = [previa && 'previa', otro && 'otro', !previa && version && 'version'].filter(Boolean) as ('version' | 'otro' | 'previa')[]
+  if (elegidas.length === 1) return { eleccion: elegidas[0], primera: /\b(primera|primer|original)\b/.test(n) }
+  return elegidas.length > 1 ? 'imprecisa' : null
+}
+
+export function detectarSolicitudVersion(texto: string): SolicitudVersion | null {
+  const n = normalizar(texto)
+  const explicita = VERSION_EXPLICITA.test(n)
+  const deshacer = DESHACER_CAMBIO.test(n)
+  if (!explicita && !deshacer && !DOCUMENTO_ANTERIOR.test(n)) return null
+  const restaurar = VERBO_RESTAURAR.test(n)
+  const consultar = VERBO_CONSULTAR.test(n)
+  const accion: SolicitudVersion['accion'] = restaurar && consultar ? 'ambigua'
+    : restaurar ? 'restaurar'
+    : consultar ? 'consultar'
+    : detectarFormatoExplicito(texto) ? 'convertir'
+    : VERBO_EDICION.test(n) ? 'editar'
+    : 'ambigua'
+  const objetivo = /\b(primera|primer|original|inicial)\b/.test(n) ? 'primera' : 'anterior'
+  const m = n.match(TIPO_VERSION)
+  const tipo = m?.[1] ?? m?.[2]
+  return { accion, objetivo, referencia: explicita || deshacer ? 'version' : 'documento', ...(tipo ? { tipo } : {}) }
+}
+
 // Pide un archivo de un documento NUEVO: nunca se responde convirtiendo
 // el documento activo (cliente) ni el último del historial (servidor) —
 // se redacta desde cero (CASO 3 de FINALIZAR ARCHIVO en /api/chat).

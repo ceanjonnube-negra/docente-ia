@@ -131,6 +131,26 @@ export type MensajeConversacion = {
   // mensaje (lib/asistente/persistencia.ts). Mensajes anteriores no lo
   // tienen y no se reconstruye.
   contenidoDocumento?: string
+  // Versiones de un documento (P2b), solo en mensajes nuevos: una versión
+  // creada por una edición guarda la versión inmediata anterior
+  // (versionDe) y la identidad estable del documento (documentoRaizId: el
+  // id del documento original, igual en todas sus versiones aunque cambie
+  // el título). Una entrega de archivo (conversión o archivo reutilizado)
+  // guarda la versión exacta usada (documentoOrigenId) y no es una versión.
+  // Un mensaje sin estos campos es su propia raíz (los históricos no se
+  // reconstruyen). Viajan con el resto del mensaje (mensajes_chat.contenido).
+  versionDe?: string
+  documentoRaizId?: string
+  documentoOrigenId?: string
+  // Restauración de una versión (P2c): mensaje del asistente que vuelve a
+  // hacer vigente la versión con este id (con su documentoRaizId). Solo
+  // referencias: no copia el contenido ni es una versión nueva.
+  restauraVersion?: string
+  // Aclaración pendiente sobre versiones (P2c): la acción original, el
+  // evento que hacía vigente al documento cuando se preguntó (origenId) y
+  // los ids candidatos para cada respuesta posible. Solo se usa si es el
+  // último mensaje y el documento vigente no cambió.
+  aclaracionVersion?: { accion: 'consultar' | 'restaurar'; objetivo: 'anterior' | 'primera'; origenId: string; version?: string; otroDocumento?: string; previa?: string; varios?: boolean }
   // Adjunto (foto o documento) que el docente agregó a ESTE mensaje —
   // ver AdjuntoImagen más abajo. Se guarda junto con el mensaje para
   // que la burbuja lo siga mostrando después de restaurar la

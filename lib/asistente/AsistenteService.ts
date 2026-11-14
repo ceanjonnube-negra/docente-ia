@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, esDocumentoFormal, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, esDocumentoFormal, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -27,11 +27,17 @@ import {
   crearNuevaConversacion,
   contenidoDocumentoDe,
   descargarConversacionRemota,
+  documentoRaizDe,
+  elegirDocumentoActivo,
+  leerMensajesRemotosPorId,
+  resolverDocumentoVigente,
+  TOPE_MENSAJES,
   documentoVigente,
   eliminarConversacionGlobal,
   establecerConversacionActiva,
   guardarConversacion,
   guardarMensajesRemotos,
+  idRemotoDe,
   listarConversaciones,
   migrarHistorialLocal,
   registrarAlRetirarConversacion,
@@ -222,6 +228,37 @@ const ESPERA_SINCRONIZACION_ENVIO_MS = 2_500
 // Único error que emite MotorOpenAIRealtime (conexión de voz): no es la
 // respuesta de una solicitud.
 const MENSAJE_VOZ_PERDIDA = 'Se perdió la conexión de voz. Toca para reintentar.'
+// Resultado de elegir una versión (P2c): el id elegido, o un aviso (con los
+// candidatos de una aclaración, si la respuesta puede completarla).
+type SeleccionVersion = { id: string; distinto: boolean } | { aviso: string; aclaracion?: NonNullable<MensajeConversacion['aclaracionVersion']> }
+
+// Respuesta a una solicitud que nombra un documento o versión anterior
+// (P2a): todavía no se identifica ese referente de forma segura; nada
+// cambia, nada se genera y no se llama a la IA.
+const RESPUESTA_SOLICITUD_VERSION = {
+  restaurar: 'Necesito identificar con seguridad qué documento o versión anterior quieres recuperar. No cambié el documento actual ni generé ningún archivo.',
+  consultar: 'Necesito identificar con seguridad qué documento o versión anterior quieres ver. Sigue más arriba en esta conversación; no cambié el documento actual.',
+  convertir: 'Necesito identificar con seguridad qué documento o versión anterior quieres convertir. No generé ningún archivo ni cambié el documento actual.',
+  editar: 'Necesito identificar con seguridad qué documento o versión anterior quieres modificar. No modifiqué ningún documento.',
+  ambigua: 'Necesito identificar qué documento o versión anterior quieres y qué deseas hacer con él. No cambié el documento actual ni generé ningún archivo.',
+} as const
+// Restauración de versiones (P2c-1).
+const MENSAJE_VERSION_ANTERIOR_RESTAURADA = 'Volví a la versión anterior del documento. Los siguientes cambios y archivos partirán de ella.'
+const MENSAJE_PRIMERA_VERSION_RESTAURADA = 'Volví a la primera versión del documento. Los siguientes cambios y archivos partirán de ella.'
+const MENSAJE_DOCUMENTO_ANTERIOR_RESTAURADO = 'Volví al documento anterior. Los siguientes cambios y archivos partirán de él.'
+const MENSAJE_VERSION_ANTERIOR_CONSULTADA = 'Esta es la versión anterior del documento; la resalté más arriba. No cambié el documento actual.'
+const MENSAJE_PRIMERA_VERSION_CONSULTADA = 'Esta es la primera versión del documento; la resalté más arriba. No cambié el documento actual.'
+const MENSAJE_DOCUMENTO_ANTERIOR_CONSULTADO = 'Este es el documento anterior; lo resalté más arriba. No cambié el documento actual.'
+const ACLARAR_TIPO_NOMBRADO = 'El documento actual no corresponde al que mencionas, así que no sé a qué documento te refieres. No cambié nada.'
+const ACLARAR_VERSION_O_DOCUMENTO = '¿Te refieres a una versión anterior de este mismo documento o a otro documento de la conversación? Dime "la versión anterior", "la primera versión" o "el otro documento". No cambié nada.'
+const ACLARAR_CUAL_DOCUMENTO = 'Hay varios documentos anteriores en esta conversación y no puedo saber a cuál te refieres. No cambié nada.'
+const ACLARAR_RAMA = 'Esta versión se restauró: ¿quieres la versión anterior en su historial o la que usabas antes de restaurarla? No cambié nada.'
+const PRECISAR_VERSION_O_DOCUMENTO = '¿La versión anterior de este documento o el otro documento?'
+const PRECISAR_RAMA = '¿La versión anterior en su historial o la que usabas antes de restaurarla?'
+const MENSAJE_SIN_OTRO_DOCUMENTO = 'No encontré otro documento en esta conversación, así que no cambié nada.'
+const MENSAJE_SIN_VERSION_ANTERIOR = 'No hay una versión anterior registrada de este documento, así que no cambié nada.'
+const MENSAJE_VERSION_NO_DISPONIBLE = 'Esa versión no está disponible en esta conversación en este dispositivo, así que no cambié el documento actual.'
+const MENSAJE_VERSION_NO_RECUPERADA = 'La versión que se restauró de este documento no está disponible en este dispositivo, así que todavía no puedo usarla. No modifiqué nada.'
 const MENSAJE_DOCUMENTO_SIN_VERIFICAR = 'No se pudo comprobar si este documento cambió en otro dispositivo. Revisa tu conexión e intenta de nuevo.'
 
 // 'al_dia': Supabase respondió (con o sin novedades); 'fallo': no se
@@ -235,8 +272,20 @@ export type ResultadoEnvio = 'enviado' | 'no_enviado' | 'otra_conversacion'
 // documento activo no cambia).
 function documentoFormalSincronizado(mensajes: MensajeConversacion[], nuevos: MensajeConversacion[]): DocumentoActivoGuardado | null {
   if (nuevos.length === 0) return null
+  // Lo determina el evento (una versión o una restauración), no el id de
+  // la versión: una restauración vuelve vigente una versión antigua.
+  const vigente = resolverDocumentoVigente(mensajes)
+  return vigente && nuevos.some((m) => m.id === vigente.origenId) ? vigente.documento : null
+}
+
+// Documento activo tras incorporar mensajes: el que determinan los nuevos
+// o, si el activo esperaba una versión restaurada que no estaba (P2c-2) y
+// llegó con ellos, esa versión ya resuelta.
+function documentoTrasIncorporar(mensajes: MensajeConversacion[], nuevos: MensajeConversacion[], activo: DocumentoActivoGuardado | null): DocumentoActivoGuardado | null {
+  const determinado = documentoFormalSincronizado(mensajes, nuevos)
+  if (determinado || !activo?.noRecuperado || nuevos.length === 0) return determinado
   const vigente = documentoVigente(mensajes)
-  return vigente && nuevos.some((m) => m.id === vigente.id) ? vigente : null
+  return vigente && !vigente.noRecuperado && vigente.id === activo.id ? vigente : null
 }
 
 class AsistenteServiceImpl {
@@ -554,8 +603,8 @@ class AsistenteServiceImpl {
     // con el documento activo que tendrán al incorporarse.
     const diferidos = this.sincronizacionDiferida?.id === this.conversacionActivaId ? this.sincronizacionDiferida.nuevos : []
     const mensajes = combinarMensajes(this.mensajes, diferidos)
-    const documentoNuevo = documentoFormalSincronizado(mensajes, diferidos)
-    guardarConversacion(this.conversacionActivaId, mensajes, documentoNuevo ?? this.documentoActivo)
+    const documentoNuevo = documentoTrasIncorporar(mensajes, diferidos, this.documentoActivo)
+    guardarConversacion(this.conversacionActivaId, mensajes, documentoNuevo ? elegirDocumentoActivo(this.documentoActivo, documentoNuevo) : this.documentoActivo)
     this.recalcularLista()
     this.programarCopiaRemota(this.conversacionActivaId, this.mensajes)
   }
@@ -688,8 +737,7 @@ class AsistenteServiceImpl {
     // El documento vigente de los mensajes (también uno entregado directo
     // como archivo). El guardado se conserva (con su caché de archivos) si
     // es ese mismo; uno anterior nunca lo sustituye.
-    const vigente = documentoVigente(datos.mensajes)
-    this.documentoActivo = datos.documentoActivo && vigente && datos.documentoActivo.id === vigente.id ? datos.documentoActivo : vigente
+    this.documentoActivo = elegirDocumentoActivo(datos.documentoActivo, documentoVigente(datos.mensajes))
     this.limpiarEstadoTransitorio()
     this.notificar()
     if (sincronizar) void this.sincronizarConversacion(id)
@@ -812,8 +860,12 @@ class AsistenteServiceImpl {
     const combinados = combinarMensajes(this.mensajes, nuevos)
     if (combinados === this.mensajes) return
     this.mensajes = combinados
-    const documentoNuevo = documentoFormalSincronizado(combinados, nuevos)
-    if (documentoNuevo) {
+    const documentoNuevo = documentoTrasIncorporar(combinados, nuevos, this.documentoActivo)
+    if (documentoNuevo?.noRecuperado) {
+      // Restauración de otro dispositivo cuya versión no está aquí: se
+      // conserva el activo si ya es esa versión; si no, queda explícita.
+      this.documentoActivo = elegirDocumentoActivo(this.documentoActivo, documentoNuevo)
+    } else if (documentoNuevo) {
       this.actualizarDocumentoActivo(documentoNuevo.id, documentoNuevo.texto)
       if (!this.documentoActivo!.ultimoFormatoGenerado && documentoNuevo.ultimoFormatoGenerado) this.documentoActivo = { ...this.documentoActivo!, ultimoFormatoGenerado: documentoNuevo.ultimoFormatoGenerado }
     }
@@ -1263,6 +1315,12 @@ class AsistenteServiceImpl {
             if (esDocumentoFormal(this.mensajes[this.mensajes.length - 1].texto)) {
               this.actualizarDocumentoActivo(this.turnoAbierto, this.mensajes[this.mensajes.length - 1].texto)
             }
+            // Edición de contenido cuya respuesta final esperaba a la
+            // burbuja del docente (voz): mismo cierre que la finalización
+            // normal (estado de edición limpio y, si la respuesta es un
+            // documento, vinculada como versión nueva — P2b).
+            const origen = this.tomarOrigenDeEdicion()
+            if (origen) this.vincularVersion(this.turnoAbierto, origen)
           }
           this.notificar()
         }
@@ -1308,6 +1366,9 @@ class AsistenteServiceImpl {
         break
       }
       case 'respuesta-final': {
+        // Documento del que esta respuesta es una versión nueva (edición
+        // de contenido), para vincularla al terminar (P2b).
+        let origenVersion: string | null = null
         // El Chat IA acaba de confirmar un cambio real en
         // perfiles_docentes (ver actualizar_perfil_docente en
         // app/api/chat/route.ts) — se dispara sin esperar a los
@@ -1372,7 +1433,7 @@ class AsistenteServiceImpl {
             // sincroniza a otros dispositivos como cualquier mensaje.
             if (evento.archivo) {
               const idMensaje = nuevoId()
-              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}) }]
+              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}), ...(this.editandoDocumentoId ? { documentoOrigenId: this.editandoDocumentoId } : {}) }]
               this.turnoAbierto = null
               this.mostrarArchivoReutilizado(idMensaje)
             }
@@ -1400,8 +1461,7 @@ class AsistenteServiceImpl {
           // respuesta nueva (documento editado, aclaración o error en
           // texto), adjuntar archivo y mover documentoActivo solo si la
           // respuesta es un documento formal.
-          this.editandoDocumentoId = null
-          this.ultimoIntentoEdicion = null
+          origenVersion = this.tomarOrigenDeEdicion()
         }
 
         if (textoVacio && this.turnoAbierto) {
@@ -1470,6 +1530,11 @@ class AsistenteServiceImpl {
             ]
           }
         }
+        // Versión nueva (P2b): si la edición produjo un documento, queda
+        // vinculada a la versión de la que salió y a la identidad estable
+        // del documento. Solo se completa el mensaje de ESTE turno; los
+        // históricos no se tocan.
+        if (origenVersion && this.turnoAbierto) this.vincularVersion(this.turnoAbierto, origenVersion)
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
         // alta la respuesta real que acaba de llegar (ver
         // MotorOpenAIRealtime.reproducirRespuestaEnVoz — "Rediseñar el
@@ -1598,7 +1663,7 @@ class AsistenteServiceImpl {
     this.preparandoEnvio = true
     let contexto: EstadoSincronizacion | 'tiempo'
     try {
-      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio))
+      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio) || !!this.documentoActivo?.noRecuperado)
     } finally {
       this.preparandoEnvio = false
     }
@@ -1623,6 +1688,46 @@ class AsistenteServiceImpl {
     // análisis conversacional normal, no en el flujo de botones/
     // respaldo/escritura (ese sigue siendo específico de una sola
     // foto, ver RFC del calendario).
+    // Nombrar un documento o versión anterior ("regresa al documento
+    // anterior", "convierte el documento anterior a Word", "corrige la
+    // versión anterior") nunca opera sobre el documento vigente. Antes que
+    // cualquier otro camino: todavía no se puede identificar ese referente
+    // de forma segura (P2a), así que se responde sin llamar a la IA, sin
+    // generar archivos y sin tocar el documento activo.
+    const solicitudVersion = detectarSolicitudVersion(limpio)
+    // Respuesta a una aclaración sobre versiones que sigue vigente (P2c):
+    // completa la acción original sin repetir la solicitud.
+    const aclarada = await this.responderAclaracion(limpio, adjunto)
+    if (aclarada !== null) return aclarada ? 'enviado' : 'otra_conversacion'
+
+    // Consultar o restaurar una versión (P2c): con un documento activo
+    // disponible, por vínculos explícitos (seleccionarVersion). Convertir o
+    // editar una versión anterior, lo ambiguo y lo que no tiene documento
+    // activo siguen con la respuesta segura de P2a.
+    if ((solicitudVersion?.accion === 'restaurar' || solicitudVersion?.accion === 'consultar') && this.documentoActivo && !this.documentoActivo.noRecuperado) {
+      return (await this.atenderSolicitudVersion(limpio, solicitudVersion, adjunto)) ? 'enviado' : 'otra_conversacion'
+    }
+    if (solicitudVersion) {
+      this.transcripcionParcial = ''
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto },
+        { id: nuevoId(), rol: 'asistente', texto: RESPUESTA_SOLICITUD_VERSION[solicitudVersion.accion], creadoEn: Date.now() },
+      ]
+      this.turnoAbierto = null
+      this.notificar()
+      return 'enviado'
+    }
+
+    // Restauración vigente cuya versión no está en este dispositivo: nada
+    // que dependa del documento (editar, convertir, aprobar) opera sobre
+    // otro en su lugar.
+    if (this.documentoActivo?.noRecuperado && (this.trabajaSobreDocumentoActivo(limpio) || detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: true }))) {
+      this.mostrarAvisoGeneracion(MENSAJE_VERSION_NO_RECUPERADA, true)
+      this.notificar()
+      return 'no_enviado'
+    }
+
     if (esVerificacionCalendarioConImagen(limpio, adjunto) && adjunto) {
       await this.analizarCalendarioDesdeImagen(limpio, adjunto)
       return 'enviado'
@@ -1716,6 +1821,203 @@ class AsistenteServiceImpl {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
     return 'enviado'
+  }
+
+  // Cierre de una edición de contenido (no de una conversión): devuelve el
+  // documento de origen y limpia el estado de edición. Lo usan la
+  // finalización normal y la de voz (finalPendiente).
+  private tomarOrigenDeEdicion(): string | null {
+    const origen = this.editandoDocumentoId
+    if (!origen || this.documentoFinalizandoId === origen) return null
+    this.editandoDocumentoId = null
+    this.ultimoIntentoEdicion = null
+    return origen
+  }
+
+  // Vincula la respuesta de una edición como versión nueva del documento
+  // de origen, solo si es un documento y todavía no está vinculada (una
+  // finalización repetida no la reescribe).
+  private vincularVersion(idVersion: string, idOrigen: string) {
+    const idx = this.mensajes.findIndex((m) => m.id === idVersion)
+    const origen = this.mensajes.find((m) => m.id === idOrigen)
+    const version = idx !== -1 ? this.mensajes[idx] : undefined
+    if (!version || !origen || version.id === origen.id || version.versionDe || !contenidoDocumentoDe(version)) return
+    this.mensajes = [...this.mensajes.slice(0, idx), { ...version, versionDe: origen.id, documentoRaizId: documentoRaizDe(origen) }, ...this.mensajes.slice(idx + 1)]
+  }
+
+  // --- Versiones de un documento: consultar y restaurar (P2c) ---
+  // Selección determinista, solo con vínculos explícitos (P2b) a partir del
+  // documento activo:
+  // - "anterior": su versión padre (versionDe); "primera": su raíz.
+  // - Un tipo nombrado ("del citatorio") solo valida contra el título del
+  //   documento activo; si no coincide, se pide aclaración (nunca se elige
+  //   otro documento por su título).
+  // - "Documento anterior": la versión anterior si en la conversación no hay
+  //   otros documentos; el otro documento si el activo no tiene versión
+  //   previa, no viene de una restauración y hay exactamente uno distinto;
+  //   si no (o si la conversación local puede estar incompleta), aclaración.
+  // - Ramas: si el activo viene de una restauración y antes se usaba una
+  //   versión de OTRA rama (que no desciende de él), "anterior" es ambiguo:
+  //   aclaración. Retroceder paso a paso (V3 → V2 → V1) no lo es.
+  // La versión que no está en memoria se trae por su id (P2c-2). Devuelve
+  // null si el docente cambió de conversación durante esa lectura.
+  private async seleccionarVersion(solicitud: SolicitudVersion): Promise<SeleccionVersion | null> {
+    const activo = this.documentoActivo
+    const actual = this.mensajes.find((m) => m.id === activo?.id)
+    if (!activo || !actual) return { aviso: MENSAJE_VERSION_NO_DISPONIBLE }
+    if (solicitud.tipo && !tituloNombraTipo(activo.texto, solicitud.tipo)) return { aviso: ACLARAR_TIPO_NOMBRADO }
+    const raiz = documentoRaizDe(actual)
+    const vigente = resolverDocumentoVigente(this.mensajes)
+    const origenId = vigente?.origenId ?? actual.id
+    const versionId = solicitud.objetivo === 'primera' ? raiz : actual.versionDe
+    if (solicitud.referencia === 'documento') {
+      const otras = new Set(this.mensajes.filter((m) => contenidoDocumentoDe(m)).map((m) => documentoRaizDe(m)).filter((r) => r !== raiz))
+      const restaurado = !!vigente && vigente.origenId !== vigente.documento.id
+      // Con la conversación posiblemente incompleta en el dispositivo (la
+      // copia guarda los últimos TOPE_MENSAJES), puede haber otros
+      // documentos que no se ven: no se puede descartar que sea otro.
+      const incompleta = this.mensajes.length >= TOPE_MENSAJES
+      const otroDocumento = otras.size === 1 && !incompleta ? [...this.mensajes].reverse().find((m) => contenidoDocumentoDe(m) && documentoRaizDe(m) === [...otras][0])?.id : undefined
+      if ((otras.size > 0 || incompleta) && (actual.versionDe || solicitud.objetivo === 'primera' || restaurado || incompleta)) {
+        return { aviso: ACLARAR_VERSION_O_DOCUMENTO, aclaracion: { accion: 'restaurar', objetivo: solicitud.objetivo, origenId, ...(versionId && versionId !== actual.id ? { version: versionId } : {}), ...(otroDocumento ? { otroDocumento } : { varios: true }) } }
+      }
+      if (otras.size > 1) return { aviso: ACLARAR_CUAL_DOCUMENTO }
+      if (otroDocumento) return this.confirmarDestino(otroDocumento, true, raiz)
+    }
+    if (!versionId || versionId === actual.id) return { aviso: MENSAJE_SIN_VERSION_ANTERIOR }
+    if (solicitud.objetivo === 'anterior') {
+      const idx = vigente && vigente.origenId !== vigente.documento.id ? this.mensajes.findIndex((m) => m.id === vigente.origenId) : -1
+      const antesDeRestaurar = idx > 0 ? resolverDocumentoVigente(this.mensajes.slice(0, idx))?.documento.id : undefined
+      if (antesDeRestaurar && antesDeRestaurar !== versionId && antesDeRestaurar !== actual.id && !this.desciendeDe(antesDeRestaurar, actual.id)) {
+        return { aviso: ACLARAR_RAMA, aclaracion: { accion: 'restaurar', objetivo: 'anterior', origenId, version: versionId, previa: antesDeRestaurar } }
+      }
+    }
+    return this.confirmarDestino(versionId, false, raiz)
+  }
+
+  // La versión elegida: si no está en memoria se trae por su id (P2c-2) y
+  // se valida que sea un documento de la misma raíz (o de otra, si se pidió
+  // otro documento). null si el docente cambió de conversación mientras.
+  private async confirmarDestino(destinoId: string, distinto: boolean, raiz: string): Promise<SeleccionVersion | null> {
+    const conversacion = this.conversacionActivaId
+    if (!this.mensajes.some((m) => m.id === destinoId)) {
+      await this.traerVersionRemota(destinoId)
+      if (conversacion !== this.conversacionActivaId) return null
+    }
+    const destino = this.mensajes.find((m) => m.id === destinoId)
+    const valido = !!destino && !!contenidoDocumentoDe(destino) && (distinto ? documentoRaizDe(destino) !== raiz : documentoRaizDe(destino) === raiz)
+    return valido ? { id: destino!.id, distinto } : { aviso: MENSAJE_VERSION_NO_DISPONIBLE }
+  }
+
+  // Respuesta a la aclaración que es el ÚLTIMO mensaje de esta
+  // conversación ("A la versión anterior", "Al otro documento"): completa
+  // la acción original con los ids que la aclaración guardó, solo si el
+  // documento vigente sigue siendo el mismo de entonces. null si no aplica
+  // (no hay aclaración vigente, la respuesta no es inequívoca o el contexto
+  // cambió): el mensaje sigue el camino normal y la aclaración queda atrás.
+  private async responderAclaracion(limpio: string, adjunto?: AdjuntoImagen): Promise<boolean | null> {
+    const ultimo = this.mensajes[this.mensajes.length - 1]
+    const aclaracion = ultimo?.rol === 'asistente' ? ultimo.aclaracionVersion : undefined
+    const respuesta = aclaracion ? respuestaAclaracionVersion(limpio) : null
+    const activo = this.mensajes.find((m) => m.id === this.documentoActivo?.id)
+    if (!aclaracion || !respuesta || !activo || this.documentoActivo?.noRecuperado) return null
+    // Una solicitud nueva y completa no es la respuesta: si nombra un tipo
+    // ("del citatorio") o pide convertir o editar, sigue el camino normal
+    // con sus validaciones. Si trae su propio verbo (muéstrame, regresa),
+    // manda ese verbo sobre el de la aclaración.
+    const solicitud = detectarSolicitudVersion(limpio)
+    if (solicitud && (solicitud.tipo || solicitud.accion === 'convertir' || solicitud.accion === 'editar')) return null
+    const accion = solicitud?.accion === 'consultar' || solicitud?.accion === 'restaurar' ? solicitud.accion : aclaracion.accion
+    if (resolverDocumentoVigente(this.mensajes)?.origenId !== aclaracion.origenId) return null
+    // Sigue sin elegir una sola opción: solo se repite la precisión que
+    // falta, con el mismo contexto.
+    if (respuesta === 'imprecisa') {
+      this.aplicarSeleccionVersion(limpio, accion, aclaracion.objetivo, { aviso: aclaracion.previa ? PRECISAR_RAMA : PRECISAR_VERSION_O_DOCUMENTO, aclaracion: { ...aclaracion, accion } }, adjunto)
+      return true
+    }
+    const raiz = documentoRaizDe(activo)
+    const objetivo = respuesta.primera ? 'primera' : aclaracion.objetivo
+    let seleccion: SeleccionVersion | null
+    if (respuesta.eleccion === 'otro') {
+      seleccion = aclaracion.otroDocumento ? await this.confirmarDestino(aclaracion.otroDocumento, true, raiz) : { aviso: aclaracion.varios ? ACLARAR_CUAL_DOCUMENTO : MENSAJE_SIN_OTRO_DOCUMENTO }
+    } else if (respuesta.eleccion === 'previa') {
+      if (!aclaracion.previa) return null
+      seleccion = await this.confirmarDestino(aclaracion.previa, false, raiz)
+    } else {
+      const versionId = respuesta.primera ? raiz : aclaracion.version
+      seleccion = versionId && versionId !== activo.id ? await this.confirmarDestino(versionId, false, raiz) : { aviso: MENSAJE_SIN_VERSION_ANTERIOR }
+    }
+    if (!seleccion) return false
+    this.aplicarSeleccionVersion(limpio, accion, objetivo, seleccion, adjunto)
+    return true
+  }
+
+  // ¿La versión `id` desciende de `ancestro` siguiendo versionDe (solo con
+  // los mensajes de esta conversación)?
+  private desciendeDe(id: string, ancestro: string): boolean {
+    let actual = this.mensajes.find((m) => m.id === id)
+    for (let paso = 0; actual?.versionDe && paso < 200; paso++) {
+      if (actual.versionDe === ancestro) return true
+      const padre: string = actual.versionDe
+      actual = this.mensajes.find((m) => m.id === padre)
+    }
+    return false
+  }
+
+  // Consultar no cambia nada: se responde y se lleva la vista a esa versión
+  // (el mismo resaltado que un archivo reutilizado; si estaba fuera de la
+  // ventana local, se trajo por su id y se muestra en su lugar).
+  // Restaurar agrega el marcador (P2c-1): solo referencias, nunca el
+  // contenido; el documento activo pasa a esa versión exacta, con la caché
+  // de archivos vacía (era de otra versión). Sin IA. Devuelve false si el
+  // docente cambió de conversación durante una lectura remota (no se
+  // escribe nada en ninguna).
+  private async atenderSolicitudVersion(limpio: string, solicitud: SolicitudVersion, adjunto?: AdjuntoImagen): Promise<boolean> {
+    const seleccion = await this.seleccionarVersion(solicitud)
+    if (!seleccion) return false
+    // La acción original viaja en la aclaración (consultar o restaurar).
+    if ('aclaracion' in seleccion && seleccion.aclaracion) seleccion.aclaracion.accion = solicitud.accion === 'consultar' ? 'consultar' : 'restaurar'
+    this.aplicarSeleccionVersion(limpio, solicitud.accion === 'consultar' ? 'consultar' : 'restaurar', solicitud.objetivo, seleccion, adjunto)
+    return true
+  }
+
+  private aplicarSeleccionVersion(limpio: string, accion: 'consultar' | 'restaurar', objetivo: 'anterior' | 'primera', seleccion: SeleccionVersion, adjunto?: AdjuntoImagen) {
+    const restaurar = accion === 'restaurar'
+    const destino = 'id' in seleccion ? this.mensajes.find((m) => m.id === seleccion.id) : undefined
+    const texto = destino ? contenidoDocumentoDe(destino) : null
+    let respuesta: MensajeConversacion
+    if (!destino || !texto || !('id' in seleccion)) {
+      const aviso = 'aviso' in seleccion ? seleccion.aviso : MENSAJE_VERSION_NO_DISPONIBLE
+      const aclaracion = 'aclaracion' in seleccion ? seleccion.aclaracion : undefined
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: aviso, creadoEn: Date.now(), ...(aclaracion ? { aclaracionVersion: aclaracion } : {}) }
+    } else if (restaurar) {
+      const confirmacion = seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_RESTAURADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_RESTAURADA : MENSAJE_VERSION_ANTERIOR_RESTAURADA
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: confirmacion, creadoEn: Date.now(), restauraVersion: destino.id, documentoRaizId: documentoRaizDe(destino) }
+    } else {
+      const consulta = seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_CONSULTADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_CONSULTADA : MENSAJE_VERSION_ANTERIOR_CONSULTADA
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: consulta, creadoEn: Date.now() }
+    }
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }, respuesta]
+    if (destino && texto && restaurar) this.actualizarDocumentoActivo(destino.id, texto)
+    if (destino && texto && !restaurar) this.mostrarArchivoReutilizado(destino.id)
+    this.turnoAbierto = null
+    this.notificar()
+  }
+
+  // Trae un mensaje de ESTA conversación por su id y lo intercala en su
+  // lugar (no lo modifica ni crea nada). Si falla, no se agrega nada.
+  private async traerVersionRemota(id: string) {
+    const conversacion = this.conversacionActivaId
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId || !conversacion) return
+      const traidos = await leerMensajesRemotosPorId(docenteId, await idRemotoDe(docenteId, conversacion), [id])
+      if (conversacion === this.conversacionActivaId) this.mensajes = combinarMensajes(this.mensajes, traidos)
+    } catch (e) {
+      console.error('[VERSION_RESTAURADA] recuperada=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+    }
   }
 
   // El mensaje trabaja sobre el documento activo (edición o conversión),
@@ -2050,8 +2352,18 @@ class AsistenteServiceImpl {
   // mensaje que se está por enviar (ese va aparte, como el turno actual).
   // No tiene efecto en el motor de voz (la sesión de Realtime ya es
   // stateful del lado del servidor mientras dura la llamada).
+  // Una restauración (P2c) va al modelo con el contenido de la versión
+  // restaurada (solo en lo enviado; lo guardado no cambia): así el último
+  // documento del historial —el que usa el servidor, p. ej. al aprobar una
+  // planeación— es la versión vigente y no la que se dejó atrás.
   private sincronizarHistorialTexto() {
-    this.motorTexto?.establecerHistorial(this.mensajes.slice(-20))
+    const historial = this.mensajes.slice(-20).map((m) => {
+      if (!m.restauraVersion) return m
+      const version = this.mensajes.find((x) => x.id === m.restauraVersion)
+      const texto = version ? contenidoDocumentoDe(version) : null
+      return texto ? { ...m, texto } : m
+    })
+    this.motorTexto?.establecerHistorial(historial)
     this.motorTexto?.establecerConversacion(this.conversacionActivaId)
   }
 
@@ -2103,7 +2415,7 @@ class AsistenteServiceImpl {
     this.mensajes = [
       ...this.mensajes,
       { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
-      { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo },
+      { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo, ...(this.documentoActivo ? { documentoOrigenId: this.documentoActivo.id } : {}) },
     ]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje
