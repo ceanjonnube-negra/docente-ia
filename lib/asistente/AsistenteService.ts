@@ -30,6 +30,7 @@ import {
   documentoRaizDe,
   documentosDeConversacion,
   elegirDocumentoActivo,
+  leerIndiceDocumental,
   leerMensajesRemotosPorId,
   resolverDocumentoVigente,
   TOPE_MENSAJES,
@@ -267,6 +268,9 @@ const MENSAJE_DOCUMENTO_ELEGIDO_NO_RECUPERADO = 'El documento que se eligió no 
 const MENSAJE_DOCUMENTO_NOMBRADO_CONSULTADO = 'Este es el documento que mencionas; lo resalté más arriba. No cambié el documento actual.'
 const MENSAJE_DOCUMENTO_NOMBRADO_NO_DISPONIBLE = 'Ese documento no está disponible en esta conversación en este dispositivo, así que no cambié nada.'
 const MENSAJE_ORDINAL_INCOMPLETO = 'Esta conversación es larga y en este dispositivo no tengo todos sus documentos, así que no puedo saber cuál es por su orden. Dime su título. No cambié nada.'
+// Tiempo máximo para leer el índice documental (P3b); si se excede, sigue
+// la protección de P3a.
+const LIMITE_INDICE_DOCUMENTAL_MS = 6000
 const MENSAJE_ORDINAL_INEXISTENTE = 'No encuentro ese documento en esta conversación, así que no cambié nada.'
 const PRECISAR_DOCUMENTO = '¿Cuál de ellos? Responde con el número de la lista o con «el más reciente». No cambié nada.'
 const NOMBRE_TIPO: Record<string, [string, string]> = {
@@ -282,9 +286,13 @@ function tituloVisible(titulo: string): string {
   const limpio = titulo.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[*_#]+/g, '').trim()
   return limpio.length > 70 ? `${limpio.slice(0, 67)}…` : limpio || 'Documento sin título'
 }
-function aclararCualDocumento(titulos: string[], incompleta: boolean): string {
+// Con títulos repetidos, la lista agrega la fecha de cada documento.
+function aclararCualDocumento(candidatos: { titulo: string; creadoEn: number }[], incompleta: boolean): string {
+  const titulos = candidatos.map((c) => c.titulo)
   if (titulos.length === 1) return `Encontré este documento entre los mensajes recientes: «${tituloVisible(titulos[0])}». Esta conversación es larga y puede haber otro más atrás. ¿Uso este? Responde «sí» o dime su título. No cambié nada.`
-  const lista = titulos.map((t, i) => `${i + 1}. «${tituloVisible(t)}»`).join('\n')
+  const repetidos = new Set(titulos.filter((t, i) => titulos.indexOf(t) !== i))
+  const fecha = (ms: number) => { const d = new Date(ms); const dos = (n: number) => String(n).padStart(2, '0'); return `${dos(d.getDate())}/${dos(d.getMonth() + 1)} ${dos(d.getHours())}:${dos(d.getMinutes())}` }
+  const lista = candidatos.map((c, i) => `${i + 1}. «${tituloVisible(c.titulo)}»${repetidos.has(c.titulo) ? ` (${fecha(c.creadoEn)})` : ''}`).join('\n')
   return `Hay ${titulos.length} documentos que coinciden con lo que pides:\n${lista}\n¿Con cuál trabajo? Responde con el número o con «el más reciente».${incompleta ? ' Esta conversación es larga y puede haber otros más atrás.' : ''} No cambié nada.`
 }
 
@@ -1908,9 +1916,24 @@ class AsistenteServiceImpl {
     if (!activo || activo.noRecuperado || esPedidoDocumentoNuevo(limpio) || detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(activo.texto) })) return null
     const destino = destinoNombrado(limpio)
     if (!destino) return null
-    const documentos = documentosDeConversacion(this.mensajes)
-    const delTipo = documentos.filter((d) => destino.tipos.some((t) => tituloNombraTipo(d.titulo, t)))
-    const incompleta = this.mensajes.length >= TOPE_MENSAJES
+    let documentos = documentosDeConversacion(this.mensajes)
+    let incompleta = this.mensajes.length >= TOPE_MENSAJES
+    // Con la conversación posiblemente incompleta en el dispositivo y otro
+    // documento nombrado (o un ordinal), se conocen TODOS sus documentos
+    // por el índice de Supabase (P3b). Si falla, sigue la protección de
+    // P3a (confirmar o avisar); nunca se elige otro documento en silencio.
+    let traidos: MensajeConversacion[] = []
+    if (incompleta && (destino.ordinal || destino.tipos.length > 1 || !tituloNombraTipo(activo.texto, destino.tipos[0]))) {
+      const conversacion = this.conversacionActivaId
+      const completos = await this.documentosCompletos()
+      if (conversacion !== this.conversacionActivaId) return 'otra_conversacion'
+      if (completos) {
+        documentos = completos.documentos
+        traidos = completos.traidos
+        incompleta = false
+      }
+    }
+    const delTipo = documentos.filter((d) => destino.tipos.some((t) => tituloNombraTipo(d.titulo ?? '', t)))
     const delActivo = documentos.find((d) => d.id === activo.id)
     let candidatos: typeof documentos
     if (destino.ordinal) {
@@ -1934,7 +1957,32 @@ class AsistenteServiceImpl {
       return this.aclararDocumento(limpio, adjunto, candidatos, incompleta)
     }
     if (candidatos[0].id === activo.id && !destino.seleccion) return null
-    return this.ejecutarConDestino(limpio, limpio, candidatos[0].id, adjunto, sinVerificar)
+    return this.ejecutarConDestino(limpio, limpio, candidatos[0].id, adjunto, sinVerificar, traidos)
+  }
+
+  // Todos los documentos de la conversación (P3b): el índice documental de
+  // Supabase combinado con los mensajes en memoria (regla canónica del
+  // vigente por documento) y el título de los que no están en memoria, leído
+  // por id. null si algo falla, tarda demasiado o llega incompleto.
+  private async documentosCompletos(): Promise<{ documentos: ReturnType<typeof documentosDeConversacion>; traidos: MensajeConversacion[] } | null> {
+    const localId = this.conversacionActivaId
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId || !localId) return null
+      return await conLimiteDeTiempoAccion((async () => {
+        const indice = await leerIndiceDocumental(docenteId, localId)
+        const documentos = documentosDeConversacion(this.mensajes, indice)
+        const faltan = [...new Set(documentos.filter((d) => d.titulo === undefined).map((d) => d.idTitulo))]
+        const traidos = faltan.length ? await leerMensajesRemotosPorId(docenteId, await idRemotoDe(docenteId, localId), faltan) : []
+        const titulos = new Map(traidos.map((m) => [m.id, contenidoDocumentoDe(m)?.trim().split('\n')[0]]))
+        if (faltan.some((id) => titulos.get(id) === undefined)) return null
+        return { documentos: documentos.map((d) => (d.titulo === undefined ? { ...d, titulo: titulos.get(d.idTitulo) } : d)), traidos }
+      })(), LIMITE_INDICE_DOCUMENTAL_MS, 'índice documental')
+    } catch (e) {
+      console.error('[INDICE_DOCUMENTAL] leido=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      return null
+    }
   }
 
   // Respuesta a la aclaración sobre cuál documento que es el ÚLTIMO mensaje
@@ -1949,8 +1997,8 @@ class AsistenteServiceImpl {
     // Una solicitud nueva y completa ("Corrige el primer citatorio") no es
     // la respuesta, aunque traiga un ordinal.
     if (pideOperacionDocumento(limpio)) return null
-    const titulos = documentosDeConversacion(this.mensajes)
-    const titulo = (id: string) => titulos.find((d) => d.id === id)?.titulo ?? ''
+    const documentos = documentosDeConversacion(this.mensajes)
+    const titulo = (id: string, i: number) => aclaracion.titulos?.[i] ?? documentos.find((d) => d.id === id)?.titulo ?? ''
     const eleccion = respuestaAclaracionDocumento(limpio, aclaracion.candidatos.map(titulo))
     if (typeof eleccion === 'number') return this.ejecutarConDestino(aclaracion.instruccion, limpio, aclaracion.candidatos[eleccion], adjunto, sinVerificar)
     if (eleccion === null && limpio.split(/\s+/).length > 6) return null
@@ -1962,8 +2010,11 @@ class AsistenteServiceImpl {
   // disponible (si no está en memoria se trae por su id). Ver no cambia el
   // documento activo; elegirlo o editarlo/convertirlo sí, y el mensaje del
   // docente lo registra (documentoDestinoId) para el resto de dispositivos.
-  private async ejecutarConDestino(instruccion: string, textoVisible: string, destinoId: string, adjunto: AdjuntoImagen | undefined, sinVerificar: boolean): Promise<ResultadoEnvio> {
+  private async ejecutarConDestino(instruccion: string, textoVisible: string, destinoId: string, adjunto: AdjuntoImagen | undefined, sinVerificar: boolean, traidos: MensajeConversacion[] = []): Promise<ResultadoEnvio> {
     const conversacion = this.conversacionActivaId
+    // Ya leída con el índice (P3b): no se vuelve a pedir.
+    const traido = traidos.find((m) => m.id === destinoId)
+    if (traido && !this.mensajes.some((m) => m.id === destinoId)) this.mensajes = combinarMensajes(this.mensajes, [traido])
     if (!this.mensajes.some((m) => m.id === destinoId)) {
       await this.traerVersionRemota(destinoId)
       if (conversacion !== this.conversacionActivaId) return 'otra_conversacion'
@@ -2023,9 +2074,10 @@ class AsistenteServiceImpl {
     return 'enviado'
   }
 
-  private aclararDocumento(limpio: string, adjunto: AdjuntoImagen | undefined, candidatos: { id: string; titulo: string }[], incompleta: boolean): ResultadoEnvio {
+  private aclararDocumento(limpio: string, adjunto: AdjuntoImagen | undefined, candidatos: { id: string; titulo?: string; creadoEn: number }[], incompleta: boolean): ResultadoEnvio {
     const origenId = resolverDocumentoVigente(this.mensajes)?.origenId ?? this.documentoActivo?.id ?? ''
-    return this.responderSinCambios(limpio, adjunto, aclararCualDocumento(candidatos.map((c) => c.titulo), incompleta), { origenId, instruccion: limpio, candidatos: candidatos.map((c) => c.id) })
+    const conTitulo = candidatos.map((c) => ({ titulo: c.titulo ?? '', creadoEn: c.creadoEn }))
+    return this.responderSinCambios(limpio, adjunto, aclararCualDocumento(conTitulo, incompleta), { origenId, instruccion: limpio, candidatos: candidatos.map((c) => c.id), titulos: conTitulo.map((c) => c.titulo) })
   }
 
   // Cierre de una edición de contenido (no de una conversión): devuelve el

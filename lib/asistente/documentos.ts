@@ -6,7 +6,10 @@
 // con uno de estos títulos (ver MODO DOCUMENTO), así que basta con mirar
 // el inicio del texto — nada de heurísticas de longitud poco confiables.
 
-const PATRON_TITULO_DOCUMENTO = /^(📋|📊|📝|📨|📄|📖)\s*[A-ZÀ-Ý]/
+// Los mismos prefijos sirven para reconocer documentos en Supabase (índice
+// documental de P3b, persistencia.ts): una sola definición.
+export const PREFIJOS_TITULO_DOCUMENTO = ['📋', '📊', '📝', '📨', '📄', '📖']
+const PATRON_TITULO_DOCUMENTO = new RegExp(`^(${PREFIJOS_TITULO_DOCUMENTO.join('|')})\\s*[A-ZÀ-Ý]`)
 
 export function esDocumentoFormal(texto: string): boolean {
   return PATRON_TITULO_DOCUMENTO.test(texto.trim())
@@ -301,7 +304,7 @@ const PALABRAS_VACIAS = new Set(['el', 'la', 'los', 'las', 'de', 'del', 'al', 'q
 export function respuestaAclaracionDocumento(texto: string, titulos: string[]): number | 'imprecisa' | null {
   const n = normalizar(texto)
   const elegidos = new Set<number>()
-  for (const m of n.matchAll(new RegExp(`\\b${ORDINAL}\\b|\\b([1-9])\\b|\\bmas\\s+reciente\\b`, 'g'))) {
+  for (const m of n.matchAll(new RegExp(`\\b${ORDINAL}\\b|\\b([1-9][0-9]?)\\b|\\bmas\\s+reciente\\b`, 'g'))) {
     const valor = m[1] ? VALOR_ORDINAL[m[1]] : m[2] ? Number(m[2]) : -1
     const indice = valor === -1 ? titulos.length - 1 : valor - 1
     if (indice >= 0 && indice < titulos.length) elegidos.add(indice)

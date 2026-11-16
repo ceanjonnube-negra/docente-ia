@@ -20,7 +20,7 @@
 // esto se limpia por completo al cerrar sesión.
 
 import { supabase } from '@/lib/supabaseClient'
-import { esDocumentoFormal } from './documentos'
+import { esDocumentoFormal, PREFIJOS_TITULO_DOCUMENTO } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
 import { propuestaListaParaGuardar, type ArchivoGeneradoInfo, type MensajeConversacion } from './tipos'
 
@@ -909,55 +909,68 @@ export function documentoRaizDe(m: Pick<MensajeConversacion, 'id' | 'documentoRa
 // generado, si lo tiene; la caché de archivos no se reconstruye (es por
 // versión exacta y vive solo en el documento activo del dispositivo).
 export function resolverDocumentoVigente(mensajes: MensajeConversacion[]): { documento: DocumentoActivoGuardado; origenId: string } | null {
-  for (let i = mensajes.length - 1; i >= 0; i--) {
-    const m = mensajes[i]
-    // Selección de otro documento (P3a): igual que una restauración, solo
-    // referencia la versión; si no está, queda noRecuperado.
-    if (m.rol === 'usuario' && m.documentoDestinoId) {
-      const version = mensajes.find((x) => x.id === m.documentoDestinoId)
-      const texto = version ? contenidoDocumentoDe(version) : null
-      if (!version || !texto) return { documento: { id: m.documentoDestinoId, texto: '', noRecuperado: true }, origenId: m.id }
-      const formato = version.archivo?.tipo
-      return { documento: { id: version.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
-    }
-    if (m.rol === 'asistente' && m.restauraVersion) {
-      const version = mensajes.find((x) => x.id === m.restauraVersion)
-      const texto = version ? contenidoDocumentoDe(version) : null
-      if (!version || !texto || documentoRaizDe(version) !== m.documentoRaizId) return { documento: { id: m.restauraVersion, texto: '', noRecuperado: true }, origenId: m.id }
-      const formato = version.archivo?.tipo
-      return { documento: { id: version.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
-    }
-    const texto = contenidoDocumentoDe(m)
-    if (!texto) continue
-    const formato = m.archivo?.tipo
-    return { documento: { id: m.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
-  }
-  return null
+  const vigente = vigenteDeEventos(mensajes.flatMap((m) => eventoDocumentalDe(m) ?? []))
+  if (!vigente) return null
+  const version = vigente.noRecuperado ? undefined : mensajes.find((m) => m.id === vigente.id)
+  const texto = version ? contenidoDocumentoDe(version) : null
+  if (!version || !texto) return { documento: { id: vigente.id, texto: '', noRecuperado: true }, origenId: vigente.origenId }
+  const formato = version.archivo?.tipo
+  return { documento: { id: version.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: vigente.origenId }
 }
 
-// Documentos de la conversación (P3a), en el orden en que aparecieron: por
-// cada identidad (raíz), su versión vigente —la última de ese documento o
-// la que se restauró o eligió para él— y el título de su versión más
-// reciente en memoria (para reconocerlo por su tipo y mostrarlo). Una
-// versión vigente que no está en memoria queda noRecuperado (se trae por
-// su id antes de usarla).
-export type DocumentoDeConversacion = { raiz: string; id: string; titulo: string; noRecuperado?: true }
-export function documentosDeConversacion(mensajes: MensajeConversacion[]): DocumentoDeConversacion[] {
-  const raizDe = new Map<string, string>()
-  const titulos = new Map<string, string>()
-  for (const m of mensajes) {
-    const texto = contenidoDocumentoDe(m)
-    if (!texto) continue
-    const raiz = documentoRaizDe(m)
-    raizDe.set(m.id, raiz)
-    titulos.set(raiz, texto.trim().split('\n')[0] ?? '')
+// Eventos documentales (P3b): lo único que decide qué versión es la vigente
+// — una versión (un mensaje con documento), una restauración (P2c, con la
+// raíz del documento) o una selección del docente (P3a). Se obtienen de
+// los mensajes en memoria (eventoDocumentalDe) o, sin el texto, del índice
+// remoto (leerIndiceDocumental): la misma regla para ambos.
+export type EventoDocumental = { id: string; creadoEn: number; tipo: 'version' | 'restauracion' | 'seleccion'; raiz?: string; objetivo?: string }
+export function eventoDocumentalDe(m: MensajeConversacion): EventoDocumental | null {
+  if (m.rol === 'usuario' && m.documentoDestinoId) return { id: m.id, creadoEn: m.creadoEn, tipo: 'seleccion', objetivo: m.documentoDestinoId }
+  if (m.rol === 'asistente' && m.restauraVersion) return { id: m.id, creadoEn: m.creadoEn, tipo: 'restauracion', objetivo: m.restauraVersion, ...(m.documentoRaizId ? { raiz: m.documentoRaizId } : {}) }
+  return contenidoDocumentoDe(m) ? { id: m.id, creadoEn: m.creadoEn, tipo: 'version', raiz: documentoRaizDe(m) } : null
+}
+
+// Regla canónica del documento vigente: lo determina el ÚLTIMO evento. Una
+// restauración o una selección solo referencian una versión; si esa versión
+// no está entre los eventos (o, en una restauración, es de otra raíz), queda
+// noRecuperado: nunca se elige otra en su lugar.
+export function vigenteDeEventos(eventos: EventoDocumental[]): { id: string; origenId: string; noRecuperado?: true } | null {
+  const e = eventos[eventos.length - 1]
+  if (!e) return null
+  if (e.tipo === 'version') return { id: e.id, origenId: e.id }
+  const version = eventos.find((x) => x.tipo === 'version' && x.id === e.objetivo)
+  const valida = !!version && (e.tipo === 'seleccion' || version.raiz === e.raiz)
+  return valida ? { id: version.id, origenId: e.id } : { id: e.objetivo ?? '', origenId: e.id, noRecuperado: true }
+}
+
+// Documentos de la conversación (P3a), en el orden en que aparecieron (su
+// primera versión): por cada identidad (raíz), su versión vigente —la
+// última de ese documento o la que se restauró o eligió para él, con la
+// regla canónica— y el título de su versión más reciente. Con los eventos
+// del índice remoto (P3b) incluye los documentos fuera de la ventana local;
+// el título de los que no están en memoria queda pendiente (idTitulo es la
+// versión que hay que leer para conocerlo). Una versión vigente que no está
+// en los eventos queda noRecuperado.
+export type DocumentoDeConversacion = { raiz: string; id: string; titulo?: string; idTitulo: string; creadoEn: number; noRecuperado?: true }
+export function documentosDeConversacion(mensajes: MensajeConversacion[], remotos: EventoDocumental[] = []): DocumentoDeConversacion[] {
+  const locales = mensajes.flatMap((m) => eventoDocumentalDe(m) ?? [])
+  const ids = new Set(mensajes.map((m) => m.id))
+  const eventos = remotos.length ? combinarMensajes(locales, remotos.filter((e) => !ids.has(e.id))) : locales
+  const raizDe = new Map(eventos.filter((e) => e.tipo === 'version').map((e) => [e.id, e.raiz ?? e.id]))
+  const porRaiz = new Map<string, EventoDocumental[]>()
+  for (const e of eventos) {
+    const raiz = e.tipo === 'version' ? raizDe.get(e.id) : e.tipo === 'restauracion' ? e.raiz : raizDe.get(e.objetivo ?? '')
+    if (!raiz || (!porRaiz.has(raiz) && e.tipo !== 'version')) continue
+    porRaiz.set(raiz, [...(porRaiz.get(raiz) ?? []), e])
   }
-  const raizDelEvento = (m: MensajeConversacion) =>
-    raizDe.get(m.id) ?? (m.rol === 'asistente' && m.restauraVersion ? m.documentoRaizId : m.rol === 'usuario' && m.documentoDestinoId ? raizDe.get(m.documentoDestinoId) : undefined)
-  return [...titulos.entries()].flatMap(([raiz, titulo]) => {
-    const vigente = resolverDocumentoVigente(mensajes.filter((m) => raizDelEvento(m) === raiz))
+  return [...porRaiz.entries()].flatMap(([raiz, propios]) => {
+    const vigente = vigenteDeEventos(propios)
     if (!vigente) return []
-    return [{ raiz, id: vigente.documento.id, titulo, ...(vigente.documento.noRecuperado ? { noRecuperado: true as const } : {}) }]
+    const versiones = propios.filter((e) => e.tipo === 'version')
+    const ultima = versiones[versiones.length - 1]
+    const mensaje = mensajes.find((m) => m.id === ultima.id)
+    const texto = mensaje ? contenidoDocumentoDe(mensaje) : null
+    return [{ raiz, id: vigente.id, idTitulo: ultima.id, creadoEn: versiones[0].creadoEn, ...(texto ? { titulo: texto.trim().split('\n')[0] ?? '' } : {}), ...(vigente.noRecuperado ? { noRecuperado: true as const } : {}) }]
   })
 }
 
@@ -1211,6 +1224,50 @@ async function leerFilasPorId(remotoId: string, idsRemotos: string[]): Promise<F
 
 // Mensajes de una conversación por su id local. Una sola lectura en curso
 // por conversación e ids (las peticiones simultáneas comparten la misma).
+// Índice documental de una conversación (P3b): TODOS sus eventos
+// documentales en Supabase —sin el texto, solo id, fecha y vínculos—, para
+// conocer los documentos que quedaron fuera de la ventana local. Mismas
+// restricciones que la sincronización: sesión del docente (RLS) y
+// conversacion_id; paginado por id hasta agotar (sin tope de resultados).
+// El filtro reproduce en el servidor lo que eventoDocumentalDe reconoce en
+// el cliente (título de documento formal, documento entregado como
+// archivo, restauración o selección). Lanza si Supabase falla.
+const FILTRO_EVENTOS_DOCUMENTALES = [
+  `and(rol.eq.asistente,texto.match."^[[:space:]]*(${PREFIJOS_TITULO_DOCUMENTO.join('|')})[[:space:]]*[A-ZÀ-Ý]")`,
+  'and(rol.eq.asistente,contenido->>contenidoDocumento.not.is.null,or(contenido->archivo.not.is.null,contenido->archivos.not.is.null))',
+  'and(rol.eq.asistente,contenido->>restauraVersion.not.is.null)',
+  'and(rol.eq.usuario,contenido->>documentoDestinoId.not.is.null)',
+].join(',')
+type FilaIndiceDocumental = { id: string; rol: string; creado_en: string; raiz: string | null; restaura: string | null; destino: string | null }
+export async function leerIndiceDocumental(docenteId: string, localId: string): Promise<EventoDocumental[]> {
+  const remotoId = await idRemotoDe(docenteId, localId)
+  const prefijo = `${remotoId}:`
+  const eventos: EventoDocumental[] = []
+  for (let ultimo = ''; ;) {
+    const { data, error } = await supabase
+      .from('mensajes_chat')
+      .select('id, rol, creado_en, raiz:contenido->>documentoRaizId, restaura:contenido->>restauraVersion, destino:contenido->>documentoDestinoId')
+      .eq('conversacion_id', remotoId)
+      .or(FILTRO_EVENTOS_DOCUMENTALES)
+      .gt('id', ultimo)
+      .order('id', { ascending: true })
+      .limit(PAGINA_IDS)
+    if (error) throw error
+    const pagina = (data ?? []) as unknown as FilaIndiceDocumental[]
+    for (const f of pagina) {
+      if (!f.id.startsWith(prefijo)) continue
+      const id = f.id.slice(prefijo.length)
+      const creadoEn = Date.parse(f.creado_en)
+      if (f.rol === 'usuario') eventos.push({ id, creadoEn, tipo: 'seleccion', objetivo: f.destino ?? '' })
+      else if (f.restaura) eventos.push({ id, creadoEn, tipo: 'restauracion', objetivo: f.restaura, ...(f.raiz ? { raiz: f.raiz } : {}) })
+      else eventos.push({ id, creadoEn, tipo: 'version', raiz: f.raiz ?? id })
+    }
+    if (pagina.length === 0) break
+    ultimo = pagina[pagina.length - 1].id
+  }
+  return eventos.sort((a, b) => (ordenAntes(a, b) ? -1 : ordenAntes(b, a) ? 1 : 0))
+}
+
 // Vienen de Supabase: quedan registrados como ya enviados (la etapa 1 no
 // los reescribe). Lanza si Supabase falla.
 const lecturasPorIdEnCurso = new Map<string, Promise<MensajeConversacion[]>>()
