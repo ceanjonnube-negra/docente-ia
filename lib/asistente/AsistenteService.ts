@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, esConsultaDocumentoActual, esDocumentoFormal, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -28,6 +28,7 @@ import {
   contenidoDocumentoDe,
   descargarConversacionRemota,
   documentoRaizDe,
+  documentosDeConversacion,
   elegirDocumentoActivo,
   leerMensajesRemotosPorId,
   resolverDocumentoVigente,
@@ -261,6 +262,31 @@ const MENSAJE_SIN_VERSION_ANTERIOR = 'No hay una versión anterior registrada de
 const MENSAJE_VERSION_NO_DISPONIBLE = 'Esa versión no está disponible en esta conversación en este dispositivo, así que no cambié el documento actual.'
 const MENSAJE_VERSION_NO_RECUPERADA = 'La versión que se restauró de este documento no está disponible en este dispositivo, así que todavía no puedo usarla. No modifiqué nada.'
 const MENSAJE_DOCUMENTO_SIN_VERIFICAR = 'No se pudo comprobar si este documento cambió en otro dispositivo. Revisa tu conexión e intenta de nuevo.'
+// Documento al que se refiere el docente (P3a).
+const MENSAJE_DOCUMENTO_ELEGIDO_NO_RECUPERADO = 'El documento que se eligió no está disponible en este dispositivo, así que todavía no puedo usarlo. No modifiqué nada.'
+const MENSAJE_DOCUMENTO_NOMBRADO_CONSULTADO = 'Este es el documento que mencionas; lo resalté más arriba. No cambié el documento actual.'
+const MENSAJE_DOCUMENTO_NOMBRADO_NO_DISPONIBLE = 'Ese documento no está disponible en esta conversación en este dispositivo, así que no cambié nada.'
+const MENSAJE_ORDINAL_INCOMPLETO = 'Esta conversación es larga y en este dispositivo no tengo todos sus documentos, así que no puedo saber cuál es por su orden. Dime su título. No cambié nada.'
+const MENSAJE_ORDINAL_INEXISTENTE = 'No encuentro ese documento en esta conversación, así que no cambié nada.'
+const PRECISAR_DOCUMENTO = '¿Cuál de ellos? Responde con el número de la lista o con «el más reciente». No cambié nada.'
+const NOMBRE_TIPO: Record<string, [string, string]> = {
+  oficio: ['un', 'oficio'], examen: ['un', 'examen'], citatorio: ['un', 'citatorio'], planeacion: ['una', 'planeación'], rubrica: ['una', 'rúbrica'], resumen: ['un', 'resumen'], carta: ['una', 'carta'],
+  circular: ['una', 'circular'], ficha: ['una', 'ficha'], reporte: ['un', 'reporte'], informe: ['un', 'informe'], presentacion: ['una', 'presentación'], aviso: ['un', 'aviso'],
+}
+function sinDocumentoDelTipo(tipo: string, incompleta: boolean): string {
+  const [articulo, nombre] = NOMBRE_TIPO[tipo] ?? ['un', tipo]
+  return `No encuentro ${articulo} ${nombre} en esta conversación, así que no cambié nada.${incompleta ? ' Si está más atrás en la conversación, todavía no puedo ubicarlo desde aquí.' : ''}`
+}
+// Título legible de un documento (su primera línea, sin emoji ni formato).
+function tituloVisible(titulo: string): string {
+  const limpio = titulo.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[*_#]+/g, '').trim()
+  return limpio.length > 70 ? `${limpio.slice(0, 67)}…` : limpio || 'Documento sin título'
+}
+function aclararCualDocumento(titulos: string[], incompleta: boolean): string {
+  if (titulos.length === 1) return `Encontré este documento entre los mensajes recientes: «${tituloVisible(titulos[0])}». Esta conversación es larga y puede haber otro más atrás. ¿Uso este? Responde «sí» o dime su título. No cambié nada.`
+  const lista = titulos.map((t, i) => `${i + 1}. «${tituloVisible(t)}»`).join('\n')
+  return `Hay ${titulos.length} documentos que coinciden con lo que pides:\n${lista}\n¿Con cuál trabajo? Responde con el número o con «el más reciente».${incompleta ? ' Esta conversación es larga y puede haber otros más atrás.' : ''} No cambié nada.`
+}
 
 // 'al_dia': Supabase respondió (con o sin novedades); 'fallo': no se
 // pudo consultar; 'sin_sesion': no hay docente con quien consultar.
@@ -382,6 +408,12 @@ class AsistenteServiceImpl {
   // documento existente" sin que el motor conversacional sepa nada de
   // documentos ni de ediciones.
   private editandoDocumentoId: string | null = null
+  // Documento elegido para la operación en curso (P3a): el próximo mensaje
+  // del docente lo registra (documentoDestinoId) y, tras una aclaración,
+  // muestra la respuesta del docente ("El segundo") en lugar de la
+  // solicitud original. Si la operación no llega a escribir ese mensaje,
+  // el documento activo vuelve al anterior.
+  private destinoPendiente: { id?: string; burbuja?: string } | null = null
   // Señal efímera para la UI: acaba de reutilizarse (sin regenerar) el
   // archivo de ESE mensaje — AsistentePanel baja el scroll hasta ahí y
   // aplica una animación breve de resaltado. Se apaga sola (mismo
@@ -1664,7 +1696,7 @@ class AsistenteServiceImpl {
     this.preparandoEnvio = true
     let contexto: EstadoSincronizacion | 'tiempo'
     try {
-      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio) || esConsultaDocumentoActual(limpio) || !!this.documentoActivo?.noRecuperado)
+      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio) || esConsultaDocumentoActual(limpio) || !!destinoNombrado(limpio) || !!this.documentoActivo?.noRecuperado)
     } finally {
       this.preparandoEnvio = false
     }
@@ -1700,6 +1732,9 @@ class AsistenteServiceImpl {
     // completa la acción original sin repetir la solicitud.
     const aclarada = await this.responderAclaracion(limpio, adjunto)
     if (aclarada !== null) return aclarada ? 'enviado' : 'otra_conversacion'
+    // Respuesta a una aclaración sobre cuál documento (P3a).
+    const documentoAclarado = await this.responderAclaracionDocumento(limpio, adjunto, contextoSinVerificar)
+    if (documentoAclarado !== null) return documentoAclarado
 
     // Consultar o restaurar una versión (P2c): con un documento activo
     // disponible, por vínculos explícitos (seleccionarVersion). Convertir o
@@ -1724,9 +1759,19 @@ class AsistenteServiceImpl {
     // que dependa del documento (editar, convertir, aprobar) opera sobre
     // otro en su lugar.
     if (this.documentoActivo?.noRecuperado && (this.trabajaSobreDocumentoActivo(limpio) || detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: true }))) {
-      this.mostrarAvisoGeneracion(MENSAJE_VERSION_NO_RECUPERADA, true)
+      const origen = this.mensajes.find((m) => m.id === resolverDocumentoVigente(this.mensajes)?.origenId)
+      this.mostrarAvisoGeneracion(origen?.documentoDestinoId ? MENSAJE_DOCUMENTO_ELEGIDO_NO_RECUPERADO : MENSAJE_VERSION_NO_RECUPERADA, true)
       this.notificar()
       return 'no_enviado'
+    }
+
+    // Documento nombrado (P3a): "Cambia la fecha del citatorio" con el
+    // examen activo trabaja sobre el citatorio, nunca sobre el examen.
+    // Sin un tipo nombrado como destino, o si es el activo, todo sigue
+    // igual.
+    if (!(adjuntos && adjuntos.length > 1) && !esVerificacionCalendarioConImagen(limpio, adjunto)) {
+      const referido = await this.atenderDocumentoNombrado(limpio, adjunto, contextoSinVerificar)
+      if (referido !== null) return referido
     }
 
     // Ver el documento actual ("Muéstrame el documento actual"): se muestra
@@ -1786,32 +1831,7 @@ class AsistenteServiceImpl {
         this.notificar()
         return 'no_enviado'
       }
-      const tipoFinalizar = detectarHerramientaDocumento(limpio)
-      if (tipoFinalizar) {
-        // Resolución del archivo referenciado: si el maestro nombró un
-        // formato real ("a PDF", "en power poin"), ese es el que pide.
-        // Si solo dijo algo genérico ("descárgalo", "ábrelo", "el
-        // archivo"), detectarHerramientaDocumento cae al default fijo
-        // ('word') — pero lo correcto es el ÚLTIMO formato que ya se
-        // generó para este documento, no siempre Word (ver "resolución
-        // del archivo referenciado").
-        const formatoExplicito = detectarFormatoExplicito(limpio)
-        const tipoResuelto = formatoExplicito ?? (this.documentoActivo.ultimoFormatoGenerado as TipoHerramienta | undefined) ?? tipoFinalizar
-        // Editar Y entregar en un formato ("agrega una conclusión y
-        // guárdalo en PDF"): primero la edición con el texto real del
-        // documento y, en la misma llamada, el archivo del resultado
-        // (CASO 3 en /api/chat) — nunca la conversión del texto anterior.
-        // Solo con un formato NOMBRADO ("en PDF", "a Word"): una palabra
-        // genérica ("haz un resumen de este documento") no pide archivo,
-        // así que es una edición normal, sin formato.
-        if (esEdicionConFormato(limpio) && tipoResuelto !== 'imagen' && tipoResuelto !== 'audio' && tipoResuelto !== 'video') {
-          await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, formatoExplicito ? tipoResuelto : undefined)
-          return 'enviado'
-        }
-        await this.ejecutarConversionFormato(tipoResuelto, limpio)
-        return 'enviado'
-      }
-      await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
+      await this.operarDocumentoActivo(limpio, adjunto)
       return 'enviado'
     }
 
@@ -1829,6 +1849,183 @@ class AsistenteServiceImpl {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
     }
     return 'enviado'
+  }
+
+  // Edita o convierte el documento activo según lo que pidió el docente (lo
+  // que escribió o, tras una aclaración, su solicitud original).
+  private async operarDocumentoActivo(limpio: string, adjunto?: AdjuntoImagen) {
+    if (!this.documentoActivo) return
+    const tipoFinalizar = detectarHerramientaDocumento(limpio)
+    if (tipoFinalizar) {
+      // Resolución del archivo referenciado: si el maestro nombró un
+      // formato real ("a PDF", "en power poin"), ese es el que pide.
+      // Si solo dijo algo genérico ("descárgalo", "ábrelo", "el
+      // archivo"), detectarHerramientaDocumento cae al default fijo
+      // ('word') — pero lo correcto es el ÚLTIMO formato que ya se
+      // generó para este documento, no siempre Word (ver "resolución
+      // del archivo referenciado").
+      const formatoExplicito = detectarFormatoExplicito(limpio)
+      const tipoResuelto = formatoExplicito ?? (this.documentoActivo.ultimoFormatoGenerado as TipoHerramienta | undefined) ?? tipoFinalizar
+      // Editar Y entregar en un formato ("agrega una conclusión y
+      // guárdalo en PDF"): primero la edición con el texto real del
+      // documento y, en la misma llamada, el archivo del resultado
+      // (CASO 3 en /api/chat) — nunca la conversión del texto anterior.
+      // Solo con un formato NOMBRADO ("en PDF", "a Word"): una palabra
+      // genérica ("haz un resumen de este documento") no pide archivo,
+      // así que es una edición normal, sin formato.
+      if (esEdicionConFormato(limpio) && tipoResuelto !== 'imagen' && tipoResuelto !== 'audio' && tipoResuelto !== 'video') {
+        await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto, formatoExplicito ? tipoResuelto : undefined)
+        return
+      }
+      await this.ejecutarConversionFormato(tipoResuelto, limpio)
+      return
+    }
+    await this.enviarComoEdicion(this.documentoActivo.id, limpio, construirPromptEdicion(this.documentoActivo.texto, limpio), adjunto)
+  }
+
+  // Mensaje del docente que inicia una edición o conversión: si se eligió
+  // otro documento para ella (P3a), lo registra.
+  private mensajeDocente(texto: string, imagen?: AdjuntoImagen): MensajeConversacion {
+    const pendiente = this.destinoPendiente
+    this.destinoPendiente = null
+    return { id: nuevoId(), rol: 'usuario', texto: pendiente?.burbuja ?? texto, creadoEn: Date.now(), ...(imagen ? { imagen } : {}), ...(pendiente?.id ? { documentoDestinoId: pendiente.id } : {}) }
+  }
+
+  // --- Documento al que se refiere el docente (P3a) ---
+  // Con un documento activo y un tipo nombrado como destino ("del
+  // citatorio", "al examen"; no como tema ni como documento nuevo):
+  // - el activo lo nombra (y no hay ordinal): null, todo sigue igual;
+  // - un solo documento de ese tipo en la conversación: se usa ese;
+  // - varios, o el único candidato con la conversación posiblemente
+  //   incompleta en el dispositivo: aclaración, sin ejecutar nada;
+  // - ninguno: aviso, aunque el activo sea el único documento (nombrar otro
+  //   tipo nunca opera sobre el activo);
+  // - un ordinal ("el segundo citatorio") solo se resuelve con la
+  //   conversación completa.
+  // Devuelve null si el mensaje sigue el camino normal.
+  private async atenderDocumentoNombrado(limpio: string, adjunto: AdjuntoImagen | undefined, sinVerificar: boolean): Promise<ResultadoEnvio | null> {
+    const activo = this.documentoActivo
+    if (!activo || activo.noRecuperado || esPedidoDocumentoNuevo(limpio) || detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(activo.texto) })) return null
+    const destino = destinoNombrado(limpio)
+    if (!destino) return null
+    const documentos = documentosDeConversacion(this.mensajes)
+    const delTipo = documentos.filter((d) => destino.tipos.some((t) => tituloNombraTipo(d.titulo, t)))
+    const incompleta = this.mensajes.length >= TOPE_MENSAJES
+    const delActivo = documentos.find((d) => d.id === activo.id)
+    let candidatos: typeof documentos
+    if (destino.ordinal) {
+      if (destino.tipos.length > 1) candidatos = delTipo
+      else if (incompleta) return this.responderSinCambios(limpio, adjunto, MENSAJE_ORDINAL_INCOMPLETO)
+      else {
+        const elegido = delTipo[destino.ordinal === -1 ? delTipo.length - 1 : destino.ordinal - 1]
+        if (!elegido) return this.responderSinCambios(limpio, adjunto, MENSAJE_ORDINAL_INEXISTENTE)
+        candidatos = [elegido]
+      }
+    } else if (destino.tipos.length === 1 && tituloNombraTipo(activo.texto, destino.tipos[0])) {
+      candidatos = delActivo ? [delActivo] : []
+      if (!destino.seleccion) return null
+    } else if (delTipo.length === 0) {
+      return this.responderSinCambios(limpio, adjunto, sinDocumentoDelTipo(destino.tipos[0], incompleta))
+    } else candidatos = delTipo
+    if (candidatos.length === 0) return null
+    // Con la conversación posiblemente incompleta, el único candidato
+    // visible se confirma (P3b lo buscará en Supabase); salvo el activo.
+    if (candidatos.length > 1 || (incompleta && !destino.ordinal && candidatos[0].id !== activo.id)) {
+      return this.aclararDocumento(limpio, adjunto, candidatos, incompleta)
+    }
+    if (candidatos[0].id === activo.id && !destino.seleccion) return null
+    return this.ejecutarConDestino(limpio, limpio, candidatos[0].id, adjunto, sinVerificar)
+  }
+
+  // Respuesta a la aclaración sobre cuál documento que es el ÚLTIMO mensaje
+  // (P3a): con el documento vigente igual que cuando se preguntó, completa
+  // la solicitud original sobre el elegido. Una solicitud nueva y completa
+  // sigue el camino normal; una respuesta breve que no elige a ninguno
+  // repite la pregunta (nunca opera sobre el documento activo en su lugar).
+  private async responderAclaracionDocumento(limpio: string, adjunto: AdjuntoImagen | undefined, sinVerificar: boolean): Promise<ResultadoEnvio | null> {
+    const ultimo = this.mensajes[this.mensajes.length - 1]
+    const aclaracion = ultimo?.rol === 'asistente' ? ultimo.aclaracionDocumento : undefined
+    if (!aclaracion || resolverDocumentoVigente(this.mensajes)?.origenId !== aclaracion.origenId) return null
+    // Una solicitud nueva y completa ("Corrige el primer citatorio") no es
+    // la respuesta, aunque traiga un ordinal.
+    if (pideOperacionDocumento(limpio)) return null
+    const titulos = documentosDeConversacion(this.mensajes)
+    const titulo = (id: string) => titulos.find((d) => d.id === id)?.titulo ?? ''
+    const eleccion = respuestaAclaracionDocumento(limpio, aclaracion.candidatos.map(titulo))
+    if (typeof eleccion === 'number') return this.ejecutarConDestino(aclaracion.instruccion, limpio, aclaracion.candidatos[eleccion], adjunto, sinVerificar)
+    if (eleccion === null && limpio.split(/\s+/).length > 6) return null
+    return this.responderSinCambios(limpio, adjunto, PRECISAR_DOCUMENTO, aclaracion)
+  }
+
+  // Opera sobre el documento elegido (su versión vigente, también una
+  // restaurada). Antes de cambiar nada se comprueba que sea un documento
+  // disponible (si no está en memoria se trae por su id). Ver no cambia el
+  // documento activo; elegirlo o editarlo/convertirlo sí, y el mensaje del
+  // docente lo registra (documentoDestinoId) para el resto de dispositivos.
+  private async ejecutarConDestino(instruccion: string, textoVisible: string, destinoId: string, adjunto: AdjuntoImagen | undefined, sinVerificar: boolean): Promise<ResultadoEnvio> {
+    const conversacion = this.conversacionActivaId
+    if (!this.mensajes.some((m) => m.id === destinoId)) {
+      await this.traerVersionRemota(destinoId)
+      if (conversacion !== this.conversacionActivaId) return 'otra_conversacion'
+    }
+    const destino = this.mensajes.find((m) => m.id === destinoId)
+    const texto = destino ? contenidoDocumentoDe(destino) : null
+    if (!destino || !texto) return this.responderSinCambios(textoVisible, adjunto, MENSAJE_DOCUMENTO_NOMBRADO_NO_DISPONIBLE)
+    if (esConsultaDocumentoActual(instruccion)) {
+      this.aplicarSeleccionVersion(textoVisible, 'consultar', 'anterior', { id: destino.id, distinto: true }, adjunto, destino.id === this.documentoActivo?.id ? MENSAJE_DOCUMENTO_ACTUAL_CONSULTADO : MENSAJE_DOCUMENTO_NOMBRADO_CONSULTADO)
+      return 'enviado'
+    }
+    if (sinVerificar) {
+      this.mostrarAvisoGeneracion(MENSAJE_DOCUMENTO_SIN_VERIFICAR, true)
+      this.notificar()
+      return 'no_enviado'
+    }
+    const formato = destino.archivo?.tipo
+    if (destinoNombrado(instruccion)?.seleccion) {
+      const yaActivo = destino.id === this.documentoActivo?.id
+      this.transcripcionParcial = ''
+      this.mensajes = [
+        ...this.mensajes,
+        { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto, ...(yaActivo ? {} : { documentoDestinoId: destino.id }) },
+        { id: nuevoId(), rol: 'asistente', texto: yaActivo ? `Ya estamos trabajando con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}».` : `Listo: ahora trabajo con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}». Los siguientes cambios y archivos partirán de él.`, creadoEn: Date.now() },
+      ]
+      if (!yaActivo) this.documentoActivo = { id: destino.id, texto, archivosGenerados: {}, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }
+      this.mostrarArchivoReutilizado(destino.id)
+      this.turnoAbierto = null
+      this.notificar()
+      return 'enviado'
+    }
+    // Editar o convertir: el documento activo pasa al elegido para esta
+    // operación; si no llega a escribirse el mensaje del docente, vuelve.
+    const previo = this.documentoActivo
+    const cambia = destino.id !== previo?.id
+    if (cambia) this.documentoActivo = { id: destino.id, texto, archivosGenerados: {}, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }
+    this.destinoPendiente = { ...(cambia ? { id: destino.id } : {}), ...(textoVisible !== instruccion ? { burbuja: textoVisible } : {}) }
+    try {
+      await this.operarDocumentoActivo(instruccion, adjunto)
+    } finally {
+      if (this.destinoPendiente) {
+        this.destinoPendiente = null
+        if (cambia) this.documentoActivo = previo
+        this.notificar()
+      }
+    }
+    return 'enviado'
+  }
+
+  // Aviso o aclaración sin cambiar nada: la burbuja del docente y la
+  // respuesta, sin IA.
+  private responderSinCambios(limpio: string, adjunto: AdjuntoImagen | undefined, texto: string, aclaracionDocumento?: MensajeConversacion['aclaracionDocumento']): ResultadoEnvio {
+    this.transcripcionParcial = ''
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }, { id: nuevoId(), rol: 'asistente', texto, creadoEn: Date.now(), ...(aclaracionDocumento ? { aclaracionDocumento } : {}) }]
+    this.turnoAbierto = null
+    this.notificar()
+    return 'enviado'
+  }
+
+  private aclararDocumento(limpio: string, adjunto: AdjuntoImagen | undefined, candidatos: { id: string; titulo: string }[], incompleta: boolean): ResultadoEnvio {
+    const origenId = resolverDocumentoVigente(this.mensajes)?.origenId ?? this.documentoActivo?.id ?? ''
+    return this.responderSinCambios(limpio, adjunto, aclararCualDocumento(candidatos.map((c) => c.titulo), incompleta), { origenId, instruccion: limpio, candidatos: candidatos.map((c) => c.id) })
   }
 
   // Cierre de una edición de contenido (no de una conversión): devuelve el
@@ -1894,7 +2091,9 @@ class AsistenteServiceImpl {
     }
     if (!versionId || versionId === actual.id) return { aviso: MENSAJE_SIN_VERSION_ANTERIOR }
     if (solicitud.objetivo === 'anterior') {
-      const idx = vigente && vigente.origenId !== vigente.documento.id ? this.mensajes.findIndex((m) => m.id === vigente.origenId) : -1
+      // Solo tras una restauración: elegir otro documento (P3a) no crea
+      // ramas en el historial de este.
+      const idx = vigente && vigente.origenId !== vigente.documento.id && this.mensajes.some((m) => m.id === vigente.origenId && m.restauraVersion) ? this.mensajes.findIndex((m) => m.id === vigente.origenId) : -1
       const antesDeRestaurar = idx > 0 ? resolverDocumentoVigente(this.mensajes.slice(0, idx))?.documento.id : undefined
       if (antesDeRestaurar && antesDeRestaurar !== versionId && antesDeRestaurar !== actual.id && !this.desciendeDe(antesDeRestaurar, actual.id)) {
         return { aviso: ACLARAR_RAMA, aclaracion: { accion: 'restaurar', objetivo: 'anterior', origenId, version: versionId, previa: antesDeRestaurar } }
@@ -2395,7 +2594,7 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto }]
+    this.mensajes = [...this.mensajes, this.mensajeDocente(textoVisible, adjunto)]
     // Append-only: la respuesta de una edición de contenido es un turno
     // NUEVO, nunca continuación de un turnoAbierto residual de antes.
     // editandoDocumentoId sigue siendo solo el documento FUENTE.
@@ -2438,7 +2637,7 @@ class AsistenteServiceImpl {
     const idMensaje = nuevoId()
     this.mensajes = [
       ...this.mensajes,
-      { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() },
+      this.mensajeDocente(textoVisible),
       { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo, ...(this.documentoActivo ? { documentoOrigenId: this.documentoActivo.id } : {}) },
     ]
     this.turnoAbierto = null
@@ -2459,7 +2658,7 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now() }]
+    this.mensajes = [...this.mensajes, this.mensajeDocente(textoVisible)]
     this.editandoDocumentoId = idDocumento
     this.documentoFinalizandoId = idDocumento
     this.textoDocumentoFinalizando = documentoTexto

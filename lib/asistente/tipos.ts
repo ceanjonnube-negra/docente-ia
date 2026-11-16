@@ -146,6 +146,17 @@ export type MensajeConversacion = {
   // hacer vigente la versión con este id (con su documentoRaizId). Solo
   // referencias: no copia el contenido ni es una versión nueva.
   restauraVersion?: string
+  // Selección de otro documento (P3a), en el mensaje del DOCENTE que lo
+  // nombró ("Cambia la fecha del citatorio", "Regresa al examen"): la
+  // versión vigente de ese documento cuando lo pidió. La vuelve vigente sin
+  // copiarla ni crear versiones; no es una restauración.
+  documentoDestinoId?: string
+  // Aclaración pendiente sobre a qué documento se refiere el docente
+  // (P3a): la solicitud original, el evento que hacía vigente al documento
+  // cuando se preguntó (origenId) y los candidatos (la versión vigente de
+  // cada uno, en el orden mostrado). Solo se usa si es el último mensaje y
+  // el documento vigente no cambió.
+  aclaracionDocumento?: { origenId: string; instruccion: string; candidatos: string[] }
   // Aclaración pendiente sobre versiones (P2c): la acción original, el
   // evento que hacía vigente al documento cuando se preguntó (origenId) y
   // los ids candidatos para cada respuesta posible. Solo se usa si es el

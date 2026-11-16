@@ -911,6 +911,15 @@ export function documentoRaizDe(m: Pick<MensajeConversacion, 'id' | 'documentoRa
 export function resolverDocumentoVigente(mensajes: MensajeConversacion[]): { documento: DocumentoActivoGuardado; origenId: string } | null {
   for (let i = mensajes.length - 1; i >= 0; i--) {
     const m = mensajes[i]
+    // Selección de otro documento (P3a): igual que una restauración, solo
+    // referencia la versión; si no está, queda noRecuperado.
+    if (m.rol === 'usuario' && m.documentoDestinoId) {
+      const version = mensajes.find((x) => x.id === m.documentoDestinoId)
+      const texto = version ? contenidoDocumentoDe(version) : null
+      if (!version || !texto) return { documento: { id: m.documentoDestinoId, texto: '', noRecuperado: true }, origenId: m.id }
+      const formato = version.archivo?.tipo
+      return { documento: { id: version.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
+    }
     if (m.rol === 'asistente' && m.restauraVersion) {
       const version = mensajes.find((x) => x.id === m.restauraVersion)
       const texto = version ? contenidoDocumentoDe(version) : null
@@ -924,6 +933,32 @@ export function resolverDocumentoVigente(mensajes: MensajeConversacion[]): { doc
     return { documento: { id: m.id, texto, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }, origenId: m.id }
   }
   return null
+}
+
+// Documentos de la conversación (P3a), en el orden en que aparecieron: por
+// cada identidad (raíz), su versión vigente —la última de ese documento o
+// la que se restauró o eligió para él— y el título de su versión más
+// reciente en memoria (para reconocerlo por su tipo y mostrarlo). Una
+// versión vigente que no está en memoria queda noRecuperado (se trae por
+// su id antes de usarla).
+export type DocumentoDeConversacion = { raiz: string; id: string; titulo: string; noRecuperado?: true }
+export function documentosDeConversacion(mensajes: MensajeConversacion[]): DocumentoDeConversacion[] {
+  const raizDe = new Map<string, string>()
+  const titulos = new Map<string, string>()
+  for (const m of mensajes) {
+    const texto = contenidoDocumentoDe(m)
+    if (!texto) continue
+    const raiz = documentoRaizDe(m)
+    raizDe.set(m.id, raiz)
+    titulos.set(raiz, texto.trim().split('\n')[0] ?? '')
+  }
+  const raizDelEvento = (m: MensajeConversacion) =>
+    raizDe.get(m.id) ?? (m.rol === 'asistente' && m.restauraVersion ? m.documentoRaizId : m.rol === 'usuario' && m.documentoDestinoId ? raizDe.get(m.documentoDestinoId) : undefined)
+  return [...titulos.entries()].flatMap(([raiz, titulo]) => {
+    const vigente = resolverDocumentoVigente(mensajes.filter((m) => raizDelEvento(m) === raiz))
+    if (!vigente) return []
+    return [{ raiz, id: vigente.documento.id, titulo, ...(vigente.documento.noRecuperado ? { noRecuperado: true as const } : {}) }]
+  })
 }
 
 export function documentoVigente(mensajes: MensajeConversacion[]): DocumentoActivoGuardado | null {

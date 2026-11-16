@@ -247,6 +247,79 @@ export function esConsultaDocumentoActual(texto: string): boolean {
   return detectarSolicitudVersion(texto) === null
 }
 
+// --- Documento al que se refiere el docente (P3a) ---
+// Tipos nombrados como DESTINO de la solicitud: con artículo o preposición
+// ("el citatorio", "del citatorio", "al examen", "en la circular"), con un
+// ordinal opcional ("el segundo citatorio", "el último examen", "el
+// citatorio más reciente"). No cuentan:
+// - los mencionados como tema ("una pregunta sobre el reporte", "acerca
+//   del oficio");
+// - una parte de otro documento ("el resumen del examen": el destino es el
+//   examen).
+// seleccion: solo pide trabajar con ese documento ("Regresa al examen",
+// "Trabajemos con el citatorio"), sin editarlo ni entregarlo.
+// Crear un documento nuevo ("Haz un examen sobre la Revolución") se
+// distingue antes, con esPedidoDocumentoNuevo.
+const TIPOS_DOCUMENTO = '(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)'
+const ORDINAL = '(primer|primero|primera|segundo|segunda|tercer|tercero|tercera|cuarto|cuarta|ultimo|ultima)'
+const VALOR_ORDINAL: Record<string, number> = { primer: 1, primero: 1, primera: 1, segundo: 2, segunda: 2, tercer: 3, tercero: 3, tercera: 3, cuarto: 4, cuarta: 4, ultimo: -1, ultima: -1 }
+const MENCION_DESTINO = new RegExp(`\\b(?:el|la|este|esta|ese|esa|mi|del|de\\s+la|de\\s+el|al|a\\s+la|en\\s+el|en\\s+la|para\\s+el|para\\s+la|con\\s+el|con\\s+la)\\s+(?:${ORDINAL}\\s+)?${TIPOS_DOCUMENTO}\\b(\\s+mas\\s+reciente|\\s+ultimo|\\s+ultima)?`, 'g')
+const ANTES_DE_TEMA = /\b(sobre|acerca|respecto|relacionad[oa]s?\s+con|basad[oa]s?\s+en|con\s+base\s+en|segun|tema|temas)\s+(?:\S+\s+){0,2}$/
+const PARTE_DE = new RegExp(`^\\s+(?:del|de\\s+la|de\\s+el)\\s+(?:${ORDINAL}\\s+)?${TIPOS_DOCUMENTO}\\b`)
+const SELECCION_EXPRESA = /\b(regresa|regresemos|vuelve|volvamos|trabajemos|trabaja|sigamos|continuemos|retoma|retomemos|selecciona|elige|usa|usemos|pasemos|cambiemos)\b|\bquedate\s+con\b/
+export type DestinoNombrado = { tipos: string[]; ordinal?: number; seleccion: boolean }
+export function destinoNombrado(texto: string): DestinoNombrado | null {
+  const n = normalizar(texto)
+  const tipos: string[] = []
+  let ordinal: number | undefined
+  for (const m of n.matchAll(MENCION_DESTINO)) {
+    if (ANTES_DE_TEMA.test(n.slice(0, m.index)) || PARTE_DE.test(n.slice(m.index + m[0].length))) continue
+    if (!tipos.includes(m[2])) tipos.push(m[2])
+    const despues = m[3]?.trim().replace(/\s+/g, ' ')
+    if (m[1]) ordinal = VALOR_ORDINAL[m[1]]
+    else if (despues) ordinal = -1
+  }
+  if (tipos.length === 0) return null
+  const seleccion = SELECCION_EXPRESA.test(n) && !VERBO_EDICION.test(n) && !ENTREGA_O_ARCHIVO.test(n) && !detectarFormatoExplicito(texto)
+  return { tipos, ...(ordinal ? { ordinal } : {}), seleccion }
+}
+
+// ¿El mensaje pide algo por sí mismo (editar, entregar, convertir, ver,
+// elegir un documento, una versión o uno nuevo)? Así una solicitud nueva no
+// se toma como respuesta a una aclaración.
+export function pideOperacionDocumento(texto: string): boolean {
+  const n = normalizar(texto)
+  return VERBO_EDICION.test(n) || ENTREGA_O_ARCHIVO.test(n) || SELECCION_EXPRESA.test(n) || !!detectarFormatoExplicito(texto) || esPedidoDocumentoNuevo(texto) || detectarSolicitudVersion(texto) !== null || esConsultaDocumentoActual(texto)
+}
+
+// Respuesta a una aclaración sobre cuál documento (P3a), con los títulos en
+// el orden mostrado: el número o el ordinal ("el segundo", "2", "el más
+// reciente"), "sí" si había un solo candidato, o palabras de un solo
+// título ("el de la reunión"). 'imprecisa' si elige más de uno; null si no
+// elige ninguno.
+const PALABRAS_VACIAS = new Set(['el', 'la', 'los', 'las', 'de', 'del', 'al', 'que', 'con', 'para', 'por', 'una', 'uno', 'este', 'esta', 'ese', 'esa', 'ese', 'documento', 'quiero', 'mejor', 'dice'])
+export function respuestaAclaracionDocumento(texto: string, titulos: string[]): number | 'imprecisa' | null {
+  const n = normalizar(texto)
+  const elegidos = new Set<number>()
+  for (const m of n.matchAll(new RegExp(`\\b${ORDINAL}\\b|\\b([1-9])\\b|\\bmas\\s+reciente\\b`, 'g'))) {
+    const valor = m[1] ? VALOR_ORDINAL[m[1]] : m[2] ? Number(m[2]) : -1
+    const indice = valor === -1 ? titulos.length - 1 : valor - 1
+    if (indice >= 0 && indice < titulos.length) elegidos.add(indice)
+    else return 'imprecisa'
+  }
+  if (elegidos.size === 0 && titulos.length === 1 && /^\s*(si|claro|correcto|ese|esa|ese mismo|esa misma|de acuerdo|ok|okay|va|adelante)\b/.test(n)) elegidos.add(0)
+  if (elegidos.size === 0) {
+    const palabras = n.split(/[^a-z0-9]+/).filter((p) => p.length >= 3 && !PALABRAS_VACIAS.has(p))
+    const normalizados = titulos.map((t) => normalizar(t))
+    for (const p of palabras) {
+      const coinciden = normalizados.flatMap((t, i) => (new RegExp(`\\b${p}\\b`).test(t) ? [i] : []))
+      if (coinciden.length === 1) elegidos.add(coinciden[0])
+    }
+  }
+  if (elegidos.size === 1) return [...elegidos][0]
+  return elegidos.size > 1 ? 'imprecisa' : null
+}
+
 // ¿El título (primera línea) del documento nombra ese tipo ("citatorio",
 // "examen"...)? Solo VALIDA una referencia contra el documento vigente;
 // nunca sirve para elegir otro documento ni para relacionar versiones.
