@@ -230,6 +230,23 @@ const DESHACER_CAMBIO = /\b(deshaz|deshacer|revierte|revertir)\b[\s\S]*\bcambios
 const VERBO_RESTAURAR = /\b(regresa|regresame|regresar|regresemos|vuelve|volver|volvamos|recupera|recuperame|recuperar|restaura|restaurar|restablece|revierte|revertir|deshaz|deshacer|retoma|retomemos|usa|utiliza|dejalo|dejala|ponlo|ponla)\b|\bquedate\s+con\b/
 const VERBO_CONSULTAR = /\b(muestra|muestrame|ensena|ensename|ver|verla|verlo|veamos|mira|recuerdame)\b|\bcual\s+era\b/
 const TIPO_VERSION = new RegExp(`\\b(?:del|de\\s+la|de\\s+el)\\s+(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)\\b|\\b(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso)\\s+(?:anterior|previo|previa|original)\\b`)
+// Ver el documento que se está trabajando ("Muéstrame el documento actual",
+// "Enséñame cómo quedó el citatorio", "Muéstramelo", "¿Cómo va quedando el
+// documento?"): se muestra la versión vigente, sin archivo ni IA. No lo es
+// si nombra un formato ("en PDF"), pide entregar o abrir ("mándame",
+// "descárgalo", "ábrelo", "el archivo"), editar, algo nuevo ("un ejemplo de
+// rúbrica") o una versión anterior (eso lo resuelve detectarSolicitudVersion).
+const VER_DOCUMENTO = /\b(muestrame|muestramelo|muestramela|muestra|ensename|ensenamelo|ensenamela|ver|verlo|verla|mira|veamos)\b|\bcomo\s+(va|vas|quedo|queda|esta)\b/
+const REFERENCIA_DOCUMENTO_ACTUAL = /\b(documento|citatorio|oficio|examen|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso|borrador)\b|\b(muestramelo|muestramela|ensenamelo|ensenamela)\b/
+const ENTREGA_O_ARCHIVO = /\b(manda|mandame|mandamelo|envia|enviame|enviamelo|descarga|descargalo|descargamelo|pasa|pasalo|pasamelo|convierte|conviertelo|comparte|compartelo|compartir|imprime|imprimelo|imprimir|abre|abrelo|dame|bajalo|entregalo|genera|generame)\b|\barchivos?\b/
+const ALGO_NUEVO = /\b(un|una|unos|unas|otro|otra|ejemplo|ejemplos|nuevo|nueva)\b/
+export function esConsultaDocumentoActual(texto: string): boolean {
+  const n = normalizar(texto)
+  if (!VER_DOCUMENTO.test(n) || !REFERENCIA_DOCUMENTO_ACTUAL.test(n)) return false
+  if (detectarFormatoExplicito(texto) || ENTREGA_O_ARCHIVO.test(n) || VERBO_EDICION.test(n) || ALGO_NUEVO.test(n)) return false
+  return detectarSolicitudVersion(texto) === null
+}
+
 // ¿El título (primera línea) del documento nombra ese tipo ("citatorio",
 // "examen"...)? Solo VALIDA una referencia contra el documento vigente;
 // nunca sirve para elegir otro documento ni para relacionar versiones.

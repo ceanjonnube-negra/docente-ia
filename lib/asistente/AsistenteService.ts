@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, esDocumentoFormal, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, esConsultaDocumentoActual, esDocumentoFormal, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -255,6 +255,7 @@ const ACLARAR_CUAL_DOCUMENTO = 'Hay varios documentos anteriores en esta convers
 const ACLARAR_RAMA = 'Esta versión se restauró: ¿quieres la versión anterior en su historial o la que usabas antes de restaurarla? No cambié nada.'
 const PRECISAR_VERSION_O_DOCUMENTO = '¿La versión anterior de este documento o el otro documento?'
 const PRECISAR_RAMA = '¿La versión anterior en su historial o la que usabas antes de restaurarla?'
+const MENSAJE_DOCUMENTO_ACTUAL_CONSULTADO = 'Este es el documento actual; lo resalté más arriba.'
 const MENSAJE_SIN_OTRO_DOCUMENTO = 'No encontré otro documento en esta conversación, así que no cambié nada.'
 const MENSAJE_SIN_VERSION_ANTERIOR = 'No hay una versión anterior registrada de este documento, así que no cambié nada.'
 const MENSAJE_VERSION_NO_DISPONIBLE = 'Esa versión no está disponible en esta conversación en este dispositivo, así que no cambié el documento actual.'
@@ -1663,7 +1664,7 @@ class AsistenteServiceImpl {
     this.preparandoEnvio = true
     let contexto: EstadoSincronizacion | 'tiempo'
     try {
-      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio) || !!this.documentoActivo?.noRecuperado)
+      contexto = await this.asegurarContextoActualizado(conversacion, this.trabajaSobreDocumentoActivo(limpio) || esConsultaDocumentoActual(limpio) || !!this.documentoActivo?.noRecuperado)
     } finally {
       this.preparandoEnvio = false
     }
@@ -1726,6 +1727,13 @@ class AsistenteServiceImpl {
       this.mostrarAvisoGeneracion(MENSAJE_VERSION_NO_RECUPERADA, true)
       this.notificar()
       return 'no_enviado'
+    }
+
+    // Ver el documento actual ("Muéstrame el documento actual"): se muestra
+    // la versión vigente (también una restaurada), igual que una consulta
+    // de versiones, sin generar archivos ni llamar a la IA.
+    if (this.documentoActivo && !this.documentoActivo.noRecuperado && !adjunto && esConsultaDocumentoActual(limpio)) {
+      return (await this.mostrarDocumentoActual(limpio)) ? 'enviado' : 'otra_conversacion'
     }
 
     if (esVerificacionCalendarioConImagen(limpio, adjunto) && adjunto) {
@@ -1981,7 +1989,23 @@ class AsistenteServiceImpl {
     return true
   }
 
-  private aplicarSeleccionVersion(limpio: string, accion: 'consultar' | 'restaurar', objetivo: 'anterior' | 'primera', seleccion: SeleccionVersion, adjunto?: AdjuntoImagen) {
+  // Muestra la versión vigente del documento activo (si no está en memoria,
+  // se trae por su id). false si el docente cambió de conversación mientras.
+  private async mostrarDocumentoActual(limpio: string): Promise<boolean> {
+    const conversacion = this.conversacionActivaId
+    const activo = this.documentoActivo!
+    if (!this.mensajes.some((m) => m.id === activo.id)) {
+      await this.traerVersionRemota(activo.id)
+      if (conversacion !== this.conversacionActivaId) return false
+    }
+    const mensaje = this.mensajes.find((m) => m.id === activo.id)
+    const seleccion = mensaje ? await this.confirmarDestino(activo.id, false, documentoRaizDe(mensaje)) : { aviso: MENSAJE_VERSION_NO_DISPONIBLE }
+    if (!seleccion) return false
+    this.aplicarSeleccionVersion(limpio, 'consultar', 'anterior', seleccion, undefined, MENSAJE_DOCUMENTO_ACTUAL_CONSULTADO)
+    return true
+  }
+
+  private aplicarSeleccionVersion(limpio: string, accion: 'consultar' | 'restaurar', objetivo: 'anterior' | 'primera', seleccion: SeleccionVersion, adjunto?: AdjuntoImagen, textoConsulta?: string) {
     const restaurar = accion === 'restaurar'
     const destino = 'id' in seleccion ? this.mensajes.find((m) => m.id === seleccion.id) : undefined
     const texto = destino ? contenidoDocumentoDe(destino) : null
@@ -1994,7 +2018,7 @@ class AsistenteServiceImpl {
       const confirmacion = seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_RESTAURADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_RESTAURADA : MENSAJE_VERSION_ANTERIOR_RESTAURADA
       respuesta = { id: nuevoId(), rol: 'asistente', texto: confirmacion, creadoEn: Date.now(), restauraVersion: destino.id, documentoRaizId: documentoRaizDe(destino) }
     } else {
-      const consulta = seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_CONSULTADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_CONSULTADA : MENSAJE_VERSION_ANTERIOR_CONSULTADA
+      const consulta = textoConsulta ?? (seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_CONSULTADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_CONSULTADA : MENSAJE_VERSION_ANTERIOR_CONSULTADA)
       respuesta = { id: nuevoId(), rol: 'asistente', texto: consulta, creadoEn: Date.now() }
     }
     this.transcripcionParcial = ''
