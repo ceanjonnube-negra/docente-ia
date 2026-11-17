@@ -157,6 +157,7 @@ async function main() {
     conversacionActivaId: string | null; mensajes: Mensaje[]; listaConversaciones: { id: string }[]; sincronizadaEn: Map<string, number>
     nuevaConversacion(): void; abrirConversacion(id: string): void; enviarMensaje(texto: string): Promise<string>; manejarEventoMotor(e: unknown): void
     cerrarSesion(): Promise<{ ok: true } | { ok: false; mensaje: string }>
+    panelAbierto: boolean; abrirPanel(): void
   }
   const interno = chat as unknown as Record<string, unknown>
   let retener = false
@@ -263,10 +264,42 @@ async function main() {
     '8a. salir(): usa el cierre seguro, solo va a la bienvenida si se confirmó, muestra el aviso si falla y evita la doble pulsación')
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   const menu = panel.slice(panel.indexOf('{menuConfigAbierto && ('), panel.indexOf('Docente <span'))
-  verificar(/const resultado = await AsistenteService\.cerrarSesion\(\)\s*\n\s*if \(resultado\.ok\) \{\s*\n\s*router\.push\('\/bienvenida'\)/.test(panel) && /setAvisoSalida\(resultado\.mensaje\)/.test(panel) && !/supabase\.auth\.signOut\(\)/.test(panel)
+  verificar(/const resultado = await AsistenteService\.cerrarSesion\(\)\s*\n\s*if \(resultado\.ok\) \{[^}]*router\.push\('\/bienvenida'\)/.test(panel) && /setAvisoSalida\(resultado\.mensaje\)/.test(panel) && !/supabase\.auth\.signOut\(\)/.test(panel)
     && /📤 Subir documentos/.test(menu) && /onClick=\{cerrarSesion\} disabled=\{saliendo\}/.test(menu) && /Cerrar sesión/.test(menu) && /role="alert"/.test(menu) && !/dashboard\/configuracion|Configuración/.test(menu)
     && menu.indexOf('Subir documentos') < menu.indexOf('Cerrar sesión') && /<a href="\/"[^>]*>[\s\S]{0,200}Inicio/.test(panel),
     '8b. Menú de la manzana: «Subir documentos» y luego «Cerrar sesión» con el mismo flujo seguro (deshabilitado mientras sale, aviso si falla); sin el enlace 404 a Configuración; «Inicio» sigue en el Chat IA')
+
+  // ---- 9. El panel no queda encima de la bienvenida ----
+  evento('SIGNED_IN', DOCENTE_A)
+  await esperar(300)
+  chat.abrirPanel()
+  chat.abrirConversacion(convA)
+  await esperar(200)
+  const r9 = await chat.cerrarSesion()
+  verificar(r9.ok && chat.panelAbierto === false && chat.listaConversaciones.length === 0 && chat.mensajes.length === 0, '9a. Cierre exitoso con el panel abierto: el panel se cierra (sin capa encima de /bienvenida) y no queda ninguna conversación visible')
+  verificar(/if \(!asistente\.panelAbierto\) \{\s*\n\s*return \(\s*\n\s*<button/.test(pagina.length ? panel : '') && /setMenuConfigAbierto\(false\)\s*\n\s*setMenuAbierto\(false\)\s*\n\s*setSaliendo\(false\)\s*\n\s*router\.push\('\/bienvenida'\)/.test(panel),
+    '9b. Con el panel cerrado solo queda la burbuja; antes de ir a /bienvenida se cierran ambos menús y se restablece «Cerrando sesión…»')
+  evento('SIGNED_IN', DOCENTE_A)
+  await esperar(300)
+  chat.abrirPanel()
+  chat.abrirConversacion(convA)
+  await esperar(200)
+  evento('SIGNED_OUT', null)
+  verificar(chat.panelAbierto === false && chat.mensajes.length === 0 && chat.listaConversaciones.length === 0 && p.propietarioLocal() === null, '9c. Sesión cerrada en otro dispositivo (SIGNED_OUT): el panel se cierra y no quedan conversaciones visibles')
+  evento('SIGNED_IN', DOCENTE_A)
+  await esperar(300)
+  chat.abrirPanel()
+  chat.abrirConversacion(convA)
+  await esperar(200)
+  fallarSignOut = true
+  const r9d = await chat.cerrarSesion()
+  fallarSignOut = false
+  verificar(!r9d.ok && chat.panelAbierto === true && chat.conversacionActivaId === convA && chat.mensajes.length > 0 && p.propietarioLocal() === DOCENTE_A, '9d. signOut falla: el panel y la conversación siguen abiertos, la sesión intacta y se devuelve el aviso')
+  await chat.cerrarSesion()
+  evento('SIGNED_IN', DOCENTE_A)
+  await esperar(400)
+  chat.abrirPanel()
+  verificar(chat.panelAbierto === true && p.listarConversaciones().some((c) => c.id === convA) && chat.listaConversaciones.some((c) => c.id === convA), '9e. Reingreso posterior: el panel se abre normalmente y la lista vuelve a mostrar la conversación de A')
 
   console.log('')
   if (fallos > 0) {

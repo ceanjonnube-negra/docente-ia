@@ -647,6 +647,9 @@ export default function AsistentePanel() {
     setAvisoSalida(null)
     const resultado = await AsistenteService.cerrarSesion()
     if (resultado.ok) {
+      setMenuConfigAbierto(false)
+      setMenuAbierto(false)
+      setSaliendo(false)
       router.push('/bienvenida')
       return
     }

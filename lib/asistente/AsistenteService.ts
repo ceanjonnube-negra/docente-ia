@@ -1052,6 +1052,9 @@ class AsistenteServiceImpl {
       for (const [localId, mensajes] of lote) void guardarMensajesRemotos(localId, anterior, mensajes)
     }
     establecerPropietarioLocal(nuevo)
+    // Sin sesión (salida aquí o en otro dispositivo) no queda el panel del
+    // chat encima de la pantalla de bienvenida.
+    if (!nuevo) this.panelAbierto = false
     this.limpiarConversacionGuardada()
     this.olvidarConversacionesRemotas()
     if (nuevo) {
