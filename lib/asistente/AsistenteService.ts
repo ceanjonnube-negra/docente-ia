@@ -213,6 +213,11 @@ export const ELIMINAR_CONVERSACION_DISPONIBLE =
 let contadorId = 0
 const sufijoAleatorio = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(36).padStart(2, '0')).join('')
 const nuevoId = () => `msg-${Date.now()}-${contadorId++}-${sufijoAleatorio()}`
+// Fecha de creación de cada mensaje nuevo (P2c): nunca repite ni retrocede
+// en este dispositivo, así una pregunta y su respuesta creadas en el mismo
+// milisegundo conservan su orden en cualquier otro dispositivo.
+let ultimaMarca = 0
+const marcaTiempo = () => (ultimaMarca = Math.max(Date.now(), ultimaMarca + 1))
 
 // Propuestas de lista oficial (ver confirmarPropuestaLista): códigos de
 // /api/lista-oficial/aplicar que no invalidan la propuesta.
@@ -1338,7 +1343,7 @@ class AsistenteServiceImpl {
           this.conversacionActivaId = crearNuevaConversacion()
         }
         this.transcripcionParcial = ''
-        this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: evento.texto, creadoEn: Date.now() }]
+        this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: evento.texto, creadoEn: marcaTiempo() }]
         this.turnoAbierto = null
         this.turnoUsuarioPendiente = false
         this.notificar()
@@ -1348,7 +1353,7 @@ class AsistenteServiceImpl {
         // ahora de un jalón — la burbuja del docente ya quedó primero.
         if (this.textoAsistentePendiente) {
           this.turnoAbierto = nuevoId()
-          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: this.textoAsistentePendiente, creadoEn: Date.now() }]
+          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: this.textoAsistentePendiente, creadoEn: marcaTiempo() }]
           this.textoAsistentePendiente = ''
           if (this.finalPendiente) {
             this.generando = false
@@ -1401,7 +1406,7 @@ class AsistenteServiceImpl {
           this.mensajes = [...this.mensajes.slice(0, -1), ultimo]
         } else {
           this.turnoAbierto = nuevoId()
-          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: evento.texto, creadoEn: Date.now() }]
+          this.mensajes = [...this.mensajes, { id: this.turnoAbierto, rol: 'asistente', texto: evento.texto, creadoEn: marcaTiempo() }]
         }
         this.notificar()
         break
@@ -1456,7 +1461,7 @@ class AsistenteServiceImpl {
             // asistente y el documento activo queda intacto. Cualquier
             // otra respuesta sin archivo sigue el camino de siempre.
             if (!evento.archivo && evento.texto.trim() === MENSAJE_ARCHIVO_SIN_SESION) {
-              this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: MENSAJE_ARCHIVO_SIN_SESION, creadoEn: Date.now() }]
+              this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: MENSAJE_ARCHIVO_SIN_SESION, creadoEn: marcaTiempo() }]
               this.editandoDocumentoId = null
               this.documentoFinalizandoId = null
               this.textoDocumentoFinalizando = null
@@ -1474,7 +1479,7 @@ class AsistenteServiceImpl {
             // sincroniza a otros dispositivos como cualquier mensaje.
             if (evento.archivo) {
               const idMensaje = nuevoId()
-              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}), ...(this.editandoDocumentoId ? { documentoOrigenId: this.editandoDocumentoId } : {}) }]
+              this.mensajes = [...this.mensajes, { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: marcaTiempo(), archivo: evento.archivo, ...(evento.archivos ? { archivos: evento.archivos } : {}), ...(this.editandoDocumentoId ? { documentoOrigenId: this.editandoDocumentoId } : {}) }]
               this.turnoAbierto = null
               this.mostrarArchivoReutilizado(idMensaje)
             }
@@ -1647,7 +1652,7 @@ class AsistenteServiceImpl {
           // motorTextoClaude.enviarTexto.
           if (this.intentarReintentoAutomatico(estabaFinalizandoArchivo, evento.mensaje)) break
         } else {
-          this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: Date.now() }]
+          this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: evento.mensaje, creadoEn: marcaTiempo() }]
         }
         // Un turno de voz que termina en error (red, timeout, HTTP de
         // /api/chat) nunca llega a 'respuesta-final' — sin esto, el
@@ -1755,8 +1760,8 @@ class AsistenteServiceImpl {
       this.transcripcionParcial = ''
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto },
-        { id: nuevoId(), rol: 'asistente', texto: RESPUESTA_SOLICITUD_VERSION[solicitudVersion.accion], creadoEn: Date.now() },
+        { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: marcaTiempo(), imagen: adjunto },
+        { id: nuevoId(), rol: 'asistente', texto: RESPUESTA_SOLICITUD_VERSION[solicitudVersion.accion], creadoEn: marcaTiempo() },
       ]
       this.turnoAbierto = null
       this.notificar()
@@ -1846,7 +1851,7 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }]
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: marcaTiempo(), imagen: adjunto }]
     this.turnoAbierto = null
     this.notificar()
 
@@ -1896,7 +1901,7 @@ class AsistenteServiceImpl {
   private mensajeDocente(texto: string, imagen?: AdjuntoImagen): MensajeConversacion {
     const pendiente = this.destinoPendiente
     this.destinoPendiente = null
-    return { id: nuevoId(), rol: 'usuario', texto: pendiente?.burbuja ?? texto, creadoEn: Date.now(), ...(imagen ? { imagen } : {}), ...(pendiente?.id ? { documentoDestinoId: pendiente.id } : {}) }
+    return { id: nuevoId(), rol: 'usuario', texto: pendiente?.burbuja ?? texto, creadoEn: marcaTiempo(), ...(imagen ? { imagen } : {}), ...(pendiente?.id ? { documentoDestinoId: pendiente.id } : {}) }
   }
 
   // --- Documento al que se refiere el docente (P3a) ---
@@ -2037,8 +2042,8 @@ class AsistenteServiceImpl {
       this.transcripcionParcial = ''
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: Date.now(), imagen: adjunto, ...(yaActivo ? {} : { documentoDestinoId: destino.id }) },
-        { id: nuevoId(), rol: 'asistente', texto: yaActivo ? `Ya estamos trabajando con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}».` : `Listo: ahora trabajo con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}». Los siguientes cambios y archivos partirán de él.`, creadoEn: Date.now() },
+        { id: nuevoId(), rol: 'usuario', texto: textoVisible, creadoEn: marcaTiempo(), imagen: adjunto, ...(yaActivo ? {} : { documentoDestinoId: destino.id }) },
+        { id: nuevoId(), rol: 'asistente', texto: yaActivo ? `Ya estamos trabajando con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}».` : `Listo: ahora trabajo con «${tituloVisible(texto.trim().split('\n')[0] ?? '')}». Los siguientes cambios y archivos partirán de él.`, creadoEn: marcaTiempo() },
       ]
       if (!yaActivo) this.documentoActivo = { id: destino.id, texto, archivosGenerados: {}, ...(formato ? { ultimoFormatoGenerado: formato } : {}) }
       this.mostrarArchivoReutilizado(destino.id)
@@ -2068,7 +2073,7 @@ class AsistenteServiceImpl {
   // respuesta, sin IA.
   private responderSinCambios(limpio: string, adjunto: AdjuntoImagen | undefined, texto: string, aclaracionDocumento?: MensajeConversacion['aclaracionDocumento']): ResultadoEnvio {
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }, { id: nuevoId(), rol: 'asistente', texto, creadoEn: Date.now(), ...(aclaracionDocumento ? { aclaracionDocumento } : {}) }]
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: marcaTiempo(), imagen: adjunto }, { id: nuevoId(), rol: 'asistente', texto, creadoEn: marcaTiempo(), ...(aclaracionDocumento ? { aclaracionDocumento } : {}) }]
     this.turnoAbierto = null
     this.notificar()
     return 'enviado'
@@ -2260,20 +2265,22 @@ class AsistenteServiceImpl {
     const restaurar = accion === 'restaurar'
     const destino = 'id' in seleccion ? this.mensajes.find((m) => m.id === seleccion.id) : undefined
     const texto = destino ? contenidoDocumentoDe(destino) : null
+    // La pregunta recibe su id y su fecha antes que la respuesta (P2c).
+    const pregunta: MensajeConversacion = { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: marcaTiempo(), imagen: adjunto }
     let respuesta: MensajeConversacion
     if (!destino || !texto || !('id' in seleccion)) {
       const aviso = 'aviso' in seleccion ? seleccion.aviso : MENSAJE_VERSION_NO_DISPONIBLE
       const aclaracion = 'aclaracion' in seleccion ? seleccion.aclaracion : undefined
-      respuesta = { id: nuevoId(), rol: 'asistente', texto: aviso, creadoEn: Date.now(), ...(aclaracion ? { aclaracionVersion: aclaracion } : {}) }
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: aviso, creadoEn: marcaTiempo(), ...(aclaracion ? { aclaracionVersion: aclaracion } : {}) }
     } else if (restaurar) {
       const confirmacion = seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_RESTAURADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_RESTAURADA : MENSAJE_VERSION_ANTERIOR_RESTAURADA
-      respuesta = { id: nuevoId(), rol: 'asistente', texto: confirmacion, creadoEn: Date.now(), restauraVersion: destino.id, documentoRaizId: documentoRaizDe(destino) }
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: confirmacion, creadoEn: marcaTiempo(), restauraVersion: destino.id, documentoRaizId: documentoRaizDe(destino) }
     } else {
       const consulta = textoConsulta ?? (seleccion.distinto ? MENSAJE_DOCUMENTO_ANTERIOR_CONSULTADO : objetivo === 'primera' ? MENSAJE_PRIMERA_VERSION_CONSULTADA : MENSAJE_VERSION_ANTERIOR_CONSULTADA)
-      respuesta = { id: nuevoId(), rol: 'asistente', texto: consulta, creadoEn: Date.now() }
+      respuesta = { id: nuevoId(), rol: 'asistente', texto: consulta, creadoEn: marcaTiempo() }
     }
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto: limpio, creadoEn: Date.now(), imagen: adjunto }, respuesta]
+    this.mensajes = [...this.mensajes, pregunta, respuesta]
     if (destino && texto && restaurar) this.actualizarDocumentoActivo(destino.id, texto)
     if (destino && texto && !restaurar) this.mostrarArchivoReutilizado(destino.id)
     this.turnoAbierto = null
@@ -2317,7 +2324,7 @@ class AsistenteServiceImpl {
     await this.asegurarMotor()
     this.sincronizarHistorialTexto()
     this.transcripcionParcial = ''
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagenes: adjuntos }]
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: marcaTiempo(), imagenes: adjuntos }]
     this.turnoAbierto = null
     this.notificar()
 
@@ -2339,7 +2346,7 @@ class AsistenteServiceImpl {
   // en un mensaje de error visible, nunca en generando=true para
   // siempre.
   private async analizarCalendarioDesdeImagen(texto: string, adjunto: AdjuntoImagen) {
-    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: Date.now(), imagen: adjunto }]
+    this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'usuario', texto, creadoEn: marcaTiempo(), imagen: adjunto }]
     this.generando = true
     this.notificar()
 
@@ -2378,7 +2385,7 @@ class AsistenteServiceImpl {
 
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '', creadoEn: Date.now(), acciones, datosAccionCalendario },
+        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '', creadoEn: marcaTiempo(), acciones, datosAccionCalendario },
       ]
     } catch (err) {
       const mensajeError =
@@ -2387,7 +2394,7 @@ class AsistenteServiceImpl {
           : err instanceof Error
             ? err.message
             : 'No pude analizar la imagen del calendario. Intenta de nuevo.'
-      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: mensajeError, creadoEn: Date.now() }]
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: mensajeError, creadoEn: marcaTiempo() }]
     } finally {
       clearTimeout(temporizadorFetch)
       this.generando = false
@@ -2414,7 +2421,7 @@ class AsistenteServiceImpl {
     if (accionId === 'cancelar') {
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no realicé ningún cambio en el calendario.', creadoEn: Date.now() },
+        { id: nuevoId(), rol: 'asistente', texto: 'De acuerdo, no realicé ningún cambio en el calendario.', creadoEn: marcaTiempo() },
       ]
       this.notificar()
       this.persistirConversacion()
@@ -2427,7 +2434,7 @@ class AsistenteServiceImpl {
     if (!diferencias || diferencias.length === 0) {
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: 'No encontré los cambios pendientes de ese análisis. Envía de nuevo la foto del calendario.', creadoEn: Date.now() },
+        { id: nuevoId(), rol: 'asistente', texto: 'No encontré los cambios pendientes de ese análisis. Envía de nuevo la foto del calendario.', creadoEn: marcaTiempo() },
       ]
       this.notificar()
       this.persistirConversacion()
@@ -2462,7 +2469,7 @@ class AsistenteServiceImpl {
       const archivo: ArchivoGeneradoInfo | undefined = cuerpo.archivoRespaldo || undefined
       this.mensajes = [
         ...this.mensajes,
-        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '✅ Calendario actualizado correctamente.', creadoEn: Date.now(), archivo },
+        { id: nuevoId(), rol: 'asistente', texto: cuerpo.texto || '✅ Calendario actualizado correctamente.', creadoEn: marcaTiempo(), archivo },
       ]
     } catch (err) {
       const mensajeError =
@@ -2471,7 +2478,7 @@ class AsistenteServiceImpl {
           : err instanceof Error
             ? err.message
             : 'No pude actualizar el calendario. Intenta de nuevo.'
-      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: `No pude actualizar el calendario: ${mensajeError}`, creadoEn: Date.now() }]
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto: `No pude actualizar el calendario: ${mensajeError}`, creadoEn: marcaTiempo() }]
     } finally {
       clearTimeout(temporizadorFetch)
       this.detenerProgresoAccionCalendario()
@@ -2512,7 +2519,7 @@ class AsistenteServiceImpl {
       this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, datosPropuestaLista: { estado, expiraEn: datos.expiraEn, aviso } } : m))
     }
     const agregarMensaje = (texto: string) => {
-      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto, creadoEn: Date.now() }]
+      this.mensajes = [...this.mensajes, { id: nuevoId(), rol: 'asistente', texto, creadoEn: marcaTiempo() }]
     }
     if (Date.now() >= Date.parse(datos.expiraEn)) {
       cerrar('cerrada', MENSAJE_PROPUESTA_VENCIDA)
@@ -2686,11 +2693,13 @@ class AsistenteServiceImpl {
   // el archivo ni subir nada a Storage. Sincrónico y siempre exitoso
   // (no hay nada que pueda fallar aquí — el archivo ya existe).
   private reutilizarArchivoExistente(textoVisible: string, archivo: ArchivoGeneradoInfo) {
+    // La pregunta recibe su id y su fecha antes que la entrega (P2c).
+    const pregunta = this.mensajeDocente(textoVisible)
     const idMensaje = nuevoId()
     this.mensajes = [
       ...this.mensajes,
-      this.mensajeDocente(textoVisible),
-      { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: Date.now(), archivo, ...(this.documentoActivo ? { documentoOrigenId: this.documentoActivo.id } : {}) },
+      pregunta,
+      { id: idMensaje, rol: 'asistente', texto: AVISO_ARCHIVO_LISTO, creadoEn: marcaTiempo(), archivo, ...(this.documentoActivo ? { documentoOrigenId: this.documentoActivo.id } : {}) },
     ]
     this.turnoAbierto = null
     // Señal de una sola vez (se apaga sola) para que AsistentePanel baje

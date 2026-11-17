@@ -197,7 +197,7 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
   try {
     const datos = JSON.parse(crudo) as ConversacionGuardada
     if (datos.version !== VERSION || !Array.isArray(datos.mensajes)) return null
-    return { titulo: datos.titulo, mensajes: datos.mensajes, documentoActivo: datos.documentoActivo ?? null }
+    return { titulo: datos.titulo, mensajes: ordenarEmpates(datos.mensajes), documentoActivo: datos.documentoActivo ?? null }
   } catch (e) {
     console.error(`Error restaurando la conversación ${id}:`, e)
     return null
@@ -923,11 +923,11 @@ export function resolverDocumentoVigente(mensajes: MensajeConversacion[]): { doc
 // raíz del documento) o una selección del docente (P3a). Se obtienen de
 // los mensajes en memoria (eventoDocumentalDe) o, sin el texto, del índice
 // remoto (leerIndiceDocumental): la misma regla para ambos.
-export type EventoDocumental = { id: string; creadoEn: number; tipo: 'version' | 'restauracion' | 'seleccion'; raiz?: string; objetivo?: string }
+export type EventoDocumental = { id: string; creadoEn: number; rol: MensajeConversacion['rol']; tipo: 'version' | 'restauracion' | 'seleccion'; raiz?: string; objetivo?: string }
 export function eventoDocumentalDe(m: MensajeConversacion): EventoDocumental | null {
-  if (m.rol === 'usuario' && m.documentoDestinoId) return { id: m.id, creadoEn: m.creadoEn, tipo: 'seleccion', objetivo: m.documentoDestinoId }
-  if (m.rol === 'asistente' && m.restauraVersion) return { id: m.id, creadoEn: m.creadoEn, tipo: 'restauracion', objetivo: m.restauraVersion, ...(m.documentoRaizId ? { raiz: m.documentoRaizId } : {}) }
-  return contenidoDocumentoDe(m) ? { id: m.id, creadoEn: m.creadoEn, tipo: 'version', raiz: documentoRaizDe(m) } : null
+  if (m.rol === 'usuario' && m.documentoDestinoId) return { id: m.id, creadoEn: m.creadoEn, rol: m.rol, tipo: 'seleccion', objetivo: m.documentoDestinoId }
+  if (m.rol === 'asistente' && m.restauraVersion) return { id: m.id, creadoEn: m.creadoEn, rol: m.rol, tipo: 'restauracion', objetivo: m.restauraVersion, ...(m.documentoRaizId ? { raiz: m.documentoRaizId } : {}) }
+  return contenidoDocumentoDe(m) ? { id: m.id, creadoEn: m.creadoEn, rol: m.rol, tipo: 'version', raiz: documentoRaizDe(m) } : null
 }
 
 // Regla canónica del documento vigente: lo determina el ÚLTIMO evento. Una
@@ -1029,7 +1029,21 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
     .order('creado_en', { ascending: false })
     .limit(TOPE_MENSAJES)
   if (errorMensajes) throw errorMensajes
-  let mensajes = filasAMensajes(remotoId, (filas ?? []) as FilaMensajeLeida[]).reverse()
+  // Desempate ANTES de recortar: si la fila más antigua leída comparte
+  // fecha con otras que quedaron fuera del límite, también se leen, y los
+  // últimos TOPE_MENSAJES se eligen con el orden canónico (P2c).
+  let leidas = (filas ?? []) as FilaMensajeLeida[]
+  if (leidas.length === TOPE_MENSAJES) {
+    const { data: empatadas, error: errorEmpates } = await supabase
+      .from('mensajes_chat')
+      .select('id, rol, texto, contenido, creado_en')
+      .eq('conversacion_id', remotoId)
+      .eq('creado_en', leidas[leidas.length - 1].creado_en)
+    if (errorEmpates) throw errorEmpates
+    const ids = new Set(leidas.map((f) => f.id))
+    leidas = [...leidas, ...((empatadas ?? []) as FilaMensajeLeida[]).filter((f) => !ids.has(f.id))]
+  }
+  let mensajes = filasAMensajes(remotoId, leidas).sort(compararOrden).slice(-TOPE_MENSAJES)
   if (mensajes.length === 0) return false
   // La versión que una restauración vigente referencia puede ser más vieja
   // que los últimos mensajes: se trae por su id (P2c-2). Si falla, la copia
@@ -1091,9 +1105,46 @@ export type ResultadoSincronizacion =
   | { estado: 'sin_cambios' | 'sin_remota' | 'sin_copia_local' | 'eliminada' }
   | { estado: 'actualizada'; nuevos: MensajeConversacion[] }
 
-type ClaveOrden = Pick<MensajeConversacion, 'id' | 'creadoEn'>
+// Orden canónico de los mensajes (P2c): por fecha de creación y, con la
+// misma fecha:
+// 1. la pregunta del docente antes que la respuesta (los pares creados en
+//    el mismo milisegundo; antes de P2c la respuesta recibía el id menor);
+// 2. entre mensajes del mismo rol, la secuencia de su id
+//    (msg-<ms>-<contador>-…) comparada como números (9 antes que 10);
+// 3. el id como texto (ids de otro formato).
+// Mensajes con fechas distintas nunca se reordenan por rol ni por id.
+type ClaveOrden = Pick<MensajeConversacion, 'id' | 'creadoEn'> & { rol?: MensajeConversacion['rol'] }
+const SECUENCIA_ID = /^msg-(\d+)-(\d+)-/
 function ordenAntes(a: ClaveOrden, b: ClaveOrden): boolean {
-  return a.creadoEn !== b.creadoEn ? a.creadoEn < b.creadoEn : a.id < b.id
+  if (a.creadoEn !== b.creadoEn) return a.creadoEn < b.creadoEn
+  if (a.rol && b.rol && (a.rol === 'usuario') !== (b.rol === 'usuario')) return a.rol === 'usuario'
+  const sa = SECUENCIA_ID.exec(a.id)
+  const sb = SECUENCIA_ID.exec(b.id)
+  if (sa && sb && (sa[1] !== sb[1] || sa[2] !== sb[2])) return sa[1] !== sb[1] ? Number(sa[1]) < Number(sb[1]) : Number(sa[2]) < Number(sb[2])
+  return a.id < b.id
+}
+export function compararOrden(a: ClaveOrden, b: ClaveOrden): number {
+  return ordenAntes(a, b) ? -1 : ordenAntes(b, a) ? 1 : 0
+}
+
+// Copias locales anteriores a P2c: solo los mensajes con la MISMA fecha se
+// ponen en orden canónico (p. ej. una respuesta guardada antes que su
+// pregunta); el orden entre fechas distintas se conserva tal cual.
+function ordenarEmpates<T extends ClaveOrden>(mensajes: T[]): T[] {
+  let cambio = false
+  const salida: T[] = []
+  for (let i = 0; i < mensajes.length; ) {
+    let j = i + 1
+    while (j < mensajes.length && mensajes[j].creadoEn === mensajes[i].creadoEn) j++
+    const grupo = mensajes.slice(i, j)
+    if (grupo.length > 1) {
+      const ordenado = [...grupo].sort(compararOrden)
+      if (ordenado.some((m, k) => m !== grupo[k])) cambio = true
+      salida.push(...ordenado)
+    } else salida.push(grupo[0])
+    i = j
+  }
+  return cambio ? salida : mensajes
 }
 
 // Intercala por fecha (y id) los remotos cuyo id no existe localmente.
@@ -1101,7 +1152,7 @@ function ordenAntes(a: ClaveOrden, b: ClaveOrden): boolean {
 export function combinarMensajes<T extends ClaveOrden>(locales: T[], remotos: T[]): T[] {
   const ids = new Set(locales.map((m) => m.id))
   const nuevos = [...new Map(remotos.filter((m) => !ids.has(m.id)).map((m) => [m.id, m])).values()]
-    .sort((a, b) => (ordenAntes(a, b) ? -1 : ordenAntes(b, a) ? 1 : 0))
+    .sort(compararOrden)
   if (nuevos.length === 0) return locales
   const combinados: T[] = []
   let i = 0
@@ -1176,10 +1227,15 @@ async function sincronizarMensajesNuevos(docenteId: string, localId: string): Pr
   const local = cargarConversacionPorId(localId)
   if (!local) return { estado: 'sin_copia_local' }
   const idsLocales = new Set(local.mensajes.map((m) => m.id))
-  const faltantes = combinarMensajes<ClaveOrden>(local.mensajes, remotos)
-    .slice(-TOPE_MENSAJES)
-    .filter((m) => !idsLocales.has(m.id))
-    .map((m) => idMensajeRemoto(remotoId, m.id))
+  const ventana = combinarMensajes<ClaveOrden>(local.mensajes, remotos).slice(-TOPE_MENSAJES)
+  // Empates en el límite (P2c): aquí no se conoce el rol, así que también
+  // se traen los mensajes con la misma fecha que el más antiguo de la
+  // ventana; al combinarlos completos, el orden canónico decide cuáles
+  // quedan en la copia (guardarConversacion recorta igual que siempre).
+  const limite = ventana[0]?.creadoEn
+  const faltantes = [...new Set([...ventana, ...remotos.filter((m) => m.creadoEn === limite)].map((m) => m.id))]
+    .filter((id) => !idsLocales.has(id))
+    .map((id) => idMensajeRemoto(remotoId, id))
   if (faltantes.length === 0) return { estado: 'sin_cambios' }
 
   const traidos = filasAMensajes(remotoId, await leerFilasPorId(remotoId, faltantes))
@@ -1258,14 +1314,14 @@ export async function leerIndiceDocumental(docenteId: string, localId: string): 
       if (!f.id.startsWith(prefijo)) continue
       const id = f.id.slice(prefijo.length)
       const creadoEn = Date.parse(f.creado_en)
-      if (f.rol === 'usuario') eventos.push({ id, creadoEn, tipo: 'seleccion', objetivo: f.destino ?? '' })
-      else if (f.restaura) eventos.push({ id, creadoEn, tipo: 'restauracion', objetivo: f.restaura, ...(f.raiz ? { raiz: f.raiz } : {}) })
-      else eventos.push({ id, creadoEn, tipo: 'version', raiz: f.raiz ?? id })
+      if (f.rol === 'usuario') eventos.push({ id, creadoEn, rol: 'usuario', tipo: 'seleccion', objetivo: f.destino ?? '' })
+      else if (f.restaura) eventos.push({ id, creadoEn, rol: 'asistente', tipo: 'restauracion', objetivo: f.restaura, ...(f.raiz ? { raiz: f.raiz } : {}) })
+      else eventos.push({ id, creadoEn, rol: 'asistente', tipo: 'version', raiz: f.raiz ?? id })
     }
     if (pagina.length === 0) break
     ultimo = pagina[pagina.length - 1].id
   }
-  return eventos.sort((a, b) => (ordenAntes(a, b) ? -1 : ordenAntes(b, a) ? 1 : 0))
+  return eventos.sort(compararOrden)
 }
 
 // Vienen de Supabase: quedan registrados como ya enviados (la etapa 1 no
