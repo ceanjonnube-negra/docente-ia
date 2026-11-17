@@ -62,7 +62,18 @@ verificar(!esDocumentoNuevoConFormato('Agrega una sección nueva sobre la evalua
 // 3. Cliente: con documentoActivo, un pedido nuevo con formato sale del
 // bloque de conversión/edición y va como mensaje normal.
 const servicio = readFileSync('lib/asistente/AsistenteService.ts', 'utf8')
-verificar(/if \(this\.documentoActivo && !detectarAprobarPlaneacion\([^)]*\{[^}]*\}\) && !esPedidoDocumentoNuevo\(limpio\)( && !\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, this\.documentoActivo\.texto\)\))?\) \{\s*\n\s*const tipoFinalizar = detectarHerramientaDocumento\(limpio\)/.test(servicio), '3a. Cliente con documentoActivo: un pedido nuevo con formato no entra a ejecutarConversionFormato ni a enviarComoEdicion')
+// La condición vive en trabajaSobreDocumentoActivo (fase 3A) y es la única
+// puerta hacia operarDocumentoActivo, el único que convierte o edita el
+// documento activo; P3a (documento nombrado) también deja pasar sin tocar
+// el activo cualquier pedido de documento nuevo.
+const cuerpoDe = (firma: string) => { const i = servicio.indexOf(firma); return i === -1 ? '' : servicio.slice(i, servicio.indexOf('\n  }\n', i)) }
+const puertaActivo = cuerpoDe('private trabajaSobreDocumentoActivo(limpio: string): boolean {')
+const operarActivo = cuerpoDe('private async operarDocumentoActivo(limpio: string, adjunto?: AdjuntoImagen) {')
+verificar(/!esPedidoDocumentoNuevo\(limpio\)/.test(puertaActivo) && /!detectarAprobarPlaneacion\(limpio/.test(puertaActivo)
+  && /if \(this\.documentoActivo && this\.trabajaSobreDocumentoActivo\(limpio\)\) \{[\s\S]{0,600}?await this\.operarDocumentoActivo\(limpio, adjunto\)/.test(servicio)
+  && /esPedidoDocumentoNuevo\(limpio\)[\s\S]{0,200}return null/.test(cuerpoDe('private async atenderDocumentoNombrado('))
+  && /await this\.ejecutarConversionFormato\(/.test(operarActivo) && (servicio.match(/await this\.ejecutarConversionFormato\(/g) ?? []).length === 1,
+  '3a. Cliente con documentoActivo: un pedido nuevo con formato no entra a ejecutarConversionFormato ni a enviarComoEdicion (trabajaSobreDocumentoActivo lo excluye y P3a no lo intercepta)')
 verificar(/if \(esEdicionConFormato\(limpio\) && tipoResuelto !== 'imagen'[^\n]*\{\s*\n\s*await this\.enviarComoEdicion\(this\.documentoActivo\.id, limpio, construirPromptEdicion\(this\.documentoActivo\.texto, limpio\), adjunto, formatoExplicito \? tipoResuelto : undefined\)\s*\n\s*return\s*\n\s*\}\s*\n\s*await this\.ejecutarConversionFormato\(tipoResuelto, limpio\)/.test(servicio), "3c. Cliente: una edición con formato va a la edición con el texto real (y el formato), nunca a la conversión del texto anterior (ver verificar-edicion-con-formato)")
 verificar(/await this\.ejecutarConversionFormato\(tipoResuelto, limpio\)/.test(servicio) && /detectarFormatoExplicito\(limpio\)/.test(servicio), '3b. Cliente: "Pásalo a PDF" conserva la conversión del documento activo y la resolución del último formato')
 

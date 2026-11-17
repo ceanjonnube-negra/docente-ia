@@ -127,7 +127,18 @@ const bloqueError = servicio.slice(servicio.indexOf("      case 'error': {"), se
 verificar(bloqueError.length > 100 && !bloqueError.includes('documentoActivo') && bloqueError.includes('this.editandoDocumentoId = null'), '6g. Falla (error de red, del modelo o del archivo): el documento activo anterior se conserva intacto')
 
 // 7. Servidor (estructura).
-verificar(/&& !esPedidoDocumentoNuevo\(limpio\) && !\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, this\.documentoActivo\.texto\)\)\) \{/.test(servicio), '7h. Cliente: editar y entregar un documento que no es el activo no edita el activo (va al servidor, que pide aclaración)')
+// Editar y entregar otro documento: si lo nombra, P3a lo identifica o avisa
+// ANTES de la rama del documento activo (comportamiento probado en
+// verificar-documento-nombrado 10a-10b); si no lo nombra pero no es
+// compatible, trabajaSobreDocumentoActivo lo excluye y va al servidor.
+const iNombrado = servicio.indexOf('private async atenderDocumentoNombrado(')
+const nombrado = servicio.slice(iNombrado, servicio.indexOf('\n  }\n', iNombrado))
+const iPuerta = servicio.indexOf('private trabajaSobreDocumentoActivo(limpio: string): boolean {')
+const puerta = servicio.slice(iPuerta, servicio.indexOf('\n  }\n', iPuerta))
+verificar(/!\(esEdicionConFormato\(limpio\) && !referenciaCompatibleConDocumento\(limpio, documento\.texto\)\)/.test(puerta)
+  && servicio.indexOf('await this.atenderDocumentoNombrado(limpio') !== -1 && servicio.indexOf('await this.atenderDocumentoNombrado(limpio') < servicio.indexOf('if (this.documentoActivo && this.trabajaSobreDocumentoActivo(limpio)) {')
+  && /return this\.responderSinCambios\(limpio, adjunto, sinDocumentoDelTipo\(/.test(nombrado),
+  '7h. Cliente: editar y entregar un documento que no es el activo nunca edita el activo (P3a lo identifica o avisa antes; sin nombrarlo va al servidor, que pide aclaración)')
 verificar((servicio.match(/construirPromptEdicion\(this\.documentoActivo\.texto, limpio\)/g) ?? []).length === 2 && !/private construirPromptEdicion/.test(servicio), '7e. Con documento activo: la edición (con o sin formato) usa SU texto completo con el mismo prompt compartido')
 const ruta = readFileSync('app/api/chat/route.ts', 'utf8')
 verificar(/const tipoHerramientaSolicitado = tipoArchivoSolicitado\(\{ mensaje: mensaje \|\| '', esEdicionDocumento: Boolean\(esEdicionDocumento\), formatoEntrega, finalizarArchivo \}\)/.test(ruta), '7a. El servidor decide el archivo con tipoArchivoSolicitado (formato validado)')

@@ -59,7 +59,14 @@ function main() {
   // 3. app/dashboard/evaluacion/page.tsx
   // ============================================================
   verificar(paginaEvaluacion.includes("'use client'"), '14. La pantalla de Evaluación es un componente cliente')
-  verificar(paginaEvaluacion.includes('docente_contexto_activo') && paginaEvaluacion.includes('ciclos_escolares.activo'), '15. Resuelve el grupo activo con el MISMO mecanismo canónico ya usado en Lista (MG-A: contexto persistido validado, nunca por nombre)')
+  // El mecanismo canónico vive en lib/grupoActivo.ts y lo usan Lista y
+  // Evaluación por igual: contexto persistido (docente_contexto_activo)
+  // validado contra un ciclo escolar activo, nunca por nombre.
+  const grupoActivo = readFileSync(raiz('lib', 'grupoActivo.ts'), 'utf-8')
+  const paginaLista = readFileSync(raiz('app', 'dashboard', 'lista', 'page.tsx'), 'utf-8')
+  const usaCanonico = (fuente: string) => fuente.includes("import { resolverGrupoActivo } from '@/lib/grupoActivo'") && /resolverGrupoActivo\(supabase, user\.id\)/.test(fuente)
+  verificar(usaCanonico(paginaEvaluacion) && usaCanonico(paginaLista) && grupoActivo.includes(".from('docente_contexto_activo')") && (grupoActivo.match(/\.eq\('ciclos_escolares\.activo', true\)/g) ?? []).length >= 2 && !/\.(eq|ilike|like)\('nombre_grupo'/.test(grupoActivo),
+    '15. Resuelve el grupo activo con el MISMO mecanismo canónico ya usado en Lista (resolverGrupoActivo: contexto persistido validado contra el ciclo activo, nunca por nombre)')
   verificar(!/nombre_grupo\s*===|filtrar.*nombre/i.test(paginaEvaluacion), '16. Nunca resuelve el grupo por nombre/heurística de texto')
   verificar(
     /import CapturaHoja,?.*from '@\/components\/Asistente\/CapturaHoja'/.test(paginaEvaluacion) && paginaEvaluacion.includes('proyectoId={proyecto.id}'),

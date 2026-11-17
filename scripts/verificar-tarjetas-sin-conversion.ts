@@ -69,6 +69,10 @@ async function main() {
   // comillas ("... retirar temporalmente Convertir de todas..."), lo
   // cual es documentación legítima, no un rótulo de interfaz visible.
   const codigoRealTarjeta = cuerpoTarjeta.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  // Funciones reales del panel (acciones de descarga y vistas previas).
+  process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'http://supabase.invalid'
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'clave-ficticia'
+  const panel = await import('../components/Asistente/AsistentePanel')
 
   // ============================================================
   // 1-5. Ninguna tarjeta muestra "Convertir" ni ofrece Word/PDF/
@@ -108,7 +112,27 @@ async function main() {
     // en iPhone Safari, donde el PDF se abre en el visor en vez de
     // descargarse directo) — el mecanismo real (descargarArchivo) no
     // cambió en ningún caso.
-    verificar(cuerpoTarjeta.includes('accionesDescargaArchivo(archivo)') && cuerpoTarjeta.includes('descargarArchivo(a.url, archivo.nombre)') && cuerpoTarjeta.includes('descargarPdfDirecto(a.url, archivo.nombre)'), '6. El botón "Descargar" sigue presente y descarga el archivo real (ahora vía descargarArchivo, más confiable en Safari/iOS que window.open a secas)')
+    // Comportamiento real de las acciones (funciones del propio panel):
+    // todo PDF se descarga por un POST a la ruta del MISMO origen
+    // /api/archivos/descargar (la URL firmada viaja en el cuerpo, nunca en
+    // la barra de direcciones; Safari en iPhone la guarda en vez de abrirla
+    // en su visor); "Ver PDF" solo si hay urlVer; los demás formatos
+    // conservan descargarArchivo.
+    const conVer = panel.accionesDescargaArchivo({ tipo: 'pdf', url: 'https://x.invalid/a.pdf', urlVer: 'https://x.invalid/v.pdf' })
+    const sinVer = panel.accionesDescargaArchivo({ tipo: 'pdf', url: 'https://x.invalid/a.pdf' })
+    const word = panel.accionesDescargaArchivo({ tipo: 'word', url: 'https://x.invalid/a.docx' })
+    type Nodo = { tag: string; hijos: Nodo[]; enviado: number; method?: string; action?: string; name?: string; value?: string; type?: string; style: Record<string, string> }
+    const creados: Nodo[] = []
+    const g = globalThis as unknown as Record<string, unknown>
+    const documentoPrevio = g.document
+    g.document = { createElement: (tag: string) => { const n: Nodo = { tag, hijos: [], enviado: 0, style: {} }; Object.assign(n, { appendChild: (h: Nodo) => n.hijos.push(h), submit: () => { n.enviado++ }, remove: () => {} }); creados.push(n); return n }, body: { appendChild: () => {} } }
+    panel.descargarPdfDirecto('https://x.invalid/firmada.pdf?token=t')
+    g.document = documentoPrevio
+    const formulario = creados.find((n) => n.tag === 'form')
+    verificar(JSON.stringify(conVer.map((a) => [a.accion, a.url])) === JSON.stringify([['ver', 'https://x.invalid/v.pdf'], ['descargar-directo', 'https://x.invalid/a.pdf']]) && JSON.stringify(sinVer.map((a) => a.accion)) === '["descargar-directo"]' && JSON.stringify(word.map((a) => a.accion)) === '["descargar"]'
+      && formulario?.method === 'POST' && formulario.action === '/api/archivos/descargar' && formulario.enviado === 1 && formulario.hijos.some((h) => h.name === 'u' && h.value === 'https://x.invalid/firmada.pdf?token=t')
+      && cuerpoTarjeta.includes('accionesDescargaArchivo(archivo)') && cuerpoTarjeta.includes('descargarPdfDirecto(a.url)') && cuerpoTarjeta.includes('descargarArchivo(a.url, archivo.nombre)'),
+      '6. El botón "Descargar" sigue presente y descarga el archivo real: PDF por POST a la ruta del mismo origen /api/archivos/descargar ("Ver PDF" solo con urlVer); los demás formatos con descargarArchivo')
     verificar(!codigoRealTarjeta.includes('🔗 Abrir'), '7. El botón "Abrir" fue retirado intencionalmente (decisión de producto posterior) — la vista previa ya está dentro del chat')
     verificar(cuerpoTarjeta.includes('📤 Compartir') && cuerpoTarjeta.includes('compartirArchivo(archivo'), '8. El botón "Compartir" sigue presente y sigue llamando a compartirArchivo con el archivo real')
   }
@@ -151,8 +175,13 @@ async function main() {
     const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
     verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
     verificar(
-      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer|ejecutar\(a\)/.test(c)) &&
-        /const ejecutar = \(a: AccionArchivo\) =>\s*\n\s*a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url, archivo\.nombre\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(cuerpoTarjeta),
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer|ejecutar\(a\)|compartir\(archivos?(\[0\])?\)/.test(c)) &&
+        // compartir(): solo comparte (vista previa con la sesión vigente o el archivo), nunca toca el chat.
+        /const compartir = \(archivo: ArchivoGeneradoInfo\) => \(referenciaVistaPrevia\(archivo\.url\)\s*\n\s*\? void compartirVistaPrevia\(archivo, avisarFallaVistaPrevia\)\s*\n\s*: compartirArchivo\(archivo, /.test(cuerpoTarjeta) &&
+        /const ejecutar = \(a: AccionArchivo\) =>\s*\n\s*referenciaVistaPrevia\(a\.url\)\s*\n\s*\? \(a\.accion === 'ver' \? verVistaPrevia\(a\.url, avisarFallaVistaPrevia\) : void descargarVistaPrevia\(a\.url, avisarFallaVistaPrevia\)\)\s*\n\s*: a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(cuerpoTarjeta) &&
+        // Vistas previas: solo rutas propias exactas, sin el token histórico (se usa el de la sesión vigente).
+        JSON.stringify(panel.referenciaVistaPrevia('/api/planeaciones/vista-previa-documento?id=7&token=viejo')) === JSON.stringify({ ruta: '/api/planeaciones/vista-previa-documento', campos: [['id', '7']] }) &&
+        panel.referenciaVistaPrevia('https://otro.invalid/api/planeaciones/vista-previa-documento') === null && panel.referenciaVistaPrevia('https://x.invalid/a.pdf') === null,
       '10c. Todos los onClick de la tarjeta solo descargan/comparten el archivo, abren "Ver PDF" o despliegan el selector de Compartir — ninguno toca AsistenteService ni el chat'
     )
   }
