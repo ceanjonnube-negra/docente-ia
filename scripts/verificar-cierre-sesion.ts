@@ -261,6 +261,12 @@ async function main() {
   const pagina = readFileSync('app/dashboard/inicio/page.tsx', 'utf8')
   verificar(/const resultado = await AsistenteService\.cerrarSesion\(\)\s*\n\s*if \(resultado\.ok\) \{\s*\n\s*router\.push\('\/bienvenida'\)/.test(pagina) && /setAvisoSalida\(resultado\.mensaje\)/.test(pagina) && !/supabase\.auth\.signOut\(\)/.test(pagina) && /disabled=\{saliendo\}/.test(pagina),
     '8a. salir(): usa el cierre seguro, solo va a la bienvenida si se confirmó, muestra el aviso si falla y evita la doble pulsación')
+  const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
+  const menu = panel.slice(panel.indexOf('{menuConfigAbierto && ('), panel.indexOf('Docente <span'))
+  verificar(/const resultado = await AsistenteService\.cerrarSesion\(\)\s*\n\s*if \(resultado\.ok\) \{\s*\n\s*router\.push\('\/bienvenida'\)/.test(panel) && /setAvisoSalida\(resultado\.mensaje\)/.test(panel) && !/supabase\.auth\.signOut\(\)/.test(panel)
+    && /📤 Subir documentos/.test(menu) && /onClick=\{cerrarSesion\} disabled=\{saliendo\}/.test(menu) && /Cerrar sesión/.test(menu) && /role="alert"/.test(menu) && !/dashboard\/configuracion|Configuración/.test(menu)
+    && menu.indexOf('Subir documentos') < menu.indexOf('Cerrar sesión') && /<a href="\/"[^>]*>[\s\S]{0,200}Inicio/.test(panel),
+    '8b. Menú de la manzana: «Subir documentos» y luego «Cerrar sesión» con el mismo flujo seguro (deshabilitado mientras sale, aviso si falla); sin el enlace 404 a Configuración; «Inicio» sigue en el Chat IA')
 
   console.log('')
   if (fallos > 0) {

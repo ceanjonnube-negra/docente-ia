@@ -636,6 +636,23 @@ export default function AsistentePanel() {
 
   const [menuAbierto, setMenuAbierto] = useState(false)
   const [menuConfigAbierto, setMenuConfigAbierto] = useState(false)
+  // Cerrar sesión desde el menú de la manzana: el flujo seguro vive en
+  // AsistenteService.cerrarSesion() (guarda lo pendiente, una sola
+  // ejecución); aquí solo se navega si se confirmó o se avisa si falló.
+  const [saliendo, setSaliendo] = useState(false)
+  const [avisoSalida, setAvisoSalida] = useState<string | null>(null)
+  const cerrarSesion = async () => {
+    if (saliendo) return
+    setSaliendo(true)
+    setAvisoSalida(null)
+    const resultado = await AsistenteService.cerrarSesion()
+    if (resultado.ok) {
+      router.push('/bienvenida')
+      return
+    }
+    setAvisoSalida(resultado.mensaje)
+    setSaliendo(false)
+  }
 
   const [procesandoFoto] = useState(false)
   // Siempre un arreglo — 0 adjuntos, 1 (foto o documento, camino
@@ -934,7 +951,8 @@ export default function AsistentePanel() {
               {menuConfigAbierto && (
                 <div className="absolute left-0 top-11 w-52 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
                   <a href="/documentos" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">📤 Subir documentos</a>
-                  <a href="/dashboard/configuracion" className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">⚙️ Configuración</a>
+                  <button type="button" onClick={cerrarSesion} disabled={saliendo} className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">🚪 {saliendo ? 'Cerrando sesión…' : 'Cerrar sesión'}</button>
+                  {avisoSalida && <p role="alert" className="px-4 pb-2 text-xs text-red-700">{avisoSalida}</p>}
                 </div>
               )}
             </div>
