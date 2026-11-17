@@ -127,6 +127,8 @@ async function main() {
     return { data: { estado: 'eliminada', mensajes: antes - tablas.mensajes_chat.length }, error: null }
   }
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
   const mensajesDe = (conv: string) => tablas.mensajes_chat.filter((m) => m.conversacion_id === conv)
   const llaves = () => [...almacen.keys()].join('|')
 
@@ -222,13 +224,12 @@ async function main() {
   verificar(!llamadas.some((l) => l.op === 'upsert') && !p.cargarConversacionPorId(X), '4a. La migración no sube nada a una eliminada y retira su copia local')
 
   // ---- 5. Aislamiento entre docentes ----
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   almacen = new Map()
   const resultadoB = await p.eliminarConversacionGlobal(DOCENTE_B, 'conv-cualquiera', OTRA)
   verificar(resultadoB === 'no_encontrada' && mensajesDe(OTRA).length === 1 && !tablas.conversaciones_chat.find((c) => c.id === OTRA)?.eliminada_en, '5a. Otro docente no puede eliminar una conversación ajena (no_encontrada, intacta)')
   verificar((await p.conversacionesLocalesEliminadas(DOCENTE_B)).length === 0, '5b. Otro docente no ve marcas ajenas')
-  sesion = DOCENTE_A
-
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   // ---- 6. Conversación que solo existe en Supabase (id local = remoto) ----
   almacen = new Map()
   const SOLO = '55555555-5555-4555-8555-555555555555'

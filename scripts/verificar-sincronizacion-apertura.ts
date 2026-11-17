@@ -114,6 +114,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesion ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   // Mensajes de A con fechas pasadas: lo que B escribe ahora es más reciente.
   const t = Date.now() - 100_000

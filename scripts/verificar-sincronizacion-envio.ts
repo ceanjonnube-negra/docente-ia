@@ -117,6 +117,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: { user: { id: sesion } } }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const t = Date.now() - 100_000
   const m = (n: number, rol: Mensaje['rol'], texto: string, extra: Partial<Mensaje> = {}): Mensaje => ({ id: `msg-${t + n}-${n}-${String(n).padStart(8, 'a')}`, rol, texto, creadoEn: t + n, ...extra })

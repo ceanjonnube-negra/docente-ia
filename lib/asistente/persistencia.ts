@@ -57,7 +57,10 @@ export type DocumentoActivoGuardado = {
   // válida) en este dispositivo: nunca se opera sobre otro documento.
   noRecuperado?: true
 }
-export type ConversacionResumen = { id: string; titulo: string; actualizadaEn: number }
+// docenteId: propietario de la copia local (aislamiento por docente). Las
+// copias anteriores no lo tienen: quedan aisladas (nadie las ve ni las
+// sincroniza) hasta resolver a quién pertenecen.
+export type ConversacionResumen = { id: string; titulo: string; actualizadaEn: number; docenteId?: string }
 
 type ConversacionGuardada = {
   version: number
@@ -65,6 +68,33 @@ type ConversacionGuardada = {
   mensajes: MensajeConversacion[]
   documentoActivo: DocumentoActivoGuardado | null
   actualizadaEn: number
+  docenteId?: string
+}
+
+// ---------------------------------------------------------------------
+// Puerta de acceso por docente. Solo el docente con sesión confirmada (lo
+// establece AsistenteService al conocer la sesión) puede listar, cargar,
+// guardar, abrir, migrar o sincronizar copias locales, y solo las suyas.
+// Mientras no hay sesión confirmada no se ve nada. Nada se borra al
+// cambiar de cuenta: las copias de otros quedan intactas y ocultas.
+let propietarioActual: string | null = null
+export function establecerPropietarioLocal(docenteId: string | null) {
+  propietarioActual = docenteId
+}
+export function propietarioLocal(): string | null {
+  return propietarioActual
+}
+// Propietario guardado en la copia (sin filtrar): undefined si no lo tiene
+// o no existe.
+function propietarioDeCopia(id: string): string | undefined {
+  try {
+    return (JSON.parse(leer(PREFIJO_CONVERSACION + id) ?? '{}') as Partial<ConversacionGuardada>).docenteId
+  } catch {
+    return undefined
+  }
+}
+function esDelPropietario(docenteId: string | undefined): boolean {
+  return !!propietarioActual && docenteId === propietarioActual
 }
 
 function leer(clave: string): string | null {
@@ -143,14 +173,21 @@ function leerIndice(): ConversacionResumen[] {
   }
 }
 
+function leerIndicePropio(): ConversacionResumen[] {
+  return leerIndice().filter((c) => esDelPropietario(c.docenteId))
+}
+
+// El tope se aplica solo a las conversaciones del docente actual: las de
+// otros (o sin propietario) nunca se recortan ni se borran desde aquí.
 function escribirIndice(indice: ConversacionResumen[]) {
-  const recortado = [...indice].sort((a, b) => b.actualizadaEn - a.actualizadaEn).slice(0, TOPE_CONVERSACIONES)
-  escribir(CLAVE_INDICE, JSON.stringify(recortado))
+  const propias = indice.filter((c) => esDelPropietario(c.docenteId))
+  const recortado = [...propias].sort((a, b) => b.actualizadaEn - a.actualizadaEn).slice(0, TOPE_CONVERSACIONES)
+  escribir(CLAVE_INDICE, JSON.stringify([...recortado, ...indice.filter((c) => !esDelPropietario(c.docenteId))]))
   // Cualquier conversación que salió del tope por vieja se borra también
   // — sin esto, el índice se recorta pero el blob queda huérfano en
   // localStorage para siempre.
   const idsVigentes = new Set(recortado.map((c) => c.id))
-  for (const c of indice) {
+  for (const c of propias) {
     if (!idsVigentes.has(c.id)) borrar(PREFIJO_CONVERSACION + c.id)
   }
 }
@@ -168,8 +205,8 @@ function migrarFormatoViejoSiHaceFalta() {
     if (!Array.isArray(datosViejos.mensajes) || datosViejos.mensajes.length === 0) return
     const id = nuevoId()
     const titulo = derivarTitulo(datosViejos.mensajes)
-    guardarConversacion(id, datosViejos.mensajes, datosViejos.documentoActivo ?? null, titulo)
-    establecerConversacionActiva(id)
+    // Sin propietario conocido: queda aislada como cualquier copia anterior.
+    escribirCopia(id, datosViejos.mensajes, datosViejos.documentoActivo ?? null, titulo, undefined)
   } catch (e) {
     console.error('Error migrando la conversación del formato anterior:', e)
   } finally {
@@ -179,12 +216,13 @@ function migrarFormatoViejoSiHaceFalta() {
 
 export function listarConversaciones(): ConversacionResumen[] {
   migrarFormatoViejoSiHaceFalta()
-  return leerIndice().sort((a, b) => b.actualizadaEn - a.actualizadaEn)
+  return leerIndicePropio().sort((a, b) => b.actualizadaEn - a.actualizadaEn)
 }
 
 export function obtenerConversacionActivaId(): string | null {
   migrarFormatoViejoSiHaceFalta()
-  return leer(CLAVE_ACTIVA)
+  const id = leer(CLAVE_ACTIVA)
+  return id && esDelPropietario(propietarioDeCopia(id)) ? id : null
 }
 
 export function establecerConversacionActiva(id: string) {
@@ -197,6 +235,7 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
   try {
     const datos = JSON.parse(crudo) as ConversacionGuardada
     if (datos.version !== VERSION || !Array.isArray(datos.mensajes)) return null
+    if (!esDelPropietario(datos.docenteId)) return null
     return { titulo: datos.titulo, mensajes: ordenarEmpates(datos.mensajes), documentoActivo: datos.documentoActivo ?? null }
   } catch (e) {
     console.error(`Error restaurando la conversación ${id}:`, e)
@@ -254,6 +293,14 @@ function aligerarParaGuardar(mensajes: MensajeConversacion[]): MensajeConversaci
 }
 
 export function guardarConversacion(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado?: string) {
+  // Sin sesión confirmada no se guarda; una copia de otro docente o sin
+  // propietario con el mismo id nunca se pisa.
+  if (!propietarioActual) return
+  if (leer(PREFIJO_CONVERSACION + id) !== null && !esDelPropietario(propietarioDeCopia(id))) return
+  escribirCopia(id, mensajes, documentoActivo, tituloForzado, propietarioActual)
+}
+
+function escribirCopia(id: string, mensajes: MensajeConversacion[], documentoActivo: DocumentoActivoGuardado | null, tituloForzado: string | undefined, docenteId: string | undefined) {
   if (mensajes.length === 0) return // conversación vacía: nada que guardar todavía
   const mensajesRecortados = conVersionRestauradaFijada(mensajes, mensajes.slice(-TOPE_MENSAJES))
   const titulo = tituloForzado ?? derivarTitulo(mensajesRecortados)
@@ -265,11 +312,12 @@ export function guardarConversacion(id: string, mensajes: MensajeConversacion[],
     mensajes: aligerarParaGuardar(mensajesRecortados),
     documentoActivo: documentoActivoSinTokenVistaPrevia(documentoActivo),
     actualizadaEn,
+    ...(docenteId ? { docenteId } : {}),
   }
   escribir(PREFIJO_CONVERSACION + id, JSON.stringify(datos))
 
   const indice = leerIndice().filter((c) => c.id !== id)
-  indice.push({ id, titulo, actualizadaEn })
+  indice.push({ id, titulo, actualizadaEn, ...(docenteId ? { docenteId } : {}) })
   escribirIndice(indice)
 }
 
@@ -280,6 +328,7 @@ export function crearNuevaConversacion(): string {
 }
 
 export function eliminarConversacion(id: string) {
+  if (!esDelPropietario(propietarioDeCopia(id))) return
   borrar(PREFIJO_CONVERSACION + id)
   escribirIndice(leerIndice().filter((c) => c.id !== id))
   if (leer(CLAVE_ACTIVA) === id) borrar(CLAVE_ACTIVA)
@@ -671,6 +720,7 @@ export function migrarHistorialLocal(docenteId: string): Promise<ResultadoMigrac
 
 async function ejecutarMigracion(docenteId: string): Promise<ResultadoMigracion> {
   const resultado: ResultadoMigracion = { migradas: 0, sinPertenencia: 0, conflictos: 0, fallidas: 0 }
+  if (propietarioActual !== docenteId) return resultado
   const { desde } = leerEstadoSincronizacion(docenteId)
   const estados = leerEstadoMigracion(docenteId)
 
@@ -700,6 +750,8 @@ async function ejecutarMigracion(docenteId: string): Promise<ResultadoMigracion>
     const filasPropias = new Map((propias ?? []).map((f: { id: string; titulo: string; documento_activo: unknown; actualizado_en: string; eliminada_en: string | null }) => [f.id, f]))
 
     for (const c of candidatas) {
+      // La sesión cambió durante la migración: no se sigue con otra cuenta.
+      if (propietarioActual !== docenteId) break
       const remota = filasPropias.get(c.remotoId)
       if (!remota) {
         resultado.sinPertenencia++
@@ -818,7 +870,7 @@ function recordarTituloRemoto(docenteId: string, remotoId: string, titulo: strin
 
 async function actualizarContextoRemoto(docenteId: string, localId: string, remotoId: string): Promise<void> {
   try {
-    const resumen = leerIndice().find((c) => c.id === localId)
+    const resumen = leerIndicePropio().find((c) => c.id === localId)
     if (!resumen) return
     const conocido = leerTitulosRemotos(docenteId)[remotoId] ?? TITULO_INICIAL
     if (resumen.titulo && resumen.titulo !== conocido) {
@@ -843,6 +895,154 @@ async function actualizarContextoRemoto(docenteId: string, localId: string, remo
   }
 }
 
+// ---------------------------------------------------------------------
+// Propietario de las copias anteriores al aislamiento (etapa 2). Una copia
+// sin docenteId solo se asigna al docente con sesión si hay evidencia
+// explícita de que es suya y de ningún otro:
+// - local: su vínculo remoto, sus marcadores de migración, sus títulos
+//   remotos o mensajes de la copia en su estado de sincronización (huellas,
+//   solo inserción o la cola pendiente);
+// - remota: sin evidencia local, la conversación remota que le
+//   correspondería existe y RLS la devuelve a ese docente.
+// Nunca por ser la única cuenta conocida en el navegador. Evidencia de dos
+// docentes, de otro docente, una conversación remota eliminada o una
+// asignación que duplicaría otra copia propia: la copia queda intacta y
+// aislada. Asignar solo agrega docenteId: los mensajes, la cola y los
+// marcadores no cambian.
+export type MotivoAislada = 'sin_evidencia' | 'contradictoria' | 'de_otro_docente' | 'eliminada' | 'duplicada'
+export type ResultadoPropietarios = { asignadas: string[]; aisladas: { id: string; motivo: MotivoAislada }[] }
+
+function clavesLocales(): string[] {
+  try {
+    const almacen = window.localStorage as Storage
+    if (typeof almacen.length !== 'number' || typeof almacen.key !== 'function') return []
+    return Array.from({ length: almacen.length }, (_, i) => almacen.key(i)).filter((k): k is string => !!k)
+  } catch {
+    return []
+  }
+}
+
+// Docentes con algún rastro en este navegador (solo para detectar
+// evidencias contradictorias, nunca para asignar).
+function docentesConRastro(): string[] {
+  const ids = new Set<string>()
+  for (const k of clavesLocales()) {
+    for (const prefijo of [PREFIJO_SINCRONIZACION, PREFIJO_MIGRACION, PREFIJO_TITULOS_REMOTOS]) if (k.startsWith(prefijo)) ids.add(k.slice(prefijo.length))
+  }
+  for (const v of Object.values(leerVinculosRemotos())) ids.add(v.docenteId)
+  return [...ids]
+}
+
+// Lectura sin efectos (leerEstadoSincronizacion crea un estado si falta).
+function estadoSincronizacionExistente(docenteId: string): EstadoSincronizacion | null {
+  try {
+    const datos = JSON.parse(leer(PREFIJO_SINCRONIZACION + docenteId) ?? 'null') as EstadoSincronizacion | null
+    return datos && Array.isArray(datos.pendientes) && datos.huellas && typeof datos.huellas === 'object' ? datos : null
+  } catch {
+    return null
+  }
+}
+
+async function evidenciaLocalDe(docenteId: string, localId: string, idsMensajes: string[]): Promise<boolean> {
+  if (leerVinculosRemotos()[localId]?.docenteId === docenteId) return true
+  if (leerEstadoMigracion(docenteId)[localId]) return true
+  const remotoId = await idRemotoDe(docenteId, localId)
+  if (leerTitulosRemotos(docenteId)[remotoId] !== undefined) return true
+  const estado = estadoSincronizacionExistente(docenteId)
+  if (!estado) return false
+  if (estado.pendientes.some((pendiente) => pendiente.localId === localId && pendiente.fila.conversacion_id === remotoId)) return true
+  return idsMensajes.some((id) => estado.huellas[`${remotoId}:${id}`] !== undefined || !!estado.soloInsercion?.[`${remotoId}:${id}`])
+}
+
+function leerCopiaCruda(id: string): ConversacionGuardada | null {
+  try {
+    const datos = JSON.parse(leer(PREFIJO_CONVERSACION + id) ?? 'null') as ConversacionGuardada | null
+    return datos && Array.isArray(datos.mensajes) ? datos : null
+  } catch {
+    return null
+  }
+}
+
+// Solo agrega el propietario a la copia y a su entrada del índice (sin
+// recortar el índice ni tocar mensajes).
+function asignarPropietario(id: string, docenteId: string) {
+  const copia = leerCopiaCruda(id)
+  if (!copia || copia.docenteId) return
+  escribir(PREFIJO_CONVERSACION + id, JSON.stringify({ ...copia, docenteId }))
+  escribir(CLAVE_INDICE, JSON.stringify(leerIndice().map((c) => (c.id === id ? { ...c, docenteId } : c))))
+}
+
+const resolucionesEnCurso = new Map<string, Promise<ResultadoPropietarios>>()
+export function resolverPropietariosLocales(docenteId: string): Promise<ResultadoPropietarios> {
+  const enCurso = resolucionesEnCurso.get(docenteId)
+  if (enCurso) return enCurso
+  const promesa = ejecutarResolucionPropietarios(docenteId).finally(() => resolucionesEnCurso.delete(docenteId))
+  resolucionesEnCurso.set(docenteId, promesa)
+  return promesa
+}
+
+async function ejecutarResolucionPropietarios(docenteId: string): Promise<ResultadoPropietarios> {
+  const resultado: ResultadoPropietarios = { asignadas: [], aisladas: [] }
+  if (propietarioActual !== docenteId) return resultado
+  const sinPropietario = leerIndice().filter((c) => !c.docenteId)
+  if (sinPropietario.length === 0) return resultado
+  const docentes = [...new Set([docenteId, ...docentesConRastro()])]
+  const confirmadas: { id: string; remotoId: string }[] = []
+  const porVerificar: { id: string; remotos: string[] }[] = []
+  for (const { id } of sinPropietario) {
+    const copia = leerCopiaCruda(id)
+    if (!copia || copia.docenteId) continue
+    const idsMensajes = copia.mensajes.map((m) => m.id)
+    const conEvidencia: string[] = []
+    for (const d of docentes) if (await evidenciaLocalDe(d, id, idsMensajes)) conEvidencia.push(d)
+    if (conEvidencia.length > 1) resultado.aisladas.push({ id, motivo: 'contradictoria' })
+    else if (conEvidencia.length === 1 && conEvidencia[0] !== docenteId) resultado.aisladas.push({ id, motivo: 'de_otro_docente' })
+    else if (conEvidencia.length === 1) confirmadas.push({ id, remotoId: await idRemotoDe(docenteId, id) })
+    // Una copia descargada de Supabase usa como id el de la conversación remota.
+    else porVerificar.push({ id, remotos: [...new Set([await idRemotoDe(docenteId, id), id])] })
+  }
+  if (porVerificar.length > 0 && propietarioActual === docenteId) {
+    try {
+      const { data, error } = await supabase
+        .from('conversaciones_chat')
+        .select('id, eliminada_en')
+        .eq('docente_id', docenteId)
+        .in('id', porVerificar.flatMap((v) => v.remotos))
+      if (error) throw error
+      const filas = new Map(((data ?? []) as { id: string; eliminada_en: string | null }[]).map((f) => [f.id, f]))
+      for (const v of porVerificar) {
+        const fila = v.remotos.map((r) => filas.get(r)).find(Boolean)
+        if (!fila) resultado.aisladas.push({ id: v.id, motivo: 'sin_evidencia' })
+        else if (fila.eliminada_en) resultado.aisladas.push({ id: v.id, motivo: 'eliminada' })
+        else confirmadas.push({ id: v.id, remotoId: fila.id })
+      }
+    } catch (e) {
+      console.error('[PROPIETARIO_LOCAL] verificacion=false', e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e))
+      for (const v of porVerificar) resultado.aisladas.push({ id: v.id, motivo: 'sin_evidencia' })
+    }
+  }
+  // Sin duplicados: cada conversación remota tiene a lo más una copia propia.
+  const propias = leerIndicePropio()
+  const ocupados = new Set([...propias.map((c) => c.id), ...(await Promise.all(propias.map((c) => idRemotoDe(docenteId, c.id))))])
+  // La sesión cambió durante la verificación: no se asigna nada.
+  if (propietarioActual !== docenteId) return { asignadas: [], aisladas: resultado.aisladas }
+  for (const c of confirmadas) {
+    if (ocupados.has(c.remotoId)) {
+      resultado.aisladas.push({ id: c.id, motivo: 'duplicada' })
+      continue
+    }
+    ocupados.add(c.remotoId)
+    // Copia descargada cuyo vínculo se perdió: se restituye para que la
+    // sincronización use la conversación remota verificada.
+    if (c.remotoId === c.id && (await idRemotoDe(docenteId, c.id)) !== c.id) guardarVinculoRemoto(c.id, docenteId, c.id)
+    if (propietarioActual !== docenteId) return { asignadas: resultado.asignadas, aisladas: resultado.aisladas }
+    asignarPropietario(c.id, docenteId)
+    resultado.asignadas.push(c.id)
+  }
+  if (resultado.asignadas.length || resultado.aisladas.length) console.info('[PROPIETARIO_LOCAL]', JSON.stringify({ asignadas: resultado.asignadas.length, aisladas: resultado.aisladas.length }))
+  return resultado
+}
+
 // Conversaciones remotas con mensajes y sin copia en este dispositivo.
 export async function conversacionesRemotasSinCopiaLocal(docenteId: string): Promise<ConversacionResumen[]> {
   const { data, error } = await supabase
@@ -853,6 +1053,8 @@ export async function conversacionesRemotasSinCopiaLocal(docenteId: string): Pro
     .order('actualizado_en', { ascending: false })
     .limit(TOPE_CONVERSACIONES)
   if (error) throw error
+  // También cuentan como ocupadas las copias de otros o sin propietario:
+  // descargarla de nuevo duplicaría o pisaría una copia aislada.
   const locales = leerIndice()
   const conCopia = new Set([...locales.map((c) => c.id), ...(await Promise.all(locales.map((c) => idRemotoDe(docenteId, c.id))))])
   return ((data ?? []) as { id: string; titulo: string; actualizado_en: string; mensajes_chat?: { count: number }[] }[])
@@ -1013,7 +1215,10 @@ function registrarComoEnviados(docenteId: string, remotoId: string, guardados: M
 // existe, no es del docente o no tiene mensajes. Nunca pisa una copia
 // local existente (y solo la acepta si su relación es de este docente).
 export async function descargarConversacionRemota(docenteId: string, remotoId: string): Promise<boolean> {
+  if (propietarioActual !== docenteId) return false
   if (cargarConversacionPorId(remotoId)) return leerVinculosRemotos()[remotoId]?.docenteId === docenteId
+  // Hay una copia aislada (de otro docente o sin propietario) con ese id.
+  if (leer(PREFIJO_CONVERSACION + remotoId) !== null) return false
   const { data: conversacion, error } = await supabase
     .from('conversaciones_chat')
     .select('id, titulo, documento_activo')
@@ -1057,6 +1262,8 @@ export async function descargarConversacionRemota(docenteId: string, remotoId: s
     }
   }
 
+  // La sesión cambió durante la descarga: no se escribe nada.
+  if (propietarioActual !== docenteId) return false
   // Relación primero: desde aquí el motor y la etapa 1 usan este id.
   guardarVinculoRemoto(remotoId, docenteId, remotoId)
   // Documento activo: el documento vigente de los mensajes (también uno
@@ -1188,7 +1395,7 @@ async function ejecutarSincronizacion(docenteId: string, localId: string): Promi
 }
 
 async function sincronizarMensajesNuevos(docenteId: string, localId: string): Promise<ResultadoSincronizacion> {
-  if (!cargarConversacionPorId(localId)) return { estado: 'sin_copia_local' }
+  if (propietarioActual !== docenteId || !cargarConversacionPorId(localId)) return { estado: 'sin_copia_local' }
   const remotoId = await idRemotoDe(docenteId, localId)
   const { data: conversacion, error } = await supabase
     .from('conversaciones_chat')
@@ -1346,6 +1553,7 @@ export function leerMensajesRemotosPorId(docenteId: string, remotoId: string, id
 // documento de la misma raíz), la combina y la guarda (queda fijada en la
 // copia). Nunca usa otra versión; si algo falla, queda noRecuperado.
 async function recuperarVersionRestaurada(docenteId: string, localId: string): Promise<MensajeConversacion | null> {
+  if (propietarioActual !== docenteId) return null
   const local = cargarConversacionPorId(localId)
   const pendiente = local ? resolverDocumentoVigente(local.mensajes) : null
   if (!pendiente?.documento.noRecuperado) return null
@@ -1390,7 +1598,9 @@ async function conversacionEliminadaRemota(remotoId: string): Promise<boolean> {
 // relación local → remoto, mensajes pendientes, huellas y marcas. Nada
 // remoto.
 export async function retirarConversacionLocal(docenteId: string, localId: string, remotoConocido?: string): Promise<void> {
+  if (propietarioActual !== docenteId) return
   const remotoId = remotoConocido ?? (await idRemotoDe(docenteId, localId))
+  if (propietarioActual !== docenteId) return
   eliminarConversacion(localId)
   const vinculos = leerVinculosRemotos()
   if (vinculos[localId]) {
@@ -1435,7 +1645,8 @@ export async function eliminarConversacionGlobal(docenteId: string, localId: str
 // Conversaciones con copia en este dispositivo que fueron eliminadas en
 // otro: una consulta acotada a sus ids remotos.
 export async function conversacionesLocalesEliminadas(docenteId: string): Promise<{ localId: string; remotoId: string }[]> {
-  const locales = leerIndice()
+  if (propietarioActual !== docenteId) return []
+  const locales = leerIndicePropio()
   if (locales.length === 0) return []
   const pares = await Promise.all(locales.map(async (c) => ({ localId: c.id, remotoId: await idRemotoDe(docenteId, c.id) })))
   const { data, error } = await supabase

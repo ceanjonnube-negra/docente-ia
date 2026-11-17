@@ -103,16 +103,21 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesion ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async (nombre: string) => { registro.push({ tabla: 'rpc', op: nombre }); return { data: null, error: null } }
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   // ---- Historial local sembrado (formato real de persistencia.ts) ----
   const T = Date.now()
   const DESDE = T - 1000 // inicio de la etapa 1 en este dispositivo
   almacen.set(`docente-ia:mensajes-remotos:${DOCENTE_A}`, JSON.stringify({ desde: DESDE, pendientes: [], huellas: {} }))
-  const indice: { id: string; titulo: string; actualizadaEn: number }[] = []
+  // Copias con propietario ya resuelto (A): la migración solo trabaja con
+  // las del docente con sesión; las copias sin propietario quedan aisladas
+  // (ver verificar-aislamiento-docente).
+  const indice: { id: string; titulo: string; actualizadaEn: number; docenteId: string }[] = []
   const msg = (id: string, rol: string, texto: string, creadoEn: number, extra: Fila = {}) => ({ id, rol, texto, creadoEn, ...extra })
   const sembrar = (id: string, titulo: string, mensajes: Fila[], documentoActivo: Fila | null, actualizadaEn: number) => {
-    almacen.set(`docente-ia:conversacion:${id}`, JSON.stringify({ version: 2, titulo, mensajes, documentoActivo, actualizadaEn }))
-    indice.push({ id, titulo, actualizadaEn })
+    almacen.set(`docente-ia:conversacion:${id}`, JSON.stringify({ version: 2, titulo, mensajes, documentoActivo, actualizadaEn, docenteId: DOCENTE_A }))
+    indice.push({ id, titulo, actualizadaEn, docenteId: DOCENTE_A })
   }
   const VIEJO = T - 86_400_000
   const DOC = '📨 CITATORIO DE PRUEBA\n\nTexto ficticio sin datos de alumnos.'
@@ -181,12 +186,11 @@ async function main() {
   verificar(r3.migradas === 0 && r3.sinPertenencia === 2 && registro.length === 0, '3a. Tercera ejecución: cero escrituras (solo la consulta única de pertenencia)')
 
   // ---- 4. Aislamiento por sesión ----
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   registro.length = 0
   const r4 = await p.migrarHistorialLocal(DOCENTE_A)
   verificar(r4.migradas === 0 && registro.length === 0, '4a. Con la sesión de otro docente no se migra nada')
-  sesion = DOCENTE_A
-
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   // ---- 5. Concurrencia: el UPDATE condicional no pisa un valor nuevo ----
   const convA2 = tablas.conversaciones_chat.find((c) => c.id === R['conv-a'])!
   convA2.titulo = 'Cambiado por otro dispositivo'
@@ -196,8 +200,8 @@ async function main() {
   // ---- 5b. Otro dispositivo escribe el título entre la lectura y el UPDATE ----
   const localCarrera = 'conv-carrera'
   const remotoCarrera = await idRemoto(DOCENTE_A, localCarrera)
-  almacen.set(`docente-ia:conversacion:${localCarrera}`, JSON.stringify({ version: 2, titulo: 'Título local', mensajes: [msg('msg-8-0', 'usuario', 'Hola', VIEJO)], documentoActivo: null, actualizadaEn: VIEJO * 1000 }))
-  almacen.set('docente-ia:conversaciones', JSON.stringify([...indice, { id: localCarrera, titulo: 'Título local', actualizadaEn: VIEJO * 1000 }]))
+  almacen.set(`docente-ia:conversacion:${localCarrera}`, JSON.stringify({ version: 2, titulo: 'Título local', mensajes: [msg('msg-8-0', 'usuario', 'Hola', VIEJO)], documentoActivo: null, actualizadaEn: VIEJO * 1000, docenteId: DOCENTE_A }))
+  almacen.set('docente-ia:conversaciones', JSON.stringify([...indice, { id: localCarrera, titulo: 'Título local', actualizadaEn: VIEJO * 1000, docenteId: DOCENTE_A }]))
   tablas.conversaciones_chat.push(fila(remotoCarrera, DOCENTE_A))
   antesDeUpdate = () => { tablas.conversaciones_chat.find((c) => c.id === remotoCarrera)!.titulo = 'Título de otro dispositivo' }
   const r5 = await p.migrarHistorialLocal(DOCENTE_A)

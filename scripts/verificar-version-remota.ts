@@ -126,6 +126,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesionVigente ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const AVISO = (n: number) => `📨 AVISO DE EXCURSIÓN ESCOLAR\n\nTexto ficticio sin datos de alumnos. Versión ${n}.`
   const URL = (n: string) => `https://proyecto.supabase.co/storage/v1/object/sign/documentos-generados-ia/d/${n}?token=firma`

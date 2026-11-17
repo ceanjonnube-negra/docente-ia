@@ -80,7 +80,9 @@ async function main() {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'clave-ficticia'
   const almacen = new Map<string, string>()
   ;(globalThis as unknown as { window: unknown }).window = { localStorage: { getItem: (k: string) => almacen.get(k) ?? null, setItem: (k: string, v: string) => { almacen.set(k, v) }, removeItem: (k: string) => { almacen.delete(k) } } }
-  const { guardarConversacion, cargarConversacionPorId } = await import('../lib/asistente/persistencia')
+  const { guardarConversacion, cargarConversacionPorId, establecerPropietarioLocal } = await import('../lib/asistente/persistencia')
+  // Aislamiento por docente: las copias locales se guardan con una sesión.
+  establecerPropietarioLocal('docente-prueba')
   guardarConversacion('conv-prueba', [
     { id: 'u1', rol: 'usuario', texto: 'Hazme un citatorio en PDF', creadoEn: 1 },
     { id: 'a1', rol: 'asistente', texto: 'Documento generado correctamente.', creadoEn: 2, contenidoDocumento: CITATORIO },

@@ -114,6 +114,8 @@ async function main() {
     return { data: null, error: null }
   }
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
   const mensajesDe = (conv: string) => tablas.mensajes_chat.filter((m) => m.conversacion_id === conv)
 
   // ---- Dispositivo A: conversación nueva sincronizada por la etapa 1 ----
@@ -195,13 +197,12 @@ async function main() {
   verificar(Date.parse(String(convX().actualizado_en)) > Date.parse(fecha) + 80_000_000, '4c. La fecha remota solo avanza (una más reciente no se retrocede)')
 
   // ---- 5. Aislamiento por docente ----
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   const deB = await p.conversacionesRemotasSinCopiaLocal(DOCENTE_B)
   verificar(deB.length === 1 && deB[0].id === CONV_B, '5a. El docente B solo ve su conversación')
   verificar((await p.descargarConversacionRemota(DOCENTE_B, X)) === false && !(await p.conversacionesRemotasSinCopiaLocal(DOCENTE_A)).length, '5b. B no puede descargar ni listar las de A')
   verificar((await p.idRemotoDe(DOCENTE_B, X)) !== X, '5c. La relación de A no aplica a otro docente')
-  sesion = DOCENTE_A
-
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   const { readFileSync } = await import('node:fs')
 
   // ---- 6. AsistenteService: lista, apertura e ids únicos ----
@@ -224,7 +225,7 @@ async function main() {
   // ---- 8. Apertura remota fallida: conserva la conversación y no genera nada ----
   const chat8 = AsistenteService as unknown as { conversacionActivaId: string | null; mensajes: { id: string }[]; avisoGeneracion: string | null; ultimoIntentoEdicion: unknown; editandoDocumentoId: string | null; refrescarConversacionesRemotas(d: string, f?: boolean): Promise<void>; abrirConversacion(id: string): void; reintentarGeneracion(): Promise<void> }
   almacen = new Map()
-  sesion = DOCENTE_A
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   await chat8.refrescarConversacionesRemotas(DOCENTE_A, true)
   p.guardarConversacion('conv-actual', [{ id: 'm1', rol: 'usuario', texto: 'Conversación abierta', creadoEn: 1 }] as never, null)
   chat8.conversacionActivaId = 'conv-actual'

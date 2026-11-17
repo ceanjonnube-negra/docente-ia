@@ -18,7 +18,6 @@ import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCale
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { esBorradorPlaneacion } from '@/lib/planeacion/extraerBorrador'
 import {
-  borrarTodasLasConversaciones,
   cargarConversacionPorId,
   combinarConversaciones,
   combinarMensajes,
@@ -41,6 +40,9 @@ import {
   guardarMensajesRemotos,
   idRemotoDe,
   listarConversaciones,
+  propietarioLocal,
+  establecerPropietarioLocal,
+  resolverPropietariosLocales,
   migrarHistorialLocal,
   registrarAlRetirarConversacion,
   reintentarMensajesRemotosPendientes,
@@ -85,16 +87,14 @@ async function conLimiteDeTiempoAccion<T>(promesa: Promise<T>, ms: number, mensa
   }
 }
 
-// Al cargar el módulo SOLO se lee el índice liviano (id/título/fecha) de
-// conversaciones guardadas — para que la barra lateral tenga qué
-// mostrar. Nunca se selecciona ni se cargan mensajes de ninguna
-// conversación automáticamente: la existencia de conversaciones
-// persistidas no debe asignar activeConversationId por sí sola. El
-// docente decide cuál abrir (ver abrirConversacion) o si empieza una
-// nueva escribiendo (ver enviarMensaje) — el Chat IA siempre monta en su
-// vista inicial, sin importar desde dónde se llegó (inicio de la app,
-// botón Inicio, o cualquier módulo).
-const INDICE_CONVERSACIONES_INICIAL = listarConversaciones()
+// Al cargar el módulo no se lee ninguna conversación: todavía no se sabe
+// qué docente tiene la sesión. Tampoco se selecciona ninguna
+// automáticamente: el docente decide cuál abrir (ver abrirConversacion) o
+// si empieza una nueva escribiendo (ver enviarMensaje) — el Chat IA
+// siempre monta en su vista inicial.
+// Aislamiento por docente: la lista empieza vacía y solo se llena cuando
+// se confirma la sesión (ver cambiarDeDocente).
+const INDICE_CONVERSACIONES_INICIAL: ConversacionResumen[] = []
 
 export type EstadoAsistente = {
   mensajes: MensajeConversacion[]
@@ -300,6 +300,11 @@ function aclararCualDocumento(candidatos: { titulo: string; creadoEn: number }[]
   const lista = candidatos.map((c, i) => `${i + 1}. «${tituloVisible(c.titulo)}»${repetidos.has(c.titulo) ? ` (${fecha(c.creadoEn)})` : ''}`).join('\n')
   return `Hay ${titulos.length} documentos que coinciden con lo que pides:\n${lista}\n¿Con cuál trabajo? Responde con el número o con «el más reciente».${incompleta ? ' Esta conversación es larga y puede haber otros más atrás.' : ''} No cambié nada.`
 }
+
+// Cierre de sesión seguro (etapa 3).
+const LIMITE_ENVIO_AL_SALIR_MS = 4000
+const MENSAJE_SALIDA_FALLIDA = 'No se pudo cerrar la sesión. Revisa tu conexión e intenta de nuevo.'
+export type ResultadoCierreSesion = { ok: true } | { ok: false; mensaje: string }
 
 // 'al_dia': Supabase respondió (con o sin novedades); 'fallo': no se
 // pudo consultar; 'sin_sesion': no hay docente con quien consultar.
@@ -1027,9 +1032,89 @@ class AsistenteServiceImpl {
     this.notificar()
   }
 
-  // Se dispara al cerrar sesión (ver el listener de onAuthStateChange
-  // más abajo) — un dispositivo compartido entre dos docentes nunca debe
-  // arrastrar la conversación de la sesión anterior a la siguiente.
+  // Cambio de identidad (sesión confirmada, cierre o cambio de cuenta; ver
+  // el listener de onAuthStateChange más abajo). Lo pendiente de la cuenta
+  // anterior se guarda en SU copia local y en SU cola antes de cerrar el
+  // acceso; después solo se ve lo del docente nuevo (o nada, sin sesión).
+  // Las copias locales, las colas y los marcadores nunca se borran aquí.
+  cambiarDeDocente(nuevo: string | null) {
+    const anterior = propietarioLocal()
+    if (anterior === nuevo) return
+    if (anterior) {
+      if (this.persistenciaTimer) {
+        clearTimeout(this.persistenciaTimer)
+        this.persistenciaTimer = null
+        this.guardarAhora()
+      }
+      if (this.copiaRemotaTimer) { clearTimeout(this.copiaRemotaTimer); this.copiaRemotaTimer = null }
+      const lote = [...this.copiasRemotasPendientes]
+      this.copiasRemotasPendientes.clear()
+      for (const [localId, mensajes] of lote) void guardarMensajesRemotos(localId, anterior, mensajes)
+    }
+    establecerPropietarioLocal(nuevo)
+    this.limpiarConversacionGuardada()
+    this.olvidarConversacionesRemotas()
+    if (nuevo) {
+      this.listaConversaciones = listarConversaciones()
+      this.notificar()
+      // Copias anteriores al aislamiento: solo las que tienen evidencia de
+      // ser de este docente vuelven a la lista (etapa 2).
+      void resolverPropietariosLocales(nuevo).then((r) => {
+        if (r.asignadas.length === 0 || propietarioLocal() !== nuevo) return
+        this.recalcularLista()
+        this.notificar()
+      })
+    }
+  }
+
+  // Cierre de sesión seguro (etapa 3): lo pendiente en memoria pasa a la
+  // copia local y a la cola del docente actual sin esperar los debounces, y
+  // se intenta enviar con el mecanismo de siempre durante un tiempo
+  // limitado (lo que no alcance queda en su cola para su próxima sesión).
+  // Solo si signOut confirma se cierra la puerta y se vacía la memoria; si
+  // falla, la sesión sigue igual y se avisa. Una segunda pulsación espera
+  // el mismo cierre. Nada local se borra.
+  private cierreSesionEnCurso: Promise<ResultadoCierreSesion> | null = null
+  cerrarSesion(): Promise<ResultadoCierreSesion> {
+    if (!this.cierreSesionEnCurso) this.cierreSesionEnCurso = this.ejecutarCierreSesion().finally(() => { this.cierreSesionEnCurso = null })
+    return this.cierreSesionEnCurso
+  }
+
+  private async ejecutarCierreSesion(): Promise<ResultadoCierreSesion> {
+    const docente = propietarioLocal()
+    if (docente) {
+      if (this.persistenciaTimer) {
+        clearTimeout(this.persistenciaTimer)
+        this.persistenciaTimer = null
+      }
+      this.guardarAhora()
+      if (this.copiaRemotaTimer) { clearTimeout(this.copiaRemotaTimer); this.copiaRemotaTimer = null }
+      const lote = [...this.copiasRemotasPendientes]
+      this.copiasRemotasPendientes.clear()
+      try {
+        await conLimiteDeTiempoAccion((async () => {
+          for (const [localId, mensajes] of lote) await guardarMensajesRemotos(localId, docente, mensajes)
+          await reintentarMensajesRemotosPendientes(docente)
+        })(), LIMITE_ENVIO_AL_SALIR_MS, 'Tiempo de espera agotado enviando lo pendiente antes de salir')
+      } catch {
+        // Lo no enviado sigue en la cola del docente (se envía en su próxima sesión).
+      }
+    }
+    let error: unknown = null
+    try {
+      error = (await supabase.auth.signOut()).error
+    } catch (e) {
+      error = e
+    }
+    if (error) return { ok: false, mensaje: MENSAJE_SALIDA_FALLIDA }
+    // Sin esperar el evento SIGNED_OUT: acceso cerrado y memoria vacía.
+    this.cambiarDeDocente(null)
+    return { ok: true }
+  }
+
+  // Vacía el estado conversacional en memoria (no toca lo guardado): las
+  // operaciones en curso de la cuenta anterior ya no encuentran su
+  // conversación ni su vista, así que no escriben ni muestran nada.
   limpiarConversacionGuardada() {
     if (this.persistenciaTimer) {
       clearTimeout(this.persistenciaTimer)
@@ -1038,7 +1123,7 @@ class AsistenteServiceImpl {
     this.mensajes = []
     this.documentoActivo = null
     this.limpiarEstadoTransitorio()
-    borrarTodasLasConversaciones()
+    this.sincronizacionDiferida = null
     this.sincronizadaEn.clear()
     this.conversacionActivaId = null
     this.listaConversaciones = []
@@ -2821,10 +2906,12 @@ if (typeof document !== 'undefined') {
 // una navegación de cliente (router.push), no una recarga completa, así
 // que el singleton sigue vivo en memoria a menos que se limpie aquí.
 supabase.auth.onAuthStateChange((evento, session) => {
-  if (evento === 'SIGNED_OUT') {
-    AsistenteService.limpiarConversacionGuardada()
-    AsistenteService.olvidarConversacionesRemotas()
-  }
+  // Identidad de las copias locales: se abre solo con una sesión
+  // confirmada y se cierra al salir o al cambiar de cuenta. Sin sesión al
+  // cargar la página (también si se perdió un SIGNED_OUT) la puerta ya
+  // está cerrada desde el inicio.
+  const docente = session?.user?.id ?? null
+  if (evento === 'SIGNED_OUT' || (docente && docente !== propietarioLocal())) AsistenteService.cambiarDeDocente(docente)
   // Cubre el login real y la restauración de sesión desde storage al
   // recargar la pestaña — ambos casos pueden dejar EstadoAsistente.perfil
   // en null (sesión aún no existía cuando el constructor la pidió).

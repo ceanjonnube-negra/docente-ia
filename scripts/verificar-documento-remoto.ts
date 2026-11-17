@@ -137,6 +137,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesionVigente ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const CITATORIO = (n: number, motivo = 'A PADRES') => `📨 CITATORIO ${motivo}\n\nTexto ficticio sin datos de alumnos. Fecha: ${n} de mayo.`
   const EXAMEN = (n: number) => `📝 EXAMEN DE FRACCIONES\n\nPregunta ficticia ${n}.`

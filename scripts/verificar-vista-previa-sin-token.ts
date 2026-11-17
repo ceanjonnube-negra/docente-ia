@@ -103,6 +103,8 @@ async function main() {
   const g = globalThis as unknown as Record<string, unknown>
   g.window = { localStorage: { getItem: (k: string) => almacen.get(k) ?? null, setItem: (k: string, v: string) => { almacen.set(k, v) }, removeItem: (k: string) => { almacen.delete(k) } }, addEventListener() {}, removeEventListener() {} }
   const p = await import('../lib/asistente/persistencia')
+  // Aislamiento por docente: las copias locales se guardan con la sesión de A.
+  p.establecerPropietarioLocal(DOCENTE_A)
   const conToken = (ruta: string, extra: string) => `${ruta}?tipoDocumento=planeacion&token=${TOKEN_HISTORICO}&datos=${datosPlaneacion}${extra}`
   const firmada = 'https://proyecto.supabase.co/storage/v1/object/sign/documentos-generados-ia/d/1-X.pdf?token=TOKEN-STORAGE-FIRMADA&download=X.pdf'
   const mensaje = {

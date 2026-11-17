@@ -123,6 +123,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesionVigente ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const t = Date.now() - 100_000
   const m = (n: number, rol: Mensaje['rol'], texto: string, extra: Partial<Mensaje> = {}): Mensaje => ({ id: `msg-${t + n}-${n}-${String(n).padStart(8, 'a')}`, rol, texto, creadoEn: t + n, ...extra })
@@ -144,7 +146,7 @@ async function main() {
   type Doc = { id: string; texto: string } | null
   const chat = AsistenteService as unknown as {
     conversacionActivaId: string | null; mensajes: Mensaje[]; documentoActivo: Doc; generando: boolean
-    sincronizadaEn: Map<string, number>; abrirConversacion(id: string): void; enviarMensaje(texto: string): Promise<string>; notificar(): void; limpiarConversacionGuardada(): void
+    sincronizadaEn: Map<string, number>; abrirConversacion(id: string): void; enviarMensaje(texto: string): Promise<string>; notificar(): void; limpiarConversacionGuardada(): void; cambiarDeDocente(docente: string | null): void
   }
   const interno = chat as unknown as Record<string, unknown>
   const envios: { historial: string[] }[] = []
@@ -371,7 +373,7 @@ async function main() {
   desdeA(X, m(90, 'asistente', 'Desde A al cerrar sesión'))
   salir()
   vencer()
-  alLeer = (tabla, columnas) => { if (tabla === 'mensajes_chat' && columnas.includes('texto')) { alLeer = null; chat.limpiarConversacionGuardada() } }
+  alLeer = (tabla, columnas) => { if (tabla === 'mensajes_chat' && columnas.includes('texto')) { alLeer = null; chat.cambiarDeDocente(null) } }
   volver()
   await esperar()
   verificar(chat.conversacionActivaId === null && chat.mensajes.length === 0 && p.cargarConversacionPorId(X) === null && p.listarConversaciones().length === 0, '11a. Cerró sesión durante la consulta: no se recrea ninguna conversación en el dispositivo')

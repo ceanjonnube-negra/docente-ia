@@ -117,6 +117,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesion ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const mensajesDe = (conv: string) => tablas.mensajes_chat.filter((m) => m.conversacion_id === conv)
   const filaDe = (conv: string, m: Mensaje) => p.mensajeAFilaRemota(conv, DOCENTE_A, m as never) as unknown as Fila
@@ -329,10 +331,14 @@ async function main() {
   verificar(sinEscrituras() && (await p.sincronizarConversacionRemota(DOCENTE_A, Z)).estado === 'sin_cambios', '5m. Sin escrituras y estable al repetir')
 
   // ---- 6. Aislamiento ----
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   const r9 = await p.sincronizarConversacionRemota(DOCENTE_A, X)
-  verificar(r9.estado === 'sin_remota' && copia(X).mensajes.length === respaldo.mensajes.length, '6a. Con la sesión de otro docente no se lee ni se cambia nada')
-  sesion = DOCENTE_A
+  // La copia de A no es visible con la sesión de B: se revisa con la de A.
+  p.establecerPropietarioLocal(DOCENTE_A)
+  const copia9 = copia(X)
+  p.establecerPropietarioLocal(sesion)
+  verificar(r9.estado === 'sin_copia_local' && copia9.mensajes.length === respaldo.mensajes.length, '6a. Con la sesión de otro docente no se lee ni se cambia nada')
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   verificar((await p.sincronizarConversacionRemota(DOCENTE_A, 'conv-inexistente')).estado === 'sin_copia_local', '6b. Sin copia local: no se descarga nada (eso es la etapa 3A)')
 
   // ---- 7. Conversación eliminada ----

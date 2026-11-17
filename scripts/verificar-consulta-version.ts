@@ -123,6 +123,8 @@ async function main() {
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesionVigente ? { user: { id: sesion } } : null }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
 
   const DOC = (titulo: string, n: number) => `📨 ${titulo}\n\nTexto ficticio sin datos de alumnos. Versión ${n}.`
   const AVISO = 'AVISO DE EXCURSIÓN ESCOLAR'

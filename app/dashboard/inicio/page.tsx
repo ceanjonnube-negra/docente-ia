@@ -1,8 +1,9 @@
 'use client'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { AsistenteService } from '@/lib/asistente/AsistenteService'
 
 
 const toTitle = (s: string) => s ? s.toLowerCase().replace(/\w/g, c => c.toUpperCase()) : ''
@@ -37,14 +38,30 @@ export default function Dashboard() {
   // "/" ahora es la raíz del Chat IA (ver RFC-0002) — tras cerrar
   // sesión el docente debe caer en la página de bienvenida/login, no en
   // un intento de abrir el chat sin sesión activa.
-  const salir = async () => { await supabase.auth.signOut(); router.push('/bienvenida') }
+  // Salida segura: guarda y envía lo pendiente antes de cerrar la sesión y
+  // solo va a la bienvenida si Supabase confirma el cierre.
+  const [saliendo, setSaliendo] = useState(false)
+  const [avisoSalida, setAvisoSalida] = useState<string | null>(null)
+  const salir = async () => {
+    if (saliendo) return
+    setSaliendo(true)
+    setAvisoSalida(null)
+    const resultado = await AsistenteService.cerrarSesion()
+    if (resultado.ok) {
+      router.push('/bienvenida')
+      return
+    }
+    setAvisoSalida(resultado.mensaje)
+    setSaliendo(false)
+  }
 
   return (
     <div className="min-h-screen flex flex-col items-center px-4 py-6" style={{backgroundColor: '#8BC34A'}}>
       {/* Header */}
       <div className="w-full max-w-sm flex justify-end mb-4">
-        <button onClick={salir} className="w-10 h-10 bg-white/80 rounded-full flex items-center justify-center shadow text-lg">⚙️</button>
+        <button onClick={salir} disabled={saliendo} className="w-10 h-10 bg-white/80 rounded-full flex items-center justify-center shadow text-lg disabled:opacity-50">⚙️</button>
       </div>
+      {avisoSalida && <p role="alert" className="w-full max-w-sm mb-4 rounded-2xl bg-white/90 px-4 py-2 text-sm text-red-700 shadow">{avisoSalida}</p>}
 
       {/* Tarjeta maestro */}
       <div className="w-full max-w-sm bg-white/90 rounded-3xl p-4 mb-6 shadow-lg">

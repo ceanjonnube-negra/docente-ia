@@ -41,6 +41,8 @@ async function main() {
   const remotos = new Map<string, Fila>()
   const s = supabase as unknown as Record<string, unknown>
   ;(s.auth as Record<string, unknown>).getSession = async () => ({ data: { session: sesion ? { user: { id: sesion } } : null }, error: null })
+  // Aislamiento por docente: la sesión simulada abre la puerta de las copias locales.
+  p.establecerPropietarioLocal(sesion)
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => ({
     insert: async () => ({ error: null }),
@@ -120,18 +122,18 @@ async function main() {
   await p.reintentarMensajesRemotosPendientes(DOCENTE_A)
 
   // 8. Aislamiento: con la sesión de otro docente no se envía nada.
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   const antes8 = upserts.length
   await p.guardarMensajesRemotos('conv-local-1', DOCENTE_A, [m('msg-5-0', 'usuario', 'Privado de A')] as never)
   verificar(upserts.length === antes8 && estado(DOCENTE_A)?.pendientes.length === 1, '8a. Sesión de otro docente: la cola de A espera, nada se envía')
-  sesion = null
+  sesion = null; p.establecerPropietarioLocal(sesion)
   await p.reintentarMensajesRemotosPendientes(DOCENTE_A)
   verificar(upserts.length === antes8, '8b. Sin sesión: nada se envía')
-  sesion = DOCENTE_B
+  sesion = DOCENTE_B; p.establecerPropietarioLocal(sesion)
   await p.guardarMensajesRemotos('conv-local-1', DOCENTE_B, [m('msg-5-0', 'usuario', 'De B')] as never)
   const deB = upserts[upserts.length - 1]?.filas[0]
   verificar(upserts.length === antes8 + 1 && deB?.docente_id === DOCENTE_B && deB.conversacion_id !== conv1 && upserts[upserts.length - 1].filas.length === 1, '8c. Mismo id local con otro docente: otra conversación remota; la cola de A no viaja con la sesión de B')
-  sesion = DOCENTE_A
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   await p.reintentarMensajesRemotosPendientes(DOCENTE_A)
   verificar(estado(DOCENTE_A)?.pendientes.length === 0 && upserts[upserts.length - 1].filas.every((f) => f.docente_id === DOCENTE_A), '8d. De vuelta la sesión de A: su cola se envía con su docente_id')
 
@@ -150,7 +152,7 @@ async function main() {
   verificar(/guardarConversacion\(this\.conversacionActivaId, (?:this\.mensajes, this\.documentoActivo|mensajes, documentoNuevo \? elegirDocumentoActivo\(this\.documentoActivo, documentoNuevo\) : this\.documentoActivo)\)\s*\n\s*this\.(?:listaConversaciones = listarConversaciones\(\)|recalcularLista\(\))\s*\n\s*this\.programarCopiaRemota\(this\.conversacionActivaId, this\.mensajes\)/.test(guardarAhora), '10a. La copia remota se programa después del guardado local, sin cambiarlo')
   const envioRemoto = servicio.slice(servicio.indexOf('private async enviarCopiaRemota() {'), servicio.indexOf('// Guardado inmediato, sin esperar el debounce'))
   verificar(/if \(this\.generando\) return/.test(envioRemoto) && !/turnoAbierto\)/.test(envioRemoto) && !/setTimeout/.test(envioRemoto) && /vigentes\.has\(localId\)/.test(envioRemoto) && !/this\.mensajes =|this\.documentoActivo =|notificar\(\)/.test(envioRemoto), '10b. Espera solo a la generación (no a turnoAbierto), sin sondeo, solo conversaciones vigentes y sin tocar el estado del chat')
-  verificar(!/fetch\(|\/api\/chat|messages\.create/.test(envioRemoto) && /if \(evento === 'SIGNED_OUT'\) \{?\s*AsistenteService\.limpiarConversacionGuardada\(\)/.test(servicio), '10c. Sin llamadas de IA; el cierre de sesión no cambia')
+  verificar(!/fetch\(|\/api\/chat|messages\.create/.test(envioRemoto) && /if \(evento === 'SIGNED_OUT' \|\| \(docente && docente !== propietarioLocal\(\)\)\) AsistenteService\.cambiarDeDocente\(docente\)/.test(servicio), '10c. Sin llamadas de IA; el cierre de sesión cierra el acceso por docente (sin borrar copias)')
   const persistencia = readFileSync('lib/asistente/persistencia.ts', 'utf8')
   verificar(!/service_role|SERVICE_ROLE|\.from\([^)]*\)\s*\.delete/.test(persistencia.slice(persistencia.indexOf('// Copia remota de los mensajes'))), '10d. Sin credenciales privilegiadas ni borrados')
 
@@ -161,7 +163,7 @@ async function main() {
   const espera = (ms: number) => new Promise((r) => setTimeout(r, ms))
   const { AsistenteService } = await import('../lib/asistente/AsistenteService')
   const chat = AsistenteService as unknown as { mensajes: { id: string; rol: string; texto: string }[]; conversacionActivaId: string | null; generando: boolean; turnoAbierto: string | null; copiaRemotaTimer: unknown; manejarEventoMotor(e: unknown): void }
-  sesion = DOCENTE_A
+  sesion = DOCENTE_A; p.establecerPropietarioLocal(sesion)
   chat.conversacionActivaId = null
   chat.mensajes = []
   upserts.length = 0
