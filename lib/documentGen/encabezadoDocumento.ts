@@ -66,7 +66,9 @@ export function prepararEncabezado(perfil: any, zonaHoraria: string | null | und
 // "Escuela", "Fecha" o "Grupo": una fecha de reunión, un destinatario o un
 // espacio para completar se conservan siempre. Tampoco toca:
 // - las firmas: el generador no sabe si el docente pidió firmar el
-//   documento, así que una firma en el texto se conserva siempre;
+//   documento, así que una firma en el texto se conserva siempre (fórmula,
+//   nombre y cargo); de ella solo se quitan las líneas que repiten
+//   exactamente la escuela, el ciclo o el grupo del encabezado;
 // - los documentos pedagógicos (planeación, rúbrica, examen, actividad,
 //   lectura…): su grado, grupo y datos curriculares son parte de su
 //   contenido, también en las vistas previas de planeación.
@@ -123,19 +125,49 @@ function esDocumentoPedagogico(titulo: string): boolean {
   return PREFIJO_PEDAGOGICO.test(titulo.trim()) || TIPO_PEDAGOGICO.test(sinSimbolos)
 }
 
+// Línea suelta que repite un dato confirmado del encabezado: la escuela tal
+// cual, o el ciclo escolar sin dos puntos ("Ciclo Escolar 2026-2027").
+function esDatoInstitucionalSuelto(linea: string, enc: EncabezadoDocumento): boolean {
+  const n = normalizarDato(linea)
+  if (enc.escuela && enc.escuela !== 'Escuela' && n === normalizarDato(enc.escuela)) return true
+  const ciclo = n.match(/^ciclo(?: escolar)? (.+)$/)
+  return !!ciclo && !!enc.cicloEscolar && ciclo[1] === normalizarDato(enc.cicloEscolar)
+}
+function esLineaInstitucionalRedundante(linea: string, enc: EncabezadoDocumento): boolean {
+  return esEncabezadoDuplicado(linea, enc) || esDatoInstitucionalSuelto(linea, enc)
+}
+
 export function quitarDuplicadosInstitucionales(texto: string, enc: EncabezadoDocumento): string {
   const lineas = texto.split('\n')
   const quitar = new Set<number>()
 
-  // Líneas duplicadas pegadas al título (antes o después). El título es la
-  // primera línea que no es un duplicado.
+  // 1. Líneas duplicadas pegadas al título (antes o después), también la
+  // escuela o el ciclo como línea suelta. El título es la primera línea que
+  // no es un duplicado; la primera línea distinta después de él detiene la
+  // revisión.
   let titulo: string | null = null
   for (let i = 0; i < lineas.length; i++) {
     const l = lineas[i].trim()
     if (!l) continue
-    if (esEncabezadoDuplicado(l, enc)) { quitar.add(i); continue }
+    if (esLineaInstitucionalRedundante(l, enc)) { quitar.add(i); continue }
     if (titulo !== null) break
     titulo = l
+  }
+
+  // 2. Firma con la que termina el documento (fórmula de cierre y lo que la
+  // sigue): se conservan la fórmula, el nombre y el cargo; solo se quitan
+  // las líneas que repiten exactamente un dato del encabezado (la escuela,
+  // el ciclo, "Grado y Grupo"). Si no queda firmante, la firma automática
+  // completa el cierre (ver agregarFirmaAutomatica).
+  const finales: number[] = []
+  for (let j = lineas.length - 1; j >= 0 && finales.length < LINEAS_FINALES; j--) {
+    if (lineas[j].trim()) finales.unshift(j)
+  }
+  const cierre = finales.findIndex((n) => CIERRE_FIRMA.test(normalizarDato(lineas[n]).replace(/[:!]+$/, '')))
+  if (cierre !== -1) {
+    for (const n of finales.slice(cierre + 1)) {
+      if (esLineaInstitucionalRedundante(lineas[n].trim(), enc)) quitar.add(n)
+    }
   }
 
   if (quitar.size === 0 || titulo === null || esDocumentoPedagogico(titulo)) return texto

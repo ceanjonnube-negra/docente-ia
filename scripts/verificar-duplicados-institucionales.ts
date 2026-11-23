@@ -193,8 +193,8 @@ async function generar() {
 
   const zipReal = await JSZip.loadAsync(await generarWordBuffer(casoReal, perfil, 'America/Mazatlan'))
   const cuerpoReal = await zipReal.file('word/document.xml')!.async('string')
-  verificar(cuerpoReal.includes('Atentamente,') && cuerpoReal.includes('Docente de 3.º A') && cuerpoReal.includes(`Ciclo Escolar ${enc.cicloEscolar}`) && !cuerpoReal.includes('Docente de grupo'),
-    'S11. Word real (caso de Preview): se conserva íntegra la firma del texto y NO se agrega la automática')
+  verificar(cuerpoReal.includes('Atentamente,') && cuerpoReal.includes('Docente de 3.º A') && !cuerpoReal.includes(`Ciclo Escolar ${enc.cicloEscolar}`) && !cuerpoReal.includes('Docente de grupo'),
+    'S11. Word real (caso de Preview): se conservan la fórmula y el cargo de la firma del texto, sin su escuela ni su ciclo repetidos, y NO se agrega la automática')
   const zipSin = await JSZip.loadAsync(await generarWordBuffer(CUERPO, perfil, 'America/Mazatlan'))
   const cuerpoSin = await zipSin.file('word/document.xml')!.async('string')
   verificar(cuerpoSin.includes('Docente de grupo') && cuerpoSin.includes('Docente Prueba E2E'), 'S12. Word real sin firma propia: se agrega la firma automática como siempre')
@@ -204,7 +204,73 @@ async function generar() {
   const srcPdf = readFileSync('lib/documentGen/generarPdfServidor.ts', 'utf8')
   verificar(srcWord.includes('const piePagina = !agregarFirmaAutomatica(texto, enc) ? [] : [') && srcPdf.includes('if (agregarFirmaAutomatica(texto, enc)) {'),
     'S14. Word y PDF aplican la misma regla de firma automática')
-  verificar(limpiar(casoReal) === casoReal, 'S15. El texto redactado (con su firma) no se modifica')
+  verificar(limpiar(casoReal) === `${CUERPO}\n\nAtentamente,\nDocente de 3.º A`, 'S15. De la firma del texto solo se quitan la escuela y el ciclo que repiten el encabezado')
+
+  // R. Caso real de E2E (aviso PDF de 3.º A en Preview) y controles contra falsos positivos.
+  const REAL = `📨 AVISO PARA PADRES Y MADRES DE FAMILIA
+
+Escuela Primaria Ficticia E2E
+Grado y Grupo: 3° A
+Ciclo Escolar: ${enc.cicloEscolar}
+
+Estimadas madres y padres de familia:
+
+Les recordamos la importancia de la puntualidad.
+
+Atentamente,
+Docente Prueba E2E
+Docente de 3° A
+Escuela Primaria Ficticia E2E
+Ciclo Escolar ${enc.cicloEscolar}`
+  const ESPERADO = `📨 AVISO PARA PADRES Y MADRES DE FAMILIA
+
+Estimadas madres y padres de familia:
+
+Les recordamos la importancia de la puntualidad.
+
+Atentamente,
+Docente Prueba E2E
+Docente de 3° A`
+  verificar(limpiar(REAL) === ESPERADO, 'R1. Caso real: se quitan escuela, grado y ciclo junto al título y la escuela y el ciclo de la firma; quedan fórmula, nombre y cargo')
+  verificar(limpiar(ESPERADO) === ESPERADO && limpiar(limpiar(REAL)) === limpiar(REAL), 'R2. Idempotente')
+  verificar(!agregarFirmaAutomatica(limpiar(REAL), enc), 'R3. La firma del texto (nombre y cargo) sigue siendo la firma: no se agrega otra')
+  const zipR = await JSZip.loadAsync(await generarWordBuffer(REAL, perfil, 'America/Mazatlan'))
+  const cuerpoR = await zipR.file('word/document.xml')!.async('string')
+  const encabezadoR = (await Promise.all(Object.keys(zipR.files).filter((f) => /^word\/header\d*\.xml$/.test(f)).map((f) => zipR.file(f)!.async('string')))).join('')
+  verificar(encabezadoR.includes('Escuela Primaria Ficticia E2E') && !cuerpoR.includes('Escuela Primaria Ficticia E2E') && !cuerpoR.includes('Ciclo Escolar') && !cuerpoR.includes('Grado y Grupo')
+    && (cuerpoR.split('Docente Prueba E2E').length - 1) === 1 && !cuerpoR.includes('Docente de grupo'),
+    'R4. Word real: escuela, grado y ciclo solo en el encabezado automático; una sola firma')
+  verificar((await generarPdfBuffer(REAL, perfil, 'America/Mazatlan')).subarray(0, 5).toString() === '%PDF-', 'R5. PDF real generado desde el mismo texto, con la misma limpieza')
+
+  const controles: [string, string][] = [
+    ['Otra escuela como línea suelta junto al título', `📢 AVISO\nEscuela Secundaria Técnica 5\n\nTexto del aviso.`],
+    ['La escuela dentro de una frase del cuerpo', `📢 AVISO\n\nLa Escuela Primaria Ficticia E2E invita a la kermés.\n\nGracias.`],
+    ['La escuela como línea suelta en el cuerpo (lejos del título y de la firma)', `📢 AVISO\n\nLugar del evento:\nEscuela Primaria Ficticia E2E\n\nGracias.`],
+    ['Firma de otra persona con su propia escuela', `📢 AVISO\n\nTexto.\n\nAtentamente,\nMaría López Ramírez\nDirectora\nEscuela Secundaria Técnica 5`],
+    ['Citatorio: destinatario y grado del alumno', `📨 CITATORIO\n\nEstimado padre/madre de familia de: _______________\nGrado y Grupo: 3° A\n\nSe le cita el día ____.`],
+    ['El ciclo dentro de una frase', `📢 AVISO\n\nDurante el Ciclo Escolar ${enc.cicloEscolar} habrá tres reuniones.\n\nGracias.`],
+    ['Ciclo distinto en la firma', `📢 AVISO\n\nTexto.\n\nAtentamente,\nDocente Prueba E2E\nCiclo Escolar 2019-2020`],
+    ['Documento pedagógico con escuela suelta', `📝 EXAMEN DE FRACCIONES\nEscuela Primaria Ficticia E2E\nGrado y Grupo: 3° A\n\n1. Suma 1/2 + 1/2.`],
+  ]
+  for (const [nombre, t] of controles) verificar(limpiar(t) === t, `R6. Sin cambios (falso positivo evitado): ${nombre}`)
+  const sinFirmante = `📢 AVISO\n\nTexto del aviso.\n\nAtentamente,\nEscuela Primaria Ficticia E2E`
+  verificar(limpiar(sinFirmante) === `📢 AVISO\n\nTexto del aviso.\n\nAtentamente,` && agregarFirmaAutomatica(limpiar(sinFirmante), enc),
+    'R7. Cierre cuyo único "firmante" era la escuela: queda "Atentamente," y la firma automática lo completa')
+  verificar(limpiar(REAL.replace('Escuela Primaria Ficticia E2E\nGrado', 'Escuela Primaria Ficticia E2E\nGrado')) === ESPERADO
+    && quitarDuplicadosInstitucionales(REAL, prepararEncabezado({}, 'America/Mazatlan')).includes('Escuela Primaria Ficticia E2E'),
+    'R8. Sin datos institucionales confirmados, la escuela nunca se quita')
+
+  // P. Prompt y contexto de sesión coherentes con la limpieza.
+  const rutaP = readFileSync('app/api/chat/route.ts', 'utf8')
+  verificar(rutaP.includes('y también a CUALQUIER otro documento que se entrega como archivo o como documento formal (aviso, comunicado, circular, oficio, constancia, carta, reporte, invitación…)'),
+    'P1. Las reglas del MODO DOCUMENTO cubren avisos, comunicados, oficios, constancias, circulares…')
+  verificar(rutaP.includes('termina con una fórmula de cortesía en su propia línea (por ejemplo "Atentamente,") y nada después: la aplicación pone la firma debajo')
+    && rutaP.includes('conserva siempre los campos del destinatario que pida el formato'),
+    'P2. Cierre natural sin firma del maestro; campos del destinatario conservados')
+  verificar(rutaP.includes('Estimado padre/madre de familia de: _______________\nGrado y Grupo: [grado] [grupo]'), 'P3. La plantilla del citatorio conserva los campos del destinatario')
+  const sesionP = readFileSync('lib/sesionContexto.ts', 'utf8')
+  verificar(!sesionP.includes('(encabezado y cuerpo)') && sesionP.includes('la aplicación ya los imprime en el encabezado: no los repitas como encabezado ni en la firma'),
+    'P4. El contexto de sesión ya no pide escribir el grupo en el encabezado')
 
   console.log(fallos === 0 ? '\nTODO OK' : `\n${fallos} verificación(es) fallaron`)
   process.exit(fallos === 0 ? 0 : 1)

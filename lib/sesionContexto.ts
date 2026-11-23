@@ -66,7 +66,7 @@ export function textoGrupoAcademico(sesion: Pick<SesionContexto, 'grupo_activo_i
   if (!sesion?.grupo_activo_id || !rotulo) {
     return 'Grado y grupo: no hay un grado ni un grupo confirmados en esta conversación. No escribas ningún grado ni grupo (ni en respuestas ni en documentos) y nunca los inventes.';
   }
-  return `Grado y grupo de esta conversación: ${rotulo}. Son los únicos válidos para respuestas y documentos (encabezado y cuerpo); nunca uses otro grado o grupo.`;
+  return `Grado y grupo de esta conversación: ${rotulo}. Son los únicos válidos para respuestas y documentos; nunca uses otro grado o grupo. En los documentos, la aplicación ya los imprime en el encabezado: no los repitas como encabezado ni en la firma; en el cuerpo úsalos solo cuando el contenido lo necesite.`;
 }
 
 export async function obtenerSesionContexto(
