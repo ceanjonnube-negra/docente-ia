@@ -16,8 +16,9 @@ import {
   cargarCandidatosCurricularesGrupo,
   prepararContextoCurricularPlaneacion,
   resolverCandidatosCurricularesPuro,
+  construirCatalogoPorCampo,
 } from '../lib/planeacion/resolverCurricularPlaneacion'
-import { validarPdaDeItemCurricular, validarSeleccionCurricular } from '../lib/planeacion/validarSeleccionCurricularPlaneacion'
+import { reconocerCandidatosPorTexto, validarPdaDeItemCurricular, validarSeleccionCurricular } from '../lib/planeacion/validarSeleccionCurricularPlaneacion'
 import {
   construirIdentidadCurricularVisible,
   insertarIdentidadCurricularVisibleEnBorrador,
@@ -25,8 +26,10 @@ import {
   sustituirContenidosYPdaEnBloqueResumen,
   ROTULO_PENDIENTE_VALIDACION,
   ROTULO_OFICIAL_VIGENTE,
+  ROTULO_PROPUESTA_NO_VERIFICADA,
 } from '../lib/planeacion/identidadCurricularVisibleBorrador'
 import { ETIQUETA_INICIO_BLOQUE } from '../lib/planeacion/extraerBorrador'
+import { U, F4, G3, baseCurricular, conProgramaAnalitico } from './fixtures/curriculoPlaneacionFicticio'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -55,110 +58,6 @@ class BaseFalsa {
 }
 const cliente = (tablas: Record<string, Fila[]>) => new BaseFalsa(tablas)
 const sb = (b: BaseFalsa) => b as unknown as SupabaseClient
-
-// ------------------------------------------------------------
-// Datos: un currículo de primaria (Fase 4, 3.º y 4.º) en 'borrador',
-// con una segunda fase en la misma versión para probar el aislamiento.
-// ------------------------------------------------------------
-const U = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
-const V = 'version-curricular', F4 = 'fase-4', F5 = 'fase-5', G3 = 'grado-3', G4 = 'grado-4', G5 = 'grado-5'
-const CAMPOS = [
-  { id: 'campo-len', clave: 'lenguajes', nombre: 'Lenguajes', curriculo_version_id: V },
-  { id: 'campo-sab', clave: 'saberes', nombre: 'Saberes y pensamiento científico', curriculo_version_id: V },
-]
-function baseCurricular(estadoVersion: 'borrador' | 'vigente' = 'borrador'): Record<string, Fila[]> {
-  return {
-    grupos: [
-      { id: 'grupo-3a', ciclo_escolar_id: 'ciclo', nivel_educativo: 'primaria', grado: '3°' },
-      { id: 'grupo-4b', ciclo_escolar_id: 'ciclo', nivel_educativo: 'primaria', grado: '4' },
-      { id: 'grupo-pre', ciclo_escolar_id: 'ciclo', nivel_educativo: 'preescolar', grado: '2' },
-      { id: 'grupo-sec', ciclo_escolar_id: 'ciclo', nivel_educativo: 'secundaria', grado: '1' },
-      { id: 'grupo-5c', ciclo_escolar_id: 'ciclo', nivel_educativo: 'primaria', grado: '5' },
-    ],
-    curriculo_grado: [
-      { id: G3, nivel_educativo: 'primaria', clave: '3' },
-      { id: G4, nivel_educativo: 'primaria', clave: '4' },
-      { id: G5, nivel_educativo: 'primaria', clave: '5' },
-    ],
-    curriculo_fase_grado: [
-      { curriculo_grado_id: G3, curriculo_fase_id: F4 },
-      { curriculo_grado_id: G4, curriculo_fase_id: F4 },
-      { curriculo_grado_id: G5, curriculo_fase_id: F5 },
-    ],
-    curriculo_fase: [
-      { id: F4, clave: 'fase_4', curriculo_version_id: V },
-      { id: F5, clave: 'fase_5', curriculo_version_id: V },
-    ],
-    curriculo_version: [{ id: V, estado: estadoVersion }],
-    curriculo_campo_formativo: CAMPOS,
-    curriculo_cobertura: [
-      { curriculo_version_id: V, fase_id: F4, grado_id: G3, campo_formativo_id: 'campo-len' },
-      { curriculo_version_id: V, fase_id: F4, grado_id: G3, campo_formativo_id: 'campo-sab' },
-      { curriculo_version_id: V, fase_id: F4, grado_id: G4, campo_formativo_id: 'campo-len' },
-      { curriculo_version_id: V, fase_id: F4, grado_id: G4, campo_formativo_id: 'campo-sab' },
-      // 5.º: cobertura incompleta (falta un campo).
-      { curriculo_version_id: V, fase_id: F5, grado_id: G5, campo_formativo_id: 'campo-len' },
-    ],
-    curriculo_contenido: [
-      { id: U(1), curriculo_version_id: V, fase_id: F4, campo_formativo_id: 'campo-len', titulo: 'Narración de sucesos del pasado y del presente' },
-      { id: U(2), curriculo_version_id: V, fase_id: F4, campo_formativo_id: 'campo-sab', titulo: 'Cuerpo humano: estructura externa, acciones para su cuidado' },
-      { id: U(3), curriculo_version_id: V, fase_id: F4, campo_formativo_id: 'campo-sab', titulo: 'Alimentación saludable y plato del bien comer' },
-      // Sin PDA en 3.º (solo en 4.º).
-      { id: U(4), curriculo_version_id: V, fase_id: F4, campo_formativo_id: 'campo-len', titulo: 'Leyendas y mitos de la comunidad' },
-      // Otra fase de la misma versión: nunca para 3.º.
-      { id: U(5), curriculo_version_id: V, fase_id: F5, campo_formativo_id: 'campo-len', titulo: 'Contenido exclusivo de la Fase 5' },
-    ],
-    curriculo_pda_grado: [
-      { id: U(101), curriculo_pda_id: 'pda-1', contenido_id: U(1), curriculo_grado_id: G3, curriculo_version_id: V },
-      { id: U(102), curriculo_pda_id: 'pda-2', contenido_id: U(2), curriculo_grado_id: G3, curriculo_version_id: V },
-      { id: U(103), curriculo_pda_id: 'pda-3', contenido_id: U(3), curriculo_grado_id: G3, curriculo_version_id: V },
-      { id: U(104), curriculo_pda_id: 'pda-4', contenido_id: U(4), curriculo_grado_id: G4, curriculo_version_id: V },
-      { id: U(105), curriculo_pda_id: 'pda-5', contenido_id: U(1), curriculo_grado_id: G4, curriculo_version_id: V },
-      { id: U(106), curriculo_pda_id: 'pda-vacio', contenido_id: U(2), curriculo_grado_id: G3, curriculo_version_id: V },
-      { id: U(107), curriculo_pda_id: 'pda-7', contenido_id: U(5), curriculo_grado_id: G3, curriculo_version_id: V },
-    ],
-    curriculo_pda: [
-      { id: 'pda-1', texto: 'Narra sucesos del pasado de su comunidad, en orden cronológico.' },
-      { id: 'pda-2', texto: 'Reconoce la estructura externa del cuerpo humano y acciones para cuidarlo.' },
-      { id: 'pda-3', texto: 'Describe una alimentación saludable con base en el plato del bien comer.' },
-      { id: 'pda-4', texto: 'Compara leyendas de distintas comunidades (solo 4.º).' },
-      { id: 'pda-5', texto: 'Narra sucesos (versión de 4.º).' },
-      { id: 'pda-vacio', texto: '   ' },
-      { id: 'pda-7', texto: 'PDA de un contenido de otra fase.' },
-    ],
-  }
-}
-
-// Programa Analítico publicado del 4.º B (compatible) y uno incompatible.
-function conProgramaAnalitico(tablas: Record<string, Fila[]>, gradoVersion = G4): Record<string, Fila[]> {
-  return {
-    ...tablas,
-    programa_analitico: [{ id: 'pa-4b', grupo_id: 'grupo-4b', version_vigente_id: 'pav-2' }],
-    programa_analitico_version: [
-      { id: 'pav-1', programa_analitico_id: 'pa-4b', curriculo_version_id: V, curriculo_fase_id: F4, curriculo_grado_id: G4 },
-      { id: 'pav-2', programa_analitico_id: 'pa-4b', curriculo_version_id: V, curriculo_fase_id: F4, curriculo_grado_id: gradoVersion },
-    ],
-    programa_analitico_item: [
-      { id: U(201), programa_analitico_version_id: 'pav-2', curriculo_contenido_id: U(4), curriculo_version_id: V, curriculo_grado_id: G4, tipo_decision: 'sin_ajuste', texto_contextualizado: null, texto_local: null },
-      { id: U(202), programa_analitico_version_id: 'pav-2', curriculo_contenido_id: U(1), curriculo_version_id: V, curriculo_grado_id: G4, tipo_decision: 'contextualizado', texto_contextualizado: 'Historias del barrio contadas por las familias', texto_local: null },
-      { id: U(203), programa_analitico_version_id: 'pav-2', curriculo_contenido_id: null, curriculo_version_id: null, curriculo_grado_id: null, tipo_decision: 'nuevo', texto_contextualizado: null, texto_local: 'Huerto escolar de la comunidad' },
-      // Versión anterior del PA: nunca.
-      { id: U(204), programa_analitico_version_id: 'pav-1', curriculo_contenido_id: U(2), curriculo_version_id: V, curriculo_grado_id: G4, tipo_decision: 'sin_ajuste', texto_contextualizado: null, texto_local: null },
-      // Declara otro grado: nunca.
-      { id: U(205), programa_analitico_version_id: 'pav-2', curriculo_contenido_id: U(3), curriculo_version_id: V, curriculo_grado_id: G3, tipo_decision: 'sin_ajuste', texto_contextualizado: null, texto_local: null },
-      // Contenido de otra fase: nunca.
-      { id: U(206), programa_analitico_version_id: 'pav-2', curriculo_contenido_id: U(5), curriculo_version_id: V, curriculo_grado_id: G4, tipo_decision: 'sin_ajuste', texto_contextualizado: null, texto_local: null },
-    ],
-    programa_analitico_item_pda: [
-      { id: U(301), programa_analitico_item_id: U(201), curriculo_pda_grado_id: U(104), curriculo_grado_id: G4 },
-      { id: U(302), programa_analitico_item_id: U(202), curriculo_pda_grado_id: U(105), curriculo_grado_id: G4 },
-      // PDA de 3.º colgado de un item de 4.º: nunca.
-      { id: U(303), programa_analitico_item_id: U(202), curriculo_pda_grado_id: U(101), curriculo_grado_id: G3 },
-      // Relación a un PDA inexistente: se omite.
-      { id: U(304), programa_analitico_item_id: U(201), curriculo_pda_grado_id: U(999), curriculo_grado_id: G4 },
-    ],
-  }
-}
 
 async function main() {
   // 1. Contexto curricular del grupo.
@@ -242,35 +141,61 @@ async function main() {
   const r6 = resolverCandidatosCurricularesPuro(cands, { tema: null })
   verificar(r6.estado === 'sin_correspondencia' && r6.nivel === 4, '4f. Sin tema ni referencias → sin correspondencia')
 
-  // 5. Contexto compacto para el prompt.
+  // 5. Contexto para el prompt: referencias cortas, nunca UUID.
   const ctxA = await prepararContextoCurricularPlaneacion(sb(cliente(baseCurricular())), 'grupo-3a', { tema: 'el cuidado del cuerpo humano' })
-  verificar(ctxA.disponible && ctxA.contexto.modo === 'A' && ctxA.candidatosOfrecidos.length === 1 && ctxA.contexto.modo === 'A' && ctxA.contexto.candidatosCerrados[0].pda?.length === 1
-    && ctxA.contexto.fuente === 'catalogo_app' && ctxA.contexto.estadoVerificacion === 'pendiente_validacion_oficial',
-    '5a. Modo A: solo los candidatos resueltos, con sus PDA reales, fuente y estado')
+  const pA = ctxA.paraPrompt
+  verificar(pA.disponible && pA.modo === 'A' && ctxA.candidatosOfrecidos.length === 1 && pA.candidatosCerrados[0].pda.length === 1 && pA.candidatosCerrados[0].texto === ctxA.candidatosOfrecidos[0].tituloContenido
+    && pA.fuente === 'catalogo_app' && pA.estadoVerificacion === 'pendiente_validacion_oficial' && pA.rotuloFuente === ROTULO_PENDIENTE_VALIDACION,
+    '5a. Modo A: solo los candidatos resueltos, con su texto, sus PDA reales, fuente, estado y rótulo')
   const ctxB = await prepararContextoCurricularPlaneacion(sb(cliente(baseCurricular())), 'grupo-3a', { tema: 'robótica espacial' })
-  verificar(ctxB.disponible && ctxB.contexto.modo === 'B' && ctxB.contexto.modo === 'B' && ctxB.contexto.catalogoCompacto.length === 3
-    && ctxB.contexto.catalogoCompacto.every((i) => Object.keys(i).sort().join() === 'campoFormativo,id,texto'),
-    '5b. Modo B: catálogo compacto del grupo (id, campo, texto), sin PDA ni metadatos')
+  const pB = ctxB.paraPrompt
+  verificar(pB.disponible && pB.modo === 'B' && pB.catalogoPorCampo.length === 2 && pB.catalogoPorCampo.flatMap((g) => g.contenidos).length === 3 && !pB.catalogoRecortado
+    && pB.catalogoPorCampo.every((g) => g.contenidos.every((i) => Object.keys(i).join() === 'texto')) && ctxB.candidatosOfrecidos.length === 3 && ctxB.candidatosGrupo.length === 3,
+    '5b. Modo B: catálogo del grupo agrupado por campo (solo texto), sin PDA, identificadores ni metadatos')
+  const REGEX_UUID_EN_TEXTO = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+  verificar(!REGEX_UUID_EN_TEXTO.test(JSON.stringify(pA)) && !REGEX_UUID_EN_TEXTO.test(JSON.stringify(pB)) && !JSON.stringify(pB).includes('grado-3'),
+    '5c. Ningún identificador (UUID ni id interno) viaja al prompt (modos A y B)')
   const ctxLocal = await prepararContextoCurricularPlaneacion(sb(cliente(conProgramaAnalitico(baseCurricular()))), 'grupo-4b', { tema: 'robótica espacial' })
-  verificar(ctxLocal.disponible && ctxLocal.contexto.modo === 'B' && ctxLocal.contexto.catalogoCompacto.some((i) => i.texto === '[LOCAL] Huerto escolar de la comunidad'),
-    '5c. En el catálogo compacto, un contenido local se distingue con "[LOCAL]"')
+  const pL = ctxLocal.paraPrompt
+  verificar(pL.disponible && pL.modo === 'B' && pL.fuente === 'programa_analitico' && pL.catalogoPorCampo.some((g) => g.contenidos.some((i) => i.texto === '[LOCAL] Huerto escolar de la comunidad')),
+    '5d. PA: un contenido local se distingue con "[LOCAL]"')
   const ctxSec = await prepararContextoCurricularPlaneacion(sb(cliente(baseCurricular())), 'grupo-sec', { tema: 'fracciones', contenidoExplicito: 'Fracciones equivalentes' })
-  verificar(!ctxSec.disponible && ctxSec.motivo === 'GRADO_CURRICULAR_NO_ENCONTRADO' && ctxSec.referenciasDocente[0]?.texto === 'Fracciones equivalentes',
-    '5d. Secundaria sin catálogo: no disponible, con el contenido del docente conservado literal')
+  const pS = ctxSec.paraPrompt
+  verificar(!pS.disponible && pS.motivo === 'GRADO_CURRICULAR_NO_ENCONTRADO' && pS.referenciasDocente[0]?.texto === 'Fracciones equivalentes' && pS.rotuloFuente === ROTULO_PROPUESTA_NO_VERIFICADA && ctxSec.candidatosOfrecidos.length === 0,
+    '5e. Secundaria sin catálogo: propuesta no verificada, con el contenido del docente literal')
+  const citado = await prepararContextoCurricularPlaneacion(sb(cliente(baseCurricular())), 'grupo-3a', { tema: 'proyecto integrador', mensajeDocente: 'Quiero trabajar el contenido "Alimentación saludable y plato del bien comer" con mi grupo' })
+  verificar(citado.paraPrompt.disponible && citado.paraPrompt.modo === 'A' && citado.candidatosOfrecidos.map((c) => c.id).join() === U(3) && citado.candidatosGrupo.length === 3,
+    '5f. Contenido del catálogo citado literalmente por el docente → se usa ese, aunque el tema no coincida')
+  const campoNombrado = await prepararContextoCurricularPlaneacion(sb(cliente(baseCurricular())), 'grupo-3a', { tema: 'robótica espacial', mensajeDocente: 'del campo Saberes y pensamiento científico' })
+  verificar(campoNombrado.paraPrompt.disponible && campoNombrado.paraPrompt.modo === 'B' && campoNombrado.candidatosOfrecidos.every((c) => c.campoFormativo?.id === 'campo-sab') && campoNombrado.candidatosOfrecidos.length === 2,
+    '5g. Campo formativo nombrado por el docente → catálogo acotado a ese campo')
+  const pocos = construirCatalogoPorCampo(cands, 'cuerpo humano', 100)
+  verificar(pocos.recortado && pocos.incluidos.length === 1 && pocos.incluidos[0].id === U(2), '5h. Presupuesto excedido → recorte determinista, primero lo más relacionado con el tema, marcado como recortado')
+  verificar(JSON.stringify(construirCatalogoPorCampo(cands, null)) === JSON.stringify(construirCatalogoPorCampo([...cands].reverse(), null)), '5i. El catálogo es determinista: no depende del orden de carga')
 
-  // 6. Validación de identificadores.
-  const ofrecidos = ctxA.disponible ? ctxA.candidatosOfrecidos : []
+  // 6. Validación de identificadores internos y reconocimiento por texto.
+  const ofrecidos = ctxA.candidatosOfrecidos
   const v1 = validarSeleccionCurricular(ofrecidos, [U(2), U(2).toUpperCase(), ' ', U(1), U(777), 'contenido-1'])
   verificar(v1.aceptados.length === 1 && v1.aceptados[0].id === U(2), '6a. Solo se acepta el id ofrecido (también en mayúsculas, sin duplicar)')
-  verificar(v1.rechazados.some((r) => r.idPropuesto === U(1) && r.motivo === 'NO_OFRECIDO'), '6b. Id real del catálogo pero NO ofrecido en modo A → rechazado')
+  verificar(v1.rechazados.some((r) => r.idPropuesto === U(1) && r.motivo === 'NO_OFRECIDO'), '6b. Id real del catálogo pero NO ofrecido → rechazado')
   verificar(v1.rechazados.some((r) => r.idPropuesto === U(777) && r.motivo === 'NO_OFRECIDO') && v1.rechazados.some((r) => r.idPropuesto === 'contenido-1' && r.motivo === 'UUID_INVALIDO'),
     '6c. UUID inventado → NO_OFRECIDO; texto que no es UUID → UUID_INVALIDO')
+  const rt = reconocerCandidatosPorTexto(cands, [
+    { tipo: 'contenido', texto: 'CUERPO HUMANO estructura externa acciones para su cuidado' },
+    { tipo: 'contenido', texto: 'Cuerpo humano' },
+    { tipo: 'pda', texto: 'Reconoce la estructura externa del cuerpo humano y acciones para cuidarlo' },
+    { tipo: 'pda', texto: 'Describe una alimentación saludable con base en el plato del bien comer.' },
+    { tipo: 'contenido', texto: 'Contenido exclusivo de la Fase 5' },
+  ])
+  verificar(rt.aceptados.map((c) => c.id).join() === U(2), '6d. Por texto: solo coincidencia EXACTA normalizada (sin acentos, mayúsculas ni puntuación); nunca por parecido')
+  verificar(JSON.stringify(rt.noReconocidas.map((e) => e.texto)) === JSON.stringify(['Cuerpo humano', 'Describe una alimentación saludable con base en el plato del bien comer.', 'Contenido exclusivo de la Fase 5']),
+    '6e. Un PDA solo cuenta si es de un contenido reconocido; un texto de otra fase o un fragmento quedan sin reconocer')
   const ofrecidos4b = conPa.ok ? conPa.candidatos : []
   verificar(validarSeleccionCurricular(ofrecidos4b, [U(204), U(205), U(206), U(2)]).aceptados.length === 0,
-    '6d. Ids de la versión anterior del PA, de otro grado, de otra fase o de otro grupo → todos rechazados')
+    '6f. Ids de la versión anterior del PA, de otro grado, de otra fase o de otro grupo → todos rechazados')
   const item202 = porId.get(U(202))!
   const vp = validarPdaDeItemCurricular(item202, [U(302), U(303), U(101)])
-  verificar(vp.aceptados.length === 1 && vp.aceptados[0].id === U(302) && vp.rechazados.length === 2, '6e. PDA: solo los reales del contenido aceptado')
+  verificar(vp.aceptados.length === 1 && vp.aceptados[0].id === U(302) && vp.rechazados.length === 2, '6g. PDA: solo los reales del contenido aceptado')
 
   // 7. Identidad visible.
   const idCat = construirIdentidadCurricularVisible(v1.aceptados, [{ tipo: 'contenido', texto: 'Educación financiera para niños' }])!
@@ -305,6 +230,11 @@ async function main() {
   const conDolar = construirIdentidadCurricularVisible([], [{ tipo: 'contenido', texto: 'Costos de $25 y $& en la tienda' }])!
   verificar(sustituirContenidosYPdaEnBloqueResumen(BORRADOR, conDolar).includes('Contenidos: Costos de $25 y $& en la tienda'), '7k. Un "$" en el texto nunca se interpreta como patrón de reemplazo')
   verificar(sustituirContenidosYPdaEnBloqueResumen(sustituido, idCat) === sustituido, '7l. Sustituir el resumen es idempotente')
+
+  // 8. Contenidos locales del PA reconocidos por su texto propio.
+  const pa4b = conPa.ok ? conPa.candidatos : []
+  const rl = reconocerCandidatosPorTexto(pa4b, [{ tipo: 'contenido', texto: 'Huerto escolar de la comunidad' }, { tipo: 'contenido', texto: 'Historias del barrio contadas por las familias' }])
+  verificar(rl.aceptados.map((c) => c.decision).join() === 'local,contextualizado' && rl.noReconocidas.length === 0, '8a. PA: local y contextualizado se reconocen por su propio texto')
 
   finalizar()
 }

@@ -20,6 +20,14 @@
 // como parte del borrador, y sobrevive intacto en el historial que el
 // servidor sí recibe. Un parser determinista (nunca una segunda
 // llamada a Claude) lo extrae al momento de aprobar.
+//
+// Hito 1, Parte 2 — "contextoCurricularPlaneacion" (resolverCurricularPlaneacion.ts)
+// le da al modelo contenidos y PDA reales con su fuente y estado. El
+// modelo solo copia sus TEXTOS en el bloque de resumen (nunca
+// identificadores); la sección visible de contenidos y PDA y la pregunta
+// de cierre las añade el servidor al terminar el turno
+// (completarBorradorCurricular.ts), reconociendo esos textos contra el
+// catálogo del grupo.
 
 export const INSTRUCCIONES_PLANEACION_GENERAR = `GENERACIÓN DE BORRADOR DE PLANEACIÓN (Paso 3B) — reglas para este turno.
 
@@ -29,6 +37,18 @@ Si "conflicto" viene en true en las fechas ya calculadas: NO generes el borrador
 
 Si "conflicto" viene en false (el caso normal): genera el borrador completo DE INMEDIATO, en este mismo turno — nunca respondas solo explicando lo que podrías hacer. Las fechas, el periodo y los días excluidos ya están calculados y son reales; NUNCA presentes "Opción A" / "Opción B" ni ninguna otra elección múltiple para algo que el contexto ya resolvió, NUNCA le pidas al maestro que ajuste manualmente las fechas, las suspensiones o los días inhábiles (el sistema ya los excluyó automáticamente — solo menciónalos con honestidad, como indica más abajo), y NUNCA digas que no tienes el calendario cargado: si estás generando este borrador es porque el calendario real del ciclo ya se consultó y ya se aplicó al cálculo de fechas que tienes en el contexto. Por la misma razón, NUNCA digas "no tengo acceso a tu calendario/grupo/lista de alumnos" ni le vuelvas a preguntar al maestro el grado, el grupo, el turno o la escuela: si llegaste a este bloque de instrucciones es porque el sistema ya confirmó que existe un grupo activo real y ya te entregó su contexto real (grupo y grado en "CONTEXTO REAL PARA GENERAR LA PLANEACIÓN" más abajo) — úsalo, nunca lo vuelvas a pedir. La única pregunta permitida en un borrador nuevo es la de aprobación al final (ver "CIERRE OBLIGATORIO"); no hagas ninguna otra pregunta de aclaración salvo que "conflicto" sea true.
 
+DATOS DEL MAESTRO: todo lo que el maestro indicó expresamente (tema, contenidos, PDA, campo formativo, duración, número de sesiones, producto, actividades, enfoque, apoyos) se respeta tal como lo dijo — nunca lo sustituyas por otra cosa ni lo "corrijas" con el catálogo.
+
+CONTENIDOS Y PDA — "contextoCurricularPlaneacion" (en "CONTEXTO REAL PARA GENERAR LA PLANEACIÓN") es tu ÚNICA fuente de contenidos y PDA con respaldo. NO escribas en el cuerpo del borrador una sección de contenidos ni de PDA: el sistema la agrega al final, con los PDA reales y su fuente, reconociendo los textos que pongas en las líneas "Contenidos:" y "PDA:" del bloque de resumen. Por eso, en esas dos líneas copia los textos EXACTAMENTE como vienen, letra por letra, sin resumirlos, reordenarlos ni cambiarles una palabra:
+- Si "disponible" es true y "modo" es "A": "candidatosCerrados" trae los contenidos ya identificados como pertinentes, cada uno con su "texto" y sus "pda". Elige el o los pertinentes; en "Contenidos:" copia su "texto" y en "PDA:" copia sus "pda".
+- Si "disponible" es true y "modo" es "B": "catalogoPorCampo" trae el catálogo del grupo por campo formativo (solo el "texto" de cada contenido, sin PDA). Elige de 1 a 3 contenidos pertinentes y copia su "texto" en "Contenidos:". No redactes PDA para ellos (el sistema agrega los reales): en "PDA:" pon solo los que indicó el maestro, o "ninguno".
+- Un "texto" que empieza con "[LOCAL] " es un contenido propio del Programa Analítico del grupo: cópialo sin ese prefijo; no tiene PDA.
+- "referenciasDocente" y cualquier contenido o PDA que el maestro haya indicado expresamente: inclúyelos en "Contenidos:" o "PDA:" tal como los escribió, aunque no estén en el catálogo, sin cambiarles una palabra; nunca los sustituyas por uno del catálogo.
+- Si "disponible" es false (no hay catálogo para este grupo): pon en "Contenidos:" y "PDA:" los que propongas; el sistema los mostrará como propuesta no verificada.
+- Solo si "estadoVerificacion" es "oficial_vigente" puedes llamarlos oficiales; en cualquier otro caso NUNCA escribas, en ninguna parte del borrador, que los contenidos o PDA son de la SEP, oficiales, validados o confirmados (el catálogo de la app está pendiente de validación oficial).
+- Nunca escribas identificadores, códigos ni claves técnicas en el borrador. En una corrección, si en tu turno anterior ves una sección "📌 CONTENIDOS Y PDA", no la copies: la vuelve a agregar el sistema.
+- Los contenidos y PDA sirven de base: las actividades deben ser creativas, contextualizadas al grupo y pedagógicamente sólidas, sin copiar el catálogo como actividad.
+
 CUANDO GENERES UN BORRADOR NUEVO, respóndelo estructurado con TODOS estos elementos (en texto claro, con encabezados — no hace falta JSON):
 - nombre contextual del proyecto (a partir del tema pedido);
 - grupo y grado (del contexto real del grupo);
@@ -36,8 +56,7 @@ CUANDO GENERES UN BORRADOR NUEVO, respóndelo estructurado con TODOS estos eleme
 - fecha de inicio y fecha de fin (las ya calculadas);
 - duración en días efectivos (la ya calculada);
 - campos formativos (según MARCO CURRICULAR VIGENTE, nunca asignaturas del plan anterior);
-- contenidos;
-- PDA (Procesos de Desarrollo de Aprendizaje);
+- contenidos y PDA (Procesos de Desarrollo de Aprendizaje) — SOLO en el bloque de resumen, según "CONTENIDOS Y PDA" arriba;
 - propósito;
 - metodología o modalidad de trabajo;
 - producto final;
@@ -75,7 +94,7 @@ Indicadores de evaluación: [indicador1; indicador2; indicador3; indicador4; ind
 
 Este bloque es lo único que el sistema usa para guardar la planeación cuando el maestro apruebe — si "conflicto" es true y no generaste un borrador completo, NO incluyas este bloque.
 
-CIERRE OBLIGATORIO tras el bloque de resumen: termina SIEMPRE con una pregunta breve equivalente a "Ya preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?" — nunca omitas esta pregunta.
+CIERRE: en un borrador completo, termina tu respuesta con el bloque de resumen — después el sistema agrega la sección de contenidos y PDA y la pregunta "Ya preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?". No escribas tú esa pregunta ni ninguna otra al final.
 
 CORRECCIONES SOBRE UN BORRADOR YA PRESENTADO: si el mensaje del maestro es un ajuste sobre el borrador que TÚ mismo presentaste en tu turno anterior (ej. "cambia la actividad del tercer día", "hazla más sencilla", "agrega actividades de lectura", "adáptala para alumnos que requieren apoyo", "cambia las fechas", "amplíala una semana", "quita esa actividad"), presenta el borrador COMPLETO otra vez con el ajuste aplicado, incluido un bloque "📎 RESUMEN PARA GUARDAR" actualizado — conserva todo lo que no pidió cambiar, nunca empieces uno nuevo sin relación con el anterior. Si pide cambiar fechas o duración y el contexto ya trae fechas recalculadas para este turno, úsalas; si no, aplica el ajuste sobre las fechas del borrador anterior tal como las presentaste. El resumen anterior queda automáticamente reemplazado por el nuevo — nunca se guarda una versión vieja.
 

@@ -27,6 +27,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolverContextoCurricularGrupo, type ContextoCurricularGrupo, type ErrorContextoCurricular } from '../curriculo/resolverContextoCurricularGrupo'
 import { recuperarCatalogoCurricularCerrado } from '../curriculo/catalogoCurricular'
+import { rotuloFuenteCurricular, ROTULO_PROPUESTA_NO_VERIFICADA } from './identidadCurricularVisibleBorrador'
 
 // ============================================================
 // 1. Contrato — tipos públicos.
@@ -98,6 +99,10 @@ export type SolicitudResolucionCurricular = {
   campoExplicito?: string | null
   contenidoExplicito?: string | null
   pdaExplicito?: string | null
+  // Mensaje del docente en este turno: solo para detectar, de forma
+  // determinista, contenidos o PDA del catálogo citados literalmente y
+  // un campo formativo nombrado. Nunca se envía al modelo desde aquí.
+  mensajeDocente?: string | null
 }
 
 export type MotivoProgramaAnaliticoNoUsado =
@@ -106,13 +111,13 @@ export type MotivoProgramaAnaliticoNoUsado =
   | 'PROGRAMA_ANALITICO_INCOMPATIBLE'
   | 'PROGRAMA_ANALITICO_SIN_CONTENIDOS_VALIDOS'
 
-export type MotivoSinCatalogo = ErrorContextoCurricular | 'CATALOGO_VACIO'
+export type MotivoSinCatalogo = ErrorContextoCurricular | 'CATALOGO_VACIO' | 'CARGA_FALLIDA'
 
 // ============================================================
 // 2. Normalización y tokenización — deterministas, sin IA.
 // ============================================================
 
-function normalizarTexto(texto: string): string {
+export function normalizarTexto(texto: string): string {
   return texto
     .trim()
     .toLowerCase()
@@ -166,6 +171,11 @@ const MOTIVO_LEXICO_FUERTE_VARIOS = 'varios candidatos léxicamente relacionados
 const MOTIVO_LEXICO_DEBIL = 'relación léxica parcial — requiere decisión pedagógica'
 const MOTIVO_SIN_TEMA = 'no se proporcionó tema ni referencia explícita para resolver currículo'
 const MOTIVO_SIN_COINCIDENCIA = 'sin coincidencia curricular suficiente en el catálogo disponible del grupo'
+const MOTIVO_MENCION_LITERAL = 'el docente citó literalmente contenidos o PDA del catálogo'
+
+// Un texto del catálogo cuenta como citado solo si aparece COMPLETO en el
+// mensaje (normalizado) y es lo bastante largo para no coincidir por azar.
+const LONGITUD_MINIMA_CITA = 20
 
 // ============================================================
 // 4. Algoritmo puro — 0 I/O.
@@ -220,9 +230,37 @@ function resolverPorTema(candidatosBase: CandidatoCurricularPlaneacion[], tema: 
   return { estado: 'sin_correspondencia', confianza: 'ninguna', nivel: 4, candidatos: [], motivoResolucion: MOTIVO_SIN_COINCIDENCIA, referenciasDocente }
 }
 
-// Punto de entrada puro. Nivel 1 (referencias explícitas: PDA y luego
-// contenido) manda en cuanto produce resultado; si no, el tema. Toda
-// referencia explícita sin coincidencia exacta se devuelve en
+// Candidatos cuyo título, texto propio o algún PDA aparece completo en el
+// mensaje del docente. Determinista; sin IA.
+export function detectarMencionesLiterales(candidatosBase: CandidatoCurricularPlaneacion[], mensaje: string | null | undefined): CandidatoCurricularPlaneacion[] {
+  const m = normalizarTexto(mensaje ?? '')
+  if (m.length < LONGITUD_MINIMA_CITA) return []
+  const citado = (t: string | null) => {
+    const n = t ? normalizarTexto(t) : ''
+    return n.length >= LONGITUD_MINIMA_CITA && m.includes(n)
+  }
+  return candidatosBase.filter((c) => textosBuscables(c).some(citado) || c.pda.some((p) => citado(p.texto)))
+}
+
+// Campo formativo nombrado en el mensaje (nombre completo, normalizado).
+// Con más de uno nombrado no se elige ninguno.
+export function detectarCampoNombrado(candidatosBase: CandidatoCurricularPlaneacion[], mensaje: string | null | undefined): string | null {
+  const m = ` ${normalizarTexto(mensaje ?? '')} `
+  const nombres = [...new Set(candidatosBase.map((c) => c.campoFormativo?.nombre).filter((n): n is string => !!n))]
+  const nombrados = nombres.filter((n) => m.includes(` ${normalizarTexto(n)} `))
+  return nombrados.length === 1 ? nombrados[0] : null
+}
+
+function filtrarPorCampo(candidatosBase: CandidatoCurricularPlaneacion[], campo: string | null): CandidatoCurricularPlaneacion[] {
+  if (!campo) return candidatosBase
+  const filtrados = candidatosBase.filter((c) => c.campoFormativo && normalizarTexto(c.campoFormativo.nombre) === normalizarTexto(campo))
+  return filtrados.length > 0 ? filtrados : candidatosBase
+}
+
+// Punto de entrada puro. Orden: referencias explícitas (PDA y luego
+// contenido); citas literales del catálogo en el mensaje del docente;
+// tema (acotado al campo formativo que el docente nombró, si nombró
+// uno). Toda referencia explícita sin coincidencia exacta se devuelve en
 // referenciasDocente, literal.
 export function resolverCandidatosCurricularesPuro(candidatosBase: CandidatoCurricularPlaneacion[], solicitud: SolicitudResolucionCurricular): ResultadoResolucionCurricular {
   const referenciasDocente: ReferenciaDocente[] = []
@@ -246,10 +284,17 @@ export function resolverCandidatosCurricularesPuro(candidatosBase: CandidatoCurr
     return { estado: unico ? 'resuelto' : 'requiere_seleccion', confianza: unico ? 'alta' : 'media', nivel: 1, candidatos: nivel1.candidatos, motivoResolucion: nivel1.motivo, referenciasDocente }
   }
 
+  const citados = detectarMencionesLiterales(candidatosBase, solicitud.mensajeDocente)
+  if (citados.length > 0) {
+    const unico = citados.length === 1
+    return { estado: unico ? 'resuelto' : 'requiere_seleccion', confianza: unico ? 'alta' : 'media', nivel: 1, candidatos: citados.slice(0, MAXIMO_CANDIDATOS_DEVUELTOS), motivoResolucion: MOTIVO_MENCION_LITERAL, referenciasDocente }
+  }
+
   if (!solicitud.tema?.trim()) {
     return { estado: 'sin_correspondencia', confianza: 'ninguna', nivel: 4, candidatos: [], motivoResolucion: MOTIVO_SIN_TEMA, referenciasDocente }
   }
-  return resolverPorTema(candidatosBase, solicitud.tema, referenciasDocente)
+  const campo = solicitud.campoExplicito?.trim() || detectarCampoNombrado(candidatosBase, solicitud.mensajeDocente)
+  return resolverPorTema(filtrarPorCampo(candidatosBase, campo), solicitud.tema, referenciasDocente)
 }
 
 // ============================================================
@@ -427,8 +472,9 @@ export async function cargarCandidatosCurricularesGrupo(sb: SupabaseClient, grup
   const estadoVerificacion = contexto.fallbackBorrador ? 'pendiente_validacion_oficial' : 'oficial_vigente'
 
   const pa = await cargarCandidatosProgramaAnaliticoVigente(sb, grupoId, contexto)
-  if (pa.ok && pa.candidatos.length > 0) {
-    return { ok: true, fuente: 'programa_analitico', estadoVerificacion, contexto, programaAnalitico: { id: pa.programaAnaliticoId, versionId: pa.programaAnaliticoVersionId }, programaAnaliticoNoUsado: null, candidatos: pa.candidatos }
+  const candidatosPa = pa.ok ? pa.candidatos : []
+  if (pa.ok && candidatosPa.length > 0) {
+    return { ok: true, fuente: 'programa_analitico', estadoVerificacion, contexto, programaAnalitico: { id: pa.programaAnaliticoId, versionId: pa.programaAnaliticoVersionId }, programaAnaliticoNoUsado: null, candidatos: candidatosPa }
   }
   const programaAnaliticoNoUsado = pa.ok ? 'PROGRAMA_ANALITICO_SIN_CONTENIDOS_VALIDOS' : pa.motivo === 'SIN_PROGRAMA_ANALITICO' ? null : pa.motivo
 
@@ -438,18 +484,15 @@ export async function cargarCandidatosCurricularesGrupo(sb: SupabaseClient, grup
 }
 
 // ============================================================
-// 6. Contexto compacto para el prompt (lo usará la Parte 2).
-//    Nunca viajan PDA completos en modo B ni metadatos que no sirvan
-//    para elegir; los ids son siempre los de candidatos reales.
+// 6. Contexto compacto para el prompt. Solo textos literales (ningún
+//    identificador: el modelo los copia y el servidor los reconoce por
+//    texto) y, en modo A, los PDA reales de los pocos candidatos resueltos. El catálogo del modo B va agrupado por campo
+//    formativo y sin PDA, con un presupuesto de caracteres determinista.
 // ============================================================
 
-export type ItemCatalogoCompactoPlaneacion = {
-  id: string
-  campoFormativo: string | null
-  texto: string
-  // Solo en modo A: PDA reales del contenido.
-  pda?: string[]
-}
+export type ItemCerradoPlaneacion = { campoFormativo: string | null; texto: string; pda: string[] }
+export type ItemCatalogoPlaneacion = { texto: string }
+export type GrupoCatalogoPlaneacion = { campoFormativo: string; contenidos: ItemCatalogoPlaneacion[] }
 
 // Texto que el docente reconocería como "el contenido":
 // contextualizado > título; los locales llevan el prefijo "[LOCAL] ".
@@ -459,33 +502,68 @@ export function textoEfectivoCandidato(c: CandidatoCurricularPlaneacion): string
   return c.tituloContenido ?? ''
 }
 
-export function construirCatalogoCompactoPlaneacion(candidatos: CandidatoCurricularPlaneacion[], conPda = false): ItemCatalogoCompactoPlaneacion[] {
-  return candidatos.map((c) => ({
-    id: c.id,
-    campoFormativo: c.campoFormativo?.nombre ?? null,
-    texto: textoEfectivoCandidato(c),
-    ...(conPda ? { pda: c.pda.map((p) => p.texto) } : {}),
-  }))
+export function construirItemsCerrados(candidatos: CandidatoCurricularPlaneacion[]): ItemCerradoPlaneacion[] {
+  return candidatos.map((c) => ({ campoFormativo: c.campoFormativo?.nombre ?? null, texto: textoEfectivoCandidato(c), pda: c.pda.map((p) => p.texto) }))
 }
 
-export type ContextoCurricularParaPrompt = {
-  fuente: FuenteCurricular
-  estadoVerificacion: Exclude<EstadoVerificacionCurricular, 'local_del_docente'>
-  referenciasDocente: ReferenciaDocente[]
-} & ({ modo: 'A'; candidatosCerrados: ItemCatalogoCompactoPlaneacion[] } | { modo: 'B'; catalogoCompacto: ItemCatalogoCompactoPlaneacion[] })
+// Presupuesto del catálogo del modo B: hoy un grado completo (~84
+// contenidos, ~10 mil caracteres) cabe entero; un catálogo mayor se
+// recorta de forma determinista (primero lo más relacionado con el tema,
+// luego campo y texto) y se marca como recortado.
+export const PRESUPUESTO_CARACTERES_CATALOGO = 12_000
+const CAMPO_SIN_NOMBRE = 'Contenidos propios del Programa Analítico'
 
-export type ResultadoContextoCurricularPlaneacion =
-  | { disponible: false; motivo: MotivoSinCatalogo; referenciasDocente: ReferenciaDocente[] }
-  | {
+export function construirCatalogoPorCampo(candidatos: CandidatoCurricularPlaneacion[], tema: string | null, presupuesto = PRESUPUESTO_CARACTERES_CATALOGO): { catalogo: GrupoCatalogoPlaneacion[]; incluidos: CandidatoCurricularPlaneacion[]; recortado: boolean } {
+  const tokens = tokenizarSignificativo(tema ?? '')
+  const puntuar = (c: CandidatoCurricularPlaneacion) => [...textosBuscables(c), ...c.pda.map((p) => p.texto)].reduce((max, t) => Math.max(max, calcularCoberturaLexica(tokens, t)), 0)
+  const campoDe = (c: CandidatoCurricularPlaneacion) => c.campoFormativo?.nombre ?? CAMPO_SIN_NOMBRE
+  const ordenados = candidatos
+    .map((c) => ({ c, score: puntuar(c), texto: textoEfectivoCandidato(c) }))
+    .sort((a, b) => b.score - a.score || campoDe(a.c).localeCompare(campoDe(b.c), 'es') || a.texto.localeCompare(b.texto, 'es') || a.c.id.localeCompare(b.c.id))
+
+  const incluidos: CandidatoCurricularPlaneacion[] = []
+  let usados = 0
+  for (const { c, texto } of ordenados) {
+    const costo = texto.length + 16
+    if (usados + costo > presupuesto) break
+    usados += costo
+    incluidos.push(c)
+  }
+
+  const porCampo = new Map<string, ItemCatalogoPlaneacion[]>()
+  for (const c of [...incluidos].sort((a, b) => campoDe(a).localeCompare(campoDe(b), 'es') || textoEfectivoCandidato(a).localeCompare(textoEfectivoCandidato(b), 'es'))) {
+    const lista = porCampo.get(campoDe(c)) ?? []
+    lista.push({ texto: textoEfectivoCandidato(c) })
+    porCampo.set(campoDe(c), lista)
+  }
+  return { catalogo: [...porCampo].map(([campoFormativo, contenidos]) => ({ campoFormativo, contenidos })), incluidos, recortado: incluidos.length < candidatos.length }
+}
+
+// Lo ÚNICO de la resolución curricular que viaja al prompt.
+export type ContextoCurricularParaPrompt =
+  | { disponible: false; motivo: MotivoSinCatalogo; rotuloFuente: string; referenciasDocente: ReferenciaDocente[] }
+  | ({
       disponible: true
-      contexto: ContextoCurricularParaPrompt
-      // Conjunto EXACTO ofrecido al modelo: lo único que la validación
-      // aceptará después (validarSeleccionCurricularPlaneacion).
-      candidatosOfrecidos: CandidatoCurricularPlaneacion[]
-      resolucion: ResultadoResolucionCurricular
-      programaAnalitico: { id: string; versionId: string } | null
-      programaAnaliticoNoUsado: Exclude<MotivoProgramaAnaliticoNoUsado, 'SIN_PROGRAMA_ANALITICO'> | null
-    }
+      fuente: FuenteCurricular
+      estadoVerificacion: Exclude<EstadoVerificacionCurricular, 'local_del_docente'>
+      rotuloFuente: string
+      referenciasDocente: ReferenciaDocente[]
+    } & ({ modo: 'A'; candidatosCerrados: ItemCerradoPlaneacion[] } | { modo: 'B'; catalogoPorCampo: GrupoCatalogoPlaneacion[]; catalogoRecortado: boolean }))
+
+export type ResultadoContextoCurricularPlaneacion = {
+  paraPrompt: ContextoCurricularParaPrompt
+  // Conjunto EXACTO ofrecido al modelo (vacío sin catálogo). Nunca va
+  // al prompt: es para validar en el servidor.
+  candidatosOfrecidos: CandidatoCurricularPlaneacion[]
+  // Todo el catálogo ya cargado del grupo (su PA vigente compatible o el
+  // catálogo de su grado y fase). Con él se reconoce, por texto exacto, lo
+  // que el borrador tomó del catálogo — la misma regla que aplicará la
+  // aprobación al recargarlo. Nunca va al prompt.
+  candidatosGrupo: CandidatoCurricularPlaneacion[]
+  resolucion: ResultadoResolucionCurricular | null
+  programaAnalitico: { id: string; versionId: string } | null
+  programaAnaliticoNoUsado: Exclude<MotivoProgramaAnaliticoNoUsado, 'SIN_PROGRAMA_ANALITICO'> | null
+}
 
 // A: la resolución ya dio un conjunto cerrado no vacío. B: cualquier
 // otro caso (el modelo elige dentro del catálogo compacto del grupo).
@@ -500,16 +578,35 @@ function referenciasSolicitud(solicitud: SolicitudResolucionCurricular): Referen
   return refs
 }
 
+export function contextoSinCobertura(motivo: MotivoSinCatalogo, solicitud: SolicitudResolucionCurricular): ResultadoContextoCurricularPlaneacion {
+  return {
+    paraPrompt: { disponible: false, motivo, rotuloFuente: ROTULO_PROPUESTA_NO_VERIFICADA, referenciasDocente: referenciasSolicitud(solicitud) },
+    candidatosOfrecidos: [],
+    candidatosGrupo: [],
+    resolucion: null,
+    programaAnalitico: null,
+    programaAnaliticoNoUsado: null,
+  }
+}
+
 export async function prepararContextoCurricularPlaneacion(sb: SupabaseClient, grupoId: string, solicitud: SolicitudResolucionCurricular): Promise<ResultadoContextoCurricularPlaneacion> {
   const carga = await cargarCandidatosCurricularesGrupo(sb, grupoId)
   // Sin catálogo, todo lo que el docente indicó se conserva literal.
-  if (!carga.ok) return { disponible: false, motivo: carga.motivo, referenciasDocente: referenciasSolicitud(solicitud) }
+  if (!carga.ok) return contextoSinCobertura(carga.motivo, solicitud)
 
   const resolucion = resolverCandidatosCurricularesPuro(carga.candidatos, solicitud)
-  const base = { fuente: carga.fuente, estadoVerificacion: carga.estadoVerificacion, referenciasDocente: resolucion.referenciasDocente }
-  const comun = { resolucion, programaAnalitico: carga.programaAnalitico, programaAnaliticoNoUsado: carga.programaAnaliticoNoUsado }
-  if (decidirModo(resolucion) === 'A') {
-    return { disponible: true, contexto: { ...base, modo: 'A', candidatosCerrados: construirCatalogoCompactoPlaneacion(resolucion.candidatos, true) }, candidatosOfrecidos: resolucion.candidatos, ...comun }
+  const base = {
+    disponible: true as const,
+    fuente: carga.fuente,
+    estadoVerificacion: carga.estadoVerificacion,
+    rotuloFuente: rotuloFuenteCurricular(carga.fuente, carga.estadoVerificacion),
+    referenciasDocente: resolucion.referenciasDocente,
   }
-  return { disponible: true, contexto: { ...base, modo: 'B', catalogoCompacto: construirCatalogoCompactoPlaneacion(carga.candidatos) }, candidatosOfrecidos: carga.candidatos, ...comun }
+  const comun = { resolucion, candidatosGrupo: carga.candidatos, programaAnalitico: carga.programaAnalitico, programaAnaliticoNoUsado: carga.programaAnaliticoNoUsado }
+  if (decidirModo(resolucion) === 'A') {
+    return { paraPrompt: { ...base, modo: 'A', candidatosCerrados: construirItemsCerrados(resolucion.candidatos) }, candidatosOfrecidos: resolucion.candidatos, ...comun }
+  }
+  const campo = solicitud.campoExplicito?.trim() || detectarCampoNombrado(carga.candidatos, solicitud.mensajeDocente)
+  const { catalogo, incluidos, recortado } = construirCatalogoPorCampo(filtrarPorCampo(carga.candidatos, campo), solicitud.tema)
+  return { paraPrompt: { ...base, modo: 'B', catalogoPorCampo: catalogo, catalogoRecortado: recortado }, candidatosOfrecidos: incluidos, ...comun }
 }

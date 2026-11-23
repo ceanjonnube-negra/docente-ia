@@ -253,7 +253,7 @@ async function main() {
       ],
     }
 
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesionSimulada, {
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesionSimulada, {
       tema: null,
       fechaInicio: null,
       fechaFin: null,

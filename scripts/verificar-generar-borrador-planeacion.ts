@@ -26,6 +26,8 @@ import {
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '../lib/asistente/instruccionesPlaneacionGenerar'
 import type { SesionContexto } from '../lib/sesionContexto'
 import type { EventoCalendarioCompleto, PeriodoEvaluacion } from '../lib/motorContexto'
+import { baseCurricular, conProgramaAnalitico } from './fixtures/curriculoPlaneacionFicticio'
+import { ROTULO_PENDIENTE_VALIDACION, ROTULO_PROPUESTA_NO_VERIFICADA } from '../lib/planeacion/identidadCurricularVisibleBorrador'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -43,6 +45,7 @@ type Fila = Record<string, unknown>
 
 class ConsultaFalsa {
   private filtros: Array<[string, unknown]> = []
+  private listas: Array<[string, unknown[]]> = []
   private rangos: Array<['gte' | 'lte' | 'gt', string, unknown]> = []
   private clausulasOr: string | null = null
   private orden: { columna: string; ascendente: boolean } | null = null
@@ -72,6 +75,12 @@ class ConsultaFalsa {
 
   eq(columna: string, valor: unknown) {
     this.filtros.push([columna, valor])
+    return this
+  }
+
+  // Contexto curricular (Hito 1, Parte 2): `.in(columna, valores)`.
+  in(columna: string, valores: unknown[]) {
+    this.listas.push([columna, valores])
     return this
   }
 
@@ -131,6 +140,7 @@ class ConsultaFalsa {
 
     let resultado = filas.filter((f) => {
       if (!this.filtros.every(([c, v]) => f[c] === v)) return false
+      if (!this.listas.every(([c, vs]) => vs.includes(f[c]))) return false
       if (!this.rangos.every(([tipo, c, v]) => {
         if (tipo === 'gte') return String(f[c]) >= String(v)
         if (tipo === 'lte') return String(f[c]) <= String(v)
@@ -245,35 +255,35 @@ async function main() {
   // 1. "Hazme una planeación de leyendas para dos semanas" → duración en semanas
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionSemanas: 2 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionSemanas: 2 }))
     verificar(r.fechas.totalDiasEfectivos === 10 && !r.fechas.conflicto, '1. "Dos semanas" resuelve a 10 días efectivos, sin conflicto')
   }
 
   // 2. Solicitud con fechas exactas
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ fechaInicio: '2026-08-10', fechaFin: '2026-08-14' }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ fechaInicio: '2026-08-10', fechaFin: '2026-08-14' }))
     verificar(r.fechas.fechaInicioResuelta === '2026-08-10' && r.fechas.fechaFinResuelta === '2026-08-14', '2. Fechas exactas se respetan tal cual')
   }
 
   // 3. Solicitud con duración en días
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 10 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 10 }))
     verificar(r.fechas.totalDiasEfectivos === 10, '3. Duración en días efectivos se respeta tal cual')
   }
 
   // 4. Solicitud sin fecha inicial — usa el siguiente día efectivo
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(r.fechas.fechaInicioResuelta === HOY, '4. Sin fecha inicial, usa la fecha de referencia (ya es día hábil)')
   }
 
   // 5. Inicio en fin de semana — se mueve y advierte
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ fechaInicio: '2026-08-08', duracionDias: 5 })) // sábado
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ fechaInicio: '2026-08-08', duracionDias: 5 })) // sábado
     verificar(r.fechas.fechaInicioResuelta === '2026-08-10' && r.fechas.advertencias.length > 0, '5. Inicio en sábado se mueve al lunes con advertencia')
   }
 
@@ -281,7 +291,7 @@ async function main() {
   {
     const eventos = [evento('2026-08-12', 'festivo', 'Día festivo de prueba')]
     const { sb } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(r.fechas.fechasExcluidas.some((f) => f.fecha === '2026-08-12' && f.motivo === 'dia_inhabil'), '6. El festivo oficial queda excluido con motivo "dia_inhabil"')
     verificar(r.eventosCalendarioDelPeriodo.some((e) => e.fecha === '2026-08-12'), '6b. El evento excluido aparece en eventosCalendarioDelPeriodo')
   }
@@ -290,7 +300,7 @@ async function main() {
   {
     const eventos = ['2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21'].map((f) => evento(f, 'vacaciones', 'Vacaciones de prueba'))
     const { sb } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 10 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 10 }))
     verificar(r.fechas.totalDiasEfectivos === 10 && r.fechas.fechasExcluidas.filter((f) => f.motivo === 'vacaciones').length === 5, '7. Se completan los 10 días efectivos saltando la semana de vacaciones')
   }
 
@@ -298,7 +308,7 @@ async function main() {
   {
     const eventos = [evento('2026-08-11', 'suspension', 'Suspensión de labores')]
     const { sb } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(r.fechas.fechasExcluidas.some((f) => f.motivo === 'suspension'), '8. La suspensión queda excluida y registrada')
   }
 
@@ -306,7 +316,7 @@ async function main() {
   {
     const eventos = [evento('2026-08-11', 'festivo', 'Festivo')]
     const { sb } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(r.fechas.fechaFinResuelta !== '2026-08-14', '9. La fecha final se ajustó automáticamente para compensar el día excluido')
   }
 
@@ -316,7 +326,7 @@ async function main() {
   {
     const eventos = ['2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21'].map((f) => evento(f, 'vacaciones', 'Vacaciones de prueba'))
     const { sb } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5, momentoRelativo: 'después de vacaciones' }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5, momentoRelativo: 'después de vacaciones' }))
     // El día siguiente a la última vacación (viernes 21) es sábado 22 —
     // calcularFechasPlaneacion mueve automáticamente al siguiente día
     // efectivo real (lunes 24), igual que ante cualquier otra fecha de
@@ -339,7 +349,7 @@ async function main() {
   // 10. Contexto de grupo activo se incluye siempre
   {
     const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(JSON.stringify(r.contextoGrupo) === JSON.stringify(RPC_GRUPO_BASE), '10. El contexto real del grupo activo se incluye en el resultado')
   }
 
@@ -350,7 +360,7 @@ async function main() {
       { id: 'periodo-2', nombre: 'Segundo trimestre', numero_periodo: 2, fecha_inicio: '2026-11-01', fecha_fin: '2027-02-28', ciclo_escolar_id: 'ciclo-1' },
     ]
     const { sb } = clienteFalso(DOCENTE_1, { periodos_evaluacion: periodos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 5 }))
     verificar(r.periodoEvaluacionActual?.id === 'periodo-1', '11. El periodo de evaluación vigente se infiere solo, sin preguntarlo')
   }
 
@@ -465,7 +475,7 @@ async function main() {
       evento('2026-08-12', 'festivo', 'Día inhábil oficial'),
     ]
     const { sb, interno } = clienteFalso(DOCENTE_1, { calendario_eventos: eventos as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
-    const r = await prepararContextoGeneracionPlaneacion(
+    const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(
       sb,
       sesion(),
       solicitud({ duracionSemanas: 2, momentoRelativo: 'las primeras dos semanas de clases' })
@@ -500,6 +510,73 @@ async function main() {
     verificar(t.includes('NUNCA le pidas al maestro que ajuste manualmente las fechas'), '27b. Las instrucciones prohíben explícitamente pedir ajuste manual de fechas/suspensiones/días inhábiles')
     verificar(t.includes('NUNCA digas que no tienes el calendario cargado'), '27c. Las instrucciones prohíben explícitamente afirmar que no hay calendario cargado')
     verificar(t.includes('genera el borrador completo DE INMEDIATO'), '27d. Las instrucciones exigen generar el borrador de inmediato cuando no hay conflicto, nunca solo explicar lo que se podría hacer')
+  }
+
+  // 28. Hito 1, Parte 2 — contexto curricular en la generación.
+  {
+    const REGEX_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+    const generar = async (datos: Record<string, Fila[]>, grupo: string, extra: Partial<SolicitudGeneracionPlaneacion> = {}, envolver?: (sb: SupabaseClient) => SupabaseClient) => {
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos, { contexto_grupo: RPC_GRUPO_BASE })
+      const { paraPrompt: r } = await prepararContextoGeneracionPlaneacion(envolver ? envolver(sb) : sb, sesion({ grupo_activo_id: grupo }), solicitud({ tema: 'el cuidado del cuerpo humano', duracionDias: 5, ...extra }))
+      return { r, interno }
+    }
+
+    const cat = await generar(baseCurricular(), 'grupo-3a')
+    const c = cat.r.contextoCurricularPlaneacion
+    verificar(c.disponible && c.fuente === 'catalogo_app' && c.rotuloFuente === ROTULO_PENDIENTE_VALIDACION && c.modo === 'A' && c.candidatosCerrados[0]?.texto.startsWith('Cuerpo humano'),
+      '28a. Catálogo provisional: el contexto lleva el contenido resuelto y el rótulo "pendiente de validación oficial"')
+    verificar(!cat.r.fechas.conflicto && cat.r.fechas.totalDiasEfectivos === 5, '28b. Las fechas se siguen calculando igual con el contexto curricular')
+    verificar(!REGEX_UUID.test(JSON.stringify(cat.r.contextoCurricularPlaneacion)) && !('candidatosOfrecidos' in cat.r),
+      '28c. Lo que se serializa al prompt no lleva UUID ni los candidatos internos')
+    verificar(cat.interno.escrituras.length === 0, '28d. Generar sigue sin escribir nada en la base de datos')
+
+    const pa = await generar(conProgramaAnalitico(baseCurricular()), 'grupo-4b', { tema: 'historias del barrio' })
+    const cp = pa.r.contextoCurricularPlaneacion
+    verificar(cp.disponible && cp.fuente === 'programa_analitico' && cp.rotuloFuente.startsWith('Programa Analítico del grupo') && cp.modo === 'A'
+      && cp.candidatosCerrados[0]?.texto === 'Historias del barrio contadas por las familias',
+      '28e. Programa Analítico publicado y compatible: el contexto usa sus contenidos')
+
+    const sec = await generar(baseCurricular(), 'grupo-sec', { tema: 'fracciones' })
+    const cs = sec.r.contextoCurricularPlaneacion
+    verificar(!cs.disponible && cs.rotuloFuente === ROTULO_PROPUESTA_NO_VERIFICADA && !sec.r.fechas.conflicto && sec.r.fechas.totalDiasEfectivos === 5,
+      '28f. Sin cobertura (secundaria): propuesta no verificada y la planeación se genera igual')
+
+    const citado = await generar(baseCurricular(), 'grupo-3a', { tema: 'proyecto', mensajeDocente: 'Usa el contenido Alimentación saludable y plato del bien comer, 5 días' })
+    const cc = citado.r.contextoCurricularPlaneacion
+    verificar(cc.disponible && cc.modo === 'A' && cc.candidatosCerrados.length === 1 && cc.candidatosCerrados[0].texto === 'Alimentación saludable y plato del bien comer',
+      '28g. Contenido citado literalmente por el docente: es el que se ofrece')
+
+    const fallo = await generar(baseCurricular(), 'grupo-3a', {}, (sb) => new Proxy(sb, {
+      get(objetivo, prop, receptor) {
+        if (prop === 'from') return (tabla: string) => { if (tabla === 'curriculo_grado') throw new Error('red caída'); return (objetivo as unknown as { from: (t: string) => unknown }).from(tabla) }
+        return Reflect.get(objetivo, prop, receptor)
+      },
+    }))
+    const cf = fallo.r.contextoCurricularPlaneacion
+    verificar(!cf.disponible && cf.motivo === 'CARGA_FALLIDA' && !fallo.r.fechas.conflicto, '28h. Si falla la carga curricular, el borrador sigue como propuesta no verificada (nunca se bloquea)')
+
+    const ajeno = await generar(conProgramaAnalitico(baseCurricular()), 'grupo-de-otro-docente')
+    verificar(!ajeno.r.contextoCurricularPlaneacion.disponible && ajeno.r.contextoCurricularPlaneacion.motivo === 'GRUPO_NO_ENCONTRADO', '28i. Grupo que RLS no devuelve → sin catálogo de nadie más')
+
+    const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+    verificar(ruta.includes("mensajeDocente: esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) : String(mensaje ?? ''),") && (ruta.match(/prepararContextoGeneracionPlaneacion\(/g) ?? []).length === 1,
+      '28j. El Chat pasa la instrucción del docente (también en ediciones) con una sola carga curricular por turno')
+    verificar(ruta.includes('const { paraPrompt: resultadoGeneracion, curricularServidor } = await prepararContextoGeneracionPlaneacion(') && ruta.includes('${JSON.stringify(resultadoGeneracion)}')
+      && !/JSON\.stringify\(curricularServidor|JSON\.stringify\(curricularDelTurno/.test(ruta),
+      '28k. Al prompt solo va paraPrompt; los candidatos del servidor nunca se serializan')
+    const posterior = ruta.slice(ruta.indexOf('const completado = completarBorradorCurricular({'), ruta.indexOf('const completado = completarBorradorCurricular({') + 1400)
+    verificar(posterior.includes('curricular: curricularDelTurno,') && posterior.includes('controller.enqueue(encoder.encode(completado.bloqueServidor))') && posterior.includes('textoBorradorAcumulado = completado.textoParaVistaPrevia')
+      && ruta.indexOf('const completado = completarBorradorCurricular({') < ruta.indexOf('const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)'),
+      '28l. Tras el streaming: sección curricular con lo ofrecido en el turno, añadida al mensaje y usada por las vistas previas')
+    const t = INSTRUCCIONES_PLANEACION_GENERAR
+    verificar(!/REFERENCIAS_CURRICULARES|"ref"/.test(t) && t.includes('Nunca escribas identificadores, códigos ni claves técnicas en el borrador') && t.includes('copia los textos EXACTAMENTE como vienen'),
+      '28m. Instrucciones: sin identificadores; el modelo copia los textos exactos en el resumen')
+    verificar(t.includes('NUNCA escribas, en ninguna parte del borrador, que los contenidos o PDA son de la SEP, oficiales, validados o confirmados') && t.includes('NO escribas en el cuerpo del borrador una sección de contenidos ni de PDA')
+      && t.includes('el sistema los mostrará como propuesta no verificada') && !/se incorporan del catálogo/i.test(t),
+      '28n. Instrucciones: sin atribuciones a la SEP; la sección la arma el sistema; sin el texto sustituto "se incorporan…"')
+    verificar(t.includes('se respeta tal como lo dijo') && t.includes('sin cambiarles una palabra') && t.includes('nunca los sustituyas por uno del catálogo') && t.includes('creativas, contextualizadas al grupo y pedagógicamente sólidas'),
+      '28o. Instrucciones: datos del docente literales, nunca sustituidos; actividades contextualizadas')
+    verificar(t.includes('termina tu respuesta con el bloque de resumen') && t.includes('No escribas tú esa pregunta ni ninguna otra al final.') && t.includes('no la copies: la vuelve a agregar el sistema'), '28p. Instrucciones: el cierre y la sección curricular los añade el sistema (sin copiarlos en correcciones)')
   }
 
   console.log('')

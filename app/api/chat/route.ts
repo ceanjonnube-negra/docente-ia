@@ -24,6 +24,8 @@ import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesP
 import { instruccionesPresentacion, seccionesDePresentacion, tieneCantidadExplicita } from '@/lib/asistente/instruccionesPresentacion'
 import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
+import { completarBorradorCurricular } from '@/lib/planeacion/completarBorradorCurricular'
+import type { ResultadoContextoCurricularPlaneacion } from '@/lib/planeacion/resolverCurricularPlaneacion'
 import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
@@ -834,6 +836,9 @@ export async function POST(req: NextRequest) {
   // importar qué pasó dentro de ese try — mismo criterio ya usado por
   // requiereConsultaOficial.
   let esTurnoDeBorradorPlaneacion = false
+  // Contexto curricular cargado en este turno (solo servidor): con él se
+  // validan, al terminar el streaming, las referencias que citó el modelo.
+  let curricularDelTurno: ResultadoContextoCurricularPlaneacion | null = null
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -1223,14 +1228,16 @@ export async function POST(req: NextRequest) {
             // evaluación vigente y trae un resumen de planeaciones previas
             // para evitar repetir tema — todo de solo lectura, sin
             // persistir nada en este paso.
-            const resultadoGeneracion = await prepararContextoGeneracionPlaneacion(supabaseUser, sesion, {
+            const { paraPrompt: resultadoGeneracion, curricularServidor } = await prepararContextoGeneracionPlaneacion(supabaseUser, sesion, {
               tema: clasificacion.tema_planeacion,
               fechaInicio: clasificacion.fecha_inicio_planeacion,
               fechaFin: clasificacion.fecha_fin_planeacion,
               duracionDias: clasificacion.duracion_dias_planeacion,
               duracionSemanas: clasificacion.duracion_semanas_planeacion,
               momentoRelativo: clasificacion.momento_relativo_planeacion,
+              mensajeDocente: esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) : String(mensaje ?? ''),
             })
+            curricularDelTurno = curricularServidor
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
             esTurnoDeBorradorPlaneacion = true
@@ -1878,6 +1885,30 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
         // realmente construidos en este turno (0, 1 o 2), nunca su
         // contenido.
         let cantidadAdjuntos = 0
+
+        // Hito 1, Parte 2 — sección de contenidos y PDA del borrador: la
+        // construye el servidor (completarBorradorCurricular), reconociendo
+        // por texto exacto, contra el catálogo del grupo ya cargado en este
+        // turno, lo que el modelo copió en el resumen, con los PDA reales.
+        // Se añade al final del turno con la pregunta de cierre, y las
+        // vistas previas usan el texto con la sección ya insertada. Sin IA
+        // ni consultas adicionales; si algo falla, el borrador queda igual.
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && curricularDelTurno) {
+          try {
+            const completado = completarBorradorCurricular({
+              textoModelo: textoBorradorAcumulado,
+              curricular: curricularDelTurno,
+              textosDocente: [...historialMensajes.filter((h) => h.role === 'user').map((h) => h.content), esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')],
+            })
+            if (completado) {
+              if (completado.bloqueServidor) controller.enqueue(encoder.encode(completado.bloqueServidor))
+              textoBorradorAcumulado = completado.textoParaVistaPrevia
+              console.log(`[PLANEACION_GENERAR] seccionCurricular=${!!completado.identidad} contenidosDelCatalogo=${completado.identidad?.contenidos.length ?? 0}`)
+            }
+          } catch (e) {
+            console.error('[PLANEACION_GENERAR] no se pudo completar la sección curricular del borrador:', e)
+          }
+        }
 
         // Corrección funcional — "falta mostrar y descargar la
         // planeación": el borrador completo (no solo su hoja de

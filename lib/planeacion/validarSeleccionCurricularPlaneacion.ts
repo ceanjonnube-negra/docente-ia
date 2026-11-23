@@ -16,7 +16,7 @@
 // al modelo (ResultadoContextoCurricularPlaneacion.candidatosOfrecidos),
 // nunca uno más amplio.
 
-import type { CandidatoCurricularPlaneacion, PdaCandidatoPlaneacion } from './resolverCurricularPlaneacion'
+import { normalizarTexto, type CandidatoCurricularPlaneacion, type PdaCandidatoPlaneacion } from './resolverCurricularPlaneacion'
 
 export type MotivoRechazoItemCurricular = 'UUID_INVALIDO' | 'NO_OFRECIDO'
 
@@ -69,4 +69,34 @@ export function validarPdaDeItemCurricular(item: CandidatoCurricularPlaneacion, 
     else rechazados.push(idCrudo)
   }
   return { aceptados, rechazados }
+}
+
+// Reconocimiento POR TEXTO de lo que un borrador tomó del catálogo: el
+// modelo nunca escribe identificadores; copia los textos. Una entrada
+// cuenta como del catálogo solo si su texto normalizado (sin acentos,
+// mayúsculas ni puntuación) es IGUAL al de un contenido de
+// `candidatos` — nunca por parecido. Los PDA cuentan solo si son PDA
+// reales de un contenido reconocido. Puro, 0 I/O; `candidatos` siempre
+// sale de la base de datos (cargarCandidatosCurricularesGrupo), nunca del
+// texto ni del cliente.
+export type EntradaCurricular = { tipo: 'contenido' | 'pda'; texto: string }
+
+export function reconocerCandidatosPorTexto(candidatos: CandidatoCurricularPlaneacion[], entradas: EntradaCurricular[]): { aceptados: CandidatoCurricularPlaneacion[]; noReconocidas: EntradaCurricular[] } {
+  const porTexto = new Map<string, CandidatoCurricularPlaneacion>()
+  for (const c of candidatos) {
+    for (const t of [c.tituloContenido, c.textoContextualizado, c.textoLocal]) {
+      const n = t ? normalizarTexto(t) : ''
+      if (n && !porTexto.has(n)) porTexto.set(n, c)
+    }
+  }
+  const aceptados: CandidatoCurricularPlaneacion[] = []
+  const pendientes: EntradaCurricular[] = []
+  for (const e of entradas) {
+    const c = e.tipo === 'contenido' ? porTexto.get(normalizarTexto(e.texto)) : undefined
+    if (c) {
+      if (!aceptados.includes(c)) aceptados.push(c)
+    } else pendientes.push(e)
+  }
+  const pdaReconocidos = new Set(aceptados.flatMap((c) => c.pda.map((p) => normalizarTexto(p.texto))))
+  return { aceptados, noReconocidas: pendientes.filter((e) => !(e.tipo === 'pda' && pdaReconocidos.has(normalizarTexto(e.texto)))) }
 }

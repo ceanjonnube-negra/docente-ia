@@ -25,6 +25,7 @@ import {
 import { listarPlaneaciones } from './persistencia'
 import { calcularFechasPlaneacion, type DiaNoLaborable, type ResultadoCalculoFechas } from './calculoFechasHabiles'
 import type { SesionContexto } from '../sesionContexto'
+import { contextoSinCobertura, prepararContextoCurricularPlaneacion, type ContextoCurricularParaPrompt, type ResultadoContextoCurricularPlaneacion } from './resolverCurricularPlaneacion'
 
 export type SolicitudGeneracionPlaneacion = {
   tema: string | null
@@ -33,6 +34,10 @@ export type SolicitudGeneracionPlaneacion = {
   duracionDias: number | null
   duracionSemanas: number | null
   momentoRelativo: string | null
+  // Mensaje del docente en este turno: solo para detectar contenidos o
+  // PDA del catálogo citados literalmente y un campo formativo nombrado
+  // (lib/planeacion/resolverCurricularPlaneacion.ts).
+  mensajeDocente?: string | null
 }
 
 export type ResumenPlaneacionPrevia = { nombre: string; periodo: string | null; fechaInicio: string | null; fechaFin: string | null }
@@ -44,6 +49,19 @@ export type ResultadoContextoGeneracion = {
   periodoEvaluacionActual: PeriodoEvaluacion | null
   planeacionesPrevias: ResumenPlaneacionPrevia[]
   eventosCalendarioDelPeriodo: { fecha: string; titulo: string; motivo: string }[]
+  // Solo la parte segura para el prompt (referencias cortas y textos
+  // literales). Los candidatos completos nunca viajan al modelo: la
+  // aprobación vuelve a cargarlos y valida las referencias en el servidor.
+  contextoCurricularPlaneacion: ContextoCurricularParaPrompt
+}
+
+// Lo que se serializa al prompt (ResultadoContextoGeneracion) va aparte de
+// lo que solo usa el servidor en este mismo turno: los candidatos
+// ofrecidos, para validar las referencias al terminar el streaming
+// (completarBorradorCurricular). Nunca se serializan.
+export type ContextoGeneracionPlaneacion = {
+  paraPrompt: ResultadoContextoGeneracion
+  curricularServidor: ResultadoContextoCurricularPlaneacion
 }
 
 // Solo eventos OFICIALES SEP cancelan clases automáticamente — una
@@ -122,7 +140,7 @@ export async function prepararContextoGeneracionPlaneacion(
   sb: SupabaseClient,
   sesion: SesionContexto,
   solicitud: SolicitudGeneracionPlaneacion
-): Promise<ResultadoContextoGeneracion> {
+): Promise<ContextoGeneracionPlaneacion> {
   const grupoId = sesion.grupo_activo_id!
   const anio = Number(sesion.fecha_actual.slice(0, 4))
   const mes = Number(sesion.fecha_actual.slice(5, 7))
@@ -130,11 +148,18 @@ export async function prepararContextoGeneracionPlaneacion(
   const inicioCiclo = `${inicioAnioCiclo}-08-01`
   const finCiclo = `${inicioAnioCiclo + 1}-07-31`
 
-  const [ctxGrupo, eventosCiclo, periodos, planeacionesPrevias] = await Promise.all([
+  const solicitudCurricular = { tema: solicitud.tema, mensajeDocente: solicitud.mensajeDocente ?? null }
+  const [ctxGrupo, eventosCiclo, periodos, planeacionesPrevias, curricular] = await Promise.all([
     contextoGrupo(sb, grupoId),
     calendarioCicloCompleto(sb, sesion.docente_id, inicioCiclo, finCiclo),
     sesion.ciclo_escolar_id ? periodosEvaluacionDelCiclo(sb, sesion.ciclo_escolar_id) : Promise.resolve<PeriodoEvaluacion[]>([]),
     listarPlaneaciones({ supabase: sb }, { grupo_id: grupoId }),
+    // Un fallo del catálogo nunca impide el borrador: se genera como
+    // propuesta no verificada.
+    prepararContextoCurricularPlaneacion(sb, grupoId, solicitudCurricular).catch((e) => {
+      console.error('[PLANEACION_GENERAR] fallo cargando el contexto curricular:', e)
+      return contextoSinCobertura('CARGA_FALLIDA', solicitudCurricular)
+    }),
   ])
 
   const diasNoLaborables = mapearEventosADiasNoLaborables(eventosCiclo)
@@ -164,12 +189,14 @@ export async function prepararContextoGeneracionPlaneacion(
     .filter((f) => f.motivo !== 'fin_de_semana')
     .map((f) => ({ fecha: f.fecha, titulo: f.descripcion || f.motivo, motivo: f.motivo }))
 
-  return {
+  const paraPrompt: ResultadoContextoGeneracion = {
     contextoGrupo: ctxGrupo,
     fechas,
     explicacionMomentoRelativo,
     periodoEvaluacionActual,
     planeacionesPrevias: resumenPrevias,
     eventosCalendarioDelPeriodo,
+    contextoCurricularPlaneacion: curricular.paraPrompt,
   }
+  return { paraPrompt, curricularServidor: curricular }
 }

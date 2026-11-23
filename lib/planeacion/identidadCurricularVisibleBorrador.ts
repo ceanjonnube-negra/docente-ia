@@ -29,6 +29,9 @@ export type IdentidadCurricularVisible = {
   pda: string[]
   contenidosLocales: string[]
   delDocente: ReferenciaDocente[]
+  // Contenidos o PDA sin respaldo en el catálogo ni del docente: se
+  // muestran, pero siempre como propuesta no verificada.
+  propuestas: ReferenciaDocente[]
 }
 
 export const ENCABEZADO_IDENTIDAD_VISIBLE = '📌 CONTENIDOS Y PDA DE ESTA PLANEACIÓN'
@@ -59,9 +62,24 @@ function agregarUnico(lista: string[], vistos: Set<string>, texto: string | null
 // referencias explícitas del docente sin correspondencia. Los textos se
 // copian literales (nunca se alteran) y se deduplican. null cuando no
 // hay nada que mostrar — nunca una sección vacía o inventada.
+function referenciasUnicas(referencias: ReferenciaDocente[]): ReferenciaDocente[] {
+  const unicas: ReferenciaDocente[] = []
+  const vistas = new Set<string>()
+  for (const r of referencias) {
+    const texto = r.texto.trim()
+    const clave = `${r.tipo}:${texto}`
+    if (texto && !vistas.has(clave)) {
+      vistas.add(clave)
+      unicas.push({ tipo: r.tipo, texto })
+    }
+  }
+  return unicas
+}
+
 export function construirIdentidadCurricularVisible(
   candidatosValidados: CandidatoCurricularPlaneacion[],
-  referenciasDocente: ReferenciaDocente[] = []
+  referenciasDocente: ReferenciaDocente[] = [],
+  propuestasNoVerificadas: ReferenciaDocente[] = []
 ): IdentidadCurricularVisible | null {
   const contenidos: string[] = []
   const pda: string[] = []
@@ -79,18 +97,10 @@ export function construirIdentidadCurricularVisible(
     for (const p of c.pda) agregarUnico(pda, vistosPda, p.texto)
   }
 
-  const delDocente: ReferenciaDocente[] = []
-  const vistosDocente = new Set<string>()
-  for (const r of referenciasDocente) {
-    const texto = r.texto.trim()
-    const clave = `${r.tipo}:${texto}`
-    if (texto && !vistosDocente.has(clave)) {
-      vistosDocente.add(clave)
-      delDocente.push({ tipo: r.tipo, texto })
-    }
-  }
+  const delDocente = referenciasUnicas(referenciasDocente)
+  const propuestas = referenciasUnicas(propuestasNoVerificadas)
 
-  if (contenidos.length === 0 && pda.length === 0 && contenidosLocales.length === 0 && delDocente.length === 0) return null
+  if (contenidos.length === 0 && pda.length === 0 && contenidosLocales.length === 0 && delDocente.length === 0 && propuestas.length === 0) return null
   // La fuente solo existe si hay al menos un candidato validado (con
   // solo referencias del docente no hay currículo que rotular), y el
   // estado solo si alguno no es local. Una sola versión pendiente basta
@@ -105,6 +115,7 @@ export function construirIdentidadCurricularVisible(
     pda,
     contenidosLocales,
     delDocente,
+    propuestas,
   }
 }
 
@@ -123,6 +134,11 @@ export function renderizarBloqueIdentidadCurricularVisible(identidad: IdentidadC
   const pdaDocente = identidad.delDocente.filter((r) => r.tipo === 'pda').map((r) => r.texto)
   if (contenidosDocente.length > 0) lineas.push(`Contenidos indicados por el docente: ${contenidosDocente.join(' · ')}`)
   if (pdaDocente.length > 0) lineas.push(`PDA indicados por el docente: ${pdaDocente.join(' · ')}`)
+  const contenidosPropuestos = identidad.propuestas.filter((r) => r.tipo === 'contenido').map((r) => r.texto)
+  const pdaPropuestos = identidad.propuestas.filter((r) => r.tipo === 'pda').map((r) => r.texto)
+  if (contenidosPropuestos.length > 0 || pdaPropuestos.length > 0) lineas.push(`${ROTULO_PROPUESTA_NO_VERIFICADA}:`)
+  if (contenidosPropuestos.length > 0) lineas.push(`Contenidos propuestos: ${contenidosPropuestos.join(' · ')}`)
+  if (pdaPropuestos.length > 0) lineas.push(`PDA propuestos: ${pdaPropuestos.join(' · ')}`)
   return lineas.join('\n')
 }
 
@@ -145,8 +161,9 @@ export function sustituirContenidosYPdaEnBloqueResumen(textoBorrador: string, id
   const indice = textoBorrador.indexOf(ETIQUETA_INICIO_BLOQUE)
   if (indice === -1) return textoBorrador
 
-  const contenidos = [...identidad.contenidos, ...identidad.contenidosLocales, ...identidad.delDocente.filter((r) => r.tipo === 'contenido').map((r) => r.texto)]
-  const pda = [...identidad.pda, ...identidad.delDocente.filter((r) => r.tipo === 'pda').map((r) => r.texto)]
+  const deTipo = (tipo: ReferenciaDocente['tipo']) => [...identidad.delDocente, ...identidad.propuestas].filter((r) => r.tipo === tipo).map((r) => r.texto)
+  const contenidos = [...identidad.contenidos, ...identidad.contenidosLocales, ...deTipo('contenido')]
+  const pda = [...identidad.pda, ...deTipo('pda')]
   let bloqueResumen = textoBorrador.slice(indice)
   // Función de reemplazo: un "$" en el texto curricular nunca se
   // interpreta como patrón de reemplazo.
