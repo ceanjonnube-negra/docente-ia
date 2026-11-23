@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { asegurarConversacionRemota } from '../persistencia'
-import { documentoParaHistorial, type FormatoEntrega, type OrigenDocumento } from '../documentos'
+import { documentoParaHistorial, type FormatoEntrega, type GrupoDocumento, type OrigenDocumento } from '../documentos'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -534,7 +534,7 @@ export class MotorTextoClaude implements MotorConversacional {
     return respuesta.replace(marcadorCompleto, '').trim()
   }
 
-  private async guardarEnHistorial(documento: { contenido: string; origen: OrigenDocumento }, perfil: any, userId: string) {
+  private async guardarEnHistorial(documento: { contenido: string; origen: OrigenDocumento; grupo: GrupoDocumento }, perfil: any, userId: string) {
     const texto = documento.contenido
     const { error } = await supabase.from('documentos_generados').insert({
       user_id: userId,
@@ -542,8 +542,9 @@ export class MotorTextoClaude implements MotorConversacional {
       titulo: detectarTitulo(texto),
       contenido: texto,
       campo_formativo: detectarCampoFormativo(texto) || perfil?.campo_formativo || null,
-      grado: perfil?.grado || null,
-      grupo: perfil?.grupo || null,
+      // El grupo con el que se generó el documento, no el del perfil.
+      grado: documento.grupo.grado,
+      grupo: documento.grupo.grupo,
       origen: documento.origen,
     })
     if (error) console.error('[HISTORIAL] No se pudo guardar el documento en documentos_generados:', error.message)

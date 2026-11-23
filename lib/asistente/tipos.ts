@@ -40,6 +40,10 @@ export type ArchivoGeneradoInfo = {
   // Id del registro del archivo en archivos_generados (etapa 3B-2A). Solo
   // en archivos nuevos; los anteriores no lo tienen.
   archivoId?: string
+  // Grado y grupo con los que se armó el encabezado del archivo (el grupo
+  // de la conversación, ver perfilConGrupoAcademico). Vacíos si no había
+  // grupo confirmado. El historial de documentos registra estos mismos.
+  grupoAcademico?: { grado: string; grupo: string }
   tipoDocumento?: TipoDocumentoPlaneacion
   descripcion?: string
   // urlVer (CORRECCIÓN AISLADA — "separar 'Ver PDF' de 'Descargar

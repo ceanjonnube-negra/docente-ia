@@ -278,7 +278,9 @@ export async function ejecutarHerramientaDocumento(
   // gratis (buffer.length ya se calculó arriba para la verificación de
   // firma) — lo usa la tarjeta universal del Chat IA para mostrar el
   // tamaño real sin pedirle nada más a Storage.
-    return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer, archivoId }
+    // El grupo es el del `perfil` recibido, el mismo del encabezado.
+    const grupoAcademico = { grado: String(perfil?.grado ?? '').trim(), grupo: String(perfil?.grupo ?? '').trim() }
+    return { tipo, nombre, url, tamanoBytes: buffer.length, urlVer, archivoId, grupoAcademico }
   } catch (err) {
     await marcarArchivoFallido(archivoId, err)
     throw err

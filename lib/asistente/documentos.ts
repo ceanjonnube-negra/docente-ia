@@ -38,13 +38,23 @@ export const ORIGENES_DOCUMENTO: readonly OrigenDocumento[] = ['archivo', 'texto
 // Sin metadatos, una respuesta solo es documento si es un documento
 // formal visible (esDocumentoFormal), origen 'texto'; una conversación no
 // se guarda.
+// Grado y grupo: los del archivo entregado (el grupo de la conversación con
+// el que se armó su encabezado); sin archivo, o sin grupo confirmado, ninguno
+// —nunca los del perfil, que puede ser de otro grupo—.
+export type GrupoDocumento = { grado: string | null; grupo: string | null }
 export function documentoParaHistorial(
   respuesta: string,
   entrega: { contenidoOriginal?: string; archivos?: readonly unknown[] } = {},
-): { contenido: string; origen: OrigenDocumento } | null {
+): { contenido: string; origen: OrigenDocumento; grupo: GrupoDocumento } | null {
   const conArchivo = (entrega.archivos?.length ?? 0) > 0
-  if (conArchivo) return entrega.contenidoOriginal?.trim() ? { contenido: entrega.contenidoOriginal, origen: 'archivo' } : null
-  return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto' } : null
+  if (conArchivo) {
+    if (!entrega.contenidoOriginal?.trim()) return null
+    // Archivos anteriores a este campo no lo traen: sin grupo, no se inventa.
+    const g = (entrega.archivos?.[0] as { grupoAcademico?: { grado?: unknown; grupo?: unknown } } | undefined)?.grupoAcademico
+    const texto = (v: unknown) => (typeof v === 'string' && v.trim()) || null
+    return { contenido: entrega.contenidoOriginal, origen: 'archivo', grupo: { grado: texto(g?.grado), grupo: texto(g?.grupo) } }
+  }
+  return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto', grupo: { grado: null, grupo: null } } : null
 }
 
 // Regla única de lectura del historial de documentos (Chat e Historial):

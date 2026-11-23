@@ -60,6 +60,10 @@ export type ArchivoGenerado = {
   // Id del registro en archivos_generados (etapa 3B-2A). Solo lo traen
   // los archivos nuevos generados por ejecutarHerramientaDocumento.
   archivoId?: string
+  // Grado y grupo con los que se armó el encabezado del archivo (el grupo
+  // de la conversación, ver perfilConGrupoAcademico). Vacíos si no había
+  // grupo confirmado. El historial de documentos registra estos mismos.
+  grupoAcademico?: { grado: string; grupo: string }
 }
 
 export function rutaArchivo(userId: string, nombreArchivo: string): string {
