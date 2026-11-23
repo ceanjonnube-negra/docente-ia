@@ -45,7 +45,7 @@ export type ResumenBorrador = {
   indicadores: string[]
 }
 
-const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
+export const ETIQUETA_INICIO_BLOQUE = '📎 RESUMEN PARA GUARDAR'
 
 // true si el texto es un borrador de planeación (trae el bloque de
 // resumen). Lo usa el cliente para saber si "Apruébala" se refiere a una
