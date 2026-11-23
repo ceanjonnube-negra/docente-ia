@@ -491,6 +491,32 @@ export function refiereDocumentoExistente(texto: string): boolean {
   return referenciaDocumento(texto) !== 'ninguna'
 }
 
+// ¿El mensaje pide PRODUCIR un documento —crear uno nuevo, o convertir o
+// entregar en un formato uno que ya existe— en vez de consultar los
+// documentos guardados? Es incompatible con consultar_documentos: el
+// clasificador puede confundirlos (p. ej. "redacta un aviso… en Word"
+// justo después de "¿cuántos documentos tengo?"), y entonces esa
+// herramienta no debe interceptarlo. La acción explícita manda: una
+// creación ("redacta un aviso sobre los documentos que tengo que
+// entregar") es creación aunque mencione documentos. Sin creación, una
+// pregunta sobre "mis documentos", "cuántos documentos" o los documentos
+// que se tienen es consulta aunque nombre un formato ("¿cuántos documentos
+// de Word tengo?"); si no, convertir uno existente a un formato. Pedir
+// solo una lista de los documentos guardados ("quiero una lista de mis
+// documentos") también es consulta: lo único que "crea" es el listado.
+const CONSULTA_DOCUMENTOS_GUARDADOS = /\bmis\s+(documentos|archivos)\b|\bcuant[oa]s\s+(documentos|archivos)\b|\b(documentos|archivos)\b[^.?!]*\b(tengo|he\s+generado|generados|guardados)\b/
+const LISTADO = new Set(['lista', 'listado', 'relacion'])
+export function pideProducirDocumento(texto: string): 'crear' | 'convertir' | null {
+  const n = normalizar(texto)
+  const consultaGuardados = CONSULTA_DOCUMENTOS_GUARDADOS.test(n)
+  const creados = sustantivosCreados(n)
+  const soloListado = creados.length > 0 && creados.every((s) => LISTADO.has(s))
+  if (esPedidoDocumentoNuevo(texto) && !(consultaGuardados && soloListado)) return 'crear'
+  if (consultaGuardados) return null
+  if (detectarFormatoExplicito(texto) && refiereDocumentoExistente(texto)) return 'convertir'
+  return null
+}
+
 // ¿El documento que se tiene corresponde a lo que el docente nombró? Si
 // nombra un tipo cuyo título lo dice siempre ("el oficio", "el examen",
 // "el citatorio"...) y el título del documento no lo dice, no es ese.

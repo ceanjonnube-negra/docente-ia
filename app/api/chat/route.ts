@@ -28,7 +28,7 @@ import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorra
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { archivoSinSesion, construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, MENSAJE_ARCHIVO_SIN_SESION, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
+import { archivoSinSesion, construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, MENSAJE_ARCHIVO_SIN_SESION, pideProducirDocumento, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -883,8 +883,17 @@ export async function POST(req: NextRequest) {
       // lista completa y por qué ficha_descriptiva/planeacion_generar/
       // consultar_calendario NO están ahí (generación/razonamiento
       // real, no una cifra fija).
+      // La consulta de documentos guardados nunca intercepta una petición
+      // explícita de producir uno (crear uno nuevo o convertir uno
+      // existente), aunque el clasificador haya devuelto
+      // consultar_documentos: esa petición sigue el flujo de generación de
+      // siempre, sin otra llamada al modelo.
+      const accionDocumental = clasificacion.intencion_principal === 'consultar_documentos' ? pideProducirDocumento(String(mensaje ?? '')) : null
+      if (accionDocumental) {
+        console.log(`[NIVEL0] consultar_documentos no aplica — el mensaje pide ${accionDocumental} un documento; sigue el flujo de generación`)
+      }
       marcarTelemetria('tool:execution_started')
-      const respuestaDeModulo = await ejecutarHerramientaDeModulo(clasificacion, {
+      const respuestaDeModulo = accionDocumental ? null : await ejecutarHerramientaDeModulo(clasificacion, {
         sb: supabaseUser,
         sesion,
         userId,
