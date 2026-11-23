@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs'
 import JSZip from 'jszip'
-import { prepararEncabezado, quitarDuplicadosInstitucionales, type EncabezadoDocumento } from '../lib/documentGen/encabezadoDocumento'
+import { agregarFirmaAutomatica, prepararEncabezado, quitarDuplicadosInstitucionales, tieneFirmaPropia, type EncabezadoDocumento } from '../lib/documentGen/encabezadoDocumento'
 import { generarWordBuffer } from '../lib/documentGen/generarWordServidor'
 import { generarPdfBuffer } from '../lib/documentGen/generarPdfServidor'
 
@@ -170,6 +170,41 @@ async function generar() {
     '8b. Las plantillas del prompt ya no piden encabezado institucional ni firma')
   verificar((ruta.match(/^Fase: \[fase según el grado, ver MARCO CURRICULAR VIGENTE\]$/gm) || []).length === 3 && ruta.includes('Estimado padre/madre de familia de: _______________') && ruta.includes('Grado y Grupo: [grado] [grupo]'),
     '8c. Se conservan Fase (planeación, rúbrica, examen) y los campos del citatorio para el destinatario')
+
+  // S. Firma automática: solo si el texto no termina con una firma propia (Word y PDF).
+  const CUERPO = '📢 AVISO PARA FAMILIAS — LECTURA DIARIA EN CASA\n\nEstimadas familias:\nLes invitamos a leer cada día.'
+  const casoReal = `${CUERPO}\n\nAtentamente,\nDocente de 3.º A\nEscuela Primaria Ficticia E2E\nCiclo Escolar ${enc.cicloEscolar}`
+  const firmaS: [string, string, boolean][] = [
+    ['S1. Caso real de Preview: cierre con cargo, escuela y ciclo (sin el nombre del docente)', casoReal, false],
+    ['S2. Sin firma propia', CUERPO, true],
+    ['S3. «Atentamente,» como última línea, sin firmante → la automática lo completa', `${CUERPO}\n\nAtentamente,`, true],
+    ['S4. Firma solicitada de otra persona (Directora)', `${CUERPO}\n\nAtentamente,\nMaría López Ramírez\nDirectora`, false],
+    ['S5. Nombre del docente como línea propia, sin fórmula de cierre', `${CUERPO}\n\nProfra. Docente Prueba E2E\nDocente de 3° grado grupo A`, false],
+    ['S6. Espacio para que firme otra persona (padre o tutor)', `${CUERPO}\n\n_______________\nFirma del padre, madre o tutor`, true],
+    ['S7. Cierre con «Cordialmente» y firmante', `${CUERPO}\n\nCordialmente:\nLa Dirección Escolar`, false],
+    ['S8. «Atentamente» dentro del cuerpo, lejos del final', `📢 AVISO\n\nAtentamente les pedimos puntualidad.\n\nLínea 1\nLínea 2\nLínea 3\nLínea 4\nLínea 5\nLínea 6\nLínea 7`, true],
+  ]
+  for (const [nombre, texto, agrega] of firmaS) {
+    verificar(agregarFirmaAutomatica(texto, enc) === agrega, `${nombre} → firma automática: ${agrega ? 'sí' : 'no'}`)
+  }
+  verificar(agregarFirmaAutomatica(`📋 PLANEACIÓN DIDÁCTICA\nFase: 3\n\nCierre.\n\nAtentamente,\nLa maestra`, enc) && agregarFirmaAutomatica(pedagogicos.vistaPreviaPlaneacion, enc),
+    'S9. Documentos pedagógicos y vistas previas de planeación: conservan siempre su firma automática')
+  verificar(!tieneFirmaPropia(CUERPO, prepararEncabezado({}, 'America/Mazatlan')), 'S10. Sin datos del docente, el nombre por defecto «Docente» nunca cuenta como firma')
+
+  const zipReal = await JSZip.loadAsync(await generarWordBuffer(casoReal, perfil, 'America/Mazatlan'))
+  const cuerpoReal = await zipReal.file('word/document.xml')!.async('string')
+  verificar(cuerpoReal.includes('Atentamente,') && cuerpoReal.includes('Docente de 3.º A') && cuerpoReal.includes(`Ciclo Escolar ${enc.cicloEscolar}`) && !cuerpoReal.includes('Docente de grupo'),
+    'S11. Word real (caso de Preview): se conserva íntegra la firma del texto y NO se agrega la automática')
+  const zipSin = await JSZip.loadAsync(await generarWordBuffer(CUERPO, perfil, 'America/Mazatlan'))
+  const cuerpoSin = await zipSin.file('word/document.xml')!.async('string')
+  verificar(cuerpoSin.includes('Docente de grupo') && cuerpoSin.includes('Docente Prueba E2E'), 'S12. Word real sin firma propia: se agrega la firma automática como siempre')
+  const pdfConFirma = await generarPdfBuffer(casoReal, perfil, 'America/Mazatlan')
+  verificar(pdfConFirma.subarray(0, 5).toString() === '%PDF-', 'S13. PDF real del caso de Preview generado')
+  const srcWord = readFileSync('lib/documentGen/construirDocumentoWord.ts', 'utf8')
+  const srcPdf = readFileSync('lib/documentGen/generarPdfServidor.ts', 'utf8')
+  verificar(srcWord.includes('const piePagina = !agregarFirmaAutomatica(texto, enc) ? [] : [') && srcPdf.includes('if (agregarFirmaAutomatica(texto, enc)) {'),
+    'S14. Word y PDF aplican la misma regla de firma automática')
+  verificar(limpiar(casoReal) === casoReal, 'S15. El texto redactado (con su firma) no se modifica')
 
   console.log(fallos === 0 ? '\nTODO OK' : `\n${fallos} verificación(es) fallaron`)
   process.exit(fallos === 0 ? 0 : 1)

@@ -143,3 +143,33 @@ export function quitarDuplicadosInstitucionales(texto: string, enc: EncabezadoDo
   // Nunca dejar un documento sin contenido propio.
   return resultado.split('\n').filter((l) => l.trim()).length >= 2 ? resultado : texto
 }
+
+// --- Firma automática ---
+// Word y PDF terminan con la firma del docente. Se agrega solo si el texto no
+// termina ya con una firma propia, que se conserva íntegra (nunca se quita
+// ni se reescribe una firma: pudo pedirla el docente). Firma propia, en las
+// últimas líneas del documento:
+// - una fórmula de cierre ("Atentamente", "Cordialmente"…) seguida de al
+//   menos una línea —quien firma, su cargo, su escuela—, o
+// - el nombre confirmado del docente en una línea propia.
+// Un "Atentamente," sin nada después no es una firma: la automática lo
+// completa. Un espacio para que firme otra persona ("____ Firma del padre o
+// tutor") tampoco. Los documentos pedagógicos (y sus vistas previas)
+// conservan siempre su firma automática.
+const CIERRE_FIRMA = /^(atentamente|atte|cordialmente|saludos cordiales|respetuosamente|sinceramente|reciba un cordial saludo)$/
+const TRATAMIENTO = /^(profr?a?|prof|mtr[oa]|lic|lcda?)\.?\s+/
+const LINEAS_FINALES = 6
+
+export function tieneFirmaPropia(texto: string, enc: EncabezadoDocumento): boolean {
+  const finales = texto.split('\n').map((l) => l.trim()).filter(Boolean).slice(-LINEAS_FINALES)
+  const cierre = finales.findIndex((l) => CIERRE_FIRMA.test(normalizarDato(l).replace(/[:!]+$/, '')))
+  if (cierre !== -1 && cierre < finales.length - 1) return true
+  const docente = enc.docente && enc.docente !== 'Docente' ? normalizarDato(enc.docente) : null
+  return docente !== null && finales.slice(-3).some((l) => normalizarDato(l).replace(TRATAMIENTO, '') === docente)
+}
+
+export function agregarFirmaAutomatica(texto: string, enc: EncabezadoDocumento): boolean {
+  const titulo = texto.split('\n').map((l) => l.trim()).find((l) => l && !esEncabezadoDuplicado(l, enc))
+  if (titulo && esDocumentoPedagogico(titulo)) return true
+  return !tieneFirmaPropia(texto, enc)
+}

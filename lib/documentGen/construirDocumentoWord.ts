@@ -9,7 +9,7 @@
 // resultado, que SÍ es específico de cada entorno (navegador vs Node).
 
 import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType } from 'docx'
-import { prepararEncabezado } from './encabezadoDocumento'
+import { agregarFirmaAutomatica, prepararEncabezado } from './encabezadoDocumento'
 
 const preprocesarTexto = (texto: string): string[] => {
   return texto
@@ -189,7 +189,9 @@ export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?
     }
   }
 
-  const piePagina = [
+  // Firma automática solo si el texto no termina ya con una firma propia
+  // (ver agregarFirmaAutomatica en encabezadoDocumento.ts).
+  const piePagina = !agregarFirmaAutomatica(texto, enc) ? [] : [
     new Paragraph({ children: [new TextRun('')], spacing: { before: 480 } }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '______________________________', size: 20, color: COLOR_TEXTO_SUAVE })] }),
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: enc.docente, bold: true, size: 20, color: COLOR_TEXTO })], spacing: { before: 80 } }),

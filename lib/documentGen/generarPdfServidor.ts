@@ -18,7 +18,7 @@
 
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { analizarContenido } from './parseContenido'
-import { prepararEncabezado, quitarDuplicadosInstitucionales } from './encabezadoDocumento'
+import { agregarFirmaAutomatica, prepararEncabezado, quitarDuplicadosInstitucionales } from './encabezadoDocumento'
 
 // Igual que en el motor anterior: los emoji del formato MODO DOCUMENTO
 // (📋, 🎯, 📅...) no tienen glifo en las fuentes estándar — se quitan
@@ -220,10 +220,14 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
     }
   }
 
-  y -= 24
-  dibujarLineaCentrada('______________________________', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
-  dibujarLineaCentrada(enc.docente, fuentes.negrita, 10, COLOR_TEXTO)
-  dibujarLineaCentrada('Docente de grupo', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+  // Firma automática solo si el texto no termina ya con una firma propia
+  // (ver agregarFirmaAutomatica en encabezadoDocumento.ts).
+  if (agregarFirmaAutomatica(texto, enc)) {
+    y -= 24
+    dibujarLineaCentrada('______________________________', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+    dibujarLineaCentrada(enc.docente, fuentes.negrita, 10, COLOR_TEXTO)
+    dibujarLineaCentrada('Docente de grupo', fuentes.regular, 10, COLOR_TEXTO_SUAVE)
+  }
 
   const bytes = await pdfDoc.save()
   return Buffer.from(bytes)
