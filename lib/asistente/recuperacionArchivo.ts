@@ -7,6 +7,7 @@
 // iPhone, Android y web. Lo usan las tarjetas del Chat (enlace vencido) y
 // Historial; nunca regenera el documento ni llama a la IA.
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabaseClient'
 
 export async function tokenSesionVigente(): Promise<string | null> {
@@ -54,6 +55,42 @@ export function accionesArchivoOriginal(formato: string | null | undefined): Acc
     modo,
     etiqueta: modo === 'ver' ? '👁️ Ver PDF' : formato === 'pdf' ? '⬇️ Descargar PDF' : '⬇️ Descargar original',
   }))
+}
+
+// Ambos originales de una planeación aprobada (Hito 1, Parte 3). Su único
+// registro en Historial está vinculado al Word; el PDF original vive en
+// planeacion_proyectos.evaluacion.documento_pdf, junto al Word. Se ubica
+// por el archivo_id del Word con el cliente del docente: RLS solo deja
+// ver proyectos de SUS planeaciones. Nunca crea registros ni regenera
+// nada, y no es autoridad: al recuperar, el servidor vuelve a verificar
+// que el archivo sea del docente (recuperarArchivoPropio).
+export type ArchivoOriginalDocumento = { archivoId: string; formato: string }
+const UUID_ARCHIVO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export async function pdfOriginalDePlaneacion(sb: Pick<SupabaseClient, 'from'>, archivoIdWord: string): Promise<ArchivoOriginalDocumento | null> {
+  if (!UUID_ARCHIVO.test(archivoIdWord)) return null
+  try {
+    const { data } = await sb.from('planeacion_proyectos').select('evaluacion').eq('evaluacion->documento_word->>archivo_id', archivoIdWord).limit(1)
+    const evaluacion = (data?.[0] as { evaluacion?: { documento_word?: { archivo_id?: unknown }; documento_pdf?: { archivo_id?: unknown } } } | undefined)?.evaluacion
+    const pdf = evaluacion?.documento_pdf?.archivo_id
+    return evaluacion?.documento_word?.archivo_id === archivoIdWord && typeof pdf === 'string' && UUID_ARCHIVO.test(pdf) && pdf !== archivoIdWord
+      ? { archivoId: pdf, formato: 'pdf' }
+      : null
+  } catch {
+    return null
+  }
+}
+
+// Acciones de los originales de un documento: con un solo archivo, las de
+// siempre (accionesArchivoOriginal); con Word y PDF, las del PDF (Ver y
+// Descargar) y "Descargar Word".
+export type AccionArchivoDocumento = AccionArchivoOriginal & { archivoId: string }
+export function accionesArchivosOriginales(archivos: ArchivoOriginalDocumento[]): AccionArchivoDocumento[] {
+  const validos = archivos.filter((a, i) => UUID_ARCHIVO.test(a.archivoId) && accionesArchivoOriginal(a.formato).length > 0 && archivos.findIndex((b) => b.archivoId === a.archivoId) === i)
+  if (validos.length <= 1) return validos.flatMap((a) => accionesArchivoOriginal(a.formato).map((x) => ({ ...x, archivoId: a.archivoId })))
+  const orden = (f: string) => (f === 'pdf' ? 0 : 1)
+  return [...validos].sort((a, b) => orden(a.formato) - orden(b.formato)).flatMap((a) =>
+    accionesArchivoOriginal(a.formato).map((x) => ({ ...x, archivoId: a.archivoId, etiqueta: a.formato === 'word' ? '⬇️ Descargar Word' : x.etiqueta })))
 }
 
 // El archivo se identifica por archivoId (registro en archivos_generados)

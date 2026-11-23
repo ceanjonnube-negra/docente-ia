@@ -23,6 +23,12 @@ import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
 import { configurarClienteRegistroArchivos } from '../lib/documentGen/registroArchivos'
 import { listarPlaneaciones } from '../lib/planeacion/persistencia'
 import type { SesionContexto } from '../lib/sesionContexto'
+import { prepararContextoCurricularPlaneacion, cargarCandidatosCurricularesGrupo } from '../lib/planeacion/resolverCurricularPlaneacion'
+import { completarBorradorCurricular } from '../lib/planeacion/completarBorradorCurricular'
+import { decidirCurricularAprobacion, resolverPeriodoPorFechaInicio, type TrazabilidadCurricularAprobada } from '../lib/planeacion/curricularAprobacion'
+import { ENCABEZADO_IDENTIDAD_VISIBLE, ROTULO_PENDIENTE_VALIDACION } from '../lib/planeacion/identidadCurricularVisibleBorrador'
+import { documentoParaHistorial } from '../lib/asistente/documentos'
+import { baseCurricular, conProgramaAnalitico } from './fixtures/curriculoPlaneacionFicticio'
 
 let fallos = 0
 function verificar(condicion: boolean, mensaje: string) {
@@ -71,6 +77,12 @@ class ConsultaFalsa {
 
   eq(columna: string, valor: unknown) {
     this.filtros.push([columna, valor])
+    return this
+  }
+
+  // Carga curricular (Hito 1, Parte 3): .in(col, valores).
+  in(columna: string, valores: unknown[]) {
+    this.condiciones.push((f) => valores.includes(f[columna]))
     return this
   }
 
@@ -131,6 +143,7 @@ class ConsultaFalsa {
 
     let resultado = filas.filter((f) =>
       this.filtros.every(([c, v]) => f[c] === v) &&
+      this.condiciones.every((p) => p(f)) &&
       this.rangos.every(([, c, v]) => Number(f[c]) > Number(v))
     )
     if (this.orden) {
@@ -762,6 +775,242 @@ async function main() {
       verificar(real && /Grado: 4° +Grupo: B(\s|$)/.test(t), `AB3. ${nombre}: "Grado: 4° Grupo: B"`)
       verificar(real && !/Grupo: A(\s|$)/.test(t), `AB4. ${nombre}: nunca "Grupo: A" (el del perfil)`)
       verificar(real && t.includes('Escuela Contraste AB'), `AB5. ${nombre}: conserva la escuela del perfil`)
+    }
+  }
+
+  // ================================================================
+  // HITO 1, PARTE 3 — aprobación curricular, trazabilidad, vínculos con
+  // evaluación y periodo, y archivos originales Word/PDF (B1/B2).
+  // ================================================================
+  {
+    const TITULO = 'Cuerpo humano: estructura externa, acciones para su cuidado'
+    const PDA_CUERPO = 'Reconoce la estructura externa del cuerpo humano y acciones para cuidarlo.'
+    const REGEX_TECNICO = /\bC-[0-9A-Z]{7}\b|sello|REFERENCIAS_CURRICULARES|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}|📎|¿Deseas/i
+    // Datos: los base + el currículo ficticio; los grupos ficticios son del docente 1.
+    const datosCurriculares = (curriculo: Record<string, Fila[]>, periodos: Fila[] = []): Record<string, Fila[]> => {
+      const d = datosBase()
+      const extra = Object.fromEntries(Object.entries(curriculo).filter(([t]) => t !== 'grupos'))
+      return {
+        ...d,
+        ...extra,
+        grupos: [...d.grupos, ...curriculo.grupos.map((g) => ({ ...g, docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' }))],
+        inscripciones: [...d.inscripciones, { grupo_id: 'grupo-3a', estatus: 'activo', alumnos: { id: 'a3', nombre: 'Carla Ruiz', curp: null, sexo: 'M', fecha_nacimiento: null } }, { grupo_id: 'grupo-4b', estatus: 'activo', alumnos: { id: 'a4', nombre: 'Diego Sol', curp: null, sexo: 'H', fecha_nacimiento: null } }, { grupo_id: 'grupo-sec', estatus: 'activo', alumnos: { id: 'a5', nombre: 'Elena Mar', curp: null, sexo: 'M', fecha_nacimiento: null } }],
+        periodos_evaluacion: periodos,
+      }
+    }
+    const PERIODOS = [
+      { id: 'p1', ciclo_escolar_id: 'ciclo-1', numero_periodo: 1, nombre: 'Primer trimestre', fecha_inicio: '2026-08-01', fecha_fin: '2026-11-30' },
+      { id: 'p2', ciclo_escolar_id: 'ciclo-1', numero_periodo: 2, nombre: 'Segundo trimestre', fecha_inicio: '2026-12-01', fecha_fin: '2027-03-15' },
+    ]
+    // Borrador de la Parte 2: el modelo copió el título del catálogo y la
+    // sección la añadió el servidor (con sus PDA reales).
+    const borradorParte2 = async (datos: Record<string, Fila[]>, grupo: string, contenidos: string, pda = 'ninguno', nombre = 'Cuidamos nuestro cuerpo') => {
+      const textoModelo = construirBloque([], { Nombre: nombre, Contenidos: contenidos, PDA: pda, 'Campos formativos': 'Saberes y Pensamiento Científico' }).replace(/\n\n¿Deseas corregir algo o aprobarla para guardarla\?$/, '')
+      const { sb } = clienteFalso(DOCENTE_1, datos)
+      const ctx = await prepararContextoCurricularPlaneacion(sb, grupo, { tema: 'cuerpo humano' })
+      const completado = completarBorradorCurricular({ textoModelo, curricular: ctx, textosDocente: ['Planeación del cuerpo humano'] })!
+      return textoModelo + completado.bloqueServidor
+    }
+    const ses = (grupo: string) => sesion({ grupo_activo_id: grupo, grupo_activo_datos: { grado: '3', grupo: 'A' } })
+
+    // H1. Catálogo provisional: aprobación completa con vínculos y originales.
+    {
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'user', content: 'Planeación del cuerpo humano' }, { role: 'assistant', content: mensaje }], 'Apruébala')
+      verificar(r.ok === true, 'H1a. Borrador de la Parte 2 (catálogo provisional) se aprueba')
+      const pp = interno._tabla('planeacion_proyectos')[0] as { id: string; contenidos: string[]; pda: string[]; evaluacion: Record<string, unknown> }
+      const ps = interno._tabla('proyectos_seguimiento')[0] as { id: string; planeacion_proyecto_id: string | null; periodo_evaluacion_id: string | null; hoja_id: string | null }
+      const pl = interno._tabla('planeaciones')[0] as { periodo_evaluacion_id: string | null }
+      const traz = pp?.evaluacion?.trazabilidad_curricular as TrazabilidadCurricularAprobada | undefined
+      verificar(traz?.esquema === 'planeacion-curricular-v1' && traz.fuente === 'catalogo_app' && traz.estadoVerificacion === 'pendiente_validacion_oficial' && traz.grupoId === 'grupo-3a'
+        && traz.nivelEducativo === 'primaria' && traz.gradoClave === '3' && traz.curriculoFaseClave === 'fase_4' && traz.curriculoVersionId === 'version-curricular' && traz.programaAnaliticoId === null,
+        'H1b. Trazabilidad: grupo, nivel, grado, fase, versión, fuente y estado (pendiente de validación)')
+      verificar(traz?.items.length === 1 && traz.items[0].curriculoContenidoId != null && traz.items[0].texto === TITULO && traz.items[0].pda.map((p) => p.texto).join() === PDA_CUERPO && !!traz.items[0].pda[0].curriculoPdaId,
+        'H1c. Trazabilidad: ids reales del contenido y de sus PDA')
+      verificar(pp.contenidos.join() === TITULO && pp.pda.join() === PDA_CUERPO, 'H1d. planeacion_proyectos guarda los contenidos y PDA validados (no "ninguno")')
+      verificar(ps.planeacion_proyecto_id === pp.id && ps.periodo_evaluacion_id === 'p1' && pl.periodo_evaluacion_id === 'p1' && ps.hoja_id === (pp.evaluacion.hoja_id as string),
+        'H1e. Vínculos: proyecto de seguimiento → proyecto de planeación, periodo por fecha de inicio y su hoja canónica')
+      const ev = pp.evaluacion as { documento_word?: { archivo_id?: string }; documento_pdf?: { archivo_id?: string } }
+      verificar(r.ok && !!r.documentoPlaneacion?.word.archivoId && r.documentoPlaneacion.word.archivoId === ev.documento_word?.archivo_id && !!r.documentoPlaneacion.pdf.archivoId && r.documentoPlaneacion.pdf.archivoId === ev.documento_pdf?.archivo_id
+        && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.word.archivoId) && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.pdf.archivoId),
+        'H1f. Word y PDF conservan su archivoId real (registrados) en la respuesta y en los metadatos persistidos')
+      const def = r.ok ? r.documentoPlaneacion?.contenidoDefinitivo ?? '' : ''
+      verificar(def.split(ENCABEZADO_IDENTIDAD_VISIBLE).length === 2 && def.split(PDA_CUERPO).length === 2 && def.includes(`Fuente: ${ROTULO_PENDIENTE_VALIDACION}`) && !REGEX_TECNICO.test(def),
+        'H1g. Documento definitivo: una sola sección de contenidos y PDA, rótulo correcto, sin resumen, pregunta ni datos técnicos')
+      verificar(def.startsWith('Aquí está tu borrador completo.') && def.indexOf(ENCABEZADO_IDENTIDAD_VISIBLE) > 0, 'H1h. El documento definitivo conserva el cuerpo aprobado, con la sección después de él')
+      const archivos = interno['archivosStorage'] as Map<string, Buffer>
+      const planWord = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.docx'))
+      const xml = planWord ? await (await JSZip.loadAsync(planWord[1])).file('word/document.xml')!.async('string') : ''
+      verificar(xml.split('CONTENIDOS Y PDA DE ESTA PLANEACIÓN').length === 2 && xml.includes(PDA_CUERPO.slice(0, 40)) && !/RESUMEN PARA GUARDAR|Deseas corregir/.test(xml), 'H1i. Word real: una sola sección curricular, sin resumen ni pregunta')
+      const hist = documentoParaHistorial('Listo, guardé la planeación de Cuidamos nuestro cuerpo.', { contenidoOriginal: def, archivos: [{ tipo: 'word', nombre: 'a.docx', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.word.archivoId : undefined, grupoAcademico: { grado: '3°', grupo: 'A' } }, { tipo: 'pdf', nombre: 'a.pdf', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.pdf.archivoId : undefined }] })
+      verificar(hist?.origen === 'archivo' && hist.archivo?.formato === 'word' && hist.archivo.id === (r.ok ? r.documentoPlaneacion?.word.archivoId : '') && hist.contenido === def,
+        'H1j. Historial (B2): un solo registro de la planeación aprobada, vinculado al Word original; el PDF queda recuperable por su archivoId')
+
+      // H2. Reintento: sin duplicados ni sobrescritura.
+      const conteos = () => ['planeaciones', 'planeacion_proyectos', 'proyectos_seguimiento', 'hojas_evaluacion'].map((t) => interno._tabla(t).length).join()
+      const antes = conteos()
+      const registrosAntes = registroArchivos.length
+      const r2 = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      verificar(!r2.ok && r2.codigo === 'YA_GUARDADA' && conteos() === antes && registroArchivos.length === registrosAntes, 'H2. Reintento: YA_GUARDADA, sin filas, hojas ni archivos duplicados')
+    }
+
+    // H3. Recuperación de un intento incompleto: trazabilidad consolidada intacta y vínculo legado completado.
+    {
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      const consolidada = { esquema: 'planeacion-curricular-v1', marca: 'consolidada-antes' }
+      datos.planeaciones.push({ id: 'pl-prev', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico' })
+      datos.planeacion_proyectos.push({ id: 'pp-prev', planeacion_id: 'pl-prev', nombre: 'Cuidamos nuestro cuerpo', evaluacion: { trazabilidad_curricular: consolidada } })
+      datos.proyectos_seguimiento.push({ id: 'ps-prev', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: null, periodo_evaluacion_id: null })
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      const pp = interno._tabla('planeacion_proyectos') as { id: string; evaluacion: Record<string, unknown> }[]
+      const ps = interno._tabla('proyectos_seguimiento') as { id: string; planeacion_proyecto_id: string | null; periodo_evaluacion_id: string | null }[]
+      verificar(r.ok && pp.length === 1 && ps.length === 1 && interno._tabla('planeaciones').length === 1, 'H3a. Recupera el intento anterior sin crear filas nuevas')
+      verificar(JSON.stringify(pp[0].evaluacion.trazabilidad_curricular) === JSON.stringify(consolidada), 'H3b. La trazabilidad ya consolidada no se sobrescribe')
+      verificar(ps[0].planeacion_proyecto_id === 'pp-prev' && ps[0].periodo_evaluacion_id === 'p1', 'H3c. Proyecto de seguimiento legado: se completan vínculo y periodo que faltaban')
+    }
+    // H3d. Un vínculo existente con otra planeación nunca se reasigna.
+    {
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      datos.proyectos_seguimiento.push({ id: 'ps-otro', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: 'pp-de-otra', periodo_evaluacion_id: 'p2' })
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      const ps = interno._tabla('proyectos_seguimiento')[0] as { planeacion_proyecto_id: string; periodo_evaluacion_id: string }
+      verificar(ps.planeacion_proyecto_id === 'pp-de-otra' && ps.periodo_evaluacion_id === 'p2', 'H3d. Un vínculo o periodo ya asignados nunca se reasignan')
+    }
+
+    // H4. Periodo: sin periodos, sin coincidencia o solapados → ninguno, sin bloquear.
+    for (const [periodos, etiqueta] of [
+      [[], 'sin periodos configurados'],
+      [[{ id: 'p9', ciclo_escolar_id: 'ciclo-1', nombre: 'Tercer trimestre', fecha_inicio: '2027-03-16', fecha_fin: '2027-07-15' }], 'sin periodo que contenga la fecha'],
+      [[...PERIODOS, { id: 'p-solapado', ciclo_escolar_id: 'ciclo-1', nombre: 'Periodo solapado', fecha_inicio: '2026-08-05', fecha_fin: '2026-09-30' }], 'periodos solapados (ambigüedad)'],
+      [[{ ...PERIODOS[0], id: 'p-otro-ciclo', ciclo_escolar_id: 'ciclo-2' }], 'periodo de otro ciclo'],
+    ] as [Fila[], string][]) {
+      const datos = datosCurriculares(baseCurricular(), periodos)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      const ps = interno._tabla('proyectos_seguimiento')[0] as { periodo_evaluacion_id: string | null } | undefined
+      verificar(r.ok && ps?.periodo_evaluacion_id === null && (interno._tabla('planeaciones')[0] as { periodo_evaluacion_id: string | null }).periodo_evaluacion_id === null, `H4. ${etiqueta}: se aprueba sin periodo (nunca uno arbitrario)`)
+    }
+    verificar(resolverPeriodoPorFechaInicio(PERIODOS, '2026-12-01')?.id === 'p2' && resolverPeriodoPorFechaInicio(PERIODOS, '2026-11-30')?.id === 'p1' && resolverPeriodoPorFechaInicio(PERIODOS, '2027-04-01') === null,
+      'H4b. El periodo se decide por la fecha de inicio, con límites inclusivos')
+
+    // H5. Programa Analítico, docente, propuestas, cambios y alteraciones (regla pura).
+    const ctxCarga = async (curriculo: Record<string, Fila[]>, grupo: string) => cargarCandidatosCurricularesGrupo(clienteFalso(DOCENTE_1, datosCurriculares(curriculo)).sb, grupo)
+    {
+      const datos = datosCurriculares(conProgramaAnalitico(baseCurricular()), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-4b', 'Historias del barrio contadas por las familias; Huerto escolar de la comunidad')
+      const r = decidirCurricularAprobacion(await ctxCarga(conProgramaAnalitico(baseCurricular()), 'grupo-4b'), 'grupo-4b', mensaje, extraerResumenBorrador([{ role: 'assistant', content: mensaje }])!, [])
+      verificar(r.trazabilidad.fuente === 'programa_analitico' && r.trazabilidad.programaAnaliticoId === 'pa-4b' && r.trazabilidad.programaAnaliticoVersionId === 'pav-2'
+        && r.trazabilidad.items.map((i) => i.decision).sort().join() === 'contextualizado,local' && r.trazabilidad.items.every((i) => i.programaAnaliticoItemId === i.id),
+        'H5a. PA: fuente, PA y versión, items con su decisión e id del item del PA')
+    }
+    {
+      const resumen = { contenidos: [TITULO, 'Educación financiera para niños (indicado por el docente)', 'Hábitos de higiene en casa (indicado por el docente)'], pda: ['Explica cómo ahorra su familia'] }
+      const mensaje = `Borrador\n\n📎 RESUMEN PARA GUARDAR\nNombre: X\nContenidos: ${resumen.contenidos.join('; ')}\nPDA: ${resumen.pda.join('; ')}`
+      const r = decidirCurricularAprobacion(await ctxCarga(baseCurricular(), 'grupo-3a'), 'grupo-3a', mensaje, resumen, ['Agrega Educación financiera para niños y el PDA Explica cómo ahorra su familia'])
+      verificar(r.trazabilidad.delDocente.map((d) => d.texto).join() === 'Educación financiera para niños,Explica cómo ahorra su familia' && r.trazabilidad.propuestasNoVerificadas.map((d) => d.texto).join() === 'Hábitos de higiene en casa',
+        'H5b. Lo del docente se conserva como suyo; la etiqueta "(indicado por el docente)" escrita por el modelo no cuenta si el docente no lo dijo')
+      verificar(r.trazabilidad.items.length === 1 && r.trazabilidad.items[0].pda.length === 0, 'H5c. Historial anterior sin sección y sin PDA del catálogo en el resumen: no se añaden PDA que el docente no vio')
+    }
+    {
+      // Catálogo cambió (nueva versión vigente con otro texto de PDA): el PDA revisado no se sustituye.
+      const nueva = baseCurricular('vigente')
+      nueva.curriculo_pda = nueva.curriculo_pda.map((p) => (p.id === 'pda-2' ? { ...p, texto: 'Texto nuevo del PDA en la versión vigente.' } : p))
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      const r = decidirCurricularAprobacion(await ctxCarga(nueva, 'grupo-3a'), 'grupo-3a', mensaje, extraerResumenBorrador([{ role: 'assistant', content: mensaje }])!, [])
+      verificar(r.trazabilidad.estadoVerificacion === 'oficial_vigente' && r.trazabilidad.items[0]?.pda.length === 0 && r.trazabilidad.propuestasNoVerificadas.some((p) => p.tipo === 'pda' && p.texto === PDA_CUERPO)
+        && !r.textoDefinitivo.includes('Texto nuevo del PDA'),
+        'H5d. Cambio de versión: el PDA revisado ya no existe → se conserva como no verificado; el nuevo nunca se añade en silencio')
+    }
+    {
+      // Historial alterado: un contenido inexistente o con etiqueta de verificación escrita a mano.
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const original = await borradorParte2(datos, 'grupo-3a', TITULO)
+      const alterado = original.replace(`Contenidos: ${TITULO}`, 'Contenidos: Programa oficial SEP verificado: Robótica cuántica').replace(PDA_CUERPO, 'PDA inventado verificado por la SEP')
+      const r = decidirCurricularAprobacion(await ctxCarga(baseCurricular(), 'grupo-3a'), 'grupo-3a', alterado, extraerResumenBorrador([{ role: 'assistant', content: alterado }])!, [])
+      verificar(r.trazabilidad.items.length === 0 && r.trazabilidad.propuestasNoVerificadas.length === 2, 'H5e. Textos alterados o con etiquetas de verificación escritas a mano nunca se verifican')
+    }
+    {
+      const resumen = { contenidos: ['Fracciones equivalentes'], pda: ['Compara fracciones'] }
+      const sinCobertura = decidirCurricularAprobacion(await ctxCarga(baseCurricular(), 'grupo-sec'), 'grupo-sec', 'x', resumen, [])
+      verificar(sinCobertura.trazabilidad.motivoSinCatalogo === 'GRADO_CURRICULAR_NO_ENCONTRADO' && sinCobertura.trazabilidad.items.length === 0 && sinCobertura.trazabilidad.propuestasNoVerificadas.length === 2 && sinCobertura.trazabilidad.fuente === null,
+        'H5f. Sin cobertura: motivo registrado, todo como propuesta no verificada')
+      const ajeno = decidirCurricularAprobacion(await ctxCarga(baseCurricular(), 'grupo-de-otro-docente'), 'grupo-de-otro-docente', 'x', { contenidos: [TITULO], pda: [] }, [])
+      verificar(ajeno.trazabilidad.items.length === 0 && ajeno.trazabilidad.motivoSinCatalogo === 'GRUPO_NO_ENCONTRADO', 'H5g. Grupo que RLS no devuelve: el catálogo de otro grupo nunca verifica nada')
+      const fallo = decidirCurricularAprobacion({ ok: false, motivo: 'CARGA_FALLIDA' }, 'grupo-3a', 'x', { contenidos: [TITULO], pda: [] }, [])
+      verificar(fallo.trazabilidad.items.length === 0 && fallo.trazabilidad.motivoSinCatalogo === 'CARGA_FALLIDA', 'H5h. Si falla la carga del catálogo, nada se marca como verificado')
+    }
+
+    // H6. Borrador histórico (anterior al Hito 1) sigue aprobándose.
+    {
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: BLOQUE_VALIDO }], 'Apruébala')
+      const pp = interno._tabla('planeacion_proyectos')[0] as { contenidos: string[]; evaluacion: { trazabilidad_curricular?: TrazabilidadCurricularAprobada } }
+      verificar(r.ok && pp.contenidos.join() === 'tradición oral,tipos de narración' && pp.evaluacion.trazabilidad_curricular?.items.length === 0
+        && pp.evaluacion.trazabilidad_curricular.propuestasNoVerificadas.length === 4,
+        'H6. Borrador histórico: se aprueba; sus contenidos y PDA se conservan literales como no verificados')
+    }
+
+    // H8. Reintento tras un cambio curricular: la fuente es la trazabilidad consolidada.
+    {
+      const datosViejos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datosViejos, 'grupo-3a', TITULO)
+      const resumen = extraerResumenBorrador([{ role: 'assistant', content: mensaje }])!
+      const primera = decidirCurricularAprobacion(await ctxCarga(baseCurricular(), 'grupo-3a'), 'grupo-3a', mensaje, resumen, [])
+      // Catálogo actual: versión vigente con otro texto para ese PDA.
+      const nueva = baseCurricular('vigente')
+      nueva.curriculo_pda = nueva.curriculo_pda.map((x) => (x.id === 'pda-2' ? { ...x, texto: 'Texto nuevo del PDA en la versión vigente.' } : x))
+      const datos = datosCurriculares(nueva, PERIODOS)
+      const WORD_PREVIO = '7a1b2c3d-0000-4000-8000-00000000aaaa'
+      datos.planeaciones.push({ id: 'pl-h8', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico' })
+      datos.planeacion_proyectos.push({ id: 'pp-h8', planeacion_id: 'pl-h8', nombre: 'Cuidamos nuestro cuerpo', contenidos: [TITULO], pda: [PDA_CUERPO], evaluacion: { trazabilidad_curricular: primera.trazabilidad, documento_word: { nombre: 'Plan.docx', url: 'https://fake-storage.local/previo.docx', archivo_id: WORD_PREVIO, grupo_academico: { grado: '3', grupo: 'A' } } } })
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const registrosAntes = registroArchivos.length
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      const pp = interno._tabla('planeacion_proyectos') as { evaluacion: { trazabilidad_curricular: unknown; documento_word: { archivo_id: string }; documento_pdf?: { archivo_id: string } } }[]
+      const def = r.ok ? r.documentoPlaneacion?.contenidoDefinitivo ?? '' : ''
+      verificar(r.ok && JSON.stringify(pp[0].evaluacion.trazabilidad_curricular) === JSON.stringify(primera.trazabilidad), 'H8a. Reintento: la trazabilidad consolidada se conserva intacta')
+      verificar(def.includes(PDA_CUERPO) && !def.includes('Texto nuevo del PDA') && def.includes('Fuente: Catálogo curricular de la app — pendiente de validación oficial'),
+        'H8b. El documento que faltaba usa la identidad persistida, nunca la del catálogo posterior')
+      const traz = primera.trazabilidad
+      verificar(traz.items.every((i) => def.includes(i.texto) && i.pda.every((x) => def.includes(x.texto))) && def.split(ENCABEZADO_IDENTIDAD_VISIBLE).length === 2,
+        'H8c. Consistencia: cada contenido y PDA de la trazabilidad está en el documento, en una sola sección')
+      verificar(pp.length === 1 && interno._tabla('planeaciones').length === 1 && interno._tabla('proyectos_seguimiento').length === 1 && interno._tabla('hojas_evaluacion').length === 1,
+        'H8d. Sin proyectos, planeaciones ni hojas duplicados')
+      verificar(pp[0].evaluacion.documento_word.archivo_id === WORD_PREVIO && registroArchivos.length === registrosAntes + 1 && !!pp[0].evaluacion.documento_pdf?.archivo_id
+        && r.ok && r.documentoPlaneacion?.word.archivoId === WORD_PREVIO && r.documentoPlaneacion.pdf.archivoId === pp[0].evaluacion.documento_pdf?.archivo_id,
+        'H8e. El Word ya registrado se reutiliza; solo se genera y registra el PDF que faltaba')
+      const reg = registroArchivos[registroArchivos.length - 1] as { docente_id?: string; clase?: string }
+      verificar(reg.docente_id === 'docente-1' && reg.clase === 'conservar', 'H8f. El archivo nuevo queda registrado a nombre del docente y protegido (conservar)')
+    }
+    // H9. Proyecto anterior sin trazabilidad y con otros contenidos: no se reconstruye por aproximación.
+    for (const [contenidosPrevios, coincide, etiqueta] of [[['Otro contenido distinto'], false, 'no coincide'], [[TITULO], true, 'coincide']] as [string[], boolean, string][]) {
+      const datos = datosCurriculares(baseCurricular(), PERIODOS)
+      const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
+      datos.planeaciones.push({ id: 'pl-h9', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico' })
+      datos.planeacion_proyectos.push({ id: 'pp-h9', planeacion_id: 'pl-h9', nombre: 'Cuidamos nuestro cuerpo', contenidos: contenidosPrevios, pda: coincide ? [PDA_CUERPO] : [], evaluacion: {} })
+      const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+      const registrosAntes = registroArchivos.length
+      const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
+      const ev = (interno._tabla('planeacion_proyectos')[0] as { evaluacion: { trazabilidad_curricular?: unknown } }).evaluacion
+      if (coincide) verificar(r.ok && !!r.documentoPlaneacion && !!ev.trazabilidad_curricular && registroArchivos.length === registrosAntes + 2, 'H9b. Proyecto anterior sin trazabilidad que coincide: se consolida y se generan los documentos')
+      else verificar(r.ok && r.documentoPlaneacion === null && ev.trazabilidad_curricular === undefined && registroArchivos.length === registrosAntes, `H9a. Proyecto anterior sin trazabilidad que ${etiqueta}: ni documentos ni trazabilidad por aproximación (la aprobación sigue)`)
+    }
+
+    // H7. Ruta del Chat: tarjetas con archivoId y contenido definitivo para el historial.
+    {
+      const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+      verificar(ruta.includes("archivoId: word.archivoId, grupoAcademico: word.grupoAcademico, tipoDocumento: 'planeacion'") && ruta.includes("archivoId: pdf.archivoId, grupoAcademico: pdf.grupoAcademico, tipoDocumento: 'planeacion'")
+        && ruta.includes('if (word.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:'),
+        'H7. Tarjetas de la planeación aprobada con archivoId (B1) y contenido definitivo para el registro del historial (B2)')
     }
   }
   } finally {

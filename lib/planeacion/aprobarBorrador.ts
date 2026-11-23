@@ -35,8 +35,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { mensajeGrupoNoDisponible, type SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
-import { resolverPeriodoEvaluacionActual } from './generarBorrador'
-import { extraerTextoCompletoBorrador, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, resolverPeriodoPorFechaInicio, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
@@ -62,7 +62,11 @@ export type CodigoErrorAprobacion =
 // solo presente en el pdf — segunda URL firmada del mismo archivo sin
 // `download`, para el botón "Ver PDF". `url` sigue siendo, sin ningún
 // cambio, la URL de descarga forzada de siempre.
-export type DocumentoPlaneacionGenerado = { nombre: string; url: string; tamanoBytes?: number; urlVer?: string }
+// archivoId/grupoAcademico (Hito 1, Parte 3): registro real en
+// archivos_generados y grado/grupo con que se armó el encabezado — con
+// ellos la tarjeta recupera el original (B1) y el historial lo vincula
+// (B2). Ausentes en planeaciones anteriores: nunca se inventan.
+export type DocumentoPlaneacionGenerado = { nombre: string; url: string; tamanoBytes?: number; urlVer?: string; archivoId?: string; grupoAcademico?: { grado: string; grupo: string } }
 
 export type ResultadoAprobacion =
   // duracionDias viaja solo para el mensaje de confirmación (nunca es
@@ -75,7 +79,9 @@ export type ResultadoAprobacion =
   // completa (la planeación y la hoja ya quedaron guardadas) — el
   // docente siempre puede pedir el archivo después escribiendo en el
   // chat, igual que antes de que existiera esta mejora.
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado } | null }
+  // contenidoDefinitivo: texto con el que se generaron Word y PDF (el del
+  // registro del historial).
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado; contenidoDefinitivo: string } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
 
 type TurnoHistorial = { role: string; content: string }
@@ -89,13 +95,24 @@ type TurnoHistorial = { role: string; content: string }
 const ESTADO_FINAL_TRAS_APROBAR = 'publicada'
 const MENSAJE_ERROR_GENERICO = 'No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.'
 
-function construirProyecto(resumen: ResumenBorrador, planeacionId: string): DatosProyectoPlaneacion & { planeacion_id: string } {
+// Contenidos y PDA que se guardan: los de la identidad validada al aprobar
+// (catálogo, locales, del docente y propuestas, sin etiquetas ni
+// "ninguno"); sin identidad, los del resumen tal cual.
+function listasCurriculares(resumen: ResumenBorrador, curricular: CurricularAprobado): { contenidos: string[]; pda: string[] } {
+  const i = curricular.identidad
+  if (!i) return { contenidos: resumen.contenidos, pda: resumen.pda }
+  const deTipo = (tipo: 'contenido' | 'pda') => [...i.delDocente, ...i.propuestas].filter((r) => r.tipo === tipo).map((r) => r.texto)
+  return { contenidos: [...i.contenidos, ...i.contenidosLocales, ...deTipo('contenido')], pda: [...i.pda, ...deTipo('pda')] }
+}
+
+function construirProyecto(resumen: ResumenBorrador, planeacionId: string, curricular: CurricularAprobado): DatosProyectoPlaneacion & { planeacion_id: string } {
+  const { contenidos, pda } = listasCurriculares(resumen, curricular)
   return {
     planeacion_id: planeacionId,
     nombre: resumen.nombre,
     campos_formativos: resumen.camposFormativos,
-    contenidos: resumen.contenidos,
-    pda: resumen.pda,
+    contenidos,
+    pda,
     ejes_articuladores: resumen.ejesArticuladores,
     metodologia: resumen.metodologia,
     duracion_dias: resumen.duracionDias,
@@ -116,6 +133,9 @@ function construirProyecto(resumen: ResumenBorrador, planeacionId: string): Dato
       producto_final: resumen.productoFinal,
       evidencias: resumen.evidencias,
       fuente: 'chat_ia',
+      // En el MISMO insert que contenidos y pda: cualquier reintento
+      // encuentra la identidad curricular ya consolidada y coherente.
+      trazabilidad_curricular: curricular.trazabilidad,
     },
     orden: 1,
   }
@@ -162,7 +182,7 @@ async function buscarPorHuella(sb: SupabaseClient, sesion: SesionContexto, resum
   return (data as FilaHuella | null) ?? null
 }
 
-type FilaProyectoSeguimiento = { id: string; hoja_id: string | null }
+type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; planeacion_proyecto_id: string | null; periodo_evaluacion_id: string | null }
 
 // Misma huella (docente + grupo + nombre + fechas) aplicada a
 // proyectos_seguimiento — recupera un intento anterior incompleto en
@@ -170,7 +190,7 @@ type FilaProyectoSeguimiento = { id: string; hoja_id: string | null }
 async function buscarProyectoSeguimientoPorHuella(sb: SupabaseClient, sesion: SesionContexto, resumen: ResumenBorrador): Promise<FilaProyectoSeguimiento | null> {
   const { data } = await sb
     .from('proyectos_seguimiento')
-    .select('id, hoja_id')
+    .select('id, hoja_id, planeacion_proyecto_id, periodo_evaluacion_id')
     .eq('docente_id', sesion.docente_id)
     .eq('grupo_id', sesion.grupo_activo_id as string)
     .eq('nombre', resumen.nombre)
@@ -225,8 +245,18 @@ export async function aprobarBorradorPlaneacion(
   }
 
   try {
-    const periodos = sesion.ciclo_escolar_id ? await periodosEvaluacionDelCiclo(sb, sesion.ciclo_escolar_id) : []
-    const periodoActual = resolverPeriodoEvaluacionActual(periodos, sesion.fecha_actual)
+    // Identidad curricular del borrador aprobado, revalidada contra el
+    // catálogo del grupo recargado (RLS) — ver curricularAprobacion.ts.
+    // Sin IA; si falla, nada se marca como verificado y se sigue.
+    const textosDocente = [...historial.filter((h) => h.role === 'user').map((h) => h.content), mensajeDocente]
+    const curricular = await resolverCurricularAprobacion(sb, sesion.grupo_activo_id, seleccion.contenido, resumen, textosDocente)
+
+    // Periodo de evaluación: el único del ciclo del grupo que contiene la
+    // fecha de inicio de la planeación. Sin periodos o con ambigüedad,
+    // ninguno (nunca uno arbitrario) y la aprobación sigue.
+    const cicloDelGrupo = curricular.cicloEscolarGrupo ?? sesion.ciclo_escolar_id
+    const periodos = cicloDelGrupo ? await periodosEvaluacionDelCiclo(sb, cicloDelGrupo) : []
+    const periodoActual = resolverPeriodoPorFechaInicio(periodos, resumen.fechaInicio)
 
     // Huella estable (docente + grupo + nombre + fechas): distingue
     // "ya guardada de verdad" (version>=1) de "hay un intento anterior
@@ -288,19 +318,48 @@ export async function aprobarBorradorPlaneacion(
     // Word/PDF definitivos, y así nunca regenerarlos ni duplicarlos.
     const { data: proyectoPlaneacionExistente, error: errorBusquedaProyecto } = await sb
       .from('planeacion_proyectos')
-      .select('id, evaluacion')
+      .select('id, evaluacion, contenidos, pda')
       .eq('planeacion_id', planeacionId)
       .maybeSingle()
     if (errorBusquedaProyecto) {
       console.error('[PLANEACION_GENERAR][aprobar] fallo verificando el proyecto existente:', errorBusquedaProyecto)
       return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
     }
-    if (!proyectoPlaneacionExistente) {
-      const { error: errorProyecto } = await sb.from('planeacion_proyectos').insert(construirProyecto(resumen, planeacionId))
-      if (errorProyecto) {
+    let proyectoPlaneacionId: string
+    if (proyectoPlaneacionExistente) {
+      proyectoPlaneacionId = (proyectoPlaneacionExistente as { id: string }).id
+    } else {
+      const { data: proyectoCreado, error: errorProyecto } = await sb.from('planeacion_proyectos').insert(construirProyecto(resumen, planeacionId, curricular)).select('id').single()
+      if (errorProyecto || !proyectoCreado) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la relación:', errorProyecto)
         return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
       }
+      proyectoPlaneacionId = (proyectoCreado as { id: string }).id
+    }
+
+    // Fuente CANÓNICA de la identidad curricular para los documentos:
+    //   - proyecto recién creado → la recién validada (ya persistida);
+    //   - reintento con trazabilidad consolidada → SOLO la persistida,
+    //     nunca recalculada con el catálogo actual;
+    //   - proyecto anterior sin trazabilidad → la recién validada solo si
+    //     coincide con los contenidos y PDA ya guardados;
+    //   - cualquier otro caso → ninguna: no se reconstruye por
+    //     aproximación (no se generan los formatos que falten ni se
+    //     escribe trazabilidad).
+    const persistido = proyectoPlaneacionExistente as { evaluacion?: { trazabilidad_curricular?: unknown } | null; contenidos?: string[] | null; pda?: string[] | null } | null
+    const trazabilidadPersistida = persistido?.evaluacion?.trazabilidad_curricular
+    let canonico: { trazabilidad: TrazabilidadCurricularAprobada; textoDefinitivo: string } | null
+    if (!persistido) {
+      canonico = { trazabilidad: curricular.trazabilidad, textoDefinitivo: curricular.textoDefinitivo }
+    } else if (esTrazabilidadCanonica(trazabilidadPersistida)) {
+      canonico = { trazabilidad: trazabilidadPersistida, textoDefinitivo: textoDefinitivoConIdentidad(seleccion.contenido, identidadDesdeTrazabilidad(trazabilidadPersistida)) }
+    } else {
+      const listas = listasCurriculares(resumen, curricular)
+      const coincide = trazabilidadPersistida == null
+        && JSON.stringify(listas.contenidos) === JSON.stringify(persistido.contenidos ?? [])
+        && JSON.stringify(listas.pda) === JSON.stringify(persistido.pda ?? [])
+      canonico = coincide ? { trazabilidad: curricular.trazabilidad, textoDefinitivo: curricular.textoDefinitivo } : null
+      if (!coincide) console.warn('[PLANEACION_GENERAR][aprobar] sin identidad curricular canónica para este reintento — no se generan formatos faltantes ni se escribe trazabilidad')
     }
 
     // Fase 3: proyectos_seguimiento — reutiliza la relación disponible
@@ -314,6 +373,20 @@ export async function aprobarBorradorPlaneacion(
     if (proyectoSeguimientoExistente) {
       proyectoSeguimientoId = proyectoSeguimientoExistente.id
       hojaIdExistente = proyectoSeguimientoExistente.hoja_id
+      // Reintento o proyecto anterior a este vínculo: se completa SOLO lo
+      // que falta; un vínculo ya existente con otro proyecto de
+      // planeación nunca se reasigna.
+      const completar: Record<string, string> = {}
+      if (!proyectoSeguimientoExistente.planeacion_proyecto_id) completar.planeacion_proyecto_id = proyectoPlaneacionId
+      else if (proyectoSeguimientoExistente.planeacion_proyecto_id !== proyectoPlaneacionId) console.warn('[PLANEACION_GENERAR][aprobar] el proyecto de seguimiento ya está vinculado a otra planeación — no se reasigna')
+      if (!proyectoSeguimientoExistente.periodo_evaluacion_id && periodoActual) completar.periodo_evaluacion_id = periodoActual.id
+      if (Object.keys(completar).length > 0) {
+        const { error: errorCompletar } = await sb.from('proyectos_seguimiento').update(completar).eq('id', proyectoSeguimientoId)
+        if (errorCompletar) {
+          console.error('[PLANEACION_GENERAR][aprobar] fallo completando el vínculo del proyecto de seguimiento:', errorCompletar)
+          return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+        }
+      }
     } else {
       const camposFormativosValidos = resumen.camposFormativos.filter((c) => CAMPOS_FORMATIVOS_VALIDOS.has(c))
       const { data: proyectoSeguimiento, error: errorProyectoSeguimiento } = await sb
@@ -323,6 +396,7 @@ export async function aprobarBorradorPlaneacion(
           docente_id: sesion.docente_id,
           ciclo_escolar_id: sesion.ciclo_escolar_id,
           periodo_evaluacion_id: periodoActual?.id ?? null,
+          planeacion_proyecto_id: proyectoPlaneacionId,
           nombre: resumen.nombre,
           campos_formativos: camposFormativosValidos,
           fecha_inicio: resumen.fechaInicio,
@@ -392,26 +466,29 @@ export async function aprobarBorradorPlaneacion(
     // aprobada antes de este ajuste puede tener documento_pdf sin
     // url_ver — TarjetaDescarga simplemente sigue mostrando el botón
     // único de siempre para esos casos, sin romper nada.
-    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string }
+    // archivo_id/grupo_academico: registro real del archivo (B1/B2); ausentes
+    // en planeaciones anteriores.
+    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string; archivo_id?: string; grupo_academico?: { grado: string; grupo: string } }
     const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado } } | null)?.evaluacion
     let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
     let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
     if (!documentoWord || !documentoPdf) {
       try {
         // El MISMO turno del borrador vigente que se aprobó — no el
-        // último del historial, que puede ser un error o una aclaración.
-        const textoCompleto = extraerTextoCompletoBorrador(seleccion.contenido)
+        // último del historial, que puede ser un error o una aclaración —,
+        // con UNA sola sección de contenidos y PDA: la validada al aprobar.
+        const textoCompleto = canonico?.textoDefinitivo ?? ''
         if (textoCompleto) {
           if (!documentoWord) {
             const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
-            documentoWord = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes }
+            documentoWord = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, archivo_id: generado.archivoId, grupo_academico: generado.grupoAcademico }
           }
           if (!documentoPdf) {
             const generado = await ejecutarHerramientaDocumento('pdf', textoCompleto, perfil, null, sb, sesion.docente_id)
-            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, url_ver: generado.urlVer }
+            documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, url_ver: generado.urlVer, archivo_id: generado.archivoId, grupo_academico: generado.grupoAcademico }
           }
         } else {
-          console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: no se encontró el texto completo del borrador en el historial — se omite Word/PDF definitivos')
+          console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: sin texto definitivo canónico — se omiten Word/PDF definitivos')
         }
       } catch (e) {
         console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: fallo generando Word/PDF definitivos de la planeación (no bloquea la aprobación):', e)
@@ -432,6 +509,9 @@ export async function aprobarBorradorPlaneacion(
           proyecto_seguimiento_id: proyectoSeguimientoId,
           hoja_id: resultadoHoja.hojaId,
           hoja_identificador_visible: resultadoHoja.identificadorVisible,
+          // Trazabilidad ya consolidada (reintento) nunca se sobrescribe;
+          // sin fuente canónica no se escribe ninguna.
+          ...(trazabilidadPersistida != null ? { trazabilidad_curricular: trazabilidadPersistida } : canonico ? { trazabilidad_curricular: canonico.trazabilidad } : {}),
           ...(documentoWord ? { documento_word: documentoWord } : {}),
           ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
         },
@@ -465,8 +545,9 @@ export async function aprobarBorradorPlaneacion(
       hoja: { identificadorVisible: resultadoHoja.identificadorVisible, url: resultadoHoja.url, urlVer: resultadoHoja.urlVer, proyectoSeguimientoId },
       documentoPlaneacion: documentoWord && documentoPdf
         ? {
-            word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes },
-            pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes, urlVer: documentoPdf.url_ver },
+            word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes, archivoId: documentoWord.archivo_id, grupoAcademico: documentoWord.grupo_academico },
+            pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes, urlVer: documentoPdf.url_ver, archivoId: documentoPdf.archivo_id, grupoAcademico: documentoPdf.grupo_academico },
+            contenidoDefinitivo: canonico?.textoDefinitivo ?? '',
           }
         : null,
     }

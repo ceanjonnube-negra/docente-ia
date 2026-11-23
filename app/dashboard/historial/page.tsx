@@ -6,7 +6,7 @@ import { generarWord } from '@/utils/generarWord'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { documentosDelHistorial } from '@/lib/asistente/documentos'
-import { accionesArchivoOriginal, recuperarArchivo } from '@/lib/asistente/recuperacionArchivo'
+import { accionesArchivoOriginal, accionesArchivosOriginales, pdfOriginalDePlaneacion, recuperarArchivo, type ArchivoOriginalDocumento } from '@/lib/asistente/recuperacionArchivo'
 
 
 const iconos: Record<string, string> = {
@@ -33,6 +33,20 @@ export default function HistorialPage() {
   const [seleccionado, setSeleccionado] = useState<any>(null)
   const [fallaArchivo, setFallaArchivo] = useState(false)
   const avisarFallaArchivo = () => { setFallaArchivo(true); setTimeout(() => setFallaArchivo(false), 4000) }
+  // Planeación aprobada: su registro está vinculado al Word; el PDF
+  // original se ubica junto a él (pdfOriginalDePlaneacion), sin registros
+  // adicionales.
+  // El resultado se guarda junto al archivo al que pertenece: al cambiar
+  // de documento nunca se muestra el PDF de otro.
+  const [complementario, setComplementario] = useState<{ de: string; pdf: ArchivoOriginalDocumento | null } | null>(null)
+  const pdfComplementario = complementario && complementario.de === seleccionado?.archivo_id ? complementario.pdf : null
+  useEffect(() => {
+    if (!seleccionado?.archivo_id || seleccionado.archivo_formato !== 'word') return
+    const de: string = seleccionado.archivo_id
+    let vigente = true
+    pdfOriginalDePlaneacion(supabase, de).then((pdf) => { if (vigente) setComplementario({ de, pdf }) })
+    return () => { vigente = false }
+  }, [seleccionado?.archivo_id, seleccionado?.archivo_formato])
 
   const eliminarDocumento = async (id: string) => {
     if (!confirm('¿Eliminar este documento? Esta acción no se puede deshacer.')) return
@@ -124,8 +138,8 @@ export default function HistorialPage() {
             {seleccionado.archivo_id && accionesArchivoOriginal(seleccionado.archivo_formato).length > 0 ? (
               <>
                 <div className="flex gap-2">
-                  {accionesArchivoOriginal(seleccionado.archivo_formato).map((a) => (
-                    <button key={a.modo} onClick={() => recuperarArchivo({ archivoId: seleccionado.archivo_id }, a.modo, avisarFallaArchivo)}
+                  {accionesArchivosOriginales([{ archivoId: seleccionado.archivo_id, formato: seleccionado.archivo_formato }, ...(pdfComplementario ? [pdfComplementario] : [])]).map((a) => (
+                    <button key={`${a.archivoId}-${a.modo}`} onClick={() => recuperarArchivo({ archivoId: a.archivoId }, a.modo, avisarFallaArchivo)}
                       className={a.modo === 'ver'
                         ? 'flex-1 border border-purple-200 text-purple-700 py-3 rounded-2xl text-sm font-medium'
                         : 'flex-1 bg-purple-600 text-white py-3 rounded-2xl text-sm font-medium'}>

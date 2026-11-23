@@ -105,7 +105,7 @@ async function main() {
       (seccionMarcadores.match(/datosComprimidos/g) ?? []).length >= 2,
       '9a. La URL de Word y la URL de PDF en la vista previa reutilizan el MISMO payload comprimido (datosComprimidos) — nunca dos extracciones de texto distintas'
     )
-    verificar(rutaAprobar.includes('const textoCompleto = extraerTextoCompletoBorrador(seleccion.contenido)'), '9b. La generación definitiva (aprobación) también extrae el texto completo UNA sola vez y lo usa para ambos formatos')
+    verificar(rutaAprobar.includes("const textoCompleto = canonico?.textoDefinitivo ?? ''") && (rutaAprobar.match(/const textoCompleto = /g) ?? []).length === 1 && (rutaAprobar.match(/ejecutarHerramientaDocumento\('(word|pdf)', textoCompleto,/g) ?? []).length === 2, '9b. La generación definitiva (aprobación) usa UN solo texto (el definitivo canónico) para ambos formatos')
     verificar(
       /await ejecutarHerramientaDocumento\('word', textoCompleto,/.test(rutaAprobar) && /await ejecutarHerramientaDocumento\('pdf', textoCompleto,/.test(rutaAprobar),
       '9c. Word y PDF definitivos se generan a partir de la MISMA variable textoCompleto — nunca una segunda interpretación del contenido'

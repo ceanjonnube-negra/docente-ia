@@ -33,8 +33,9 @@ export const ORIGENES_DOCUMENTO: readonly OrigenDocumento[] = ['archivo', 'texto
 //     archivo: se guarda su texto real (el visible es solo un aviso),
 //     origen 'archivo'.
 //   - archivo sin contenidoOriginal → archivo de un documento que ya
-//     existía (conversión de formato, planeación aprobada, hoja): no hay
-//     texto nuevo que guardar y el original ya quedó registrado.
+//     existía (conversión de formato, hoja): no hay texto nuevo que
+//     guardar y el original ya quedó registrado. La planeación aprobada
+//     sí trae su texto definitivo: un registro vinculado a su Word.
 // Sin metadatos, una respuesta solo es documento si es un documento
 // formal visible (esDocumentoFormal), origen 'texto'; una conversación no
 // se guarda.
