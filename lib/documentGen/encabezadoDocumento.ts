@@ -56,3 +56,90 @@ export function prepararEncabezado(perfil: any, zonaHoraria: string | null | und
     cicloEscolar,
   }
 }
+
+// --- Encabezado institucional duplicado en el cuerpo ---
+// Word y PDF ya agregan el encabezado institucional (construirDocumentoWord.ts,
+// generarPdfServidor.ts). Si el texto redactado también lo trae, se repite.
+// Esta limpieza es CONSERVADORA: solo quita las líneas "Clave: valor" pegadas
+// al título (antes o después de él) que repiten exactamente los datos
+// confirmados de este encabezado. Nunca quita una línea por contener
+// "Escuela", "Fecha" o "Grupo": una fecha de reunión, un destinatario o un
+// espacio para completar se conservan siempre. Tampoco toca:
+// - las firmas: el generador no sabe si el docente pidió firmar el
+//   documento, así que una firma en el texto se conserva siempre;
+// - los documentos pedagógicos (planeación, rúbrica, examen, actividad,
+//   lectura…): su grado, grupo y datos curriculares son parte de su
+//   contenido, también en las vistas previas de planeación.
+// No cambia el texto guardado: se aplica solo al armar el archivo, y es
+// idempotente.
+
+const normalizarDato = (s: string): string =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/\*\*|__|[°º]/g, '').replace(/[.,;]+$/, '').replace(/\s+/g, ' ').trim()
+
+// ¿El par "clave: valor" (ya normalizados) repite exactamente un dato
+// confirmado del encabezado? Sin dato confirmado (escuela o docente por
+// defecto, grado o grupo vacíos), nunca coincide y la línea se conserva.
+function coincideCampo(clave: string, valor: string, enc: EncabezadoDocumento): boolean {
+  const e = (s: string) => normalizarDato(s)
+  const escuela = enc.escuela && enc.escuela !== 'Escuela' ? e(enc.escuela) : null
+  const docente = enc.docente && enc.docente !== 'Docente' ? e(enc.docente) : null
+  const grado = e(enc.grado) || null
+  const grupo = e(enc.grupo) || null
+  const lugares = e(enc.lugar).split(',').map((x) => x.trim()).filter(Boolean)
+  switch (clave) {
+    case 'escuela': return escuela !== null && valor === escuela
+    case 'docente': case 'maestro': case 'maestra': case 'profesor': case 'profesora': return docente !== null && valor === docente
+    case 'grado': return grado !== null && valor.replace(/\s*grado$/, '') === grado
+    case 'grupo': return grupo !== null && valor === grupo
+    case 'grado y grupo': return grado !== null && grupo !== null && valor.replace(/\s+/g, '') === `${grado}${grupo}`.replace(/\s+/g, '')
+    case 'ciclo escolar': case 'ciclo': return !!enc.cicloEscolar && valor === e(enc.cicloEscolar)
+    case 'fecha': return !!enc.fecha && valor.endsWith(e(enc.fecha))
+    case 'lugar': case 'municipio': case 'estado': case 'localidad':
+      return lugares.length > 0 && (valor === lugares.join(', ') || lugares.includes(valor))
+    default: return false
+  }
+}
+
+// "Escuela: X | Municipio: Y": TODOS sus pares deben ser campos
+// institucionales que coinciden con el encabezado.
+function esEncabezadoDuplicado(linea: string, enc: EncabezadoDocumento): boolean {
+  const pares = linea.split('|').map((p) => p.trim()).filter(Boolean)
+  if (pares.length === 0) return false
+  return pares.every((par) => {
+    const m = par.match(/^([^:]{2,30}):\s*(.+)$/)
+    return !!m && coincideCampo(normalizarDato(m[1]), normalizarDato(m[2]), enc)
+  })
+}
+
+// Documento pedagógico, reconocido por su título: el prefijo de sus
+// plantillas (📋 planeación, 📊 rúbrica, 📝 examen/actividad, 📖 lectura) o
+// el tipo con el que EMPIEZA ("EXAMEN DE FRACCIONES"). Una palabra que solo
+// es el tema ("AVISO … LECTURA DIARIA") no lo convierte en pedagógico.
+const PREFIJO_PEDAGOGICO = /^(📋|📊|📝|📖)/u
+const TIPO_PEDAGOGICO = /^(planeacion|rubrica|examen|actividad|evaluacion|lectura|cuento|fabula|guia|ejercicios|practica|secuencia didactica|proyecto|ficha descriptiva)\b/
+function esDocumentoPedagogico(titulo: string): boolean {
+  const sinSimbolos = normalizarDato(titulo).replace(/^[^a-z0-9]+/, '')
+  return PREFIJO_PEDAGOGICO.test(titulo.trim()) || TIPO_PEDAGOGICO.test(sinSimbolos)
+}
+
+export function quitarDuplicadosInstitucionales(texto: string, enc: EncabezadoDocumento): string {
+  const lineas = texto.split('\n')
+  const quitar = new Set<number>()
+
+  // Líneas duplicadas pegadas al título (antes o después). El título es la
+  // primera línea que no es un duplicado.
+  let titulo: string | null = null
+  for (let i = 0; i < lineas.length; i++) {
+    const l = lineas[i].trim()
+    if (!l) continue
+    if (esEncabezadoDuplicado(l, enc)) { quitar.add(i); continue }
+    if (titulo !== null) break
+    titulo = l
+  }
+
+  if (quitar.size === 0 || titulo === null || esDocumentoPedagogico(titulo)) return texto
+  const resultado = lineas.filter((_, n) => !quitar.has(n)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  // Nunca dejar un documento sin contenido propio.
+  return resultado.split('\n').filter((l) => l.trim()).length >= 2 ? resultado : texto
+}

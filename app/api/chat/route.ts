@@ -1334,7 +1334,6 @@ FUENTES QUE NO EXISTEN EN ESTA APLICACIÓN — no son "no disponibles ahora", so
   // Tijuana, Cancún) — ver lib/tiempo/TimeService.ts, único lugar del
   // proyecto que calcula esto.
   const infoFechaHora = obtenerFechaHora(zonaHoraria)
-  const cicloEscolar = infoFechaHora.cicloEscolar
 
   let contextoProceso = `
 
@@ -1477,7 +1476,7 @@ TIPOS DE DOCUMENTOS QUE GENERAS:
 
 PLANEACIONES — usa este formato. La duración por defecto es de 5 días (una semana) si el maestro no especifica otra cosa; si pide un número de días distinto (por ejemplo "para 10 días"), genera EXACTAMENTE esa cantidad de días completos, nunca menos, y organízalos con progresión real de principio a fin (conocimientos previos → desarrollo del contenido → práctica/aplicación → producto final) — nunca repitas la misma actividad en días distintos:
 📋 PLANEACIÓN DIDÁCTICA
-Grado: [grado] | Grupo: [grupo] | Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
+Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
 Campo Formativo: [uno o más de los 4 campos formativos vigentes, nunca una asignatura del plan anterior]
 Ejes Articuladores: [el o los que apliquen de verdad al contenido]
 Proyecto Didáctico: [nombre]
@@ -1509,7 +1508,7 @@ Duración: [número de días real] días
 
 RÚBRICAS — cuando el maestro pida una rúbrica, usa este formato:
 📊 RÚBRICA DE EVALUACIÓN
-Grado: [grado] | Grupo: [grupo] | Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
+Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
 Campo Formativo: [uno o más de los 4 campos formativos vigentes, nunca una asignatura del plan anterior]
 Actividad o Proyecto: [nombre]
 Fecha: [dejar en blanco para llenar]
@@ -1544,7 +1543,7 @@ _______________________________________________
 
 EXÁMENES Y ACTIVIDADES — cuando el maestro pida un examen o actividad, usa este formato:
 📝 EXAMEN / ACTIVIDAD
-Grado: [grado] | Grupo: [grupo] | Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
+Fase: [fase según el grado, ver MARCO CURRICULAR VIGENTE]
 Campo Formativo: [uno o más de los 4 campos formativos vigentes, nunca una asignatura del plan anterior]
 Tema: [tema]
 Fecha: [dejar en blanco para llenar]
@@ -1566,9 +1565,6 @@ Fecha: [dejar en blanco para llenar]
 
 CITATORIOS — cuando el maestro pida un citatorio, usa este formato:
 📨 CITATORIO
-Escuela: [escuela] | Municipio: [municipio]
-Fecha: [fecha actual]
-Ciclo Escolar: ${cicloEscolar}
 
 Estimado padre/madre de familia de: _______________
 Grado y Grupo: [grado] [grupo]
@@ -1580,9 +1576,6 @@ Por medio del presente se le cita cordialmente a una reunión el día __________
 
 Se le solicita puntualidad y presencia. En caso de no poder asistir, favor de comunicarse con el docente.
 
-Atentamente,
-[nombre del maestro]
-Docente de [grado] grado grupo [grupo]
 
 RESÚMENES FORMALES — cuando el maestro pida el resumen de una ley, reglamento, acuerdo o documento oficial como entregable (no como explicación conversacional), usa este formato:
 📄 RESUMEN — [nombre real de la ley/reglamento/documento]
@@ -1601,7 +1594,6 @@ La cita de fuente (ver CITAR LA FUENTE arriba) va siempre al final de este docum
 
 CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lectura o texto narrativo, construye automáticamente el recurso completo (ver ANTICIPACIÓN AUTOMÁTICA arriba): título atractivo, texto narrativo adecuado al grado del maestro, moraleja si es fábula, preguntas de comprensión lectora, y una actividad de cierre — sin preguntar cada pieza por separado. Usa este formato:
 📖 [TÍTULO ATRACTIVO DEL TEXTO]
-Grado: [grado] | Grupo: [grupo]
 
 [texto narrativo: cuento, fábula o lectura, con vocabulario y extensión adecuados al grado]
 

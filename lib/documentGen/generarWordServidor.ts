@@ -8,10 +8,14 @@
 
 import { Packer } from 'docx'
 import { construirDocumentoWord } from './construirDocumentoWord'
+import { prepararEncabezado, quitarDuplicadosInstitucionales } from './encabezadoDocumento'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function generarWordBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
-  const doc = construirDocumentoWord(texto, perfil, zonaHoraria)
+  // El encabezado institucional lo agrega el documento: se quitan sus
+  // duplicados inequívocos del texto (ver encabezadoDocumento.ts).
+  const limpio = quitarDuplicadosInstitucionales(texto, prepararEncabezado(perfil, zonaHoraria))
+  const doc = construirDocumentoWord(limpio, perfil, zonaHoraria)
   return Packer.toBuffer(doc)
 }
 

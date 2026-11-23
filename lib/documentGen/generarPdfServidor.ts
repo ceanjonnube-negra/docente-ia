@@ -18,7 +18,7 @@
 
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { analizarContenido } from './parseContenido'
-import { prepararEncabezado } from './encabezadoDocumento'
+import { prepararEncabezado, quitarDuplicadosInstitucionales } from './encabezadoDocumento'
 
 // Igual que en el motor anterior: los emoji del formato MODO DOCUMENTO
 // (📋, 🎯, 📅...) no tienen glifo en las fuentes estándar — se quitan
@@ -89,6 +89,9 @@ function envolverTexto(texto: string, font: PDFFont, tamano: number, anchoMax: n
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: string | null): Promise<Buffer> {
   const enc = prepararEncabezado(perfil, zonaHoraria)
+  // El encabezado institucional lo agrega el documento: se quitan sus
+  // duplicados inequívocos del texto (ver encabezadoDocumento.ts).
+  texto = quitarDuplicadosInstitucionales(texto, enc)
   const pdfDoc = await PDFDocument.create()
   const fuentes: Fuentes = {
     regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
