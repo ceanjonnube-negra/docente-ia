@@ -28,7 +28,7 @@ import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorra
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { construirHerramientaConsultaOficial } from '@/lib/fuentesOficiales'
 import { construirHerramientaRegistroEscolar } from '@/lib/registroEscolarTool'
-import { archivoSinSesion, construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esEdicionConFormato, instruccionDeEdicion, MENSAJE_ARCHIVO_SIN_SESION, pideProducirDocumento, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
+import { archivoSinSesion, construirPromptEdicion, contenidoParaArchivo, esDocumentoFormal, esDocumentoNuevoConFormatoExplicito, esDocumentoNuevoEntregable, esEdicionConFormato, finalizarArchivoExcedeLimite, instruccionDeEdicion, LIMITE_CARACTERES_DOCUMENTO, MENSAJE_ARCHIVO_SIN_SESION, MENSAJE_DOCUMENTO_DEMASIADO_LARGO, pideProducirDocumento, tipoArchivoSolicitado } from '@/lib/asistente/documentos'
 import type { AccionNavegacion } from '@/lib/asistente/tipos'
 import { ejecutarHerramientaDocumento, ErrorHerramientaDocumento, HerramientaNoDisponibleError, ETIQUETA_MODULO } from '@/lib/documentGen/herramientas'
 import { perfilConGrupoAcademico } from '@/lib/documentGen/encabezadoDocumento'
@@ -362,7 +362,6 @@ export async function POST(req: NextRequest) {
   // contexto de texto plano. Si la extracción falla (archivo dañado o
   // protegido), se responde de inmediato con un error claro — nunca se
   // sigue adelante fingiendo que no había adjunto.
-  const LIMITE_CARACTERES_DOCUMENTO = 60_000
   const tipoDocumentoAdjunto = clasificarTipoDocumento(imagenTipo)
   let mensajeConDocumento: string = mensaje
   if (tipoDocumentoAdjunto && tipoDocumentoAdjunto !== 'pdf' && imagenBase64) {
@@ -537,6 +536,12 @@ export async function POST(req: NextRequest) {
   // acepta si está en FORMATOS_ENTREGA — nunca se detecta dentro del
   // prompt de edición. Esa edición va directo al CASO 3 (el modelo aplica
   // el cambio sobre el texto real y con su resultado se genera el archivo).
+  // El documento activo a convertir llega del navegador: más allá del
+  // límite no se convierte ni se redacta nada en su lugar.
+  if (finalizarArchivoExcedeLimite(finalizarArchivo)) {
+    console.log(`[PIPELINE] finalizarArchivo rechazado — documentoTexto supera ${LIMITE_CARACTERES_DOCUMENTO} caracteres`)
+    return respuestaTexto(MENSAJE_DOCUMENTO_DEMASIADO_LARGO)
+  }
   const tipoHerramientaSolicitado = tipoArchivoSolicitado({ mensaje: mensaje || '', esEdicionDocumento: Boolean(esEdicionDocumento), formatoEntrega, finalizarArchivo })
 
   // Conversación eliminada (etapa 3B-1): nunca se continúa, ni se llama
@@ -579,7 +584,13 @@ export async function POST(req: NextRequest) {
     // es lo único que varía.
     console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:deteccion] tipo=${tipoHerramientaSolicitado} fuenteContenido=${fuenteContenido}`)
 
-    if (documentoTexto && esDocumentoFormal(documentoTexto)) {
+    // 'cliente' = el documento activo que el cliente pide convertir: ya es
+    // un referente documental confirmado (documento formal o entregado como
+    // archivo con su contenido, ver contenidoDocumentoDe), así que no
+    // depende del emoji de su título. Lo buscado en el historial
+    // ('historial') sí se reconoce por el prefijo canónico.
+    const esDocumentoConvertible = fuenteContenido === 'cliente' ? documentoTexto.trim() !== '' : esDocumentoFormal(documentoTexto)
+    if (documentoTexto && esDocumentoConvertible) {
       console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado]}:contenido] OK — ${documentoTexto.length} caracteres (fuente=${fuenteContenido})`)
       try {
         // Grado y grupo del encabezado: el grupo efectivo de esta
@@ -1703,8 +1714,18 @@ Grado: [grado] | Grupo: [grupo]
         : parametrosClaude.system
       const respuestaCompleta = await conReintento(() => client.messages.create({ ...parametrosClaude, system: systemCaso3, stream: false }, { timeout: TIMEOUT_ANTHROPIC_DOCUMENTO_MS }), 'claude-documento-combinado')
       const texto = respuestaCompleta.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
+      // Documento nuevo con formato explícito, confirmado de forma
+      // determinista: la entrega no depende del emoji ni del estilo del
+      // título que eligió el modelo (p. ej. "📢 AVISO…"), solo de que haya
+      // redactado un documento completo: el modelo terminó su respuesta
+      // (stop_reason 'end_turn', no cortada por max_tokens ni rechazada) y
+      // tiene estructura de documento. En los demás casos, la regla de siempre.
+      const documentoNuevoConfirmado = !esEdicionDocumento && esDocumentoNuevoConFormatoExplicito(mensaje || '')
+      const esDocumento = documentoNuevoConfirmado
+        ? esDocumentoNuevoEntregable(texto, respuestaCompleta.stop_reason)
+        : esDocumentoFormal(texto)
 
-      if (texto && esDocumentoFormal(texto)) {
+      if (texto && esDocumento) {
         console.log(`[PIPELINE ${etiquetaCaso3}:contenido] OK — ${texto.length} caracteres redactados por Claude — ${Date.now() - inicioContenido}ms`)
         const { data: perfilDocente } = await supabaseUser.from('perfiles_docentes').select('*').eq('id', userId).single()
         // Grado y grupo: el grupo efectivo de la sesión (vacíos sin grupo

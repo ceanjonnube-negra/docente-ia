@@ -425,6 +425,38 @@ export function esEdicionConFormato(texto: string): boolean {
   return detectarHerramientaDocumento(texto) !== null && clasificarIntencionConFormato(texto) === 'editar'
 }
 
+// Documento NUEVO pedido con un formato nombrado de forma explícita (Word,
+// PDF o PowerPoint): la ruta ya sabe con certeza que lo que sigue es un
+// documento que entregar como archivo (CASO 3 de FINALIZAR ARCHIVO).
+export function esDocumentoNuevoConFormatoExplicito(mensaje: string): boolean {
+  const formato = detectarFormatoExplicito(mensaje)
+  return (formato === 'word' || formato === 'pdf' || formato === 'powerpoint') && esDocumentoNuevoConFormato(mensaje)
+}
+
+// ¿El modelo redactó un documento? Para un documento nuevo ya confirmado
+// (esDocumentoNuevoConFormatoExplicito) no importa el emoji ni el estilo
+// del título: basta un título (primera línea breve que no es una pregunta,
+// una frase que presenta algo con ":" ni una oración terminada en punto) y
+// contenido debajo. No lo es una respuesta vacía, una pregunta para
+// aclarar, una negativa o un aviso del sistema. Los documentos con el
+// prefijo canónico siguen valiendo siempre (esDocumentoFormal).
+export function esDocumentoRedactado(texto: string): boolean {
+  if (esDocumentoFormal(texto)) return true
+  const lineas = texto.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (lineas.length < 2) return false
+  const titulo = lineas[0]
+  if (esAvisoTecnicoDeArchivo(titulo) || titulo === MENSAJE_ARCHIVO_SIN_SESION) return false
+  return titulo.length <= 120 && !titulo.startsWith('¿') && !/[?:.…]$/.test(titulo)
+}
+
+// CASO 3, documento nuevo confirmado: solo se entrega como archivo si el
+// modelo terminó su respuesta (stop_reason 'end_turn' de la API; no
+// 'max_tokens' —documento cortado— ni 'refusal') y lo que redactó es un
+// documento.
+export function esDocumentoNuevoEntregable(texto: string, stopReason: string | null | undefined): boolean {
+  return stopReason === 'end_turn' && esDocumentoRedactado(texto)
+}
+
 // Formatos que una edición puede entregar como archivo. El servidor solo
 // acepta un formatoEntrega de esta lista (nunca confía en el cliente).
 export const FORMATOS_ENTREGA = ['word', 'pdf', 'powerpoint', 'excel'] as const
@@ -530,9 +562,21 @@ export function referenciaCompatibleConDocumento(mensaje: string, documentoTexto
 
 // --- Decisión de /api/chat sobre el archivo pedido (pura, sin red) ---
 
+// Máximo de caracteres de texto de un documento que acepta el servidor:
+// adjuntos (se recortan) y documento activo a convertir (se rechaza).
+export const LIMITE_CARACTERES_DOCUMENTO = 60_000
+export const MENSAJE_DOCUMENTO_DEMASIADO_LARGO = 'El documento supera el máximo de 60,000 caracteres para generar el archivo; no se creó ningún archivo.'
+
 type FinalizarArchivoCliente = { tipo: TipoHerramienta; documentoTexto: string }
+// El documento activo llega del navegador: solo se acepta texto dentro del
+// límite (cualquier título o emoji).
 function esFinalizarArchivo(valor: unknown): valor is FinalizarArchivoCliente {
   return typeof valor === 'object' && valor !== null && typeof (valor as { documentoTexto?: unknown }).documentoTexto === 'string'
+    && (valor as { documentoTexto: string }).documentoTexto.length <= LIMITE_CARACTERES_DOCUMENTO
+}
+export function finalizarArchivoExcedeLimite(valor: unknown): boolean {
+  return typeof valor === 'object' && valor !== null && typeof (valor as { documentoTexto?: unknown }).documentoTexto === 'string'
+    && (valor as { documentoTexto: string }).documentoTexto.length > LIMITE_CARACTERES_DOCUMENTO
 }
 
 // Qué archivo pide este turno (null: ninguno). Una edición nunca se
