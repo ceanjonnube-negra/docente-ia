@@ -42,19 +42,32 @@ export const ORIGENES_DOCUMENTO: readonly OrigenDocumento[] = ['archivo', 'texto
 // el que se armó su encabezado); sin archivo, o sin grupo confirmado, ninguno
 // —nunca los del perfil, que puede ser de otro grupo—.
 export type GrupoDocumento = { grado: string | null; grupo: string | null }
+// Archivo original con el que nació el documento (documentos_generados.
+// archivo_id/archivo_formato, migración 20261124000000): el archivo
+// principal entregado, solo si trae su registro (archivoId) y un formato
+// conocido. Sin él, ninguno: nunca se deduce de otra cosa.
+export const FORMATOS_ARCHIVO_ORIGINAL = ['word', 'pdf', 'powerpoint', 'excel'] as const
+export type FormatoArchivoOriginal = (typeof FORMATOS_ARCHIVO_ORIGINAL)[number]
+export type ArchivoOriginal = { id: string; formato: FormatoArchivoOriginal }
+const UUID_ARCHIVO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function documentoParaHistorial(
   respuesta: string,
   entrega: { contenidoOriginal?: string; archivos?: readonly unknown[] } = {},
-): { contenido: string; origen: OrigenDocumento; grupo: GrupoDocumento } | null {
+): { contenido: string; origen: OrigenDocumento; grupo: GrupoDocumento; archivo: ArchivoOriginal | null } | null {
   const conArchivo = (entrega.archivos?.length ?? 0) > 0
   if (conArchivo) {
     if (!entrega.contenidoOriginal?.trim()) return null
+    const principal = entrega.archivos?.[0] as { grupoAcademico?: { grado?: unknown; grupo?: unknown }; archivoId?: unknown; tipo?: unknown } | undefined
     // Archivos anteriores a este campo no lo traen: sin grupo, no se inventa.
-    const g = (entrega.archivos?.[0] as { grupoAcademico?: { grado?: unknown; grupo?: unknown } } | undefined)?.grupoAcademico
+    const g = principal?.grupoAcademico
     const texto = (v: unknown) => (typeof v === 'string' && v.trim()) || null
-    return { contenido: entrega.contenidoOriginal, origen: 'archivo', grupo: { grado: texto(g?.grado), grupo: texto(g?.grupo) } }
+    const archivo = typeof principal?.archivoId === 'string' && UUID_ARCHIVO.test(principal.archivoId)
+      && (FORMATOS_ARCHIVO_ORIGINAL as readonly unknown[]).includes(principal.tipo)
+      ? { id: principal.archivoId, formato: principal.tipo as FormatoArchivoOriginal }
+      : null
+    return { contenido: entrega.contenidoOriginal, origen: 'archivo', grupo: { grado: texto(g?.grado), grupo: texto(g?.grupo) }, archivo }
   }
-  return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto', grupo: { grado: null, grupo: null } } : null
+  return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto', grupo: { grado: null, grupo: null }, archivo: null } : null
 }
 
 // Regla única de lectura del historial de documentos (Chat e Historial):

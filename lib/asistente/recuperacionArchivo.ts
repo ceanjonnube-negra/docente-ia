@@ -1,0 +1,86 @@
+// lib/asistente/recuperacionArchivo.ts
+//
+// Formulario POST nativo con la sesión vigente del docente —el mecanismo de
+// las vistas previas de planeación— y recuperación del archivo ORIGINAL
+// (Word/PDF) con POST /api/archivos/descargar en modo autenticado, que
+// verifica en el servidor que el archivo sea del docente. Funciona en
+// iPhone, Android y web. Lo usan las tarjetas del Chat (enlace vencido) y
+// Historial; nunca regenera el documento ni llama a la IA.
+
+import { supabase } from '@/lib/supabaseClient'
+
+export async function tokenSesionVigente(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token ?? null
+  } catch {
+    return null
+  }
+}
+
+// action = SOLO la ruta: ni los datos ni la credencial forman parte de la
+// URL — van como campos ocultos del cuerpo del POST.
+export function enviarFormularioPost(ruta: string, campos: [string, string][], token: string, destino?: string) {
+  const formulario = document.createElement('form')
+  formulario.method = 'POST'
+  formulario.action = ruta
+  formulario.style.display = 'none'
+  if (destino) formulario.target = destino
+  for (const [clave, valor] of [...campos, ['token', token] as [string, string]]) {
+    const campo = document.createElement('input')
+    campo.type = 'hidden'
+    campo.name = clave
+    campo.value = valor
+    formulario.appendChild(campo)
+  }
+  document.body.appendChild(formulario)
+  formulario.submit()
+  formulario.remove()
+}
+
+// Solo un PDF se puede ver en línea; Word y los demás formatos solo se
+// descargan (el navegador no los muestra).
+export type ModoRecuperacion = 'ver' | 'descargar'
+export function modosRecuperacion(formato: string): ModoRecuperacion[] {
+  return formato === 'pdf' ? ['ver', 'descargar'] : ['descargar']
+}
+
+// Acciones del archivo original de un documento de Historial
+// (documentos_generados.archivo_formato). Sin formato conocido, ninguna.
+export type AccionArchivoOriginal = { modo: ModoRecuperacion; etiqueta: string }
+export function accionesArchivoOriginal(formato: string | null | undefined): AccionArchivoOriginal[] {
+  if (formato !== 'word' && formato !== 'pdf' && formato !== 'powerpoint' && formato !== 'excel') return []
+  return modosRecuperacion(formato).map((modo) => ({
+    modo,
+    etiqueta: modo === 'ver' ? '👁️ Ver PDF' : formato === 'pdf' ? '⬇️ Descargar PDF' : '⬇️ Descargar original',
+  }))
+}
+
+// El archivo se identifica por archivoId (registro en archivos_generados)
+// o, en tarjetas antiguas, por su URL firmada persistida.
+export type ReferenciaArchivoOriginal = { archivoId?: string | null; url?: string | null }
+
+function enviarRecuperacion(referencia: ReferenciaArchivoOriginal, modo: ModoRecuperacion, token: string, destino?: string) {
+  const archivo: [string, string] = referencia.archivoId ? ['archivoId', referencia.archivoId] : ['u', referencia.url ?? '']
+  enviarFormularioPost('/api/archivos/descargar', [['modo', modo], archivo], token, destino)
+}
+
+export function recuperarArchivo(referencia: ReferenciaArchivoOriginal, modo: ModoRecuperacion, alFallar: () => void) {
+  if (!referencia.archivoId && !referencia.url) { alFallar(); return }
+  if (modo === 'ver') {
+    // La ventana se abre en el mismo toque (Safari en iPhone bloquea
+    // window.open después de un await).
+    const nombreVentana = `archivo-${Date.now()}`
+    const ventana = window.open('', nombreVentana)
+    if (!ventana) { alFallar(); return }
+    void tokenSesionVigente().then((token) => {
+      if (!token) { ventana.close(); alFallar(); return }
+      enviarRecuperacion(referencia, modo, token, nombreVentana)
+    })
+    return
+  }
+  void tokenSesionVigente().then((token) => {
+    if (!token) { alFallar(); return }
+    enviarRecuperacion(referencia, modo, token)
+  })
+}

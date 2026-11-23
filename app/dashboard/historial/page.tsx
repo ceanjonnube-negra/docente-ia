@@ -6,6 +6,7 @@ import { generarWord } from '@/utils/generarWord'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { documentosDelHistorial } from '@/lib/asistente/documentos'
+import { accionesArchivoOriginal, recuperarArchivo } from '@/lib/asistente/recuperacionArchivo'
 
 
 const iconos: Record<string, string> = {
@@ -30,6 +31,8 @@ export default function HistorialPage() {
   const [cargando, setCargando] = useState(true)
   const [filtro, setFiltro] = useState('todos')
   const [seleccionado, setSeleccionado] = useState<any>(null)
+  const [fallaArchivo, setFallaArchivo] = useState(false)
+  const avisarFallaArchivo = () => { setFallaArchivo(true); setTimeout(() => setFallaArchivo(false), 4000) }
 
   const eliminarDocumento = async (id: string) => {
     if (!confirm('¿Eliminar este documento? Esta acción no se puede deshacer.')) return
@@ -115,10 +118,32 @@ export default function HistorialPage() {
             <div className="flex-1 overflow-y-auto text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-xl p-3 mb-4">
               {seleccionado.contenido}
             </div>
-            <button onClick={() => generarWord(seleccionado.contenido, null)}
-              className="w-full bg-purple-600 text-white py-3 rounded-2xl text-sm font-medium">
-              Descargar Word
-            </button>
+            {/* Con archivo original (B2): se abre o descarga ESE archivo, con
+                la sesión vigente y sin regenerarlo. Registros anteriores sin
+                archivo: Word nuevo generado desde el texto guardado. */}
+            {seleccionado.archivo_id && accionesArchivoOriginal(seleccionado.archivo_formato).length > 0 ? (
+              <>
+                <div className="flex gap-2">
+                  {accionesArchivoOriginal(seleccionado.archivo_formato).map((a) => (
+                    <button key={a.modo} onClick={() => recuperarArchivo({ archivoId: seleccionado.archivo_id }, a.modo, avisarFallaArchivo)}
+                      className={a.modo === 'ver'
+                        ? 'flex-1 border border-purple-200 text-purple-700 py-3 rounded-2xl text-sm font-medium'
+                        : 'flex-1 bg-purple-600 text-white py-3 rounded-2xl text-sm font-medium'}>
+                      {a.etiqueta}
+                    </button>
+                  ))}
+                </div>
+                {fallaArchivo && <p className="text-xs text-amber-600 mt-2">No fue posible abrir el archivo. Revisa tu sesión e inténtalo de nuevo.</p>}
+              </>
+            ) : (
+              <>
+                <button onClick={() => generarWord(seleccionado.contenido, null)}
+                  className="w-full bg-purple-600 text-white py-3 rounded-2xl text-sm font-medium">
+                  Generar Word desde el texto
+                </button>
+                <p className="text-xs text-gray-400 mt-1 text-center">No es el archivo original: se crea un Word nuevo con el texto guardado.</p>
+              </>
+            )}
           <button onClick={() => eliminarDocumento(seleccionado.id)}
             className="w-full bg-red-50 text-red-600 py-3 rounded-2xl text-sm font-medium mt-2">
             Eliminar documento

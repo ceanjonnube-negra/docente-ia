@@ -159,8 +159,10 @@ async function main() {
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   verificar(panel.includes('if (ocultarPorVencido && referenciaVistaPrevia(archivo.url) === null) {') && panel.includes('recuperarArchivo(archivo, a.modo, avisarFallaVistaPrevia)'),
     '7d. Solo con el enlace vencido (y no en vistas previas) la tarjeta usa la recuperación')
-  verificar(panel.includes("archivo.archivoId ? ['archivoId', archivo.archivoId] : ['u', archivo.url]") && panel.includes("enviarFormularioVistaPrevia({ ruta: '/api/archivos/descargar'"),
-    '7e. Mismo formulario POST nativo y sesión vigente que las vistas previas; archivoId o URL persistida')
+  const util = readFileSync('lib/asistente/recuperacionArchivo.ts', 'utf8')
+  verificar(util.includes("referencia.archivoId ? ['archivoId', referencia.archivoId] : ['u', referencia.url ?? '']") && util.includes("enviarFormularioPost('/api/archivos/descargar'")
+    && panel.includes('enviarFormularioPost(referencia.ruta, referencia.campos, token, destino)'),
+    '7e. Mismo formulario POST nativo y sesión vigente que las vistas previas (utilidad compartida); archivoId o URL persistida')
   verificar(!panel.includes('Enlace vencido — pide el documento de nuevo') && panel.includes('{ocultarPorVencido ? null : archivos.length === 1 ? ('),
     '7f. Ya no se ocultan las acciones al vencer; Compartir (usa la URL firmada) solo con el enlace vigente')
 

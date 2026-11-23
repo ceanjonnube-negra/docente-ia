@@ -20,7 +20,7 @@ import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
-import { supabase } from '@/lib/supabaseClient'
+import { enviarFormularioPost, modosRecuperacion, recuperarArchivo, tokenSesionVigente, type ModoRecuperacion } from '@/lib/asistente/recuperacionArchivo'
 import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE } from '@/lib/asistente/AsistenteService'
 import { esAvisoTecnicoDeArchivo, esDocumentoFormal } from '@/lib/asistente/documentos'
 import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
@@ -68,10 +68,12 @@ export function accionesDescargaArchivo(archivo: Pick<ArchivoGeneradoInfo, 'tipo
 // Tarjeta con la URL firmada vencida: el archivo ORIGINAL se recupera con la
 // sesión vigente (POST /api/archivos/descargar en modo autenticado). Solo un
 // PDF se puede ver en línea; Word y demás formatos solo se descargan.
-export type AccionRecuperacion = { modo: 'ver' | 'descargar'; etiqueta: string }
+export type AccionRecuperacion = { modo: ModoRecuperacion; etiqueta: string }
 export function accionesRecuperacionArchivo(archivo: Pick<ArchivoGeneradoInfo, 'tipo'>): AccionRecuperacion[] {
-  if (archivo.tipo === 'pdf') return [{ modo: 'ver', etiqueta: '👁️ Ver PDF' }, { modo: 'descargar', etiqueta: '⬇️ Descargar PDF' }]
-  return [{ modo: 'descargar', etiqueta: `⬇️ ${etiquetaDescargar(archivo.tipo)}` }]
+  return modosRecuperacion(archivo.tipo).map((modo) => ({
+    modo,
+    etiqueta: modo === 'ver' ? '👁️ Ver PDF' : archivo.tipo === 'pdf' ? '⬇️ Descargar PDF' : `⬇️ ${etiquetaDescargar(archivo.tipo)}`,
+  }))
 }
 
 // Título legible para los documentos de planeación/hoja de evaluación
@@ -258,33 +260,11 @@ export function referenciaVistaPrevia(url: string | undefined): ReferenciaVistaP
   return { ruta, campos: [...new URLSearchParams(consulta).entries()].filter(([clave]) => clave.toLowerCase() !== 'token') }
 }
 
-async function tokenSesionVigente(): Promise<string | null> {
-  try {
-    const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token ?? null
-  } catch {
-    return null
-  }
-}
-
 // action = SOLO la ruta: ni el borrador ni la credencial forman parte de
-// la URL — ambos van como campos ocultos del cuerpo del POST.
+// la URL — ambos van como campos ocultos del cuerpo del POST
+// (enviarFormularioPost, lib/asistente/recuperacionArchivo.ts).
 function enviarFormularioVistaPrevia(referencia: ReferenciaVistaPrevia, token: string, destino?: string) {
-  const formulario = document.createElement('form')
-  formulario.method = 'POST'
-  formulario.action = referencia.ruta
-  formulario.style.display = 'none'
-  if (destino) formulario.target = destino
-  for (const [clave, valor] of [...referencia.campos, ['token', token] as [string, string]]) {
-    const campo = document.createElement('input')
-    campo.type = 'hidden'
-    campo.name = clave
-    campo.value = valor
-    formulario.appendChild(campo)
-  }
-  document.body.appendChild(formulario)
-  formulario.submit()
-  formulario.remove()
+  enviarFormularioPost(referencia.ruta, referencia.campos, token, destino)
 }
 
 // VER — la pestaña se abre DENTRO del clic (Safari en iPhone bloquea
@@ -306,32 +286,6 @@ export function verVistaPrevia(url: string, alFallar: () => void) {
 // DESCARGAR (PDF y Word) — el mismo formulario en la pestaña actual: la
 // respuesta es attachment, así que el navegador guarda el archivo sin
 // salir del Chat IA. Sin sesión vigente no se envía nada.
-// Mismo formulario POST nativo que las vistas previas (funciona en iPhone,
-// Android y web): el archivo se identifica por archivoId o, en tarjetas
-// antiguas, por su URL persistida; el servidor verifica que sea del docente.
-function enviarFormularioRecuperacion(archivo: Pick<ArchivoGeneradoInfo, 'url' | 'archivoId'>, modo: 'ver' | 'descargar', token: string, destino?: string) {
-  const referencia: [string, string] = archivo.archivoId ? ['archivoId', archivo.archivoId] : ['u', archivo.url]
-  enviarFormularioVistaPrevia({ ruta: '/api/archivos/descargar', campos: [['modo', modo], referencia] }, token, destino)
-}
-
-export function recuperarArchivo(archivo: Pick<ArchivoGeneradoInfo, 'url' | 'archivoId'>, modo: 'ver' | 'descargar', alFallar: () => void) {
-  if (modo === 'ver') {
-    // La ventana se abre en el mismo toque (bloqueadores de ventanas).
-    const nombreVentana = `archivo-${Date.now()}`
-    const ventana = window.open('', nombreVentana)
-    if (!ventana) { alFallar(); return }
-    void tokenSesionVigente().then((token) => {
-      if (!token) { ventana.close(); alFallar(); return }
-      enviarFormularioRecuperacion(archivo, modo, token, nombreVentana)
-    })
-    return
-  }
-  void tokenSesionVigente().then((token) => {
-    if (!token) { alFallar(); return }
-    enviarFormularioRecuperacion(archivo, modo, token)
-  })
-}
-
 export async function descargarVistaPrevia(url: string, alFallar: () => void) {
   const referencia = referenciaVistaPrevia(url)
   const token = referencia ? await tokenSesionVigente() : null
