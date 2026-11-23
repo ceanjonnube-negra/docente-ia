@@ -13,7 +13,9 @@
 // autorización que el botón ya tenía. Solo acepta peticiones del mismo
 // sitio. No escribe nada ni toca el registro de archivos.
 
-import { BUCKET_DESCARGA_PDF, TAMANO_MAXIMO_DESCARGA_PDF, contentDispositionAdjunto, validarUrlFirmadaPdf } from '@/lib/documentGen/descargaPdf'
+import { BUCKET_DESCARGA_PDF, TAMANO_MAXIMO_DESCARGA_PDF, contentDispositionAdjunto, nombreSeguroArchivo, rutaDeUrlFirmada, validarUrlFirmadaPdf } from '@/lib/documentGen/descargaPdf'
+import { recuperarArchivoPropio, type ReferenciaArchivo } from '@/lib/documentGen/registroArchivos'
+import { autenticarRequestApi } from '@/lib/server/authApi'
 
 export const runtime = 'nodejs'
 
@@ -31,12 +33,16 @@ export async function POST(request: Request): Promise<Response> {
     return error(403, 'Solicitud no permitida.')
   }
 
-  let entrada: FormDataEntryValue | null = null
+  let datos: FormData
   try {
-    entrada = (await request.formData()).get('u')
+    datos = await request.formData()
   } catch {
     return error(400, 'Solicitud de descarga inválida.')
   }
+  // Con sesión: recuperar el archivo original aunque su URL firmada ya
+  // haya vencido (ver recuperarAutenticado abajo).
+  if (datos.has('token')) return recuperarAutenticado(datos)
+  const entrada = datos.get('u')
   const validacion = validarUrlFirmadaPdf(entrada, process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!validacion.ok) {
     console.error(`[DESCARGA_PDF] rechazada motivo=${validacion.motivo}`)
@@ -68,6 +74,54 @@ export async function POST(request: Request): Promise<Response> {
       'Content-Type': 'application/octet-stream',
       'Content-Disposition': contentDispositionAdjunto(validacion.nombre),
       'Content-Length': String(contenido.byteLength),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  })
+}
+
+// Modo autenticado (tarjetas del Chat con el enlace vencido): el docente se
+// identifica con su sesión vigente y el archivo se lee de Storage solo si su
+// registro en archivos_generados es suyo, está activo y en su carpeta del
+// bucket de documentos generados (recuperarArchivoPropio). Solo lectura: no
+// genera archivos, no escribe registros ni llama a la IA.
+// - archivoId: tarjetas nuevas. Sin él, la URL persistida de una tarjeta
+//   antigua solo sirve para ubicar el archivo; su propiedad se verifica
+//   igual en el registro, y sin registro no se entrega.
+// - modo 'ver' muestra en línea solo un PDF; cualquier otro archivo (Word…)
+//   se entrega como descarga, porque el navegador no lo muestra en línea.
+async function recuperarAutenticado(datos: FormData): Promise<Response> {
+  const token = datos.get('token')
+  const auth = await autenticarRequestApi(typeof token === 'string' ? token : null)
+  if (!auth.ok) return error(auth.status, 'Tu sesión venció. Vuelve a iniciar sesión para abrir el archivo.')
+
+  const archivoId = datos.get('archivoId')
+  let referencia: ReferenciaArchivo
+  if (typeof archivoId === 'string' && archivoId) {
+    referencia = { archivoId }
+  } else {
+    const ubicacion = rutaDeUrlFirmada(datos.get('u'), process.env.NEXT_PUBLIC_SUPABASE_URL)
+    if (!ubicacion.ok) {
+      console.error(`[RECUPERAR_ARCHIVO] referencia rechazada motivo=${ubicacion.motivo}`)
+      return error(404, 'No encontré ese archivo entre tus documentos. Pídelo de nuevo en el Chat.')
+    }
+    referencia = { bucket: ubicacion.bucket, ruta: ubicacion.ruta }
+  }
+
+  const archivo = await recuperarArchivoPropio(auth.user.id, referencia)
+  if (!archivo.ok) {
+    console.error(`[RECUPERAR_ARCHIVO] no entregado motivo=${archivo.motivo}`)
+    return error(archivo.estado, archivo.mensaje)
+  }
+
+  const nombre = nombreSeguroArchivo(archivo.nombre)
+  const enLinea = datos.get('modo') === 'ver' && archivo.tipoMime === 'application/pdf'
+  return new Response(new Uint8Array(archivo.contenido), {
+    status: 200,
+    headers: {
+      'Content-Type': enLinea ? 'application/pdf' : 'application/octet-stream',
+      'Content-Disposition': enLinea ? contentDispositionAdjunto(nombre).replace(/^attachment/, 'inline') : contentDispositionAdjunto(nombre),
+      'Content-Length': String(archivo.contenido.byteLength),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     },

@@ -119,7 +119,15 @@ async function main() {
   const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
   verificar(!/export (async )?function GET/.test(ruta) && !/\.from\(|supabase|insert|update|delete/i.test(ruta.replace(/\/\/.*$/gm, '').replace(/NEXT_PUBLIC_SUPABASE_URL/g, '')), '4a. Solo POST; la ruta no escribe nada ni usa la base')
   verificar(/: a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)/.test(panel) && /: descargarArchivo\(a\.url, archivo\.nombre\)/.test(panel) && /: compartirArchivo\(archivo, \(\) =>/.test(panel), '4b. URL firmadas: Ver PDF (window.open), Compartir (compartirArchivo) y Word/PowerPoint/Excel (descargarArchivo) de siempre')
-  verificar(!/herramientas|registroArchivos|archivos_generados|mensajes_chat|conversaciones_chat/.test(ruta) && !/^import .*(herramientas|registroArchivos|supabaseClient|persistencia|AsistenteService)/m.test(readFileSync('lib/documentGen/descargaPdf.ts', 'utf8')), '4c. La descarga no depende de la generación, del registro 3B-2A ni de las conversaciones')
+  // B1: el modo con sesión (tarjetas con el enlace vencido) LEE el registro
+  // 3B-2A solo a través de recuperarArchivoPropio (ver
+  // verificar-recuperar-archivo.ts); el modo sin sesión no lo usa.
+  const codigoRuta = ruta.replace(/\/\/.*$/gm, '')
+  const modoSinSesion = codigoRuta.slice(0, codigoRuta.indexOf('async function recuperarAutenticado'))
+  verificar(!/herramientas|registroArchivos\.|archivos_generados|mensajes_chat|conversaciones_chat|recuperarArchivoPropio\(/.test(modoSinSesion.replace(/^import .*$/gm, ''))
+    && !/herramientas|archivos_generados|mensajes_chat|conversaciones_chat/.test(codigoRuta)
+    && !/^import .*(herramientas|registroArchivos|supabaseClient|persistencia|AsistenteService)/m.test(readFileSync('lib/documentGen/descargaPdf.ts', 'utf8')),
+    '4c. La descarga sin sesión no depende de la generación, del registro 3B-2A ni de las conversaciones; el modo con sesión solo lee el registro')
 
   console.log('')
   if (fallos > 0) {

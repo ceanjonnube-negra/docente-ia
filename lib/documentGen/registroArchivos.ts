@@ -12,7 +12,8 @@
 // ('fallido' = nunca entregado). Nada aquí borra archivos ni registros.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { BUCKET_DOCUMENTOS_GENERADOS } from './almacenamiento'
+import { BUCKET_DOCUMENTOS_GENERADOS, descargarBuffer } from './almacenamiento'
+import { TAMANO_MAXIMO_DESCARGA_PDF } from './descargaPdf'
 
 export type ClaseArchivo = 'conservar' | 'efimero'
 // Señal estructurada que un llamador puede pasar a ejecutarHerramientaDocumento.
@@ -145,4 +146,61 @@ export async function marcarArchivoFallido(id: string, causa: unknown): Promise<
   } catch (e) {
     console.error('[REGISTRO_ARCHIVOS] no se pudo marcar como fallido (queda en subiendo):', mensajeDe(e))
   }
+}
+
+// --- Recuperar un archivo propio (tarjetas del Chat con el enlace vencido) ---
+// Solo LECTURA: no genera archivos, no escribe registros ni llama a la IA.
+// La fuente de verdad es archivos_generados: el archivo se entrega solo si
+// su registro existe, es del docente autenticado, está 'activo', vive en el
+// bucket de documentos generados y bajo la carpeta del propio docente.
+// Referencias aceptadas:
+// - { archivoId }: tarjetas nuevas (etapa 3B-2A).
+// - { bucket, ruta }: tarjetas antiguas, sacadas de su URL firmada
+//   persistida; igual exigen un registro propio. Un archivo sin registro no
+//   puede verificarse y NO se recupera.
+// Las respuestas no distinguen "no existe" de "es de otro docente".
+export type ReferenciaArchivo = { archivoId: string } | { bucket: string; ruta: string }
+export type ArchivoRecuperado =
+  | { ok: true; nombre: string; tipoMime: string; contenido: Buffer }
+  | { ok: false; estado: 404 | 410 | 413 | 502; mensaje: string; motivo: string }
+
+const NO_ENCONTRADO = 'No encontré ese archivo entre tus documentos. Pídelo de nuevo en el Chat.'
+
+export async function recuperarArchivoPropio(docenteId: string, referencia: ReferenciaArchivo): Promise<ArchivoRecuperado> {
+  const noEncontrado = (motivo: string): ArchivoRecuperado => ({ ok: false, estado: 404, mensaje: NO_ENCONTRADO, motivo })
+  if (!UUID.test(docenteId)) return noEncontrado('docente')
+  let consulta = cliente().from('archivos_generados')
+    .select('docente_id, bucket, ruta, nombre, tipo_mime, estado, tamano_bytes')
+    .eq('docente_id', docenteId)
+  if ('archivoId' in referencia) {
+    if (!UUID.test(referencia.archivoId)) return noEncontrado('archivo_id')
+    consulta = consulta.eq('id', referencia.archivoId)
+  } else {
+    if (referencia.bucket !== BUCKET_DOCUMENTOS_GENERADOS) return noEncontrado('bucket')
+    consulta = consulta.eq('bucket', referencia.bucket).eq('ruta', referencia.ruta)
+  }
+  const { data, error } = (await consulta.maybeSingle()) as {
+    data: { docente_id: string; bucket: string; ruta: string; nombre: string; tipo_mime: string; estado: string; tamano_bytes: number } | null
+    error: ErrorBD
+  }
+  if (error) return { ok: false, estado: 502, mensaje: 'No se pudo consultar el archivo. Intenta de nuevo.', motivo: 'consulta' }
+  // Comprobaciones explícitas además del filtro de la consulta.
+  if (!data || data.docente_id !== docenteId) return noEncontrado('sin_registro_propio')
+  if (data.bucket !== BUCKET_DOCUMENTOS_GENERADOS || !data.ruta.startsWith(`${docenteId}/`) || data.ruta.split('/').some((s) => s === '' || s === '.' || s === '..')) {
+    return noEncontrado('ubicacion')
+  }
+  if (data.estado !== 'activo') return noEncontrado('estado')
+  if (data.tamano_bytes > TAMANO_MAXIMO_DESCARGA_PDF) {
+    return { ok: false, estado: 413, mensaje: 'El archivo es demasiado grande para abrirlo desde aquí. Pídelo de nuevo en el Chat.', motivo: 'tamano' }
+  }
+  let contenido: Buffer
+  try {
+    contenido = await descargarBuffer(cliente(), data.ruta, data.bucket)
+  } catch {
+    return { ok: false, estado: 410, mensaje: 'El archivo ya no está disponible. Pídelo de nuevo en el Chat.', motivo: 'sin_objeto' }
+  }
+  if (contenido.byteLength > TAMANO_MAXIMO_DESCARGA_PDF) {
+    return { ok: false, estado: 413, mensaje: 'El archivo es demasiado grande para abrirlo desde aquí. Pídelo de nuevo en el Chat.', motivo: 'tamano' }
+  }
+  return { ok: true, nombre: data.nombre, tipoMime: data.tipo_mime, contenido }
 }

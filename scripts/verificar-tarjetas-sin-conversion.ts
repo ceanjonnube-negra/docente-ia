@@ -175,7 +175,7 @@ async function main() {
     const onClicksSimples = cuerpoTarjeta.match(/onClick=\{[^}]*\}/g) ?? []
     verificar(onClicksSimples.length >= 2, `10b. TarjetaDescarga tiene al menos un botón de Descargar y uno de Compartir/desplegar-Compartir — encontrados: ${onClicksSimples.length}`)
     verificar(
-      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer|ejecutar\(a\)|compartir\(archivos?(\[0\])?\)/.test(c)) &&
+      onClicksSimples.every(c => /descargarArchivo|compartirArchivo|setMostrarCompartir|descargarPdfDirecto|window\.open\(archivo\.urlVer|ejecutar\(a\)|compartir\(archivos?(\[0\])?\)|recuperarArchivo\(archivo, a\.modo/.test(c)) &&
         // compartir(): solo comparte (vista previa con la sesión vigente o el archivo), nunca toca el chat.
         /const compartir = \(archivo: ArchivoGeneradoInfo\) => \(referenciaVistaPrevia\(archivo\.url\)\s*\n\s*\? void compartirVistaPrevia\(archivo, avisarFallaVistaPrevia\)\s*\n\s*: compartirArchivo\(archivo, /.test(cuerpoTarjeta) &&
         /const ejecutar = \(a: AccionArchivo\) =>\s*\n\s*referenciaVistaPrevia\(a\.url\)\s*\n\s*\? \(a\.accion === 'ver' \? verVistaPrevia\(a\.url, avisarFallaVistaPrevia\) : void descargarVistaPrevia\(a\.url, avisarFallaVistaPrevia\)\)\s*\n\s*: a\.accion === 'ver' \? window\.open\(a\.url, '_blank'\)\s*\n\s*: a\.accion === 'descargar-directo' \? descargarPdfDirecto\(a\.url\)\s*\n\s*: descargarArchivo\(a\.url, archivo\.nombre\)/.test(cuerpoTarjeta) &&

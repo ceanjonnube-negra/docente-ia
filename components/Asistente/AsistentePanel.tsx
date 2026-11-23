@@ -65,6 +65,15 @@ export function accionesDescargaArchivo(archivo: Pick<ArchivoGeneradoInfo, 'tipo
   return [{ accion: 'descargar', url: archivo.url, etiqueta: `⬇️ ${etiquetaDescargar(archivo.tipo)}` }]
 }
 
+// Tarjeta con la URL firmada vencida: el archivo ORIGINAL se recupera con la
+// sesión vigente (POST /api/archivos/descargar en modo autenticado). Solo un
+// PDF se puede ver en línea; Word y demás formatos solo se descargan.
+export type AccionRecuperacion = { modo: 'ver' | 'descargar'; etiqueta: string }
+export function accionesRecuperacionArchivo(archivo: Pick<ArchivoGeneradoInfo, 'tipo'>): AccionRecuperacion[] {
+  if (archivo.tipo === 'pdf') return [{ modo: 'ver', etiqueta: '👁️ Ver PDF' }, { modo: 'descargar', etiqueta: '⬇️ Descargar PDF' }]
+  return [{ modo: 'descargar', etiqueta: `⬇️ ${etiquetaDescargar(archivo.tipo)}` }]
+}
+
 // Título legible para los documentos de planeación/hoja de evaluación
 // (ver "corrección final — el adjunto de planeación abre la hoja de
 // evaluación"): reemplaza el nombre técnico del archivo SOLO cuando
@@ -297,6 +306,32 @@ export function verVistaPrevia(url: string, alFallar: () => void) {
 // DESCARGAR (PDF y Word) — el mismo formulario en la pestaña actual: la
 // respuesta es attachment, así que el navegador guarda el archivo sin
 // salir del Chat IA. Sin sesión vigente no se envía nada.
+// Mismo formulario POST nativo que las vistas previas (funciona en iPhone,
+// Android y web): el archivo se identifica por archivoId o, en tarjetas
+// antiguas, por su URL persistida; el servidor verifica que sea del docente.
+function enviarFormularioRecuperacion(archivo: Pick<ArchivoGeneradoInfo, 'url' | 'archivoId'>, modo: 'ver' | 'descargar', token: string, destino?: string) {
+  const referencia: [string, string] = archivo.archivoId ? ['archivoId', archivo.archivoId] : ['u', archivo.url]
+  enviarFormularioVistaPrevia({ ruta: '/api/archivos/descargar', campos: [['modo', modo], referencia] }, token, destino)
+}
+
+export function recuperarArchivo(archivo: Pick<ArchivoGeneradoInfo, 'url' | 'archivoId'>, modo: 'ver' | 'descargar', alFallar: () => void) {
+  if (modo === 'ver') {
+    // La ventana se abre en el mismo toque (bloqueadores de ventanas).
+    const nombreVentana = `archivo-${Date.now()}`
+    const ventana = window.open('', nombreVentana)
+    if (!ventana) { alFallar(); return }
+    void tokenSesionVigente().then((token) => {
+      if (!token) { ventana.close(); alFallar(); return }
+      enviarFormularioRecuperacion(archivo, modo, token, nombreVentana)
+    })
+    return
+  }
+  void tokenSesionVigente().then((token) => {
+    if (!token) { alFallar(); return }
+    enviarFormularioRecuperacion(archivo, modo, token)
+  })
+}
+
 export async function descargarVistaPrevia(url: string, alFallar: () => void) {
   const referencia = referenciaVistaPrevia(url)
   const token = referencia ? await tokenSesionVigente() : null
@@ -436,17 +471,37 @@ function TarjetaDescarga({
             )}
             {esActivo && <span className="text-purple-600 font-semibold">· Documento activo</span>}
           </p>
-          <p className={`text-xs ${ocultarPorVencido ? 'text-amber-600' : 'text-green-600'}`}>
-            {ocultarPorVencido ? 'Enlace vencido — pide el documento de nuevo' : 'Listo'}
+          <p className="text-xs text-green-600">
+            {ocultarPorVencido ? 'Listo · se abre con tu sesión' : 'Listo'}
           </p>
           {fallaVistaPrevia && (
             <p className="text-xs text-amber-600">No fue posible abrir la vista previa. Revisa tu sesión e inténtalo de nuevo.</p>
           )}
         </div>
       </div>
-      {!ocultarPorVencido && (
-        <div className="px-3 pb-3 space-y-1.5">
+      <div className="px-3 pb-3 space-y-1.5">
           {archivos.map((archivo) => {
+            // Enlace vencido (salvo vistas previas, que no vencen): el
+            // original se recupera con la sesión vigente, sin regenerarlo.
+            if (ocultarPorVencido && referenciaVistaPrevia(archivo.url) === null) {
+              return (
+                <div key={archivo.tipo} className="flex gap-1.5">
+                  {accionesRecuperacionArchivo(archivo).map((a) => (
+                    <button
+                      key={a.modo}
+                      onClick={() => recuperarArchivo(archivo, a.modo, avisarFallaVistaPrevia)}
+                      className={
+                        a.modo === 'ver'
+                          ? 'flex-1 flex items-center justify-center gap-1 border border-gray-200 text-gray-700 text-xs font-semibold px-3 py-2 rounded-full hover:bg-gray-50'
+                          : 'flex-1 flex items-center justify-center gap-1 bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-full hover:bg-green-700'
+                      }
+                    >
+                      {a.etiqueta}
+                    </button>
+                  ))}
+                </div>
+              )
+            }
             // Ver, Descargar (ver accionesDescargaArchivo) y, abajo,
             // Compartir: tres acciones independientes.
             const acciones = accionesDescargaArchivo(archivo)
@@ -474,7 +529,8 @@ function TarjetaDescarga({
               </div>
             )
           })}
-          {archivos.length === 1 ? (
+          {/* Compartir usa la URL firmada: solo mientras está vigente. */}
+          {ocultarPorVencido ? null : archivos.length === 1 ? (
             <button
               onClick={() => compartir(archivos[0])}
               className="w-full flex items-center justify-center gap-1 border border-gray-200 text-gray-600 text-[11px] font-semibold px-3 py-1.5 rounded-full hover:bg-gray-50"
@@ -505,7 +561,6 @@ function TarjetaDescarga({
             </div>
           )}
         </div>
-      )}
       {/* EVAL-1G — acción contextual "Subir foto ya contestada", solo
           en la tarjeta de la hoja de evaluación y solo cuando trae el
           id del proyecto (tarjetas generadas antes de este cambio no

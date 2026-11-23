@@ -30,13 +30,25 @@ export function nombreSeguroPdf(crudo: string): string {
   return `${sinExtension || 'documento'}.pdf`
 }
 
+// Nombre seguro para un archivo del registro (Word, PDF, PowerPoint,
+// Excel): mismas reglas que nombreSeguroPdf, conservando su extensión.
+export function nombreSeguroArchivo(crudo: string): string {
+  const base = (crudo.split(/[\\/]/).pop() ?? '').normalize('NFC').replace(/[\u0000-\u001f\u007f"\\;]/g, '').replace(/^\.+/, '').trim().slice(0, 120)
+  return /^.+\.[a-z0-9]{2,5}$/i.test(base) ? base : `${base || 'documento'}`
+}
+
 // Content-Disposition con respaldo ASCII y nombre UTF-8 (RFC 6266/5987).
 export function contentDispositionAdjunto(nombre: string): string {
   const ascii = nombre.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '_')
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nombre)}`
 }
 
-export function validarUrlFirmadaPdf(entrada: unknown, urlSupabase: string | undefined): UrlDescargaValida | UrlDescargaInvalida {
+// Bucket y ruta de una URL firmada del proyecto de Supabase del entorno, con
+// las mismas comprobaciones estrictas de origen y ruta. No exige que la URL
+// siga vigente: sirve también para identificar el archivo de una tarjeta
+// antigua (sin archivoId), cuya propiedad se verifica después en el registro.
+export type RutaUrlFirmada = { ok: true; url: URL; bucket: (typeof BUCKETS_DESCARGA_PDF)[number]; ruta: string; segmentos: string[] }
+export function rutaDeUrlFirmada(entrada: unknown, urlSupabase: string | undefined): RutaUrlFirmada | UrlDescargaInvalida {
   if (typeof entrada !== 'string' || entrada.length === 0 || entrada.length > 4096) return { ok: false, motivo: 'url_ausente_o_larga' }
   if (!urlSupabase) return { ok: false, motivo: 'entorno_sin_supabase' }
   // Antes de que el parser normalice la ruta: ningún segmento "." o ".."
@@ -58,17 +70,22 @@ export function validarUrlFirmadaPdf(entrada: unknown, urlSupabase: string | und
   const bucket = BUCKETS_DESCARGA_PDF.find((b) => url.pathname.startsWith(`/storage/v1/object/sign/${b}/`))
   if (!bucket) return { ok: false, motivo: 'ruta' }
   const prefijo = `/storage/v1/object/sign/${bucket}/`
-  const ruta = url.pathname.slice(prefijo.length)
   let rutaDecodificada: string
   try {
-    rutaDecodificada = decodeURIComponent(ruta)
+    rutaDecodificada = decodeURIComponent(url.pathname.slice(prefijo.length))
   } catch {
     return { ok: false, motivo: 'ruta_mal_codificada' }
   }
   const segmentos = rutaDecodificada.split('/')
   if (segmentos.length < 2 || segmentos.some((s) => s === '' || s === '.' || s === '..') || /[\\\u0000-\u001f]/.test(rutaDecodificada)) return { ok: false, motivo: 'ruta' }
-  if (!/\.pdf$/i.test(rutaDecodificada)) return { ok: false, motivo: 'no_pdf' }
-  if (!url.searchParams.get('token')) return { ok: false, motivo: 'sin_token' }
-  const nombre = nombreSeguroPdf(url.searchParams.get('download') || segmentos[segmentos.length - 1].replace(/^\d+-/, ''))
-  return { ok: true, url: url.toString(), nombre }
+  return { ok: true, url, bucket, ruta: rutaDecodificada, segmentos }
+}
+
+export function validarUrlFirmadaPdf(entrada: unknown, urlSupabase: string | undefined): UrlDescargaValida | UrlDescargaInvalida {
+  const r = rutaDeUrlFirmada(entrada, urlSupabase)
+  if (!r.ok) return r
+  if (!/\.pdf$/i.test(r.ruta)) return { ok: false, motivo: 'no_pdf' }
+  if (!r.url.searchParams.get('token')) return { ok: false, motivo: 'sin_token' }
+  const nombre = nombreSeguroPdf(r.url.searchParams.get('download') || r.segmentos[r.segmentos.length - 1].replace(/^\d+-/, ''))
+  return { ok: true, url: r.url.toString(), nombre }
 }
