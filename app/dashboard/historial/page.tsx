@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { generarWord } from '@/utils/generarWord'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { useAsistente } from '@/lib/asistente/hooks'
+import { documentosDelHistorial } from '@/lib/asistente/documentos'
 
 
 const iconos: Record<string, string> = {
@@ -49,9 +50,13 @@ export default function HistorialPage() {
     cargar()
   }, [])
 
+  // Misma regla que el Chat (esDocumentoDelHistorial): los registros
+  // antiguos sin formato de documento siguen en la base sin cambios, pero
+  // no se presentan como documentos.
+  const formales = documentosDelHistorial(documentos)
   const filtrados = filtro === 'todos'
-    ? documentos
-    : documentos.filter(d => d.tipo === filtro)
+    ? formales
+    : formales.filter(d => d.tipo === filtro)
 
   const formatFecha = (fecha: string) => formatearFecha(fecha, obtenerZonaHorariaDispositivo(), { day: '2-digit', month: 'short', year: 'numeric' })
 
@@ -61,7 +66,7 @@ export default function HistorialPage() {
         <a href="/dashboard" className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-gray-500">←</a>
         <div>
           <p className="font-bold text-gray-900 text-sm">Historial de Documentos</p>
-          <p className="text-xs text-gray-400">{documentos.length} documentos generados</p>
+          <p className="text-xs text-gray-400">{formales.length} documentos generados</p>
         </div>
       </header>
 

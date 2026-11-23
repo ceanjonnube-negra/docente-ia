@@ -20,7 +20,7 @@
 // esto se limpia por completo al cerrar sesión.
 
 import { supabase } from '@/lib/supabaseClient'
-import { esDocumentoFormal, PREFIJOS_TITULO_DOCUMENTO } from './documentos'
+import { esDocumentoFormal, PATRON_TITULO_DOCUMENTO_SQL } from './documentos'
 import { extraerTitulo } from '../documentGen/parseContenido'
 import { propuestaListaParaGuardar, type ArchivoGeneradoInfo, type MensajeConversacion } from './tipos'
 
@@ -1496,7 +1496,7 @@ async function leerFilasPorId(remotoId: string, idsRemotos: string[]): Promise<F
 // el cliente (título de documento formal, documento entregado como
 // archivo, restauración o selección). Lanza si Supabase falla.
 const FILTRO_EVENTOS_DOCUMENTALES = [
-  `and(rol.eq.asistente,texto.match."^[[:space:]]*(${PREFIJOS_TITULO_DOCUMENTO.join('|')})[[:space:]]*[A-ZÀ-Ý]")`,
+  `and(rol.eq.asistente,texto.match."${PATRON_TITULO_DOCUMENTO_SQL}")`,
   'and(rol.eq.asistente,contenido->>contenidoDocumento.not.is.null,or(contenido->archivo.not.is.null,contenido->archivos.not.is.null))',
   'and(rol.eq.asistente,contenido->>restauraVersion.not.is.null)',
   'and(rol.eq.usuario,contenido->>documentoDestinoId.not.is.null)',

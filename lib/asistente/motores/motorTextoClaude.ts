@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { asegurarConversacionRemota } from '../persistencia'
-import type { FormatoEntrega } from '../documentos'
+import { documentoParaHistorial, type FormatoEntrega, type OrigenDocumento } from '../documentos'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -298,7 +298,11 @@ export class MotorTextoClaude implements MotorConversacional {
       emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
 
-      if (user) await this.guardarEnHistorial(respuestaLimpia, perfil, user.id)
+      // Solo los documentos van al historial de documentos (primero por los
+      // metadatos de entrega del servidor); las respuestas conversacionales
+      // (saludos, consultas) no.
+      const documento = documentoParaHistorial(respuestaLimpia, { contenidoOriginal, archivos })
+      if (user && documento) await this.guardarEnHistorial(documento, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
@@ -530,8 +534,9 @@ export class MotorTextoClaude implements MotorConversacional {
     return respuesta.replace(marcadorCompleto, '').trim()
   }
 
-  private async guardarEnHistorial(texto: string, perfil: any, userId: string) {
-    await supabase.from('documentos_generados').insert({
+  private async guardarEnHistorial(documento: { contenido: string; origen: OrigenDocumento }, perfil: any, userId: string) {
+    const texto = documento.contenido
+    const { error } = await supabase.from('documentos_generados').insert({
       user_id: userId,
       tipo: detectarTipoDocumento(texto),
       titulo: detectarTitulo(texto),
@@ -539,6 +544,8 @@ export class MotorTextoClaude implements MotorConversacional {
       campo_formativo: detectarCampoFormativo(texto) || perfil?.campo_formativo || null,
       grado: perfil?.grado || null,
       grupo: perfil?.grupo || null,
+      origen: documento.origen,
     })
+    if (error) console.error('[HISTORIAL] No se pudo guardar el documento en documentos_generados:', error.message)
   }
 }

@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { DiferenciaCalendario } from './asistente/tipos';
+import { FILTRO_DOCUMENTOS_HISTORIAL } from './asistente/documentos';
 import type { AspectoGeneral } from './seguimiento/tipos';
 import type { NivelTextoCanonico } from './seguimiento/conversionCalificacion';
 
@@ -250,13 +251,20 @@ export async function necesidadesApoyoGrupo(sb: SupabaseClient, grupoId: string)
 
 export type DocumentoResumen = { titulo: string; tipo: string; fecha: string };
 
+// Solo cuenta y lista documentos, con la misma regla que la pantalla
+// Historial (esDocumentoDelHistorial): origen válido, o registro histórico
+// con prefijo canónico. Los registros antiguos sin formato de documento
+// (respuestas del Chat guardadas antes de filtrar) siguen en la tabla sin
+// cambios; simplemente no son documentos.
 export async function documentosDelDocente(sb: SupabaseClient, userId: string, limite = 15): Promise<{ total: number; recientes: DocumentoResumen[] }> {
-  const { data, count } = await sb
+  const { data, count, error } = await sb
     .from('documentos_generados')
     .select('titulo, tipo, created_at', { count: 'exact' })
     .eq('user_id', userId)
+    .or(FILTRO_DOCUMENTOS_HISTORIAL)
     .order('created_at', { ascending: false })
     .limit(limite);
+  if (error) throw error;
 
   return {
     total: count ?? (data?.length || 0),

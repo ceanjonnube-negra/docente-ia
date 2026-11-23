@@ -15,6 +15,54 @@ export function esDocumentoFormal(texto: string): boolean {
   return PATRON_TITULO_DOCUMENTO.test(texto.trim())
 }
 
+// La misma regla como regex POSIX, para filtrar en Supabase (operador
+// `match` de PostgREST): el índice documental y los registros históricos
+// del historial se reconocen exactamente igual que con esDocumentoFormal.
+export const PATRON_TITULO_DOCUMENTO_SQL = `^[[:space:]]*(${PREFIJOS_TITULO_DOCUMENTO.join('|')})[[:space:]]*[A-ZÀ-Ý]`
+
+// documentos_generados.origen (migración 20261123000000): cómo se
+// reconoció un documento nuevo. NULL = registro anterior.
+export type OrigenDocumento = 'archivo' | 'texto'
+export const ORIGENES_DOCUMENTO: readonly OrigenDocumento[] = ['archivo', 'texto']
+
+// Qué se guarda de una respuesta del Chat en documentos_generados.
+// Primero los metadatos estructurados que pone el servidor solo cuando de
+// verdad generó un documento ([[DOCUMENTO_ARCHIVO]] y
+// [[DOCUMENTO_CONTENIDO]]):
+//   - archivo + contenidoOriginal → documento nuevo entregado como
+//     archivo: se guarda su texto real (el visible es solo un aviso),
+//     origen 'archivo'.
+//   - archivo sin contenidoOriginal → archivo de un documento que ya
+//     existía (conversión de formato, planeación aprobada, hoja): no hay
+//     texto nuevo que guardar y el original ya quedó registrado.
+// Sin metadatos, una respuesta solo es documento si es un documento
+// formal visible (esDocumentoFormal), origen 'texto'; una conversación no
+// se guarda.
+export function documentoParaHistorial(
+  respuesta: string,
+  entrega: { contenidoOriginal?: string; archivos?: readonly unknown[] } = {},
+): { contenido: string; origen: OrigenDocumento } | null {
+  const conArchivo = (entrega.archivos?.length ?? 0) > 0
+  if (conArchivo) return entrega.contenidoOriginal?.trim() ? { contenido: entrega.contenidoOriginal, origen: 'archivo' } : null
+  return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto' } : null
+}
+
+// Regla única de lectura del historial de documentos (Chat e Historial):
+//   - documento nuevo: origen válido;
+//   - registro histórico: origen NULL y prefijo canónico.
+// Los registros antiguos sin formato de documento siguen en la base sin
+// cambios; simplemente no se presentan como documentos.
+export function esDocumentoDelHistorial(fila: { origen?: string | null; contenido?: string | null }): boolean {
+  if (fila.origen != null) return (ORIGENES_DOCUMENTO as readonly string[]).includes(fila.origen)
+  return esDocumentoFormal(fila.contenido ?? '')
+}
+export function documentosDelHistorial<T extends { origen?: string | null; contenido?: string | null }>(filas: T[]): T[] {
+  return filas.filter(esDocumentoDelHistorial)
+}
+// La misma regla para Supabase (`.or()` de PostgREST).
+export const FILTRO_DOCUMENTOS_HISTORIAL =
+  `origen.in.(${ORIGENES_DOCUMENTO.join(',')}),and(origen.is.null,contenido.match."${PATRON_TITULO_DOCUMENTO_SQL}")`
+
 // Normaliza para comparar por sinónimo/palabra, no por texto exacto:
 // minúsculas + sin acentos. Con esto una sola entrada ("mandamelo")
 // cubre tanto "mándamelo" como "mandamelo" sin duplicar la lista, y
