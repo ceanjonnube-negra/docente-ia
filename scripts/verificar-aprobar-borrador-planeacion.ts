@@ -809,7 +809,7 @@ async function main() {
       const { sb } = clienteFalso(DOCENTE_1, datos)
       const ctx = await prepararContextoCurricularPlaneacion(sb, grupo, { tema: 'cuerpo humano' })
       const completado = completarBorradorCurricular({ textoModelo, curricular: ctx, textosDocente: ['Planeación del cuerpo humano'] })!
-      return textoModelo + completado.bloqueServidor
+      return completado.textoFinal
     }
     const ses = (grupo: string) => sesion({ grupo_activo_id: grupo, grupo_activo_datos: { grado: '3', grupo: 'A' } })
 

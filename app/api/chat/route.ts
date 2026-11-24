@@ -1910,7 +1910,9 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
               textosDocente: [...historialMensajes.filter((h) => h.role === 'user').map((h) => h.content), esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')],
             })
             if (completado) {
-              if (completado.bloqueServidor) controller.enqueue(encoder.encode(completado.bloqueServidor))
+              // El texto final del mensaje (ver textoFinalChat.ts): el
+              // cliente lo adopta en lugar del transmitido por el modelo.
+              controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(completado.textoFinal, 'utf-8').toString('base64')}]]`))
               textoBorradorAcumulado = completado.textoParaVistaPrevia
               console.log(`[PLANEACION_GENERAR] seccionCurricular=${!!completado.identidad} contenidosDelCatalogo=${completado.identidad?.contenidos.length ?? 0}`)
             }

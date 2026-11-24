@@ -119,37 +119,164 @@ export function construirIdentidadCurricularVisible(
   }
 }
 
-// Texto plano con el formato "Etiqueta: valor1 · valor2" del resto del
-// documento. Sin candidatos validados pero con referencias del docente,
-// lo indicado por el docente se muestra sin atribuirlo a ningún
-// programa.
+// Texto plano en listas legibles: cada grupo es una línea "Etiqueta:"
+// seguida de un elemento "- " por línea, sin líneas vacías dentro (la
+// sección termina en la primera línea vacía). Sin candidatos validados
+// pero con referencias del docente, lo indicado por el docente se muestra
+// sin atribuirlo a ningún programa.
+export const ETIQUETA_PDA_DE_REFERENCIA = 'PDA de referencia:'
+
 export function renderizarBloqueIdentidadCurricularVisible(identidad: IdentidadCurricularVisible): string {
   const lineas = [ENCABEZADO_IDENTIDAD_VISIBLE]
+  const grupo = (etiqueta: string, elementos: string[]) => {
+    if (elementos.length > 0) lineas.push(etiqueta, ...elementos.map((e) => `- ${e}`))
+  }
   const hayReferencia = identidad.contenidos.length > 0 || identidad.pda.length > 0 || identidad.contenidosLocales.length > 0
   if (hayReferencia) lineas.push(`Fuente: ${rotuloFuenteCurricular(identidad.fuente, identidad.estadoVerificacion)}`)
-  if (identidad.contenidos.length > 0) lineas.push(`Contenidos de referencia: ${identidad.contenidos.join(' · ')}`)
-  if (identidad.pda.length > 0) lineas.push(`PDA de referencia: ${identidad.pda.join(' · ')}`)
-  if (identidad.contenidosLocales.length > 0) lineas.push(`Contenidos propios del Programa Analítico: ${identidad.contenidosLocales.join(' · ')}`)
-  const contenidosDocente = identidad.delDocente.filter((r) => r.tipo === 'contenido').map((r) => r.texto)
-  const pdaDocente = identidad.delDocente.filter((r) => r.tipo === 'pda').map((r) => r.texto)
-  if (contenidosDocente.length > 0) lineas.push(`Contenidos indicados por el docente: ${contenidosDocente.join(' · ')}`)
-  if (pdaDocente.length > 0) lineas.push(`PDA indicados por el docente: ${pdaDocente.join(' · ')}`)
+  grupo('Contenidos de referencia:', identidad.contenidos)
+  grupo(ETIQUETA_PDA_DE_REFERENCIA, identidad.pda)
+  grupo('Contenidos propios del Programa Analítico:', identidad.contenidosLocales)
+  grupo('Contenidos indicados por el docente:', identidad.delDocente.filter((r) => r.tipo === 'contenido').map((r) => r.texto))
+  grupo('PDA indicados por el docente:', identidad.delDocente.filter((r) => r.tipo === 'pda').map((r) => r.texto))
   const contenidosPropuestos = identidad.propuestas.filter((r) => r.tipo === 'contenido').map((r) => r.texto)
   const pdaPropuestos = identidad.propuestas.filter((r) => r.tipo === 'pda').map((r) => r.texto)
   if (contenidosPropuestos.length > 0 || pdaPropuestos.length > 0) lineas.push(`${ROTULO_PROPUESTA_NO_VERIFICADA}:`)
-  if (contenidosPropuestos.length > 0) lineas.push(`Contenidos propuestos: ${contenidosPropuestos.join(' · ')}`)
-  if (pdaPropuestos.length > 0) lineas.push(`PDA propuestos: ${pdaPropuestos.join(' · ')}`)
+  grupo('Contenidos propuestos:', contenidosPropuestos)
+  grupo('PDA propuestos:', pdaPropuestos)
   return lineas.join('\n')
 }
 
-// Inserta la sección JUSTO ANTES del bloque de resumen. Fail-closed: sin
-// marcador o sin identidad, el texto se devuelve SIN TOCAR.
+// Elementos de un grupo de la ÚLTIMA sección curricular del texto
+// ("Etiqueta:" + líneas "- "), o del formato anterior en una sola línea
+// ("Etiqueta: a · b"). null si el texto no tiene sección.
+export function elementosDeGrupoEnSeccion(texto: string, etiqueta: string): string[] | null {
+  const inicio = texto.lastIndexOf(ENCABEZADO_IDENTIDAD_VISIBLE)
+  if (inicio === -1) return null
+  const fin = texto.indexOf('\n\n', inicio)
+  const lineas = texto.slice(inicio, fin === -1 ? undefined : fin).split('\n')
+  const i = lineas.findIndex((l) => l.startsWith(etiqueta))
+  if (i === -1) return []
+  const enLinea = lineas[i].slice(etiqueta.length).trim()
+  if (enLinea) return enLinea.split(' · ').map((x) => x.trim()).filter(Boolean)
+  const elementos: string[] = []
+  for (const l of lineas.slice(i + 1)) {
+    if (!l.startsWith('- ')) break
+    elementos.push(l.slice(2).trim())
+  }
+  return elementos.filter(Boolean)
+}
+
+// ------------------------------------------------------------------
+// Normalización de la sección curricular del cuerpo de un borrador o
+// documento: la identidad del servidor es la ÚNICA sección de contenidos
+// y PDA visible. Una sola función para Chat, vistas previas, documentos
+// definitivos e Historial. Determinista e idempotente.
+//   - Solo actúa sobre el cuerpo (antes del bloque de resumen, que no se
+//     toca).
+//   - Sin identidad no cambia nada (borradores históricos o sin datos
+//     curriculares: nunca se quita lo que no se reemplaza).
+//   - Quita las secciones de contenidos o PDA del modelo: un ENCABEZADO de
+//     línea completa (con o sin emoji, markdown, mayúsculas o dos puntos)
+//     y su lista; y, antes de la primera sesión o día, las líneas
+//     "Contenidos: …" / "PDA: …". Una mención dentro de una actividad no
+//     es un encabezado y se conserva.
+//   - Inserta la sección canónica después del propósito; si no hay, antes
+//     de materiales o recursos, antes de la primera sesión o día, o al
+//     final del cuerpo.
+// ------------------------------------------------------------------
+function normalizarEncabezado(linea: string): string {
+  return linea
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[*_#>`]/g, ' ')
+    .replace(/[^\p{L}\p{N}():\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+// Encabezado: toda la línea es un título (termina en ":" o no tiene más
+// texto), sin oraciones.
+function textoDeEncabezado(linea: string): string | null {
+  const n = normalizarEncabezado(linea)
+  if (!n || n.length > 80) return null
+  const sinDosPuntos = n.replace(/:\s*$/, '').trim()
+  return sinDosPuntos.includes(':') ? null : sinDosPuntos
+}
+const ENCABEZADO_CURRICULAR = /^(los |las )?(contenidos?( curriculares| del programa( analitico| sintetico)?| de aprendizaje| seleccionados| a trabajar)?|pdas?|\(?pda\)?|procesos? de desarrollo (de|del) aprendizaje( \(pdas?\))?|pdas? \(procesos? de desarrollo (de|del) aprendizaje\)|contenidos? y (pdas?|procesos? de desarrollo (de|del) aprendizaje)( \(pdas?\))?|contenidos?, pda y [a-z ]+|contenidos y pda de esta planeacion)$/
+const ENCABEZADO_PROPOSITO = /^(proposito|propositos)( general| del proyecto| de la planeacion)?$/
+const ENCABEZADO_MATERIALES = /^(materiales|recursos|materiales y recursos|recursos didacticos)$/
+const ENCABEZADO_SESION = /^((dia|sesion|semana)\s+\d+|secuencia didactica|desarrollo de las sesiones|actividades)\b/
+const LINEA_ETIQUETA_CURRICULAR = /^\s*[-*•]?\s*(\*\*)?(contenidos?|pdas?|procesos? de desarrollo (de|del) aprendizaje( \(pdas?\))?)(\*\*)?\s*:\s*\S/i
+const ELEMENTO_LISTA = /^\s*([-*•▪◦]|\d+[.)])\s+/
+
+// Línea que abre otra sección (emoji o símbolo inicial, markdown o
+// mayúsculas): termina la lista anterior.
+function abreSeccion(linea: string): boolean {
+  const t = linea.trim()
+  if (!t || ELEMENTO_LISTA.test(t)) return false
+  return /^#{1,6}\s/.test(t) || /^\*\*[^*]+\*\*:?$/.test(t) || /^[^\p{L}\p{N}\s]/u.test(t) || (t === t.toUpperCase() && /\p{L}/u.test(t) && t.length <= 80)
+}
+
+function quitarSeccionesCurricularesDelModelo(cuerpo: string): string {
+  const lineas = cuerpo.split('\n')
+  const salida: string[] = []
+  let primeraSesion = lineas.findIndex((l) => { const e = textoDeEncabezado(l); return !!e && ENCABEZADO_SESION.test(e) })
+  if (primeraSesion === -1) primeraSesion = lineas.length
+  for (let i = 0; i < lineas.length; i++) {
+    const encabezado = textoDeEncabezado(lineas[i])
+    if (encabezado && ENCABEZADO_CURRICULAR.test(encabezado)) {
+      // Se salta el encabezado y su contenido hasta una línea vacía seguida
+      // de otra sección, o hasta la siguiente sección.
+      let j = i + 1
+      while (j < lineas.length) {
+        const l = lineas[j]
+        if (!l.trim()) {
+          const siguiente = lineas.slice(j + 1).find((x) => x.trim())
+          if (siguiente === undefined || !ELEMENTO_LISTA.test(siguiente)) break
+        } else if (abreSeccion(l)) break
+        j++
+      }
+      i = j - 1
+      continue
+    }
+    if (i < primeraSesion && LINEA_ETIQUETA_CURRICULAR.test(lineas[i])) continue
+    salida.push(lineas[i])
+  }
+  return salida.join('\n').replace(/\n{3,}/g, '\n\n')
+}
+
+// Índice de línea donde va la sección canónica.
+function posicionSeccionCanonica(lineas: string[]): number {
+  const encabezados = lineas.map((l) => textoDeEncabezado(l) ?? '')
+  const esSeccion = (i: number) => !!lineas[i].trim() && abreSeccion(lineas[i])
+  const proposito = encabezados.findIndex((e) => ENCABEZADO_PROPOSITO.test(e))
+  if (proposito !== -1) {
+    for (let i = proposito + 1; i < lineas.length; i++) if (esSeccion(i)) return i
+    return lineas.length
+  }
+  const materiales = encabezados.findIndex((e) => ENCABEZADO_MATERIALES.test(e))
+  if (materiales !== -1) return materiales
+  const sesion = encabezados.findIndex((e) => ENCABEZADO_SESION.test(e))
+  return sesion !== -1 ? sesion : lineas.length
+}
+
+export function normalizarSeccionCurricular(texto: string, identidad: IdentidadCurricularVisible | null): string {
+  if (!identidad) return texto
+  const indice = texto.indexOf(ETIQUETA_INICIO_BLOQUE)
+  const cuerpo = indice === -1 ? texto : texto.slice(0, indice)
+  const resto = indice === -1 ? '' : texto.slice(indice)
+  const limpio = quitarSeccionesCurricularesDelModelo(cuerpo).trimEnd()
+  const lineas = limpio.split('\n')
+  const en = posicionSeccionCanonica(lineas)
+  const antes = lineas.slice(0, en).join('\n').trimEnd()
+  const despues = lineas.slice(en).join('\n').trimStart()
+  const seccion = renderizarBloqueIdentidadCurricularVisible(identidad)
+  const nuevoCuerpo = [antes, seccion, despues].filter(Boolean).join('\n\n')
+  return resto ? `${nuevoCuerpo}\n\n${resto}` : nuevoCuerpo
+}
+
+// Compatibilidad: insertar = normalizar (una sola sección, en su lugar).
 export function insertarIdentidadCurricularVisibleEnBorrador(textoBorrador: string, identidad: IdentidadCurricularVisible | null): string {
-  if (!identidad) return textoBorrador
-  const indice = textoBorrador.indexOf(ETIQUETA_INICIO_BLOQUE)
-  if (indice === -1) return textoBorrador
-  const bloque = renderizarBloqueIdentidadCurricularVisible(identidad)
-  return `${textoBorrador.slice(0, indice).trimEnd()}\n\n${bloque}\n\n${textoBorrador.slice(indice)}`
+  return normalizarSeccionCurricular(textoBorrador, identidad)
 }
 
 // Sustituye SOLO el valor de las líneas "Contenidos:"/"PDA:" DENTRO del

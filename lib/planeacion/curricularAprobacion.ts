@@ -22,8 +22,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { extraerTextoCompletoBorrador, type ResumenBorrador } from './extraerBorrador'
 import { cargarCandidatosCurricularesGrupo, normalizarTexto, type CandidatoCurricularPlaneacion, type CargaCurricularGrupo, type ReferenciaDocente } from './resolverCurricularPlaneacion'
 import { reconocerCandidatosPorTexto, type EntradaCurricular } from './validarSeleccionCurricularPlaneacion'
-import { construirIdentidadCurricularVisible, insertarIdentidadCurricularVisibleEnBorrador, ENCABEZADO_IDENTIDAD_VISIBLE, type IdentidadCurricularVisible } from './identidadCurricularVisibleBorrador'
-import { clasificarNoReconocidas, entradasCurricularesDelResumen, quitarSeccionCurricularCopiada } from './completarBorradorCurricular'
+import { construirIdentidadCurricularVisible, elementosDeGrupoEnSeccion, normalizarSeccionCurricular, ETIQUETA_PDA_DE_REFERENCIA, type IdentidadCurricularVisible } from './identidadCurricularVisibleBorrador'
+import { clasificarNoReconocidas, entradasCurricularesDelResumen } from './completarBorradorCurricular'
 
 // Trazabilidad guardada en planeacion_proyectos.evaluacion.trazabilidad_curricular.
 // Conserva los nombres de los registros anteriores (programaAnaliticoId,
@@ -69,17 +69,11 @@ export type CurricularAprobado = {
   cicloEscolarGrupo: string | null
 }
 
-const ETIQUETA_PDA_REVISADOS = 'PDA de referencia: '
-
-// PDA que el docente vio en la última sección curricular del borrador.
-// null si el borrador no tiene sección (borradores anteriores).
+// PDA que el docente vio en la última sección curricular del borrador
+// (en lista o en el formato anterior de una línea). null si el borrador
+// no tiene sección (borradores anteriores).
 export function pdaRevisadosEnSeccion(contenido: string): string[] | null {
-  const inicio = contenido.lastIndexOf(ENCABEZADO_IDENTIDAD_VISIBLE)
-  if (inicio === -1) return null
-  const fin = contenido.indexOf('\n\n', inicio)
-  const seccion = contenido.slice(inicio, fin === -1 ? undefined : fin)
-  const linea = seccion.split('\n').find((l) => l.startsWith(ETIQUETA_PDA_REVISADOS))
-  return linea ? linea.slice(ETIQUETA_PDA_REVISADOS.length).split(' · ').map((p) => p.trim()).filter(Boolean) : []
+  return elementosDeGrupoEnSeccion(contenido, ETIQUETA_PDA_DE_REFERENCIA)
 }
 
 function textoDeCandidato(c: CandidatoCurricularPlaneacion): string {
@@ -198,6 +192,7 @@ export function identidadDesdeTrazabilidad(t: TrazabilidadCurricularAprobada): I
 }
 
 // Texto definitivo para Word/PDF a partir de una identidad ya decidida.
+// Misma normalización que el Chat y las vistas previas.
 export function textoDefinitivoConIdentidad(contenidoBorrador: string, identidad: IdentidadCurricularVisible | null): string {
-  return extraerTextoCompletoBorrador(insertarIdentidadCurricularVisibleEnBorrador(quitarSeccionCurricularCopiada(contenidoBorrador), identidad))
+  return extraerTextoCompletoBorrador(normalizarSeccionCurricular(contenidoBorrador, identidad))
 }

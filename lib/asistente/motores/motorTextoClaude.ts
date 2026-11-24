@@ -23,6 +23,7 @@ import type {
   MotorConversacional,
 } from '../tipos'
 import { esPropuestaListaParaCliente, type PropuestaListaParaCliente } from '@/lib/listaOficial/vistaPropuestaLista'
+import { extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
 
 const detectarTipoDocumento = (texto: string): string => {
   if (texto.includes('RÚBRICA')) return 'rubrica'
@@ -285,16 +286,19 @@ export class MotorTextoClaude implements MotorConversacional {
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
           // El marcador de propuesta (largo, en base64) nunca se pinta.
-          emitir({ tipo: 'respuesta-parcial', texto: respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '').trim() })
+          emitir({ tipo: 'respuesta-parcial', texto: sinTextoFinalParcial(respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '')).trim() })
         }
       }
 
-      const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuesta, texto, user?.id)
+      // Texto final normalizado por el servidor (ver textoFinalChat.ts).
+      const { texto: respuestaSinFinal, textoFinal } = extraerTextoFinal(respuesta)
+      const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuestaSinFinal, texto, user?.id)
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
       const { texto: sinNavegacion, accionNavegacion } = this.procesarMarcadorDeNavegacion(sinContenido)
       const { texto: sinPerfil, perfilActualizado } = this.procesarMarcadorDePerfilActualizado(sinNavegacion)
-      const { texto: respuestaLimpia, propuestaLista } = this.procesarMarcadorDePropuestaLista(sinPerfil)
+      const { texto: sinPropuesta, propuestaLista } = this.procesarMarcadorDePropuestaLista(sinPerfil)
+      const respuestaLimpia = textoFinal ?? sinPropuesta
       emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
       emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
 

@@ -14,11 +14,11 @@
 //   2. lo no reconocido se clasifica: indicado por el docente (aparece
 //      literal en sus mensajes) o propuesta no verificada — nunca se
 //      sustituye ni se descarta lo que dijo el docente;
-//   3. se añade al final del turno la sección visible (identidad
-//      curricular, con los PDA reales) y la pregunta de cierre, una sola
-//      vez; el mensaje queda solo con información pedagógica;
-//   4. las vistas previas (Word/PDF) usan el texto con la sección
-//      insertada una sola vez antes del bloque de resumen.
+//   3. el texto se normaliza (normalizarSeccionCurricular): fuera las
+//      secciones de contenidos o PDA del modelo y UNA sola sección
+//      canónica, con los PDA reales, después del propósito; más la
+//      pregunta de cierre una sola vez. Ese es el texto final del mensaje
+//      del Chat ([[TEXTO_FINAL]]) y el de las vistas previas (Word/PDF).
 //
 // La aprobación (Parte 3) aplica la MISMA regla al texto del borrador
 // vigente, con el catálogo recargado de la base de datos: ningún dato del
@@ -29,9 +29,7 @@ import { normalizarTexto, type ReferenciaDocente, type ResultadoContextoCurricul
 import { reconocerCandidatosPorTexto, type EntradaCurricular } from './validarSeleccionCurricularPlaneacion'
 import {
   construirIdentidadCurricularVisible,
-  insertarIdentidadCurricularVisibleEnBorrador,
-  renderizarBloqueIdentidadCurricularVisible,
-  ENCABEZADO_IDENTIDAD_VISIBLE,
+  normalizarSeccionCurricular,
   type IdentidadCurricularVisible,
 } from './identidadCurricularVisibleBorrador'
 
@@ -45,10 +43,11 @@ export type EntradaCompletarBorrador = {
 }
 
 export type BorradorCompletado = {
-  // Texto que se añade al final del turno (ya empieza con salto de línea).
-  bloqueServidor: string
-  // Texto del borrador con la sección curricular insertada, para las
-  // vistas previas.
+  // Texto FINAL del mensaje del Chat (el que se guarda y se reenvía):
+  // cuerpo normalizado con la única sección curricular, resumen y la
+  // pregunta de cierre una sola vez.
+  textoFinal: string
+  // El mismo texto normalizado, para las vistas previas.
   textoParaVistaPrevia: string
   identidad: IdentidadCurricularVisible | null
 }
@@ -93,17 +92,6 @@ export function clasificarNoReconocidas(entradas: EntradaCurricular[], textosDoc
   return { delDocente, propuestas }
 }
 
-// Quita del texto del modelo una copia de la sección curricular (puede
-// reproducirla en una corrección, porque la ve en el turno anterior): la
-// sección válida es solo la que arma el servidor. La sección termina en
-// la primera línea vacía.
-export function quitarSeccionCurricularCopiada(texto: string): string {
-  const inicio = texto.indexOf(ENCABEZADO_IDENTIDAD_VISIBLE)
-  if (inicio === -1) return texto
-  const fin = texto.indexOf('\n\n', inicio)
-  return quitarSeccionCurricularCopiada(`${texto.slice(0, inicio).trimEnd()}${fin === -1 ? '' : `\n\n${texto.slice(fin).trimStart()}`}`)
-}
-
 // ¿El modelo ya escribió una pregunta de cierre? Una pregunta después del
 // bloque de resumen que no sea una línea "Etiqueta: valor" del propio
 // resumen, o la pregunta de aprobación en cualquier parte del texto.
@@ -123,13 +111,7 @@ export function completarBorradorCurricular(entrada: EntradaCompletarBorrador): 
   const { delDocente, propuestas } = clasificarNoReconocidas(noReconocidas, entrada.textosDocente)
   const identidad = construirIdentidadCurricularVisible(aceptados, [...entrada.curricular.paraPrompt.referenciasDocente, ...delDocente], propuestas)
 
-  const partes: string[] = []
-  if (identidad) partes.push(renderizarBloqueIdentidadCurricularVisible(identidad))
-  if (!yaTienePreguntaDeCierre(entrada.textoModelo)) partes.push(PREGUNTA_CIERRE_BORRADOR)
-
-  return {
-    bloqueServidor: partes.length > 0 ? `\n\n${partes.join('\n\n')}` : '',
-    textoParaVistaPrevia: insertarIdentidadCurricularVisibleEnBorrador(quitarSeccionCurricularCopiada(entrada.textoModelo), identidad),
-    identidad,
-  }
+  const normalizado = normalizarSeccionCurricular(entrada.textoModelo, identidad)
+  const textoFinal = yaTienePreguntaDeCierre(entrada.textoModelo) ? normalizado : `${normalizado.trimEnd()}\n\n${PREGUNTA_CIERRE_BORRADOR}`
+  return { textoFinal, textoParaVistaPrevia: normalizado, identidad }
 }

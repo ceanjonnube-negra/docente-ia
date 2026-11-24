@@ -202,27 +202,27 @@ async function main() {
   const bloqueCat = renderizarBloqueIdentidadCurricularVisible(idCat)
   verificar(bloqueCat.includes(`Fuente: ${ROTULO_PENDIENTE_VALIDACION}`) && !bloqueCat.includes(ROTULO_OFICIAL_VIGENTE) && !/OFICIAL VALIDADA|oficiales:/i.test(bloqueCat),
     '7a. Catálogo en borrador → "Catálogo curricular de la app — pendiente de validación oficial", nunca "oficial"')
-  verificar(bloqueCat.includes('Contenidos de referencia: Cuerpo humano: estructura externa, acciones para su cuidado') && bloqueCat.includes('PDA de referencia: Reconoce la estructura externa')
-    && bloqueCat.includes('Contenidos indicados por el docente: Educación financiera para niños'),
-    '7b. Textos literales del catálogo y lo indicado por el docente, por separado')
+  verificar(bloqueCat.includes('Contenidos de referencia:\n- Cuerpo humano: estructura externa, acciones para su cuidado') && bloqueCat.includes('PDA de referencia:\n- Reconoce la estructura externa')
+    && bloqueCat.includes('Contenidos indicados por el docente:\n- Educación financiera para niños') && !bloqueCat.includes(' · ') && !bloqueCat.includes('\n\n'),
+    '7b. Textos literales del catálogo y lo del docente, por separado, en listas (sin concatenar ni líneas vacías)')
   verificar(!/^(Contenidos|PDA):/m.test(bloqueCat), '7c. Las etiquetas nunca coinciden con "Contenidos:"/"PDA:" del bloque de resumen')
   const bloquePa = renderizarBloqueIdentidadCurricularVisible(construirIdentidadCurricularVisible([porId.get(U(202))!, porId.get(U(203))!])!)
-  verificar(bloquePa.includes(`Fuente: Programa Analítico del grupo (con base en: ${ROTULO_PENDIENTE_VALIDACION})`) && bloquePa.includes('Contenidos de referencia: Historias del barrio contadas por las familias')
-    && bloquePa.includes('Contenidos propios del Programa Analítico: Huerto escolar de la comunidad'),
+  verificar(bloquePa.includes(`Fuente: Programa Analítico del grupo (con base en: ${ROTULO_PENDIENTE_VALIDACION})`) && bloquePa.includes('Contenidos de referencia:\n- Historias del barrio contadas por las familias')
+    && bloquePa.includes('Contenidos propios del Programa Analítico:\n- Huerto escolar de la comunidad'),
     '7d. PA: fuente PA con su base pendiente; contextualizado y local diferenciados')
   const idVigente = construirIdentidadCurricularVisible(vigente.ok ? vigente.candidatos.slice(0, 1) : [])!
   verificar(renderizarBloqueIdentidadCurricularVisible(idVigente).includes(`Fuente: ${ROTULO_OFICIAL_VIGENTE}`), '7e. Solo una versión vigente se rotula como oficial vigente')
   const soloDocente = construirIdentidadCurricularVisible([], [{ tipo: 'pda', texto: 'Resuelve problemas con fracciones' }])!
   const bloqueDocente = renderizarBloqueIdentidadCurricularVisible(soloDocente)
-  verificar(!bloqueDocente.includes('Fuente:') && bloqueDocente.includes('PDA indicados por el docente: Resuelve problemas con fracciones'), '7f. Solo datos del docente: sin atribuirlos a ningún programa')
+  verificar(!bloqueDocente.includes('Fuente:') && bloqueDocente.includes('PDA indicados por el docente:\n- Resuelve problemas con fracciones'), '7f. Solo datos del docente: sin atribuirlos a ningún programa')
   verificar(construirIdentidadCurricularVisible([], []) === null, '7g. Sin nada validado ni indicado → sin sección (nunca vacía ni inventada)')
 
   const BORRADOR = `📋 PLANEACIÓN: El cuerpo humano\n\nSecuencia didáctica...\n\n${ETIQUETA_INICIO_BLOQUE}\nNombre: El cuerpo humano\nContenidos: paráfrasis del modelo\nPDA: otra paráfrasis\n`
   const insertado = insertarIdentidadCurricularVisibleEnBorrador(BORRADOR, idCat)
   verificar(insertado.indexOf('📌 CONTENIDOS Y PDA') > 0 && insertado.indexOf('📌 CONTENIDOS Y PDA') < insertado.indexOf(ETIQUETA_INICIO_BLOQUE) && insertado.endsWith(BORRADOR.slice(BORRADOR.indexOf(ETIQUETA_INICIO_BLOQUE))),
-    '7h. La sección se inserta justo antes del bloque de resumen, sin tocarlo')
-  verificar(insertarIdentidadCurricularVisibleEnBorrador('Texto sin resumen', idCat) === 'Texto sin resumen' && insertarIdentidadCurricularVisibleEnBorrador(BORRADOR, null) === BORRADOR,
-    '7i. Sin marcador o sin identidad → texto intacto')
+    '7h. La sección va en el cuerpo, antes del bloque de resumen, sin tocarlo')
+  verificar(insertarIdentidadCurricularVisibleEnBorrador(BORRADOR, null) === BORRADOR && insertarIdentidadCurricularVisibleEnBorrador('Texto sin resumen', idCat).split('📌 CONTENIDOS Y PDA').length === 2,
+    '7i. Sin identidad → texto intacto; sin bloque de resumen, la sección se añade igual una sola vez')
   const sustituido = sustituirContenidosYPdaEnBloqueResumen(insertado, idCat)
   verificar(sustituido.includes('Contenidos: Cuerpo humano: estructura externa, acciones para su cuidado; Educación financiera para niños') && sustituido.includes('PDA: Reconoce la estructura externa')
     && !sustituido.includes('paráfrasis del modelo') && sustituido.slice(0, sustituido.indexOf(ETIQUETA_INICIO_BLOQUE)) === insertado.slice(0, insertado.indexOf(ETIQUETA_INICIO_BLOQUE)),

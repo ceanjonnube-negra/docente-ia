@@ -565,9 +565,9 @@ async function main() {
       && !/JSON\.stringify\(curricularServidor|JSON\.stringify\(curricularDelTurno/.test(ruta),
       '28k. Al prompt solo va paraPrompt; los candidatos del servidor nunca se serializan')
     const posterior = ruta.slice(ruta.indexOf('const completado = completarBorradorCurricular({'), ruta.indexOf('const completado = completarBorradorCurricular({') + 1400)
-    verificar(posterior.includes('curricular: curricularDelTurno,') && posterior.includes('controller.enqueue(encoder.encode(completado.bloqueServidor))') && posterior.includes('textoBorradorAcumulado = completado.textoParaVistaPrevia')
+    verificar(posterior.includes('curricular: curricularDelTurno,') && posterior.includes('controller.enqueue(encoder.encode(`\\n\\n[[TEXTO_FINAL:${Buffer.from(completado.textoFinal, \'utf-8\').toString(\'base64\')}]]`))') && posterior.includes('textoBorradorAcumulado = completado.textoParaVistaPrevia')
       && ruta.indexOf('const completado = completarBorradorCurricular({') < ruta.indexOf('const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)'),
-      '28l. Tras el streaming: sección curricular con lo ofrecido en el turno, añadida al mensaje y usada por las vistas previas')
+      '28l. Tras el streaming: texto final normalizado (una sola sección curricular) para el Chat y las vistas previas')
     const t = INSTRUCCIONES_PLANEACION_GENERAR
     verificar(!/REFERENCIAS_CURRICULARES|"ref"/.test(t) && t.includes('Nunca escribas identificadores, códigos ni claves técnicas en el borrador') && t.includes('copia los textos EXACTAMENTE como vienen'),
       '28m. Instrucciones: sin identificadores; el modelo copia los textos exactos en el resumen')

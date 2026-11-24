@@ -267,6 +267,66 @@ async function main() {
   const ultimo = chat.mensajes[chat.mensajes.length - 1]
   verificar(ultimo.texto === LISTO && (ultimo.archivo as { tipo?: string } | undefined)?.tipo === 'pdf' && chat.mensajes.find((x) => x.id === docX.id)?.texto === AVISO && chat.documentoActivo?.id === docX.id && !chat.generando, '5a. Conversión normal: la entrega llega en su mensaje nuevo y el documento activo no cambia')
 
+  // 6. [[TEXTO_FINAL]] (normalización curricular): respuesta transmitida en
+  //    fragmentos que cortan el marcador, motor real y servicio real.
+  {
+    const { textoParaCopiar } = await import('../lib/asistente/copiarRespuesta')
+    const b64 = (t: string) => Buffer.from(t, 'utf-8').toString('base64')
+    const MODELO = '📋 PLANEACIÓN DIDÁCTICA\n\n📚 PROCESOS DE DESARROLLO DE APRENDIZAJE (PDA)\n- Copia del modelo\n\n📎 RESUMEN PARA GUARDAR\nNombre: Leyendas'
+    const FINAL = '📋 PLANEACIÓN DIDÁCTICA\n\n📌 CONTENIDOS Y PDA DE ESTA PLANEACIÓN\nPDA de referencia:\n- PDA real con acentos: niñas y niños\n\n📎 RESUMEN PARA GUARDAR\nNombre: Leyendas\n\nYa preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?'
+    const tarjeta = { tipo: 'word', nombre: 'vista-previa-planeacion.docx', url: '/api/planeaciones/vista-previa-documento-word?tipoDocumento=planeacion&datos=x', tipoDocumento: 'planeacion' }
+    const completo = `${MODELO}\n\n[[TEXTO_FINAL:${b64(FINAL)}]]\n\n[[DOCUMENTO_ARCHIVO:${b64(JSON.stringify(tarjeta))}]]`
+    // Cortes en medio del marcador ("[[TEXTO_FI" | "NAL:" | base64 | "]]") y de la tarjeta.
+    const i = completo.indexOf('[[TEXTO_FINAL:')
+    const j = completo.indexOf('[[DOCUMENTO_ARCHIVO:')
+    const cortes = [0, i - 3, i + 2, i + 10, i + 30, j - 1, j + 8, completo.length].filter((x, k, a) => x >= 0 && (k === 0 || x > a[k - 1]))
+    const fragmentos = cortes.slice(1).map((fin, k) => completo.slice(cortes[k], fin))
+    const enStreaming = (partes: string[]) => async () => new Response(new ReadableStream({
+      async start(c) {
+        const enc = new TextEncoder()
+        for (const f of partes) { c.enqueue(enc.encode(f)); await esperar(2) }
+        c.close()
+      },
+    }), { status: 200 })
+    await preparar()
+    const motor6 = new MotorTextoClaude()
+    const parciales: string[] = []
+    motor6.suscribir((e) => { const ev = e as { tipo: string; texto?: string }; if (ev.tipo === 'respuesta-parcial') parciales.push(ev.texto ?? ''); chat.manejarEventoMotor(e) })
+    usarMotor(motor6)
+    chat.documentoActivo = null
+    ;(globalThis as Record<string, unknown>).fetch = enStreaming(fragmentos)
+    await chat.enviarMensaje('Hazme una planeación de leyendas')
+    for (let k = 0; k < 100 && chat.generando; k++) await esperar(10)
+    const ultimo6 = chat.mensajes[chat.mensajes.length - 1] as Mensaje & { archivos?: unknown[]; archivo?: unknown }
+    verificar(parciales.length >= fragmentos.length - 1 && parciales.every((t) => !t.includes('[[TEXTO') && !t.includes('TEXTO_FINAL') && !/\[\[?$/.test(t)),
+      '6a. Con el marcador cortado en varios fragmentos, ningún texto parcial lo muestra (ni a medias)')
+    verificar(ultimo6.texto === FINAL, '6b. El mensaje final es exactamente el texto normalizado del servidor (también con acentos y "ñ")')
+    verificar(((ultimo6.archivos ?? (ultimo6.archivo ? [ultimo6.archivo] : [])) as { nombre?: string }[]).some((a) => a.nombre === tarjeta.nombre), '6c. La tarjeta del archivo que viene después del marcador se conserva')
+    const copiado = textoParaCopiar(ultimo6) ?? ''
+    verificar(!copiado.includes('[[') && !copiado.includes('TEXTO_FINAL') && copiado.includes('PDA real con acentos'), '6d. Copiar: sin marcadores, con el texto normalizado')
+    chat.guardarInmediatamente()
+    const guardado = p.cargarConversacionPorId('conv-x')?.mensajes ?? []
+    verificar(guardado.some((x) => x.texto === FINAL) && !guardado.some((x) => x.texto.includes('TEXTO_FINAL') || x.texto.includes('Copia del modelo')), '6e. Mensaje persistido: el texto normalizado, sin marcador ni la sección del modelo')
+    const historial: { texto: string }[] = []
+    ;(motor6 as unknown as { establecerHistorial: (h: { texto: string }[]) => void }).establecerHistorial = (h) => { historial.splice(0, historial.length, ...h) }
+    ;(interno.sincronizarHistorialTexto as () => void).call(chat)
+    verificar(historial.some((x) => x.texto === FINAL) && !historial.some((x) => x.texto.includes('TEXTO_FINAL')), '6f. Contexto de turnos posteriores: el texto normalizado, sin marcador')
+
+    // Respuesta normal (ajena a Planeación): sin marcador, nada cambia.
+    await preparar()
+    const motor6b = new MotorTextoClaude()
+    motor6b.suscribir((e) => chat.manejarEventoMotor(e))
+    usarMotor(motor6b)
+    chat.documentoActivo = null
+    const NORMAL = 'Claro: la asistencia de hoy quedó registrada. ¿Algo más?'
+    ;(globalThis as Record<string, unknown>).fetch = enStreaming([NORMAL.slice(0, 10), NORMAL.slice(10), `\n\n[[DOCUMENTO_ARCHIVO:${b64(JSON.stringify(tarjeta))}]]`])
+    await chat.enviarMensaje('¿Registraste la asistencia?')
+    for (let k = 0; k < 100 && chat.generando; k++) await esperar(10)
+    const normal = chat.mensajes[chat.mensajes.length - 1] as Mensaje & { archivos?: unknown[]; archivo?: unknown }
+    verificar(normal.texto === NORMAL && ((normal.archivos ?? (normal.archivo ? [normal.archivo] : [])) as unknown[]).length === 1, '6g. Respuesta normal: su texto y su tarjeta no cambian')
+    usarMotor(motorB)
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)
