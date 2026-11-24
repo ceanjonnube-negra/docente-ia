@@ -159,7 +159,9 @@ export type SeleccionBorrador =
   | { estado: 'listo'; resumen: ResumenBorrador; contenido: string }
   | { estado: 'sin_borrador' }
   | { estado: 'incompleto' }
-  | { estado: 'ya_aprobado' }
+  // contenido: el borrador al que corresponde la confirmación (null si ya
+  // no está en el historial) — para comprobar su estado persistido.
+  | { estado: 'ya_aprobado'; contenido: string | null }
   | { estado: 'otro_documento' }
   | { estado: 'no_reciente' }
   | { estado: 'referencia_no_vigente'; nombreVigente: string }
@@ -185,7 +187,8 @@ function normalizarNombre(texto: string): string {
 //   incompleto (→ 'incompleto').
 // - Si antes de llegar a él aparece la confirmación de una aprobación
 //   exitosa (PREFIJO_CONFIRMACION_APROBACION), ese borrador ya se
-//   guardó (→ 'ya_aprobado').
+//   guardó (→ 'ya_aprobado', con el borrador confirmado: el servidor
+//   comprueba su estado persistido; el texto no basta).
 // - Si antes aparece otro documento formal (examen, circular…), no hay
 //   certeza de qué se quiere aprobar (→ 'otro_documento').
 // - Si entre el borrador y ahora hubo más de
@@ -202,6 +205,7 @@ export function seleccionarBorradorVigente(historial: { role: string; content: s
   let indiceVigente = -1
   let otroDocumentoDespues = false
   let respuestasDespues = 0
+  let confirmado = false
   for (let i = historial.length - 1; i >= 0; i--) {
     const turno = historial[i]
     if (turno.role !== 'assistant') continue
@@ -209,10 +213,12 @@ export function seleccionarBorradorVigente(historial: { role: string; content: s
       indiceVigente = i
       break
     }
-    if (turno.content.trim().startsWith(PREFIJO_CONFIRMACION_APROBACION)) return { estado: 'ya_aprobado' }
+    if (turno.content.trim().startsWith(PREFIJO_CONFIRMACION_APROBACION)) confirmado = true
+    if (confirmado) continue
     if (esDocumentoFormal(turno.content)) otroDocumentoDespues = true
     respuestasDespues++
   }
+  if (confirmado) return { estado: 'ya_aprobado', contenido: indiceVigente === -1 ? null : historial[indiceVigente].content }
   if (indiceVigente === -1) return { estado: 'sin_borrador' }
   if (otroDocumentoDespues) return { estado: 'otro_documento' }
   if (respuestasDespues > MAXIMO_RESPUESTAS_DESPUES_DEL_BORRADOR) return { estado: 'no_reciente' }

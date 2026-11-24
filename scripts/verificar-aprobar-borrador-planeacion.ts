@@ -718,7 +718,7 @@ async function main() {
     const conConfirmacion = [...historial, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: 'Listo, guardé la planeación de Leyendas de mi comunidad para 10 días efectivos.' }]
     const escriturasAntes = interno.escrituras.length
     const r3 = await aprobarBorradorPlaneacion(sb, sesion(), conConfirmacion, 'Apruébala')
-    verificar(!r3.ok && r3.codigo === 'YA_GUARDADA', 'V2. Un borrador ya aprobado no se aprueba de nuevo')
+    verificar(r3.ok && r2.ok && r3.planeacion.id === r2.planeacion.id && interno._tabla('planeaciones').length === 1, 'V2. Un borrador ya aprobado no se aprueba de nuevo: se recupera la misma planeación')
     verificar(interno.escrituras.length === escriturasAntes, 'V2b. Ninguna escritura al detectar la aprobación previa')
   }
 
@@ -1235,13 +1235,51 @@ async function main() {
           'I11. Sin margen: la consolidación final (vínculo + Historial) es atómica con el token; perdida la concesión, no escribe ni confirma')
       }
 
+      // I13. El historial ya muestra la confirmación (caso real de Preview): se comprueba el estado
+      //      persistido por la identidad del borrador y se entregan las tarjetas originales.
+      {
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        const r1 = await aprobar(sb, CONV_A)
+        const confirmacion = `Listo, guardé la planeación de ${r1.ok ? r1.planeacion.nombre : ''} para 5 días efectivos.`
+        const historialConfirmado = [{ role: 'assistant', content: MSG }, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: confirmacion }]
+        const antes = { conteo: conteo(interno), archivos: registroArchivos.length, storage: (interno['archivosStorage'] as Map<string, Buffer>).size, historial: interno._tabla('documentos_generados').length, escrituras: interno.escrituras.length }
+        const r2 = await aprobarBorradorPlaneacion(sb, sesion(), historialConfirmado, 'Aprueba y guarda esta planeación.', CONV_A)
+        verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word.archivoId === r1.documentoPlaneacion?.word.archivoId
+          && r2.documentoPlaneacion?.pdf.archivoId === r1.documentoPlaneacion?.pdf.archivoId && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url
+          && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
+          'I13a. Con la confirmación en el historial, se recuperan las tarjetas originales (misma planeación, Word, PDF, hoja y contenido)')
+        verificar(conteo(interno) === antes.conteo && registroArchivos.length === antes.archivos && (interno['archivosStorage'] as Map<string, Buffer>).size === antes.storage
+          && interno._tabla('documentos_generados').length === antes.historial && interno.escrituras.length === antes.escrituras,
+          'I13b. Sin regenerar ni escribir nada: ni filas, ni archivos, ni Storage, ni Historial')
+
+        // I14. Confirmación en el historial pero planeación persistida aún sin confirmar: manda el estado persistido.
+        ;(interno._tabla('planeaciones') as Fila[])[0].version = 0
+        const r3 = await aprobarBorradorPlaneacion(sb, sesion(), historialConfirmado, 'Apruébala', CONV_A)
+        verificar(!r3.ok && r3.codigo === 'EN_PROCESO' && interno.escrituras.length === antes.escrituras,
+          'I14. La confirmación textual no sustituye al estado persistido: sin confirmar en la base → "en proceso", sin escribir')
+      }
+
+      // I15. Planeación histórica sin identidad + confirmación en el historial: el mensaje de siempre, sin asociar nada.
+      {
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, { ...datos, planeaciones: [{ id: 'pl-historica', docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'X', version: 1, estado: 'publicada', borrador_clave: null }] })
+        const historial = [{ role: 'assistant', content: MSG }, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: 'Listo, guardé la planeación de X para 5 días.' }]
+        const r = await aprobarBorradorPlaneacion(sb, sesion(), historial, 'Apruébala', CONV_A)
+        const sinBorrador = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: 'Listo, guardé la planeación de X para 5 días.' }], 'Apruébala', CONV_A)
+        verificar(!r.ok && r.codigo === 'YA_GUARDADA' && !sinBorrador.ok && sinBorrador.codigo === 'YA_GUARDADA' && interno.escrituras.length === 0 && interno._tabla('planeaciones').length === 1,
+          'I15. Sin identidad persistida (planeación histórica) o sin el borrador en el historial: "ya está guardada", sin crear registros ni asociar documentos')
+      }
+
       // I12. Ninguna escritura de consolidación fuera de la función atómica.
       {
         const codigo = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarBorrador.ts'), 'utf-8')
         const migracion = readFileSync(join(__dirname, '..', 'supabase', 'migrations', '20261125000000_identidad_aprobacion_planeacion.sql'), 'utf-8')
-        verificar(!/from\('planeacion_proyectos'\)\s*\.update/.test(codigo) && (codigo.match(/from\('documentos_generados'\)\.insert/g) ?? []).length === 1
+        verificar(!/from\('planeacion_proyectos'\)\s*\.update/.test(codigo) && !/from\('documentos_generados'\)\.insert/.test(codigo)
           && /aprobacion_token = p_token/.test(migracion) && /security invoker/.test(migracion) && /auth\.uid\(\)/.test(migracion),
-          'I12. Evaluación e Historial de una aprobación en curso solo se escriben con consolidar_aprobacion_planeacion (token comprobado en la misma transacción); el único insert directo es el de una planeación ya confirmada')
+          'I12. Evaluación e Historial de una aprobación en curso solo se escriben con consolidar_aprobacion_planeacion (token comprobado en la misma transacción); la recuperación no escribe')
       }
 
       // I7. Ruta y cliente.

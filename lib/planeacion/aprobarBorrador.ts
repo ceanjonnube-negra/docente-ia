@@ -35,7 +35,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { mensajeGrupoNoDisponible, type SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
-import { seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { extraerResumenBorrador, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
 import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, resolverPeriodoPorFechaInicio, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
@@ -251,23 +251,13 @@ function filaHistorial(contenido: string, word: DocumentoGuardado | null): Recor
   }
 }
 
-// Planeación ya confirmada (inmutable): inserción directa, idempotente.
-async function asegurarRegistroHistorial(sb: SupabaseClient, docenteId: string, contenido: string, word: DocumentoGuardado | null): Promise<boolean> {
-  const fila = filaHistorial(contenido, word)
-  if (!fila) return true
-  const { error } = await sb.from('documentos_generados').insert({ user_id: docenteId, ...fila })
-  if (error && (error as { code?: string }).code !== '23505') {
-    console.error('[PLANEACION_GENERAR][aprobar] no se pudo registrar la planeación en Historial:', error)
-    return false
-  }
-  return true
-}
-
-// Aprobación ya terminada (reintento cuya respuesta anterior se perdió):
-// se entregan sus tarjetas originales a partir de lo persistido — sin
-// regenerar archivos ni hoja, sin IA — y se asegura su registro en
-// Historial.
-async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: string, planeacionId: string, contenidoBorrador: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
+// Aprobación ya terminada (reintento cuya respuesta anterior se perdió, o
+// confirmación ya visible en el historial): se entregan sus tarjetas
+// originales a partir de lo persistido — sin regenerar archivos ni hoja,
+// sin IA y SIN escribir: su registro en Historial ya se consolidó en la
+// misma transacción que precede a la confirmación (y no se revive uno
+// que el docente haya borrado).
+async function recuperarAprobacionTerminada(sb: SupabaseClient, planeacionId: string, contenidoBorrador: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
   const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
   const { data: planeacion } = await sb.from('planeaciones').select(COLUMNAS_PLANEACION_APROBADA).eq('id', planeacionId).maybeSingle()
   const { data: proyecto } = await sb.from('planeacion_proyectos').select('evaluacion').eq('planeacion_id', planeacionId).maybeSingle()
@@ -281,7 +271,6 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
   const contenidoDefinitivo = esTrazabilidadCanonica(ev.trazabilidad_curricular) ? textoDefinitivoConIdentidad(contenidoBorrador, identidadDesdeTrazabilidad(ev.trazabilidad_curricular)) : ''
   const word = ev.documento_word ?? null
   const pdf = ev.documento_pdf ?? null
-  if (!(await asegurarRegistroHistorial(sb, docenteId, contenidoDefinitivo, word))) return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
   return {
     ok: true,
     planeacion: planeacion as Planeacion,
@@ -295,6 +284,20 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
         }
       : null,
   }
+}
+
+// El historial ya muestra la confirmación de este borrador. El texto no
+// basta: se comprueba el estado persistido por la identidad del borrador
+// y, si está confirmada, se entregan sus tarjetas originales (misma
+// recuperación que un reintento). Sin identidad (planeaciones anteriores)
+// no se busca nada más ni se escribe: el mensaje de siempre.
+async function recuperarBorradorConfirmado(sb: SupabaseClient, docenteId: string, conversacionId: string | null, contenido: string | null): Promise<ResultadoAprobacion> {
+  const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
+  const clave = contenido ? await resolverIdentidadBorrador(sb, conversacionId, contenido) : null
+  const fila = clave ? await buscarPorIdentidad(sb, docenteId, clave) : null
+  if (!fila || !contenido) return yaGuardada
+  if (fila.version < 1) return { ok: false, codigo: 'EN_PROCESO', mensaje: MENSAJE_EN_PROCESO }
+  return recuperarAprobacionTerminada(sb, fila.id, contenido, extraerResumenBorrador([{ role: 'assistant', content: contenido }])?.duracionDias ?? null)
 }
 
 type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; periodo_evaluacion_id: string | null }
@@ -326,7 +329,7 @@ export async function aprobarBorradorPlaneacion(
     return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }
   }
   if (seleccion.estado === 'ya_aprobado') {
-    return { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
+    return recuperarBorradorConfirmado(sb, sesion.docente_id, conversacionId, seleccion.contenido)
   }
   if (seleccion.estado === 'otro_documento') {
     return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'Después de la planeación trabajamos en otro documento, así que no puedo saber con certeza cuál guardar. Pídeme que vuelva a mostrar la planeación y luego apruébala.' }
@@ -373,7 +376,7 @@ export async function aprobarBorradorPlaneacion(
     // con la concesión) o nueva.
     const clave = await resolverIdentidadBorrador(sb, conversacionId, seleccion.contenido)
     if (!clave) return { ok: false, codigo: 'BORRADOR_NO_PERSISTIDO', mensaje: MENSAJE_NO_PERSISTIDO }
-    const recuperar = (id: string) => recuperarAprobacionTerminada(sb, sesion.docente_id, id, seleccion.contenido, resumen.duracionDias)
+    const recuperar = (id: string) => recuperarAprobacionTerminada(sb, id, seleccion.contenido, resumen.duracionDias)
     const existente = await buscarPorIdentidad(sb, sesion.docente_id, clave)
     if (existente && existente.version >= 1) return recuperar(existente.id)
     const token = randomUUID()
