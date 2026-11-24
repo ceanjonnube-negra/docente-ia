@@ -8,6 +8,7 @@
 // nuevo por seguridad).
 
 import { esAvisoTecnicoDeArchivo, esDocumentoFormal } from './documentos'
+import { ocultarResumenParaGuardar } from '../planeacion/extraerBorrador'
 import type { MensajeConversacion } from './tipos'
 
 const MARCADOR_INTERNO = /\[\[[A-Z_]+(:[^\]]*)?\]\]/g
@@ -73,7 +74,8 @@ export function textoParaCopiar(mensaje: Pick<MensajeConversacion, 'rol' | 'text
   if (mensaje.rol !== 'asistente') return null
   const contenidoDocumento = mensaje.contenidoDocumento?.trim()
   if (contenidoDocumento) return ordenarEspacios(sinElementosInternos(contenidoDocumento)) || null
-  const texto = sinElementosInternos(mensaje.texto ?? '')
+  // El resumen interno de una planeación no se copia (ocultarResumenParaGuardar).
+  const texto = sinElementosInternos(ocultarResumenParaGuardar(mensaje.texto ?? ''))
   if (!texto.trim() || esAvisoTecnicoDeArchivo(texto)) return null
   // Un documento formal ya es texto plano estructurado (MODO DOCUMENTO):
   // se copia tal cual. El resto de respuestas viene en Markdown.

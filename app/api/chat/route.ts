@@ -22,7 +22,7 @@ import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { instruccionesPresentacion, seccionesDePresentacion, tieneCantidadExplicita } from '@/lib/asistente/instruccionesPresentacion'
-import { prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
+import { duracionSolicitadaEnMensaje, prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
 import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
 import { completarBorradorCurricular } from '@/lib/planeacion/completarBorradorCurricular'
 import type { ResultadoContextoCurricularPlaneacion } from '@/lib/planeacion/resolverCurricularPlaneacion'
@@ -857,6 +857,21 @@ export async function POST(req: NextRequest) {
         ? clasificacionAprobarPlaneacion()
         : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       marcarTelemetria('intent:classification_finished')
+      // Duración de una planeación expresada en sesiones, clases, días o
+      // semanas (determinista): completa lo que el clasificador no tomó y
+      // evita preguntar algo que el docente ya dijo. Ver
+      // duracionSolicitadaEnMensaje.
+      let unidadDuracionDelTurno: 'sesiones' | 'clases' | null = null
+      if (clasificacion.intencion_principal === 'planeacion_generar' && clasificacion.accion_planeacion_generar !== 'aprobar') {
+        const duracion = duracionSolicitadaEnMensaje(esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) : String(mensaje ?? ''))
+        const sinDuracion = !clasificacion.duracion_dias_planeacion && !clasificacion.duracion_semanas_planeacion && !(clasificacion.fecha_inicio_planeacion && clasificacion.fecha_fin_planeacion)
+        if (duracion && sinDuracion) {
+          clasificacion.duracion_dias_planeacion = duracion.duracionDias
+          clasificacion.duracion_semanas_planeacion = duracion.duracionSemanas
+          clasificacion.datos_faltantes = clasificacion.datos_faltantes.filter((d) => d !== 'fecha_o_duracion')
+        }
+        if (duracion && (duracion.unidad === 'sesiones' || duracion.unidad === 'clases') && duracion.duracionDias === clasificacion.duracion_dias_planeacion) unidadDuracionDelTurno = duracion.unidad
+      }
       requiereConsultaOficial = clasificacion.requiere_consulta_oficial === true
       if (requiereConsultaOficial) {
         console.log(`[CONSULTA_OFICIAL] activada — intencion=${clasificacion.intencion_principal}`)
@@ -1244,6 +1259,7 @@ export async function POST(req: NextRequest) {
               duracionDias: clasificacion.duracion_dias_planeacion,
               duracionSemanas: clasificacion.duracion_semanas_planeacion,
               momentoRelativo: clasificacion.momento_relativo_planeacion,
+              unidadDuracion: unidadDuracionDelTurno,
               mensajeDocente: esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) : String(mensaje ?? ''),
             })
             curricularDelTurno = curricularServidor

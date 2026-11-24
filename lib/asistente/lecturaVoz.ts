@@ -6,13 +6,17 @@
 // voz como conversación continua"). Nunca decide CUÁNDO leer ni
 // gestiona el ciclo de vida de la sesión — solo transforma texto.
 
+import { ocultarResumenParaGuardar } from '../planeacion/extraerBorrador'
+
 // Limpia el texto de una respuesta para que no se lea en voz alta
 // símbolos de formato — conserva números, nombres, acentos y la
 // puntuación real del contenido, solo quita la sintaxis de marcado
 // (Markdown, emoji decorativos, marcadores técnicos) que no aporta
 // nada hablado.
 export function limpiarTextoParaVoz(texto: string): string {
-  return texto
+  // El resumen interno de una planeación no se lee (misma regla que el
+  // Chat y Copiar); el texto guardado no cambia.
+  return ocultarResumenParaGuardar(texto)
     // Marcadores técnicos que a veces sobreviven en el texto mostrado
     // (defensivo — normalmente ya vienen quitados antes de llegar
     // aquí, ver motorTextoClaude.ts).

@@ -31,6 +31,7 @@ import { comprimirImagen, comprimirImagenes, verificarPresupuestoAdjuntos, MAXIM
 import type { AdjuntoImagen, ArchivoGeneradoInfo } from '@/lib/asistente/tipos'
 import TarjetaPropuestaLista from './TarjetaPropuestaLista'
 import CapturaHoja from './CapturaHoja'
+import { ocultarResumenParaGuardar } from '@/lib/planeacion/extraerBorrador'
 
 const saludoPorHora = (): string => obtenerFechaHora(obtenerZonaHorariaDispositivo()).saludo
 
@@ -1087,7 +1088,7 @@ export default function AsistentePanel() {
                 <div className="flex flex-col items-start gap-2 w-full">
                   {esDoc && (
                     <VistaPreviaDocumento
-                      texto={m.texto}
+                      texto={ocultarResumenParaGuardar(m.texto)}
                       escribiendo={esUltimoGenerando}
                       generandoArchivo={asistente.documentoFinalizandoId === m.id}
                       resaltado={asistente.archivoReutilizadoId === m.id}
@@ -1105,7 +1106,7 @@ export default function AsistentePanel() {
                   {!esDoc && m.texto && !esAvisoTecnicoDeArchivo(m.texto) && (
                     <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed bg-white text-gray-800 shadow-sm rounded-bl-sm w-full">
                       <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{ocultarResumenParaGuardar(m.texto).replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
                     </div>
                   )}
@@ -1182,7 +1183,7 @@ export default function AsistentePanel() {
                   }>
                     {m.rol === 'asistente' ? (
                       <div className="prose prose-sm max-w-none prose-headings:text-purple-800 prose-headings:font-bold prose-strong:text-gray-900">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.texto.replace(/\n/g, "  \n")}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{ocultarResumenParaGuardar(m.texto).replace(/\n/g, "  \n")}</ReactMarkdown>
                       </div>
                     ) : m.texto}
                   </div>

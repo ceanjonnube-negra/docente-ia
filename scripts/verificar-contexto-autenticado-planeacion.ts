@@ -231,6 +231,8 @@ async function main() {
   //       del ciclo (no a "hoy"), cero escrituras.
   {
     const eventos = [
+      // Inicio oficial del ciclo registrado en el calendario (nunca se supone).
+      evento('2026-08-03', 'inicio_ciclo', 'Inicio del ciclo escolar'),
       evento('2026-08-05', 'suspension', 'Suspensión de labores'),
       evento('2026-08-12', 'festivo', 'Día inhábil oficial'),
     ]

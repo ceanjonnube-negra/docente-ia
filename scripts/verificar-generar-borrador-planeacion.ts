@@ -385,8 +385,8 @@ async function main() {
     const t = INSTRUCCIONES_PLANEACION_GENERAR
     verificar(t.includes('hoja de evaluación final con indicadores derivados'), '13. Las instrucciones piden mencionar brevemente la hoja de evaluación final')
     verificar(t.includes('NUNCA digas que tú generas el PDF') && t.includes('eso lo hace el sistema automáticamente'), '13b. Las instrucciones prohíben que Claude describa o prometa el control de descarga — lo hace el sistema')
-    verificar(t.includes('NUNCA digas que el docente debe elaborar manualmente una ficha diagnóstica'), '13c. Las instrucciones prohíben explícitamente pedirle al docente que elabore instrumentos manualmente')
-    verificar(t.includes('Docente IA integrará automáticamente la ficha diagnóstica individual de cada alumno a partir de los resultados registrados en la hoja de evaluación final del proyecto'), '13d. Las instrucciones usan exactamente la redacción corregida sobre la ficha diagnóstica')
+    verificar(t.includes('NUNCA digas que el docente debe elaborar manualmente una rúbrica'), '13c. Las instrucciones prohíben explícitamente pedirle al docente que elabore instrumentos manualmente')
+    verificar(!t.includes('integrará automáticamente') && t.includes('NUNCA prometas que el sistema generará automáticamente fichas diagnósticas o descriptivas, reportes'), '13d. Las instrucciones ya no prometen fichas, reportes ni otros resultados automáticos aún no implementados')
   }
 
   // 14/15/16. Cero INSERT/UPDATE/DELETE reales
@@ -466,11 +466,13 @@ async function main() {
   //     momentoRelativo reconocido, fechaReferencia caía en HOY y el
   //     periodo arrancaba tarde; con la corrección, "las primeras dos
   //     semanas de clases" ancla al inicio real del ciclo
-  //     (2026-08-01 → primer día efectivo 2026-08-03), consultando el
-  //     calendario real (suspensión + festivo) para excluir los días
-  //     correctos y completar igual los 10 días efectivos.
+  //     registrado en el calendario (evento SEP de inicio, 2026-08-03),
+  //     consultando el calendario real (suspensión + festivo) para
+  //     excluir los días correctos y completar igual los 10 días
+  //     efectivos. Sin ese evento no se supone ninguna fecha (25g).
   {
     const eventos = [
+      evento('2026-08-03', 'inicio_ciclo', 'Inicio del ciclo escolar'),
       evento('2026-08-05', 'suspension', 'Suspensión de labores'),
       evento('2026-08-12', 'festivo', 'Día inhábil oficial'),
     ]
@@ -485,7 +487,7 @@ async function main() {
     verificar(r.fechas.fechaFinResuelta === '2026-08-18', '25c. La fecha final compensa correctamente la suspensión y el día inhábil intermedios')
     verificar(r.fechas.fechasExcluidas.some((f) => f.motivo === 'suspension') && r.fechas.fechasExcluidas.some((f) => f.motivo === 'dia_inhabil'), '25d. La suspensión y el día inhábil registrados en el calendario real quedan excluidos (consulta automática del calendario)')
     verificar(r.eventosCalendarioDelPeriodo.some((e) => e.motivo === 'suspension') && r.eventosCalendarioDelPeriodo.some((e) => e.motivo === 'dia_inhabil'), '25e. Ambos quedan reportados en eventosCalendarioDelPeriodo para que el borrador los mencione con honestidad')
-    verificar(!!r.explicacionMomentoRelativo && r.explicacionMomentoRelativo.includes('inicio oficial del ciclo escolar') && r.explicacionMomentoRelativo.includes('2026-08-01'), '25f. La explicación honesta indica que se ancló al inicio oficial del ciclo escolar')
+    verificar(!!r.explicacionMomentoRelativo && r.explicacionMomentoRelativo.includes('inicio oficial del ciclo escolar registrado en el calendario') && r.explicacionMomentoRelativo.includes('2026-08-03'), '25f. La explicación honesta indica que se ancló al inicio oficial del ciclo escolar')
     verificar(interno.escrituras.length === 0, '25g. Cero escrituras en Supabase durante la generación del contexto (vista previa, nada persistido)')
   }
 
@@ -510,6 +512,47 @@ async function main() {
     verificar(t.includes('NUNCA le pidas al maestro que ajuste manualmente las fechas'), '27b. Las instrucciones prohíben explícitamente pedir ajuste manual de fechas/suspensiones/días inhábiles')
     verificar(t.includes('NUNCA digas que no tienes el calendario cargado'), '27c. Las instrucciones prohíben explícitamente afirmar que no hay calendario cargado')
     verificar(t.includes('genera el borrador completo DE INMEDIATO'), '27d. Las instrucciones exigen generar el borrador de inmediato cuando no hay conflicto, nunca solo explicar lo que se podría hacer')
+  }
+
+  // 29. Refinamiento: duración en sesiones/clases, calendario sin datos
+  //     oficiales e inicio de ciclo nunca supuesto.
+  {
+    const { duracionSolicitadaEnMensaje } = await import('../lib/planeacion/generarBorrador')
+    const t0 = INSTRUCCIONES_PLANEACION_GENERAR
+    const casos: [string, unknown][] = [
+      ['Elabora una planeación didáctica de 10 sesiones sobre las leyendas', { duracionDias: 10, duracionSemanas: null, unidad: 'sesiones' }],
+      ['ocho clases de fracciones', { duracionDias: 8, duracionSemanas: null, unidad: 'clases' }],
+      ['10 días efectivos de clase.', { duracionDias: 10, duracionSemanas: null, unidad: 'dias' }],
+      ['para dos semanas', { duracionDias: null, duracionSemanas: 2, unidad: 'semanas' }],
+      ['3 sesiones por semana durante el mes', null],
+      ['10 sesiones y 2 semanas', null],
+      ['sobre leyendas', null],
+    ]
+    for (const [m, esperado] of casos) verificar(JSON.stringify(duracionSolicitadaEnMensaje(m)) === JSON.stringify(esperado), `29a. Duración de «${m}» → ${JSON.stringify(esperado)}`)
+
+    const { sb } = clienteFalso(DOCENTE_1, {}, { contexto_grupo: RPC_GRUPO_BASE })
+    const { paraPrompt: conSesiones } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionDias: 10, unidadDuracion: 'sesiones' }))
+    verificar(conSesiones.fechas.totalDiasEfectivos === 10 && !!conSesiones.explicacionDuracion?.includes('10 sesiones') && conSesiones.explicacionDuracion.includes('una sesión por día efectivo'),
+      '29b. 10 sesiones sin horario registrado → 10 días efectivos, con la equivalencia explicada')
+    verificar(conSesiones.calendarioOficialRegistrado === false && JSON.stringify(conSesiones).includes('"calendarioOficialRegistrado":false'),
+      '29c. Sin eventos oficiales en el calendario: se marca para no presentar los días como lectivos confirmados')
+    const { paraPrompt: inicioSinEvento } = await prepararContextoGeneracionPlaneacion(sb, sesion(), solicitud({ duracionSemanas: 2, momentoRelativo: 'las primeras dos semanas de clases' }))
+    verificar(inicioSinEvento.fechas.fechaInicioResuelta === HOY && !!inicioSinEvento.explicacionMomentoRelativo?.includes('no hay una fecha oficial de inicio de ciclo registrada') && !JSON.stringify(inicioSinEvento).includes('2026-08-01'),
+      '29d. Sin inicio oficial registrado no se supone ninguna fecha: se usa la más próxima y se explica')
+    const { sb: sbSep } = clienteFalso(DOCENTE_1, { calendario_eventos: [evento('2026-08-03', 'inicio_ciclo', 'Inicio del ciclo escolar'), evento('2026-08-14', 'suspension', 'Suspensión', false)] as unknown as Fila[] }, { contexto_grupo: RPC_GRUPO_BASE })
+    const { paraPrompt: conSep } = await prepararContextoGeneracionPlaneacion(sbSep, sesion(), solicitud({ duracionDias: 5 }))
+    verificar(conSep.calendarioOficialRegistrado === true && conSep.explicacionDuracion === null, '29e. Con eventos oficiales registrados → calendario oficial disponible; duración en días sin equivalencia')
+    verificar(conSesiones.fechas.advertencias.some((a) => a.startsWith('Fechas estimadas: no hay un calendario escolar oficial registrado')) && !conSep.fechas.advertencias.some((a) => a.startsWith('Fechas estimadas')),
+      '29h. Sin calendario oficial, el cálculo lleva el aviso de fechas ESTIMADAS; con calendario oficial, no')
+    verificar(!!conSesiones.explicacionDuracion?.startsWith('Supuesto:') && conSesiones.explicacionDuracion.includes('no hay un horario de clases registrado') && t0.includes('presenta esa equivalencia como SUPUESTO') && t0.includes('Preséntalas como "fechas estimadas"'),
+      '29i. La equivalencia sesión = día efectivo es un supuesto explícito (solo sin horario registrado) y las fechas se presentan como estimadas')
+    const t = INSTRUCCIONES_PLANEACION_GENERAR
+    verificar(t.includes('si "calendarioOficialRegistrado" es false') && t.includes('nunca presentes esos días como lectivos confirmados ni inventes fechas oficiales') && t.includes('si viene "explicacionDuracion"'),
+      '29f. Instrucciones: calendario sin datos oficiales y equivalencia de sesiones')
+    const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+    verificar(ruta.includes("clasificacion.datos_faltantes = clasificacion.datos_faltantes.filter((d) => d !== 'fecha_o_duracion')") && ruta.includes('unidadDuracion: unidadDuracionDelTurno,')
+      && ruta.indexOf('duracionSolicitadaEnMensaje(') < ruta.indexOf("if (clasificacion.datos_faltantes.length > 0"),
+      '29g. El Chat completa la duración del mensaje ANTES de decidir si falta información (sin pregunta redundante)')
   }
 
   // 28. Hito 1, Parte 2 — contexto curricular en la generación.

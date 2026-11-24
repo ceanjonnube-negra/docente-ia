@@ -254,3 +254,24 @@ export function extraerTextoCompletoBorrador(texto: string): string {
   const sinResumen = indiceBloque === -1 ? texto : texto.slice(0, indiceBloque)
   return sinResumen.trim()
 }
+
+// Presentación (Chat y Copiar): el bloque "📎 RESUMEN PARA GUARDAR" es
+// interno — lo usan la aprobación y el contexto de los turnos siguientes,
+// y sigue íntegro en el texto guardado. Al mostrarlo o copiarlo se omite
+// el marcador y sus líneas "Etiqueta: valor" (también mientras llega por
+// streaming); lo que venga después (la pregunta de cierre) se conserva.
+const LINEA_DEL_RESUMEN = /^[\p{L}_][\p{L}_ ]{0,40}:(\s|$)/u
+
+export function ocultarResumenParaGuardar(texto: string): string {
+  const indice = texto.indexOf(ETIQUETA_INICIO_BLOQUE)
+  if (indice === -1) return texto
+  const lineas = texto.slice(indice).split('\n')
+  let j = 1
+  while (j < lineas.length && LINEA_DEL_RESUMEN.test(lineas[j].trim())) j++
+  // Streaming: una última línea que todavía es solo el inicio de una
+  // etiqueta ("Campos form") también es del bloque.
+  if (j === lineas.length - 1 && /^[\p{L}_ ]{1,40}$/u.test(lineas[j].trim())) j++
+  const antes = texto.slice(0, indice).trimEnd()
+  const despues = lineas.slice(j).join('\n').trim()
+  return [antes, despues].filter(Boolean).join('\n\n')
+}

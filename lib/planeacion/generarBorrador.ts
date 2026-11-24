@@ -34,6 +34,9 @@ export type SolicitudGeneracionPlaneacion = {
   duracionDias: number | null
   duracionSemanas: number | null
   momentoRelativo: string | null
+  // Unidad en que el docente expresó la duración, si no fue en días o
+  // semanas (ver duracionSolicitadaEnMensaje).
+  unidadDuracion?: 'sesiones' | 'clases' | null
   // Mensaje del docente en este turno: solo para detectar contenidos o
   // PDA del catálogo citados literalmente y un campo formativo nombrado
   // (lib/planeacion/resolverCurricularPlaneacion.ts).
@@ -49,6 +52,12 @@ export type ResultadoContextoGeneracion = {
   periodoEvaluacionActual: PeriodoEvaluacion | null
   planeacionesPrevias: ResumenPlaneacionPrevia[]
   eventosCalendarioDelPeriodo: { fecha: string; titulo: string; motivo: string }[]
+  // Cómo se interpretó una duración expresada en sesiones o clases.
+  explicacionDuracion: string | null
+  // true solo si hay eventos OFICIALES (SEP) registrados en el ciclo: sin
+  // ellos, los días efectivos excluyen únicamente fines de semana y deben
+  // presentarse como provisionales, nunca como lectivos confirmados.
+  calendarioOficialRegistrado: boolean
   // Solo la parte segura para el prompt (referencias cortas y textos
   // literales). Los candidatos completos nunca viajan al modelo: la
   // aprobación vuelve a cargarlos y valida las referencias en el servidor.
@@ -104,19 +113,32 @@ export function resolverPeriodoEvaluacionActual(periodos: PeriodoEvaluacion[], h
 // que el borrador lo mencione con honestidad en vez de fingir certeza.
 const PATRON_INICIO_CICLO = /inicio de clases|primer d[ií]a de clases|comienzo (del |de )?(ciclo|curso)|regreso a clases|inicio del? ciclo escolar|inicio de ciclo|primeras?.*de clases/
 
+// Inicio OFICIAL del ciclo: el evento SEP de inicio registrado en el
+// calendario; sin él, ninguno (nunca una fecha supuesta).
+export function inicioOficialDelCiclo(eventos: EventoCalendarioCompleto[]): string | null {
+  const inicios = eventos.filter((e) => e.es_sep && /inicio/i.test(e.tipo || '') && !/fin/i.test(e.tipo || '')).map((e) => e.fecha).sort()
+  return inicios[0] ?? null
+}
+
 function resolverFechaReferencia(
   momentoRelativo: string | null,
   eventos: EventoCalendarioCompleto[],
-  hoy: string,
-  inicioCiclo: string
+  hoy: string
 ): { fechaReferencia: string; explicacion: string | null } {
   if (!momentoRelativo) return { fechaReferencia: hoy, explicacion: null }
 
   const normalizado = momentoRelativo.toLowerCase()
   if (PATRON_INICIO_CICLO.test(normalizado)) {
+    const inicioCiclo = inicioOficialDelCiclo(eventos)
+    if (!inicioCiclo) {
+      return {
+        fechaReferencia: hoy,
+        explicacion: `Se solicitó iniciar en "${momentoRelativo}", pero no hay una fecha oficial de inicio de ciclo registrada en el calendario escolar — se usó la fecha más próxima disponible. Indica la fecha de inicio si es otra.`,
+      }
+    }
     return {
       fechaReferencia: inicioCiclo,
-      explicacion: `Se solicitó iniciar en "${momentoRelativo}" — se ubicó el inicio oficial del ciclo escolar (${inicioCiclo}) y se calculó a partir de ahí, ajustando al siguiente día efectivo si cae en fin de semana o día no laborable.`,
+      explicacion: `Se solicitó iniciar en "${momentoRelativo}" — se ubicó el inicio oficial del ciclo escolar registrado en el calendario (${inicioCiclo}) y se calculó a partir de ahí, ajustando al siguiente día efectivo si cae en fin de semana o día no laborable.`,
     }
   }
   if (normalizado.includes('vacacion')) {
@@ -163,9 +185,13 @@ export async function prepararContextoGeneracionPlaneacion(
   ])
 
   const diasNoLaborables = mapearEventosADiasNoLaborables(eventosCiclo)
-  const { fechaReferencia, explicacion: explicacionMomentoRelativo } = resolverFechaReferencia(solicitud.momentoRelativo, eventosCiclo, sesion.fecha_actual, inicioCiclo)
+  const { fechaReferencia, explicacion: explicacionMomentoRelativo } = resolverFechaReferencia(solicitud.momentoRelativo, eventosCiclo, sesion.fecha_actual)
+  const calendarioOficialRegistrado = eventosCiclo.some((e) => e.es_sep)
+  // Sin calendario oficial, las fechas son ESTIMADAS: se avisa junto al
+  // cálculo (lo que el modelo ya debe mencionar), nunca como lectivas.
+  const AVISO_FECHAS_ESTIMADAS = 'Fechas estimadas: no hay un calendario escolar oficial registrado, así que solo se excluyeron fines de semana; pueden cambiar si hay suspensiones, días inhábiles o vacaciones.'
 
-  const fechas = calcularFechasPlaneacion({
+  const calculo = calcularFechasPlaneacion({
     fechaInicio: solicitud.fechaInicio,
     fechaFin: solicitud.fechaFin,
     duracionDiasEfectivos: solicitud.duracionDias,
@@ -173,6 +199,7 @@ export async function prepararContextoGeneracionPlaneacion(
     diasNoLaborables,
     fechaReferencia,
   })
+  const fechas = calendarioOficialRegistrado ? calculo : { ...calculo, advertencias: [...calculo.advertencias, AVISO_FECHAS_ESTIMADAS] }
 
   const periodoEvaluacionActual = resolverPeriodoEvaluacionActual(periodos, sesion.fecha_actual)
 
@@ -193,10 +220,40 @@ export async function prepararContextoGeneracionPlaneacion(
     contextoGrupo: ctxGrupo,
     fechas,
     explicacionMomentoRelativo,
+    explicacionDuracion: solicitud.unidadDuracion && solicitud.duracionDias
+      ? `Supuesto: el maestro pidió ${solicitud.duracionDias} ${solicitud.unidadDuracion} y no hay un horario de clases registrado, así que se supone una ${solicitud.unidadDuracion === 'clases' ? 'clase' : 'sesión'} por día efectivo (${solicitud.duracionDias} días efectivos). Si el horario es otro, el maestro puede indicarlo.`
+      : null,
+    calendarioOficialRegistrado,
     periodoEvaluacionActual,
     planeacionesPrevias: resumenPrevias,
     eventosCalendarioDelPeriodo,
     contextoCurricularPlaneacion: curricular.paraPrompt,
   }
   return { paraPrompt, curricularServidor: curricular }
+}
+
+// ------------------------------------------------------------------
+// Duración expresada por el docente en su mensaje (determinista, sin IA):
+// "10 sesiones", "ocho clases", "12 días efectivos", "dos semanas". Una
+// frecuencia ("3 sesiones por semana") no es una duración: no se usa.
+// Sin horario de clases registrado, una sesión o clase = un día efectivo.
+// ------------------------------------------------------------------
+const NUMEROS_EN_PALABRAS: Record<string, number> = {
+  una: 1, un: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
+  once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19, veinte: 20,
+}
+export type DuracionSolicitada = { duracionDias: number | null; duracionSemanas: number | null; unidad: 'sesiones' | 'clases' | 'dias' | 'semanas' }
+
+export function duracionSolicitadaEnMensaje(mensaje: string | null | undefined): DuracionSolicitada | null {
+  const t = (mensaje ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  const numero = `(\\d{1,2}|${Object.keys(NUMEROS_EN_PALABRAS).join('|')})`
+  const patron = new RegExp(`\\b${numero}\\s+(sesiones|sesion|clases|clase|dias|dia|semanas|semana)\\b(?!\\s*(por|a la|al|cada|de la)\\s+(semana|dia))`, 'g')
+  const encontrados = [...t.matchAll(patron)]
+  if (encontrados.length !== 1) return null // ninguna o varias: que decida el clasificador
+  const [, n, unidadTexto] = encontrados[0]
+  const valor = /^\d+$/.test(n) ? Number(n) : NUMEROS_EN_PALABRAS[n]
+  if (!valor || valor < 1 || valor > 60) return null
+  if (unidadTexto.startsWith('semana')) return { duracionDias: null, duracionSemanas: valor, unidad: 'semanas' }
+  const unidad = unidadTexto.startsWith('sesion') ? 'sesiones' : unidadTexto.startsWith('clase') ? 'clases' : 'dias'
+  return { duracionDias: valor, duracionSemanas: null, unidad }
 }

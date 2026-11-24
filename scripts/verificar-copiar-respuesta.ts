@@ -103,6 +103,33 @@ async function main() {
   verificar(/\{ \.\.\.msg, archivo: evento\.archivo, archivos: evento\.archivos, \.\.\.\(evento\.contenidoOriginal \? \{ contenidoDocumento: evento\.contenidoOriginal \} : \{\}\) \}/.test(servicio) && /this\.actualizarDocumentoActivo\(msg\.id, evento\.contenidoOriginal \?\? msg\.texto, evento\.archivo\)/.test(servicio), '4d. El documento entregado como archivo guarda su contenido en el mensaje; documentoActivo se actualiza igual que antes')
   verificar((servicio.match(/contenidoDocumento:/g) ?? []).length === 1, '4e. contenidoDocumento solo se escribe en ese punto (no afecta historial del modelo ni otros flujos); leerlo con contenidoDocumentoDe no es escribirlo')
 
+  // 5. Resumen interno de la planeación: oculto al mostrar y copiar,
+  //    íntegro en el texto guardado (aprobación y contexto).
+  {
+    const { ocultarResumenParaGuardar, extraerResumenBorrador, seleccionarBorradorVigente } = await import('../lib/planeacion/extraerBorrador')
+    const RESUMEN = '📎 RESUMEN PARA GUARDAR\nNombre: Las Leyendas de Nuestra Comunidad\nGrupo: 3° A\nFecha de inicio: 2026-11-24\nFecha de fin: 2026-12-07\nDuración: 10 días efectivos\nPropósito: ¿Cómo narran las familias sus leyendas? Recuperarlas.\nContenidos: Identificación de la fantasía\nPDA: Distingue la fantasía de la realidad\nSecuencia didáctica: Día 1: inicio; Día 2: lectura\nIndicadores de evaluación: i1; i2; i3; i4; i5'
+    const PREGUNTA = 'Ya preparé la planeación. ¿Deseas corregir algo o aprobarla para guardarla?'
+    const BORRADOR = `📋 PLANEACIÓN DIDÁCTICA\n\n🎯 PROPÓSITO GENERAL\nNarrar leyendas.\n\n📅 DÍA 1 — Inicio\nActividad.\n\n${RESUMEN}\n\n${PREGUNTA}`
+    const visible = ocultarResumenParaGuardar(BORRADOR)
+    verificar(!visible.includes('RESUMEN PARA GUARDAR') && !visible.includes('Fecha de inicio: 2026-11-24') && !visible.includes('Indicadores de evaluación:') && visible.endsWith(PREGUNTA) && visible.startsWith('📋 PLANEACIÓN DIDÁCTICA\n\n🎯 PROPÓSITO GENERAL'),
+      '5a. Chat: sin el bloque ni sus líneas (aunque una traiga "¿"); el cuerpo y la pregunta de cierre se conservan')
+    const copiado = textoParaCopiar(asistente(BORRADOR)) ?? ''
+    verificar(!copiado.includes('RESUMEN PARA GUARDAR') && !copiado.includes('Nombre: Las Leyendas') && copiado.includes('Narrar leyendas.') && copiado.includes('¿Deseas corregir algo'), '5b. Copiar: sin el resumen interno')
+    const parcial = `📋 PLANEACIÓN DIDÁCTICA\n\nActividad.\n\n${RESUMEN.split('\n').slice(0, 4).join('\n')}\nCampos form`
+    verificar(ocultarResumenParaGuardar(parcial) === '📋 PLANEACIÓN DIDÁCTICA\n\nActividad.', '5c. Durante el streaming el resumen a medias tampoco se ve')
+    verificar(extraerResumenBorrador([{ role: 'assistant', content: BORRADOR }])?.nombre === 'Las Leyendas de Nuestra Comunidad' && seleccionarBorradorVigente([{ role: 'user', content: 'x' }, { role: 'assistant', content: BORRADOR }]).estado === 'listo',
+      '5d. El texto guardado conserva el resumen: la aprobación y el contexto lo siguen leyendo')
+    const NORMAL = 'Claro: hoy faltaron 2 alumnos.\nHora: 8:00'
+    verificar(ocultarResumenParaGuardar(NORMAL) === NORMAL && textoParaCopiar(asistente(NORMAL)) === markdownATexto(NORMAL).trim(), '5e. Respuestas sin resumen no cambian')
+    const panel = readFileSync('components/Asistente/AsistentePanel.tsx', 'utf8')
+    verificar((panel.match(/ocultarResumenParaGuardar\(m\.texto\)/g) ?? []).length === 3 && !/<ReactMarkdown[^>]*>\{m\.texto\.replace/.test(panel) && panel.includes('texto={ocultarResumenParaGuardar(m.texto)}'),
+      '5f. El panel oculta el resumen en la vista previa del documento y en los dos textos Markdown, sin cambiar el mensaje')
+    const { limpiarTextoParaVoz } = await import('../lib/asistente/lecturaVoz')
+    const voz = limpiarTextoParaVoz(BORRADOR)
+    verificar(!voz.includes('RESUMEN PARA GUARDAR') && !voz.includes('Fecha de inicio') && !voz.includes('Indicadores de evaluación') && voz.includes('Narrar leyendas') && voz.includes('Deseas corregir algo') && limpiarTextoParaVoz(NORMAL).includes('hoy faltaron 2 alumnos'),
+      '5g. Lectura en voz: tampoco lee el resumen interno (misma función); las demás respuestas se leen igual')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)
