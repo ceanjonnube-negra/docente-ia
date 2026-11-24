@@ -26,6 +26,9 @@ export type CodigoErrorPlaneacion =
   | 'PLANEACION_AJENA'
   | 'SESION_INVALIDA'
   | 'ERROR_SUPABASE'
+  // Otra planeación ya tiene esa identidad de borrador (índice único
+  // planeaciones_docente_borrador_unico): quien llama recupera la fila.
+  | 'DUPLICADO'
 
 export type ErrorPlaneacion = { codigo: CodigoErrorPlaneacion; mensaje: string }
 
@@ -78,6 +81,9 @@ export type DatosCrearPlaneacion = {
   estado?: EstadoPlaneacion
   version?: number
   proyectos?: DatosProyectoPlaneacion[] // contenido estructurado, opcional
+  // Aprobación desde el Chat (aprobarBorrador.ts): identidad del borrador
+  // que origina la planeación y concesión de la aprobación en curso.
+  identidadAprobacion?: { borrador_clave: string; aprobacion_token: string; aprobacion_expira_en: string }
 }
 
 // Crea la planeación y, si vienen, sus proyectos vinculados. Valida
@@ -139,9 +145,13 @@ export async function crearPlaneacion(ctx: ContextoPlaneacion, datos: DatosCrear
       fecha_fin: datos.fecha_fin ?? null,
       estado: datos.estado ?? 'borrador',
       version: datos.version ?? 1,
+      ...(datos.identidadAprobacion ?? {}),
     })
     .select(COLUMNAS_PLANEACION)
     .single()
+  if (errorInsert?.code === '23505' && datos.identidadAprobacion) {
+    return fallo('DUPLICADO', 'Ya existe una planeación de este borrador.')
+  }
   if (errorInsert || !planeacion) {
     return fallo('ERROR_SUPABASE', errorInsert?.message || 'No se pudo crear la planeación.')
   }

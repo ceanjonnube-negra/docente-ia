@@ -92,7 +92,7 @@ verificar(seleccionarBorradorVigente([a('📝 EXAMEN DE CIENCIAS\n\n1. …')]).e
   const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
   verificar(/const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion\(/.test(ruta), '8a. El servidor usa el mismo detector que el cliente (nunca para un prompt de edición)')
   verificar(ruta.includes('? clasificacionAprobarPlaneacion()') && ruta.includes(': await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))'), '8b. Con orden detectada no se llama al clasificador; sin ella, igual que antes')
-  verificar(ruta.includes("aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''))"), '8c. La aprobación recibe el historial de esta conversación y el mensaje del docente')
+  verificar(ruta.includes("aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion)"), '8c. La aprobación recibe el historial de esta conversación, el mensaje del docente y la conversación validada')
 }
 
 // 9. Un bloque antiguo no basta por sí solo.
@@ -107,7 +107,12 @@ verificar(seleccionarBorradorVigente([a('📝 EXAMEN DE CIENCIAS\n\n1. …')]).e
 {
   const aprobar = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarBorrador.ts'), 'utf-8')
   const extraer = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'extraerBorrador.ts'), 'utf-8')
-  verificar(!/mensajes_chat|conversaciones_chat|conversacionId/.test(aprobar + extraer), '10a. La selección y la aprobación no leen conversaciones guardadas: solo el historial recibido')
+  // La aprobación lee mensajes_chat SOLO para la identidad del borrador
+  // (el id persistido del mensaje), nunca para elegir el borrador.
+  const lecturasMensajes = aprobar.match(/\.from\('mensajes_chat'\)[\s\S]{0,40}\.select\('[^']*'\)/g) ?? []
+  verificar(!/mensajes_chat|conversaciones_chat|conversacionId/.test(extraer) && !/conversaciones_chat/.test(aprobar)
+    && lecturasMensajes.length === 1 && lecturasMensajes[0].endsWith(".select('id')"),
+    '10a. La selección del borrador usa solo el historial recibido; la aprobación lee de mensajes_chat únicamente el id (identidad)')
   verificar(seleccionarBorradorVigente([u('Apruébala')]).estado === 'sin_borrador' && nombreDe(seleccionarBorradorVigente([a(A)])) === 'Los insectos', '10b. Función pura: el resultado depende solo del historial que se le pasa')
 }
 

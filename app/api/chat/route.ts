@@ -1069,7 +1069,10 @@ export async function POST(req: NextRequest) {
       // nunca confía ciegamente en la clasificación.
       if (clasificacion.intencion_principal === 'planeacion_generar' && clasificacion.accion_planeacion_generar === 'aprobar') {
         try {
-          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''))
+          // Conversación propia validada (RLS): identidad del borrador.
+          const vinculoAprobacion = await vinculoConversacionPromise
+          const conversacionAprobacion = vinculoAprobacion.estado === 'con_grupo' || vinculoAprobacion.estado === 'sin_grupo' || vinculoAprobacion.estado === 'antigua' ? vinculoAprobacion.id : null
+          const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion)
           if (!resultado.ok) {
             console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)
             return respuestaTexto(resultado.mensaje)

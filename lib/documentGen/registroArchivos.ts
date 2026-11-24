@@ -148,6 +148,26 @@ export async function marcarArchivoFallido(id: string, causa: unknown): Promise<
   }
 }
 
+// Archivo YA confirmado que nunca llegó a entregarse (p. ej. lo generó una
+// aprobación de planeación que perdió su concesión antes de consolidarlo):
+// 'fallido' = nunca entregado (activado_en vuelve a null: la tabla exige
+// estado 'activo' ⇔ activado_en). Queda auditado y recuperarArchivoPropio
+// no lo entrega jamás. Mejor esfuerzo: nunca lanza.
+export async function marcarArchivoNoEntregado(id: string, causa: string): Promise<void> {
+  try {
+    await conReintentos(async () => {
+      const { error } = (await cliente()
+        .from('archivos_generados')
+        .update({ estado: 'fallido', activado_en: null, ultimo_error: causa.slice(0, 500) })
+        .eq('id', id)
+        .eq('estado', 'activo')) as { error: ErrorBD }
+      if (error) throw error
+    }, 2)
+  } catch (e) {
+    console.error('[REGISTRO_ARCHIVOS] no se pudo marcar como no entregado:', mensajeDe(e))
+  }
+}
+
 // --- Recuperar un archivo propio (tarjetas del Chat con el enlace vencido) ---
 // Solo LECTURA: no genera archivos, no escribe registros ni llama a la IA.
 // La fuente de verdad es archivos_generados: el archivo se entrega solo si

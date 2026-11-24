@@ -24,34 +24,7 @@ import type {
 } from '../tipos'
 import { esPropuestaListaParaCliente, type PropuestaListaParaCliente } from '@/lib/listaOficial/vistaPropuestaLista'
 import { extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
-
-const detectarTipoDocumento = (texto: string): string => {
-  if (texto.includes('RÚBRICA')) return 'rubrica'
-  if (texto.includes('CITATORIO')) return 'citatorio'
-  if (texto.includes('PLANEACIÓN')) return 'planeacion'
-  if (texto.includes('COMPRENSIÓN LECTORA')) return 'lectura'
-  return 'documento'
-}
-
-// El flag /u es obligatorio aquí: sin él, una clase de caracteres con
-// varios emoji (pares de "surrogate" UTF-16) no compara cada emoji
-// completo, sino cada mitad por separado. Como varios de estos emoji
-// comparten el mismo surrogate alto, eso corrompía 📝/📄 (que ni
-// siquiera estaban en la lista) dejando un surrogate bajo suelto —
-// texto inválido que rompía el insert a documentos_generados.
-const detectarTitulo = (texto: string): string => {
-  const lineas = texto.split('\n').filter(l => l.trim())
-  for (const linea of lineas) {
-    const limpia = linea.replace(/[📋📊📨🎯📚🧰📅✍️📝📄📖💡🤔✏️]/gu, '').trim()
-    if (limpia.length > 5) return limpia.substring(0, 80)
-  }
-  return 'Documento generado'
-}
-
-const detectarCampoFormativo = (texto: string): string | null => {
-  const match = texto.match(/Campo Formativo:\s*([^\n]+)/i)
-  return match ? match[1].trim() : null
-}
+import { camposDeHistorial } from '../documentos'
 
 type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
 
@@ -542,10 +515,10 @@ export class MotorTextoClaude implements MotorConversacional {
     const texto = documento.contenido
     const { error } = await supabase.from('documentos_generados').insert({
       user_id: userId,
-      tipo: detectarTipoDocumento(texto),
-      titulo: detectarTitulo(texto),
+      tipo: camposDeHistorial(texto).tipo,
+      titulo: camposDeHistorial(texto).titulo,
       contenido: texto,
-      campo_formativo: detectarCampoFormativo(texto) || perfil?.campo_formativo || null,
+      campo_formativo: camposDeHistorial(texto).campoFormativo || perfil?.campo_formativo || null,
       // El grupo con el que se generó el documento, no el del perfil.
       grado: documento.grupo.grado,
       grupo: documento.grupo.grupo,
@@ -554,6 +527,8 @@ export class MotorTextoClaude implements MotorConversacional {
       archivo_id: documento.archivo?.id ?? null,
       archivo_formato: documento.archivo?.formato ?? null,
     })
-    if (error) console.error('[HISTORIAL] No se pudo guardar el documento en documentos_generados:', error.message)
+    // 23505: ese archivo original ya tiene su registro (índice único por
+    // archivo): el Historial ya está completo, no es un error.
+    if (error && error.code !== '23505') console.error('[HISTORIAL] No se pudo guardar el documento en documentos_generados:', error.message)
   }
 }

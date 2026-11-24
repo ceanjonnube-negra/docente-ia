@@ -682,3 +682,38 @@ export const MENSAJE_ARCHIVO_SIN_SESION = 'Tu sesión no está activa. Inicia se
 export function archivoSinSesion(tipo: TipoHerramienta | null, userId: string | null): boolean {
   return !userId && esFormatoEntrega(tipo)
 }
+
+// Campos derivados del texto para un registro de documentos_generados.
+// Una sola regla para el cliente (motorTextoClaude) y el servidor
+// (aprobación de planeaciones, que registra el Historial por su cuenta).
+const detectarTipoDocumento = (texto: string): string => {
+  if (texto.includes('RÚBRICA')) return 'rubrica'
+  if (texto.includes('CITATORIO')) return 'citatorio'
+  if (texto.includes('PLANEACIÓN')) return 'planeacion'
+  if (texto.includes('COMPRENSIÓN LECTORA')) return 'lectura'
+  return 'documento'
+}
+
+// El flag /u es obligatorio aquí: sin él, una clase de caracteres con
+// varios emoji (pares de "surrogate" UTF-16) no compara cada emoji
+// completo, sino cada mitad por separado. Como varios de estos emoji
+// comparten el mismo surrogate alto, eso corrompía 📝/📄 (que ni
+// siquiera estaban en la lista) dejando un surrogate bajo suelto —
+// texto inválido que rompía el insert a documentos_generados.
+const detectarTitulo = (texto: string): string => {
+  const lineas = texto.split('\n').filter(l => l.trim())
+  for (const linea of lineas) {
+    const limpia = linea.replace(/[📋📊📨🎯📚🧰📅✍️📝📄📖💡🤔✏️]/gu, '').trim()
+    if (limpia.length > 5) return limpia.substring(0, 80)
+  }
+  return 'Documento generado'
+}
+
+const detectarCampoFormativo = (texto: string): string | null => {
+  const match = texto.match(/Campo Formativo:\s*([^\n]+)/i)
+  return match ? match[1].trim() : null
+}
+
+export function camposDeHistorial(texto: string): { tipo: string; titulo: string; campoFormativo: string | null } {
+  return { tipo: detectarTipoDocumento(texto), titulo: detectarTitulo(texto), campoFormativo: detectarCampoFormativo(texto) }
+}

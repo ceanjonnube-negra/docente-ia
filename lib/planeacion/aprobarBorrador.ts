@@ -38,7 +38,12 @@ import { periodosEvaluacionDelCiclo } from '../motorContexto'
 import { seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
 import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, resolverPeriodoPorFechaInicio, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
-import { crearPlaneacion, confirmarPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
+import { crearPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
+import { randomUUID } from 'node:crypto'
+import { camposDeHistorial } from '../asistente/documentos'
+import { crearUrlFirmada, BUCKET_HOJAS_SEGUIMIENTO } from '../documentGen/almacenamiento'
+import { nombreArchivoHoja } from '../documentGen/generarHojaSeguimientoPdf'
+import { marcarArchivoNoEntregado } from '../documentGen/registroArchivos'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
@@ -53,6 +58,10 @@ export type CodigoErrorAprobacion =
   | 'YA_GUARDADA'
   | 'BORRADOR_NO_DETERMINADO'
   | 'ERROR_GUARDADO'
+  // Otra solicitud tiene la concesión de esta misma aprobación.
+  | 'EN_PROCESO'
+  // El mensaje del borrador aún no está persistido: no hay identidad.
+  | 'BORRADOR_NO_PERSISTIDO'
 
 // Un formato definitivo (Word o PDF) de la planeación ya generado y
 // subido a Storage — mismo shape que ArchivoGenerado
@@ -163,40 +172,135 @@ function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorPro
     .map((texto) => ({ indicador_especifico: texto, aspecto_general: 'logro_aprendizaje' }))
 }
 
-type FilaHuella = { id: string; version: number }
+// ------------------------------------------------------------------
+// IDENTIDAD E IDEMPOTENCIA DE LA APROBACIÓN (migración
+// 20261125000000_identidad_aprobacion_planeacion.sql)
+//
+// Una planeación nace de UN borrador, identificado por el id PERSISTIDO de
+// su mensaje: planeaciones.borrador_clave = "msg:<mensajes_chat.id>",
+// única por docente. El id se lee con la sesión del docente (RLS) y debe
+// pertenecer a SU conversación validada. El cliente confirma la
+// persistencia de la conversación antes de enviar una aprobación
+// (AsistenteService); si aun así el mensaje no está guardado, no se
+// aprueba todavía — nunca se usa el texto como identidad, porque no
+// distinguiría dos borradores idénticos. Nombre y fechas no identifican.
+//
+// Concesión (lease): la aprobación en curso se adquiere con una
+// actualización condicional atómica (token propio; libre, o vencida si el
+// proceso anterior se interrumpió) y se RENUEVA antes de cada escritura;
+// una ejecución que la perdió no escribe, no confirma, y marca como
+// 'fallido' (nunca entregado) el archivo que hubiera generado. Cada fase es
+// idempotente por relación única y la confirmación exige el token propio.
+// Una aprobación ya terminada se recupera tal cual (tarjetas y Historial),
+// sin regenerar nada.
+// ------------------------------------------------------------------
+const DURACION_CONCESION_MS = 2 * 60 * 1000
+const MENSAJE_EN_PROCESO = 'Ya estoy guardando esta planeación. En unos segundos aparecerá en Planeación; si no, vuelve a pedírmelo.'
+const MENSAJE_YA_GUARDADA = 'Esta planeación ya está guardada. La encuentras en Planeación, Evaluación e Historial.'
+const MENSAJE_NO_PERSISTIDO = 'Todavía estoy guardando esta conversación. Vuelve a pedirme que la apruebe en unos segundos.'
+const COLUMNAS_PLANEACION_APROBADA = 'id, docente_id, grupo_id, ciclo_escolar_id, periodo_evaluacion_id, nombre, proposito, fecha_inicio, fecha_fin, estado, version, creado_en, actualizado_en'
 
-// Busca una fila EXISTENTE con la misma huella (docente + grupo +
-// nombre + fechas exactas) — a propósito NO pasa por listarPlaneaciones
-// (que ahora oculta version=0): esta función necesita ver también las
-// filas temporales, para poder recuperarlas en vez de duplicarlas.
-async function buscarPorHuella(sb: SupabaseClient, sesion: SesionContexto, resumen: ResumenBorrador): Promise<FilaHuella | null> {
-  const { data } = await sb
-    .from('planeaciones')
-    .select('id, version')
-    .eq('docente_id', sesion.docente_id)
-    .eq('grupo_id', sesion.grupo_activo_id as string)
-    .eq('nombre', resumen.nombre)
-    .eq('fecha_inicio', resumen.fechaInicio)
-    .eq('fecha_fin', resumen.fechaFin)
-    .maybeSingle()
-  return (data as FilaHuella | null) ?? null
+// Identidad del borrador vigente: el id persistido de su mensaje en ESTA
+// conversación (el más reciente con ese texto exacto). null si no hay
+// conversación o el mensaje aún no está guardado.
+export async function resolverIdentidadBorrador(sb: SupabaseClient, conversacionId: string | null, contenido: string): Promise<string | null> {
+  if (!conversacionId) return null
+  try {
+    const { data } = await sb
+      .from('mensajes_chat')
+      .select('id')
+      .eq('conversacion_id', conversacionId)
+      .eq('rol', 'asistente')
+      .eq('texto', contenido)
+      .order('creado_en', { ascending: false })
+      .limit(1)
+    const id = (data?.[0] as { id?: unknown } | undefined)?.id
+    // El id persistido es "<conversación>:<mensaje>": se exige que sea de ESTA conversación.
+    return typeof id === 'string' && id.startsWith(`${conversacionId}:`) && id.length <= 290 ? `msg:${id}` : null
+  } catch {
+    return null
+  }
 }
 
-type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; planeacion_proyecto_id: string | null; periodo_evaluacion_id: string | null }
+type FilaIdentidad = { id: string; version: number }
 
-// Misma huella (docente + grupo + nombre + fechas) aplicada a
-// proyectos_seguimiento — recupera un intento anterior incompleto en
-// vez de crear un proyecto duplicado.
-async function buscarProyectoSeguimientoPorHuella(sb: SupabaseClient, sesion: SesionContexto, resumen: ResumenBorrador): Promise<FilaProyectoSeguimiento | null> {
-  const { data } = await sb
-    .from('proyectos_seguimiento')
-    .select('id, hoja_id, planeacion_proyecto_id, periodo_evaluacion_id')
-    .eq('docente_id', sesion.docente_id)
-    .eq('grupo_id', sesion.grupo_activo_id as string)
-    .eq('nombre', resumen.nombre)
-    .eq('fecha_inicio', resumen.fechaInicio)
-    .eq('fecha_fin', resumen.fechaFin)
-    .maybeSingle()
+async function buscarPorIdentidad(sb: SupabaseClient, docenteId: string, clave: string): Promise<FilaIdentidad | null> {
+  const { data } = await sb.from('planeaciones').select('id, version').eq('docente_id', docenteId).eq('borrador_clave', clave).maybeSingle()
+  return (data as FilaIdentidad | null) ?? null
+}
+
+type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string; archivo_id?: string; grupo_academico?: { grado: string; grupo: string } }
+
+// Registro CANÓNICO de la planeación aprobada en Historial (B2), escrito
+// por el servidor: no depende de que el cliente reciba la respuesta. Uno
+// por archivo original (índice único documentos_generados_archivo_unico):
+// un reintento o el registro del cliente chocan y no duplican.
+function filaHistorial(contenido: string, word: DocumentoGuardado | null): Record<string, unknown> | null {
+  if (!contenido || !word?.archivo_id) return null // sin original registrado no hay registro que vincular
+  const campos = camposDeHistorial(contenido)
+  return {
+    tipo: campos.tipo,
+    titulo: campos.titulo,
+    contenido,
+    campo_formativo: campos.campoFormativo,
+    grado: word.grupo_academico?.grado || null,
+    grupo: word.grupo_academico?.grupo || null,
+    origen: 'archivo',
+    archivo_id: word.archivo_id,
+    archivo_formato: 'word',
+  }
+}
+
+// Planeación ya confirmada (inmutable): inserción directa, idempotente.
+async function asegurarRegistroHistorial(sb: SupabaseClient, docenteId: string, contenido: string, word: DocumentoGuardado | null): Promise<boolean> {
+  const fila = filaHistorial(contenido, word)
+  if (!fila) return true
+  const { error } = await sb.from('documentos_generados').insert({ user_id: docenteId, ...fila })
+  if (error && (error as { code?: string }).code !== '23505') {
+    console.error('[PLANEACION_GENERAR][aprobar] no se pudo registrar la planeación en Historial:', error)
+    return false
+  }
+  return true
+}
+
+// Aprobación ya terminada (reintento cuya respuesta anterior se perdió):
+// se entregan sus tarjetas originales a partir de lo persistido — sin
+// regenerar archivos ni hoja, sin IA — y se asegura su registro en
+// Historial.
+async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: string, planeacionId: string, contenidoBorrador: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
+  const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
+  const { data: planeacion } = await sb.from('planeaciones').select(COLUMNAS_PLANEACION_APROBADA).eq('id', planeacionId).maybeSingle()
+  const { data: proyecto } = await sb.from('planeacion_proyectos').select('evaluacion').eq('planeacion_id', planeacionId).maybeSingle()
+  const ev = ((proyecto as { evaluacion?: Record<string, unknown> } | null)?.evaluacion ?? {}) as { hoja_id?: string; proyecto_seguimiento_id?: string; documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado; trazabilidad_curricular?: unknown }
+  if (!planeacion || (planeacion as Planeacion).version < 1 || !ev.hoja_id || !ev.proyecto_seguimiento_id) return yaGuardada
+  const { data: hoja } = await sb.from('hojas_evaluacion').select('identificador_visible, storage_path').eq('id', ev.hoja_id).maybeSingle()
+  const filaHoja = hoja as { identificador_visible: string; storage_path: string | null } | null
+  if (!filaHoja?.storage_path) return yaGuardada
+  const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
+  const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
+  const contenidoDefinitivo = esTrazabilidadCanonica(ev.trazabilidad_curricular) ? textoDefinitivoConIdentidad(contenidoBorrador, identidadDesdeTrazabilidad(ev.trazabilidad_curricular)) : ''
+  const word = ev.documento_word ?? null
+  const pdf = ev.documento_pdf ?? null
+  if (!(await asegurarRegistroHistorial(sb, docenteId, contenidoDefinitivo, word))) return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+  return {
+    ok: true,
+    planeacion: planeacion as Planeacion,
+    duracionDias,
+    hoja: { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: ev.proyecto_seguimiento_id },
+    documentoPlaneacion: word && pdf
+      ? {
+          word: { nombre: word.nombre, url: word.url, tamanoBytes: word.tamano_bytes, archivoId: word.archivo_id, grupoAcademico: word.grupo_academico },
+          pdf: { nombre: pdf.nombre, url: pdf.url, tamanoBytes: pdf.tamano_bytes, urlVer: pdf.url_ver, archivoId: pdf.archivo_id, grupoAcademico: pdf.grupo_academico },
+          contenidoDefinitivo,
+        }
+      : null,
+  }
+}
+
+type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; periodo_evaluacion_id: string | null }
+
+async function buscarProyectoSeguimientoDePlaneacion(sb: SupabaseClient, proyectoPlaneacionId: string): Promise<FilaProyectoSeguimiento | null> {
+  const { data } = await sb.from('proyectos_seguimiento').select('id, hoja_id, periodo_evaluacion_id').eq('planeacion_proyecto_id', proyectoPlaneacionId).maybeSingle()
   return (data as FilaProyectoSeguimiento | null) ?? null
 }
 
@@ -206,7 +310,10 @@ export async function aprobarBorradorPlaneacion(
   historial: TurnoHistorial[],
   // Texto que escribió el docente en este turno — solo para detectar
   // si nombra un borrador distinto del vigente (ver seleccionarBorradorVigente).
-  mensajeDocente = ''
+  mensajeDocente = '',
+  // Conversación del docente ya validada (RLS) — para la identidad del
+  // borrador. null sin conversación remota.
+  conversacionId: string | null = null
 ): Promise<ResultadoAprobacion> {
   if (!sesion.grupo_activo_id) {
     return { ok: false, codigo: 'GRUPO_NO_DISPONIBLE', mensaje: mensajeGrupoNoDisponible(sesion) ?? 'No tengo un grupo activo configurado para guardar la planeación.' }
@@ -219,7 +326,7 @@ export async function aprobarBorradorPlaneacion(
     return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }
   }
   if (seleccion.estado === 'ya_aprobado') {
-    return { ok: false, codigo: 'YA_GUARDADA', mensaje: 'Esta planeación ya está guardada.' }
+    return { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
   }
   if (seleccion.estado === 'otro_documento') {
     return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'Después de la planeación trabajamos en otro documento, así que no puedo saber con certeza cuál guardar. Pídeme que vuelva a mostrar la planeación y luego apruébala.' }
@@ -244,6 +351,9 @@ export async function aprobarBorradorPlaneacion(
     return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: validacion.mensaje }
   }
 
+  // Concesión propia de esta solicitud (para liberarla ante un fallo).
+  let concesionPropia: string | null = null
+  let liberarAlFallar: (() => Promise<ResultadoAprobacion>) | null = null
   try {
     // Identidad curricular del borrador aprobado, revalidada contra el
     // catálogo del grupo recargado (RLS) — ver curricularAprobacion.ts.
@@ -258,12 +368,60 @@ export async function aprobarBorradorPlaneacion(
     const periodos = cicloDelGrupo ? await periodosEvaluacionDelCiclo(sb, cicloDelGrupo) : []
     const periodoActual = resolverPeriodoPorFechaInicio(periodos, resumen.fechaInicio)
 
-    // Huella estable (docente + grupo + nombre + fechas): distingue
-    // "ya guardada de verdad" (version>=1) de "hay un intento anterior
-    // sin terminar" (version=0, se recupera) de "no existe todavía".
-    const existente = await buscarPorHuella(sb, sesion, resumen)
-    if (existente && existente.version >= 1) {
-      return { ok: false, codigo: 'YA_GUARDADA', mensaje: 'Esta planeación ya está guardada.' }
+    // Identidad del BORRADOR (no nombre ni fechas): ya guardada de verdad
+    // (version>=1), intento anterior sin terminar (version=0, se reanuda
+    // con la concesión) o nueva.
+    const clave = await resolverIdentidadBorrador(sb, conversacionId, seleccion.contenido)
+    if (!clave) return { ok: false, codigo: 'BORRADOR_NO_PERSISTIDO', mensaje: MENSAJE_NO_PERSISTIDO }
+    const recuperar = (id: string) => recuperarAprobacionTerminada(sb, sesion.docente_id, id, seleccion.contenido, resumen.duracionDias)
+    const existente = await buscarPorIdentidad(sb, sesion.docente_id, clave)
+    if (existente && existente.version >= 1) return recuperar(existente.id)
+    const token = randomUUID()
+    const vencimiento = () => new Date(Date.now() + DURACION_CONCESION_MS).toISOString()
+    // Adquiere (o renueva) la concesión: solo si está libre, vencida o es
+    // propia, y la planeación sigue sin confirmar. Atómico en la base.
+    const adquirirConcesion = async (id: string): Promise<'propia' | 'ocupada' | 'error'> => {
+      const { data, error } = await sb
+        .from('planeaciones')
+        .update({ aprobacion_token: token, aprobacion_expira_en: vencimiento() })
+        .eq('id', id)
+        .eq('version', 0)
+        .or(`aprobacion_token.is.null,aprobacion_token.eq.${token},aprobacion_expira_en.lt.${new Date().toISOString()}`)
+        .select('id')
+      if (error) return 'error'
+      return (data ?? []).length === 1 ? 'propia' : 'ocupada'
+    }
+    // Un fallo controlado libera la concesión propia: el reintento
+    // inmediato no espera a que venza.
+    const fallar = async (): Promise<ResultadoAprobacion> => {
+      if (concesionPropia) await sb.from('planeaciones').update({ aprobacion_token: null, aprobacion_expira_en: null }).eq('id', concesionPropia).eq('aprobacion_token', token)
+      return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+    }
+    liberarAlFallar = fallar
+    const conConcesion = async (id: string): Promise<ResultadoAprobacion | null> => {
+      const estado = await adquirirConcesion(id)
+      if (estado === 'error') return fallar()
+      if (estado === 'ocupada') return sinConcesion(id)
+      concesionPropia = id
+      return null
+    }
+    // Consolida resultados SOLO con la concesión propia, en una transacción
+    // (consolidar_aprobacion_planeacion): comprobar el token, renovarlo y
+    // escribir son atómicos. 'perdida' = otra ejecución la tiene; no se
+    // escribió nada.
+    const consolidar = async (id: string, evaluacion: Record<string, unknown>, historial: Record<string, unknown> | null): Promise<'ok' | 'perdida' | 'error'> => {
+      const { data, error } = await sb.rpc('consolidar_aprobacion_planeacion', { p_planeacion_id: id, p_token: token, p_evaluacion: evaluacion, p_historial: historial })
+      if (error) {
+        console.error('[PLANEACION_GENERAR][aprobar] fallo consolidando la aprobación:', error)
+        return 'error'
+      }
+      return data === true ? 'ok' : 'perdida'
+    }
+    const sinConcesion = async (id: string): Promise<ResultadoAprobacion> => {
+      const { data } = await sb.from('planeaciones').select('version').eq('id', id).maybeSingle()
+      return ((data as { version?: number } | null)?.version ?? 0) >= 1
+        ? recuperar(id)
+        : { ok: false, codigo: 'EN_PROCESO', mensaje: MENSAJE_EN_PROCESO }
     }
 
     // PLN-1E-F-FIX — planeaciones.campo_formativo es NOT NULL sin
@@ -284,11 +442,13 @@ export async function aprobarBorradorPlaneacion(
       return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador no tiene un campo formativo reconocido — pídeme que lo genere de nuevo antes de guardarlo.' }
     }
 
-    // Fase 1: planeación temporal (version=0, invisible) — se crea o
-    // se recupera, nunca se duplica.
+    // Fase 1: planeación temporal (version=0, invisible) con su identidad
+    // y la concesión — se crea o se recupera, nunca se duplica.
     let planeacionId: string
     if (existente) {
       planeacionId = existente.id
+      const sinPermiso = await conConcesion(planeacionId)
+      if (sinPermiso) return sinPermiso
     } else {
       const creado = await crearPlaneacion(
         { supabase: sb },
@@ -302,14 +462,25 @@ export async function aprobarBorradorPlaneacion(
           fecha_inicio: resumen.fechaInicio,
           fecha_fin: resumen.fechaFin,
           estado: 'borrador', // estado técnico temporal — fase 1 del commit en dos fases
-          version: 0, // centinela: invisible hasta confirmarPlaneacion()
+          version: 0, // centinela: invisible hasta la confirmación final
+          identidadAprobacion: { borrador_clave: clave, aprobacion_token: token, aprobacion_expira_en: vencimiento() },
         }
       )
-      if (!creado.ok) {
+      if (!creado.ok && creado.error.codigo === 'DUPLICADO') {
+        // Otra solicitud del MISMO borrador la creó al mismo tiempo.
+        const otra = await buscarPorIdentidad(sb, sesion.docente_id, clave)
+        if (!otra) return fallar()
+        if (otra.version >= 1) return recuperar(otra.id)
+        const sinPermiso = await conConcesion(otra.id)
+        if (sinPermiso) return sinPermiso
+        planeacionId = otra.id
+      } else if (!creado.ok) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la fila temporal:', creado.error)
-        return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+        return fallar()
+      } else {
+        planeacionId = creado.datos.id
+        concesionPropia = planeacionId
       }
-      planeacionId = creado.datos.id
     }
 
     // Fase 2: planeacion_proyectos — se crea solo si no existe ya
@@ -323,16 +494,21 @@ export async function aprobarBorradorPlaneacion(
       .maybeSingle()
     if (errorBusquedaProyecto) {
       console.error('[PLANEACION_GENERAR][aprobar] fallo verificando el proyecto existente:', errorBusquedaProyecto)
-      return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+      return fallar()
     }
     let proyectoPlaneacionId: string
     if (proyectoPlaneacionExistente) {
       proyectoPlaneacionId = (proyectoPlaneacionExistente as { id: string }).id
     } else {
       const { data: proyectoCreado, error: errorProyecto } = await sb.from('planeacion_proyectos').insert(construirProyecto(resumen, planeacionId, curricular)).select('id').single()
+      if ((errorProyecto as { code?: string } | null)?.code === '23505') {
+        // Único por (planeación, orden): otra solicitud lo creó; la
+        // concesión la tiene otra, así que esta no sigue.
+        return sinConcesion(planeacionId)
+      }
       if (errorProyecto || !proyectoCreado) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando la relación:', errorProyecto)
-        return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+        return fallar()
       }
       proyectoPlaneacionId = (proyectoCreado as { id: string }).id
     }
@@ -362,29 +538,19 @@ export async function aprobarBorradorPlaneacion(
       if (!coincide) console.warn('[PLANEACION_GENERAR][aprobar] sin identidad curricular canónica para este reintento — no se generan formatos faltantes ni se escribe trazabilidad')
     }
 
-    // Fase 3: proyectos_seguimiento — reutiliza la relación disponible
-    // (Seguimiento integrado en Planeación → Proyecto → Seguimiento →
-    // Hoja de evaluación, nunca como módulo aparte). Vinculado por la
-    // MISMA huella (docente + grupo + nombre + fechas) — sin columna
-    // planeacion_id (no existe en el esquema, no se agrega ninguna).
+    // Fase 3: proyectos_seguimiento del proyecto de ESTA planeación
+    // (planeacion_proyecto_id, único) — nunca por nombre y fechas.
     let proyectoSeguimientoId: string
     let hojaIdExistente: string | null
-    const proyectoSeguimientoExistente = await buscarProyectoSeguimientoPorHuella(sb, sesion, resumen)
+    const proyectoSeguimientoExistente = await buscarProyectoSeguimientoDePlaneacion(sb, proyectoPlaneacionId)
     if (proyectoSeguimientoExistente) {
       proyectoSeguimientoId = proyectoSeguimientoExistente.id
       hojaIdExistente = proyectoSeguimientoExistente.hoja_id
-      // Reintento o proyecto anterior a este vínculo: se completa SOLO lo
-      // que falta; un vínculo ya existente con otro proyecto de
-      // planeación nunca se reasigna.
-      const completar: Record<string, string> = {}
-      if (!proyectoSeguimientoExistente.planeacion_proyecto_id) completar.planeacion_proyecto_id = proyectoPlaneacionId
-      else if (proyectoSeguimientoExistente.planeacion_proyecto_id !== proyectoPlaneacionId) console.warn('[PLANEACION_GENERAR][aprobar] el proyecto de seguimiento ya está vinculado a otra planeación — no se reasigna')
-      if (!proyectoSeguimientoExistente.periodo_evaluacion_id && periodoActual) completar.periodo_evaluacion_id = periodoActual.id
-      if (Object.keys(completar).length > 0) {
-        const { error: errorCompletar } = await sb.from('proyectos_seguimiento').update(completar).eq('id', proyectoSeguimientoId)
+      if (!proyectoSeguimientoExistente.periodo_evaluacion_id && periodoActual) {
+        const { error: errorCompletar } = await sb.from('proyectos_seguimiento').update({ periodo_evaluacion_id: periodoActual.id }).eq('id', proyectoSeguimientoId)
         if (errorCompletar) {
-          console.error('[PLANEACION_GENERAR][aprobar] fallo completando el vínculo del proyecto de seguimiento:', errorCompletar)
-          return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+          console.error('[PLANEACION_GENERAR][aprobar] fallo completando el periodo del proyecto de seguimiento:', errorCompletar)
+          return fallar()
         }
       }
     } else {
@@ -404,9 +570,10 @@ export async function aprobarBorradorPlaneacion(
         })
         .select('id')
         .single()
+      if ((errorProyectoSeguimiento as { code?: string } | null)?.code === '23505') return sinConcesion(planeacionId)
       if (errorProyectoSeguimiento || !proyectoSeguimiento) {
         console.error('[PLANEACION_GENERAR][aprobar] fallo creando proyectos_seguimiento:', errorProyectoSeguimiento)
-        return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+        return fallar()
       }
       proyectoSeguimientoId = proyectoSeguimiento.id
       hojaIdExistente = null
@@ -442,7 +609,7 @@ export async function aprobarBorradorPlaneacion(
       // completamente aprobada" se cumple sin necesitar un estado
       // técnico adicional.
       console.error('[PLANEACION_GENERAR][aprobar] fallo generando la hoja de evaluación:', resultadoHoja.error)
-      return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+      return fallar()
     }
 
     // Fase 4.5: Word + PDF DEFINITIVOS de la planeación (AJUSTE
@@ -468,11 +635,30 @@ export async function aprobarBorradorPlaneacion(
     // único de siempre para esos casos, sin romper nada.
     // archivo_id/grupo_academico: registro real del archivo (B1/B2); ausentes
     // en planeaciones anteriores.
-    type DocumentoGuardado = { nombre: string; url: string; tamano_bytes?: number; url_ver?: string; archivo_id?: string; grupo_academico?: { grado: string; grupo: string } }
     const evaluacionPrevia = (proyectoPlaneacionExistente as { evaluacion?: { documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado } } | null)?.evaluacion
     let documentoWord: DocumentoGuardado | null = evaluacionPrevia?.documento_word ?? null
     let documentoPdf: DocumentoGuardado | null = evaluacionPrevia?.documento_pdf ?? null
+    // Cada formato generado se guarda EN SEGUIDA en el proyecto: si el
+    // proceso se interrumpe, el reintento lo reutiliza (nunca lo duplica).
+    const evaluacionAcumulada: Record<string, unknown> = { ...((evaluacionPrevia as Record<string, unknown> | undefined) ?? construirProyecto(resumen, planeacionId, curricular).evaluacion) }
+    // Devuelve un resultado si esta ejecución ya no debe seguir (perdió la
+    // concesión): el archivo recién generado nunca se entregó y queda
+    // 'fallido' en su registro; nada se escribe en el proyecto.
+    const guardarFormato = async (campo: 'documento_word' | 'documento_pdf', documento: DocumentoGuardado): Promise<ResultadoAprobacion | null> => {
+      const estado = await consolidar(planeacionId, { ...evaluacionAcumulada, [campo]: documento }, null)
+      if (estado === 'perdida') {
+        if (documento.archivo_id) await marcarArchivoNoEntregado(documento.archivo_id, 'La aprobación que lo generó perdió su concesión; nunca se entregó.')
+        return sinConcesion(planeacionId)
+      }
+      // Error de escritura: mejor esfuerzo, como siempre (el vínculo final lo reintenta).
+      evaluacionAcumulada[campo] = documento
+      return null
+    }
     if (!documentoWord || !documentoPdf) {
+      // Antes de generar archivos se renueva la concesión: si otra
+      // solicitud la tomó (la nuestra venció), esta no genera nada.
+      const sinPermiso = await conConcesion(planeacionId)
+      if (sinPermiso) return sinPermiso
       try {
         // El MISMO turno del borrador vigente que se aprobó — no el
         // último del historial, que puede ser un error o una aclaración —,
@@ -482,10 +668,14 @@ export async function aprobarBorradorPlaneacion(
           if (!documentoWord) {
             const generado = await ejecutarHerramientaDocumento('word', textoCompleto, perfil, null, sb, sesion.docente_id)
             documentoWord = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, archivo_id: generado.archivoId, grupo_academico: generado.grupoAcademico }
+            const detener = await guardarFormato('documento_word', documentoWord)
+            if (detener) return detener
           }
           if (!documentoPdf) {
             const generado = await ejecutarHerramientaDocumento('pdf', textoCompleto, perfil, null, sb, sesion.docente_id)
             documentoPdf = { nombre: generado.nombre, url: generado.url, tamano_bytes: generado.tamanoBytes, url_ver: generado.urlVer, archivo_id: generado.archivoId, grupo_academico: generado.grupoAcademico }
+            const detener = await guardarFormato('documento_pdf', documentoPdf)
+            if (detener) return detener
           }
         } else {
           console.error('[PLANEACION_GENERAR][aprobar] Fase 4.5: sin texto definitivo canónico — se omiten Word/PDF definitivos')
@@ -497,44 +687,49 @@ export async function aprobarBorradorPlaneacion(
 
     // Fase 5: vincular la hoja real y el documento real (si se logró
     // generar) dentro de planeacion_proyectos — único lugar del
-    // vínculo, sin relación improvisada nueva.
-    const { error: errorVinculo } = await sb
-      .from('planeacion_proyectos')
-      .update({
-        evaluacion: {
-          indicadores: resumen.indicadores,
-          producto_final: resumen.productoFinal,
-          evidencias: resumen.evidencias,
-          fuente: 'chat_ia',
-          proyecto_seguimiento_id: proyectoSeguimientoId,
-          hoja_id: resultadoHoja.hojaId,
-          hoja_identificador_visible: resultadoHoja.identificadorVisible,
-          // Trazabilidad ya consolidada (reintento) nunca se sobrescribe;
-          // sin fuente canónica no se escribe ninguna.
-          ...(trazabilidadPersistida != null ? { trazabilidad_curricular: trazabilidadPersistida } : canonico ? { trazabilidad_curricular: canonico.trazabilidad } : {}),
-          ...(documentoWord ? { documento_word: documentoWord } : {}),
-          ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
-        },
-        actualizado_en: new Date().toISOString(),
-      })
-      .eq('planeacion_id', planeacionId)
-    if (errorVinculo) {
-      console.error('[PLANEACION_GENERAR][aprobar] fallo vinculando la hoja a planeacion_proyectos:', errorVinculo)
-      return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
-    }
+    // vínculo, sin relación improvisada nueva — y registrar la planeación
+    // en Historial (registro canónico del servidor), en UNA transacción
+    // protegida por la concesión: nunca sobrescribe lo de otra ejecución.
+    const contenidoDefinitivoFinal = canonico?.textoDefinitivo ?? ''
+    const vinculo = await consolidar(planeacionId, {
+      indicadores: resumen.indicadores,
+      producto_final: resumen.productoFinal,
+      evidencias: resumen.evidencias,
+      fuente: 'chat_ia',
+      proyecto_seguimiento_id: proyectoSeguimientoId,
+      hoja_id: resultadoHoja.hojaId,
+      hoja_identificador_visible: resultadoHoja.identificadorVisible,
+      // Trazabilidad ya consolidada (reintento) nunca se sobrescribe;
+      // sin fuente canónica no se escribe ninguna.
+      ...(trazabilidadPersistida != null ? { trazabilidad_curricular: trazabilidadPersistida } : canonico ? { trazabilidad_curricular: canonico.trazabilidad } : {}),
+      ...(documentoWord ? { documento_word: documentoWord } : {}),
+      ...(documentoPdf ? { documento_pdf: documentoPdf } : {}),
+    }, filaHistorial(contenidoDefinitivoFinal, documentoWord))
+    if (vinculo === 'perdida') return sinConcesion(planeacionId)
+    if (vinculo === 'error') return fallar()
 
     // Fase 6: promoción — el único punto en el que la planeación se
     // vuelve visible de verdad, ahora que TODO (planeación, proyecto,
-    // hoja, PDF) está confirmado como una sola operación lógica.
-    const confirmada = await confirmarPlaneacion({ supabase: sb }, planeacionId, ESTADO_FINAL_TRAS_APROBAR)
-    if (!confirmada.ok) {
-      console.error('[PLANEACION_GENERAR][aprobar] fallo confirmando la planeación:', confirmada.error)
-      return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
+    // hoja, PDF) está confirmado como una sola operación lógica. Solo con
+    // la concesión propia (token): si otra solicitud la tomó, esta no
+    // confirma; la concesión se libera al confirmar.
+    const { data: confirmadas, error: errorConfirmar } = await sb
+      .from('planeaciones')
+      .update({ version: 1, estado: ESTADO_FINAL_TRAS_APROBAR, aprobacion_token: null, aprobacion_expira_en: null, actualizado_en: new Date().toISOString() })
+      .eq('id', planeacionId)
+      .eq('version', 0)
+      .eq('aprobacion_token', token)
+      .select(COLUMNAS_PLANEACION_APROBADA)
+    if (errorConfirmar) {
+      console.error('[PLANEACION_GENERAR][aprobar] fallo confirmando la planeación:', errorConfirmar)
+      return fallar()
     }
+    const confirmada = (confirmadas ?? [])[0] as Planeacion | undefined
+    if (!confirmada) return sinConcesion(planeacionId)
 
     return {
       ok: true,
-      planeacion: confirmada.datos,
+      planeacion: confirmada,
       duracionDias: resumen.duracionDias,
       // EVAL-1G — proyectoSeguimientoId (ya resuelto arriba, Fase 3)
       // viaja de vuelta al llamador para que app/api/chat/route.ts
@@ -547,12 +742,13 @@ export async function aprobarBorradorPlaneacion(
         ? {
             word: { nombre: documentoWord.nombre, url: documentoWord.url, tamanoBytes: documentoWord.tamano_bytes, archivoId: documentoWord.archivo_id, grupoAcademico: documentoWord.grupo_academico },
             pdf: { nombre: documentoPdf.nombre, url: documentoPdf.url, tamanoBytes: documentoPdf.tamano_bytes, urlVer: documentoPdf.url_ver, archivoId: documentoPdf.archivo_id, grupoAcademico: documentoPdf.grupo_academico },
-            contenidoDefinitivo: canonico?.textoDefinitivo ?? '',
+            contenidoDefinitivo: contenidoDefinitivoFinal,
           }
         : null,
     }
   } catch (e) {
     console.error('[PLANEACION_GENERAR][aprobar] excepción no controlada:', e)
+    if (liberarAlFallar) return liberarAlFallar()
     return { ok: false, codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR_GENERICO }
   }
 }

@@ -68,6 +68,9 @@ import type {
 import { MENSAJE_PROPUESTA_VENCIDA } from './tipos'
 import { CONTEXTO_VACIO } from './tipos'
 
+// Espera máxima para confirmar la copia remota antes de aprobar una planeación.
+const LIMITE_PERSISTENCIA_ANTES_DE_APROBAR_MS = 5000
+
 class ErrorLimiteDeTiempoAccion extends Error {}
 
 // Mismo patrón de conLimiteDeTiempo que ya usan motorTextoClaude.ts (
@@ -670,6 +673,16 @@ class AsistenteServiceImpl {
     this.copiasRemotasPendientes.set(localId, mensajes)
     if (this.copiaRemotaTimer) clearTimeout(this.copiaRemotaTimer)
     this.copiaRemotaTimer = setTimeout(() => void this.enviarCopiaRemota(), 2000)
+  }
+
+  private async confirmarPersistenciaConversacion(): Promise<void> {
+    if (!this.conversacionActivaId) return
+    this.copiasRemotasPendientes.set(this.conversacionActivaId, this.mensajes)
+    try {
+      await Promise.race([this.enviarCopiaRemota(), new Promise((r) => setTimeout(r, LIMITE_PERSISTENCIA_ANTES_DE_APROBAR_MS))])
+    } catch {
+      // Sin confirmación, el servidor responde que aún se está guardando.
+    }
   }
 
   private async enviarCopiaRemota() {
@@ -1784,6 +1797,14 @@ class AsistenteServiceImpl {
     // conversationId". Nunca pasa nada implícito antes de esto.
     if (!this.conversacionActivaId) {
       this.conversacionActivaId = crearNuevaConversacion()
+    }
+
+    // Aprobación de un borrador de planeación: el servidor identifica el
+    // borrador por el id PERSISTIDO de su mensaje, así que antes de enviar
+    // la orden se confirma la copia remota de la conversación (mismo
+    // mecanismo de siempre, sin esperar su debounce; con límite).
+    if (detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: this.mensajes.some((m) => m.rol === 'asistente' && esBorradorPlaneacion(m.texto)) })) {
+      await this.confirmarPersistenciaConversacion()
     }
 
     // Contexto al día antes de decidir el camino y armar el historial:
