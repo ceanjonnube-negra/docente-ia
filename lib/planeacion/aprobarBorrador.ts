@@ -129,7 +129,7 @@ function listasCurriculares(resumen: ResumenBorrador, curricular: CurricularApro
   return { contenidos: [...i.contenidos, ...i.contenidosLocales, ...deTipo('contenido')], pda: [...i.pda, ...deTipo('pda')] }
 }
 
-function construirProyecto(resumen: ResumenBorrador, planeacionId: string, curricular: CurricularAprobado): DatosProyectoPlaneacion & { planeacion_id: string } {
+export function construirProyecto(resumen: ResumenBorrador, planeacionId: string, curricular: CurricularAprobado): DatosProyectoPlaneacion & { planeacion_id: string } {
   const { contenidos, pda } = listasCurriculares(resumen, curricular)
   return {
     planeacion_id: planeacionId,
@@ -171,7 +171,7 @@ function construirProyecto(resumen: ResumenBorrador, planeacionId: string, curri
 // planeacion_versiones.estructura: los campos estructurados de una versión,
 // con los mismos nombres que la proyección (planeaciones +
 // planeacion_proyectos) que publicar_version_planeacion actualiza.
-function estructuraDeVersion(resumen: ResumenBorrador, campoFormativo: string, proyecto: ReturnType<typeof construirProyecto>) {
+export function estructuraDeVersion(resumen: ResumenBorrador, campoFormativo: string, proyecto: ReturnType<typeof construirProyecto>) {
   const evaluacion = proyecto.evaluacion as { indicadores?: unknown; producto_final?: unknown; evidencias?: unknown }
   return {
     planeacion: { nombre: resumen.nombre, proposito: resumen.proposito, fecha_inicio: resumen.fechaInicio, fecha_fin: resumen.fechaFin, campo_formativo: campoFormativo },
@@ -192,7 +192,7 @@ function estructuraDeVersion(resumen: ResumenBorrador, campoFormativo: string, p
   }
 }
 
-const CAMPOS_FORMATIVOS_VALIDOS = new Set<string>(CAMPOS_FORMATIVOS)
+export const CAMPOS_FORMATIVOS_VALIDOS = new Set<string>(CAMPOS_FORMATIVOS)
 
 export function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorProyecto[] {
   // Los indicadores del borrador son texto libre, sin aspecto general
@@ -236,7 +236,7 @@ export function construirIndicadoresSeguimiento(resumen: ResumenBorrador): Indic
 const DURACION_CONCESION_MS = 2 * 60 * 1000
 const MENSAJE_EN_PROCESO = 'Ya estoy guardando esta planeación. En unos segundos aparecerá en Planeación; si no, vuelve a pedírmelo.'
 const MENSAJE_YA_GUARDADA = 'Esta planeación ya está guardada. La encuentras en Planeación, Evaluación e Historial.'
-const MENSAJE_NO_PERSISTIDO = 'Todavía estoy guardando esta conversación. Vuelve a pedirme que la apruebe en unos segundos.'
+export const MENSAJE_NO_PERSISTIDO = 'Todavía estoy guardando esta conversación. Vuelve a pedirme que la apruebe en unos segundos.'
 const COLUMNAS_PLANEACION_APROBADA = 'id, docente_id, grupo_id, ciclo_escolar_id, periodo_evaluacion_id, nombre, proposito, fecha_inicio, fecha_fin, estado, version, creado_en, actualizado_en'
 
 // Identidad del borrador vigente: el id persistido de su mensaje en ESTA
@@ -299,6 +299,24 @@ function filaHistorial(contenido: string, word: DocumentoGuardado | null): Recor
 // Sin regenerar archivos ni hoja, sin IA y SIN escribir: su registro en
 // Historial ya se consolidó antes de confirmar. La hoja de evaluación es
 // del proyecto (la misma para todas sus versiones).
+// Tarjeta de una hoja de evaluación concreta (la de una versión). Si ya
+// fue reemplazada se entrega solo para consulta: sin proyecto, sin captura.
+// null si la hoja no existe o su PDF aún no está generado.
+export type FilaHojaEntregable = { identificador_visible: string; storage_path: string | null; proyecto_id: string; reemplazada_por: string | null }
+export async function leerHoja(sb: SupabaseClient, hojaId: string): Promise<FilaHojaEntregable | null> {
+  const { data } = await sb.from('hojas_evaluacion').select('identificador_visible, storage_path, proyecto_id, reemplazada_por').eq('id', hojaId).maybeSingle()
+  return (data as FilaHojaEntregable | null) ?? null
+}
+export async function hojaEntregable(sb: SupabaseClient, hojaId: string, fila?: FilaHojaEntregable | null): Promise<HojaAprobacion | null> {
+  const filaHoja = fila === undefined ? await leerHoja(sb, hojaId) : fila
+  if (!filaHoja?.storage_path) return null
+  const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
+  const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
+  return filaHoja.reemplazada_por
+    ? { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: null, reemplazada: true }
+    : { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: filaHoja.proyecto_id }
+}
+
 type VersionAprobada = {
   numero: number
   contenido: string | null
@@ -327,18 +345,7 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
   // hoja registrada solo usa la del proyecto si es la vigente (mismo
   // vínculo explícito); nunca se asocia otra.
   const hojaId = version.hoja_id ?? (version.numero === (planeacion as Planeacion).version ? ev.hoja_id ?? null : null)
-  const { data: filaHojaLeida } = hojaId
-    ? await sb.from('hojas_evaluacion').select('identificador_visible, storage_path, proyecto_id, reemplazada_por').eq('id', hojaId).maybeSingle()
-    : { data: null }
-  const filaHoja = filaHojaLeida as { identificador_visible: string; storage_path: string | null; proyecto_id: string; reemplazada_por: string | null } | null
-  let hojaEntregada: HojaAprobacion | null = null
-  if (filaHoja?.storage_path) {
-    const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
-    const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
-    hojaEntregada = filaHoja.reemplazada_por
-      ? { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: null, reemplazada: true }
-      : { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: filaHoja.proyecto_id }
-  }
+  const hojaEntregada = hojaId ? await hojaEntregable(sb, hojaId) : null
   // Archivos ORIGINALES de esa versión (registro propio y activo). El grupo
   // del encabezado solo se toma de la proyección si es ese mismo archivo.
   const word = version.documento_word_archivo_id ? await enlacesArchivoPropio(docenteId, version.documento_word_archivo_id) : null

@@ -3,6 +3,7 @@ import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { aprobarAjusteSiCorresponde } from '@/lib/planeacion/aprobarAjuste'
 import { ajusteDesdeConsultada, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
 import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorradorAjustado, contextoParaAjuste, continuarAjuste, huellaBorrador, registrarAjuste, ETIQUETA_AJUSTE, type BaseAjuste } from '@/lib/planeacion/modificarPlaneacion'
 import { contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
@@ -27,7 +28,7 @@ import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { instruccionesPresentacion, seccionesDePresentacion, tieneCantidadExplicita } from '@/lib/asistente/instruccionesPresentacion'
 import { duracionSolicitadaEnMensaje, prepararContextoGeneracionPlaneacion } from '@/lib/planeacion/generarBorrador'
-import { aprobarBorradorPlaneacion } from '@/lib/planeacion/aprobarBorrador'
+import { aprobarBorradorPlaneacion, type HojaAprobacion } from '@/lib/planeacion/aprobarBorrador'
 import { completarBorradorCurricular } from '@/lib/planeacion/completarBorradorCurricular'
 import type { ResultadoContextoCurricularPlaneacion } from '@/lib/planeacion/resolverCurricularPlaneacion'
 import { esBorradorPlaneacion, extraerResumenBorrador, extraerTextoCompletoBorrador, PREFIJO_CONFIRMACION_APROBACION } from '@/lib/planeacion/extraerBorrador'
@@ -293,6 +294,20 @@ async function conReintento<T>(fn: () => Promise<T>, etiqueta: string): Promise<
       throw segundoError
     }
   }
+}
+
+// Tarjeta de la hoja de evaluación (mismo protocolo [[DOCUMENTO_ARCHIVO]]
+// para la primera aprobación y para una versión N+1). EVAL-1G:
+// proyectoSeguimientoId viaja en la tarjeta para que "Subir foto ya
+// contestada" (CapturaHoja.tsx) sepa a qué proyecto pertenece. Una hoja
+// reemplazada por una versión posterior es solo de consulta (sin
+// proyecto, sin captura) y lleva un aviso discreto.
+function marcadorHoja(hoja: HojaAprobacion): string {
+  const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${hoja.identificadorVisible}${hoja.reemplazada ? '-reemplazada' : ''}.pdf`, url: hoja.url, urlVer: hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const, ...(hoja.proyectoSeguimientoId ? { proyectoSeguimientoId: hoja.proyectoSeguimientoId } : {}) }
+  return `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`
+}
+function avisoHojaReemplazada(hoja: HojaAprobacion | null | undefined): string {
+  return hoja?.reemplazada ? ` La hoja de evaluación ${hoja.identificadorVisible} de esta versión ya fue reemplazada; captura solo sobre la vigente.` : ''
 }
 
 export async function POST(req: NextRequest) {
@@ -1158,6 +1173,9 @@ export async function POST(req: NextRequest) {
           // Conversación propia validada (RLS): identidad del borrador.
           const vinculoAprobacion = await vinculoConversacionPromise
           const conversacionAprobacion = vinculoAprobacion.estado === 'con_grupo' || vinculoAprobacion.estado === 'sin_grupo' || vinculoAprobacion.estado === 'antigua' ? vinculoAprobacion.id : null
+          // Hito 2 (3b): un borrador de ajuste se publica como versión N+1.
+          const aprobacionAjuste = await aprobarAjusteSiCorresponde(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion, undefined, zonaHoraria)
+          if (aprobacionAjuste) return respuestaTexto(`${aprobacionAjuste.mensaje}${avisoHojaReemplazada(aprobacionAjuste.hoja)}${aprobacionAjuste.hoja ? `\n${marcadorHoja(aprobacionAjuste.hoja)}` : ''}`)
           const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion)
           if (!resultado.ok) {
             console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)
@@ -1199,18 +1217,10 @@ export async function POST(req: NextRequest) {
             }
             if (word?.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:${Buffer.from(contenidoDefinitivo, 'utf-8').toString('base64')}]]`)
           }
-          // EVAL-1G — proyectoSeguimientoId viaja en la tarjeta para
-          // que "Subir foto ya contestada" (CapturaHoja.tsx) sepa a
-          // qué proyecto pertenece esta hoja, sin tener que adivinarlo
-          // ni volver a resolverlo por nombre/fecha.
-          // Hoja reemplazada por una versión posterior: solo consulta (sin
-          // proyecto, sin captura) y un aviso discreto.
+          // Tarjeta de la hoja de evaluación (ver marcadorHoja).
           const hoja = resultado.hoja
-          if (hoja) {
-            const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${hoja.identificadorVisible}${hoja.reemplazada ? '-reemplazada' : ''}.pdf`, url: hoja.url, urlVer: hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const, ...(hoja.proyectoSeguimientoId ? { proyectoSeguimientoId: hoja.proyectoSeguimientoId } : {}) }
-            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
-          }
-          const avisoHoja = hoja?.reemplazada ? ` La hoja de evaluación ${hoja.identificadorVisible} de esta versión ya fue reemplazada; captura solo sobre la vigente.` : ''
+          if (hoja) marcadores.push(marcadorHoja(hoja))
+          const avisoHoja = avisoHojaReemplazada(hoja)
           return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}${avisoHoja}\n${marcadores.join('\n')}`)
         } catch (e) {
           console.error('[NIVEL0] planeacion_generar — excepción aprobando el borrador:', e)
@@ -2062,7 +2072,7 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
               // Al editar desde el documento activo, el previo es el documento EXACTO reenviado.
               const previo = esEdicionDocumento ? documentoDeEdicion(String(mensaje ?? '')) ?? '' : [...historialMensajes].reverse().find((h) => h.role === 'assistant' && h.content.includes('📎 RESUMEN PARA GUARDAR'))?.content ?? ''
               const heredado = new RegExp(`^${ETIQUETA_AJUSTE}:`, 'mi').test(previo) && supabaseUser
-                ? await continuarAjuste(supabaseUser, await conversacionPropia(), previo, completado.textoFinal)
+                ? await continuarAjuste(supabaseUser, await conversacionPropia(), previo, completado.textoFinal, esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? ''))
                 : null
               const textoFinalTurno = heredado ?? completado.textoFinal
               controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(textoFinalTurno, 'utf-8').toString('base64')}]]`))

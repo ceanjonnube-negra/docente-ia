@@ -2,7 +2,7 @@
 //
 // Hito 2, etapa 3a — ajuste conversacional de una planeación GUARDADA.
 // Produce un BORRADOR (nunca toca la planeación aprobada, su proyecto ni su
-// evaluación); su publicación como versión N+1 es la etapa 3b.
+// evaluación); su publicación como versión N+1 está en aprobarAjuste.ts (3b).
 //
 // - Base: la versión VIGENTE completa (planeacion_versiones: texto,
 //   estructura y trazabilidad), nunca el texto que mande el cliente.
@@ -23,7 +23,7 @@
 
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ETIQUETA_INICIO_BLOQUE } from './extraerBorrador'
+import { ETIQUETA_INICIO_BLOQUE, extraerResumenBorrador, type ResumenBorrador } from './extraerBorrador'
 import type { Planeacion } from './tipos'
 
 // ------------------------------------------------------------------
@@ -49,6 +49,27 @@ export async function baseVigente(sb: SupabaseClient, planeacion: Planeacion): P
   const v = data as { numero: number; contenido: string | null; estructura: EstructuraVersion | null; trazabilidad_curricular: unknown } | null
   if (!v?.contenido) return null // sin texto canónico no hay base que ajustar (nunca se inventa)
   return { planeacion, numero: v.numero, contenido: v.contenido, estructura: v.estructura ?? {}, trazabilidad: v.trazabilidad_curricular }
+}
+
+// Base de una versión EXACTA (inmutable) de una planeación del docente y
+// del grupo indicado: la versión de la que partió un ajuste.
+export async function baseDeVersion(sb: SupabaseClient, planeacionId: string, grupoId: string, numero: number): Promise<BaseAjuste | null> {
+  const { data } = await sb.from('planeaciones').select('id, nombre, version, grupo_id, fecha_inicio, fecha_fin').eq('id', planeacionId).eq('grupo_id', grupoId).maybeSingle()
+  return data ? baseVigente(sb, { ...(data as Planeacion), version: numero }) : null
+}
+
+// Estructura (mismos campos que planeacion_versiones.estructura) a partir
+// del resumen de un borrador: referencia de conservación al seguir
+// corrigiendo un borrador de ajuste.
+export function estructuraDesdeResumen(r: ResumenBorrador): EstructuraVersion {
+  return {
+    planeacion: { nombre: r.nombre, proposito: r.proposito, fecha_inicio: r.fechaInicio, fecha_fin: r.fechaFin },
+    proyecto: {
+      nombre: r.nombre, campos_formativos: r.camposFormativos, contenidos: r.contenidos, pda: r.pda, ejes_articuladores: r.ejesArticuladores,
+      metodologia: r.metodologia, duracion_dias: r.duracionDias, actividades: r.secuenciaDidactica as { dia: number; resumen: string }[], recursos: r.recursos,
+      indicadores: r.indicadores, producto_final: r.productoFinal, evidencias: r.evidencias,
+    },
+  }
 }
 
 // ------------------------------------------------------------------
@@ -179,21 +200,28 @@ export type AjusteCalculado = {
   restauradas: string[]
 }
 
-export function construirBorradorAjustado(entrada: { textoModelo: string; base: BaseAjuste; instruccion: string; avisoBase?: string | null }): AjusteCalculado | null {
+// referencia: de dónde se restaura lo no pedido. Por omisión la versión
+// base; al seguir corrigiendo un borrador de ajuste, el último borrador
+// confiable (conserva los cambios ya pedidos). El resumen de cambios se
+// calcula SIEMPRE contra la versión base.
+export type ReferenciaAjuste = { contenido: string; estructura: EstructuraVersion }
+
+export function construirBorradorAjustado(entrada: { textoModelo: string; base: BaseAjuste; instruccion: string; avisoBase?: string | null; referencia?: ReferenciaAjuste }): AjusteCalculado | null {
   const { base } = entrada
+  const ref = entrada.referencia ?? base
   const modelo = separarResumen(entrada.textoModelo)
   if (!modelo.resumen) return null // sin bloque de resumen no es un borrador completo
   const alcance = alcanceDeInstruccion(entrada.instruccion)
-  const cuerpoBase = separarResumen(base.contenido).cuerpo
-  const secBase = seccionesDe(cuerpoBase)
+  const secBase = seccionesDe(separarResumen(base.contenido).cuerpo)
+  const secRef = entrada.referencia ? seccionesDe(separarResumen(ref.contenido).cuerpo.slice(Math.max(0, separarResumen(ref.contenido).cuerpo.indexOf('📋')))) : secBase
   let secModelo = seccionesDe(modelo.cuerpo.slice(Math.max(0, modelo.cuerpo.indexOf('📋'))))
   const restauradas: string[] = []
 
   // 1) Cuerpo: restaurar secciones no pedidas (misma estructura, alcance acotado).
-  if (secBase && secModelo) {
+  if (secRef && secModelo) {
     // La sección curricular la escribe el servidor: si no se pidió cambiarla,
     // se usa la de la base (aunque el modelo la haya omitido).
-    const curricularBase = secBase.find((s) => s.clave === 'curricular')
+    const curricularBase = secRef.find((s) => s.clave === 'curricular')
     if (curricularBase && !mencionaCurricular(entrada.instruccion)) {
       const sinCurricular = secModelo.filter((s) => s.clave !== 'curricular')
       const iProposito = sinCurricular.findIndex((s) => s.clave === 'proposito')
@@ -201,20 +229,20 @@ export function construirBorradorAjustado(entrada: { textoModelo: string; base: 
       if (!secModelo.some((s) => s.clave === 'curricular' && normal(s.texto) === normal(curricularBase.texto))) restauradas.push(curricularBase.titulo)
       secModelo = sinCurricular
     }
-    const mismaEstructura = secBase.map((s) => s.clave).join('|') === secModelo.map((s) => s.clave).join('|')
+    const mismaEstructura = secRef.map((s) => s.clave).join('|') === secModelo.map((s) => s.clave).join('|')
     if (mismaEstructura && alcance !== 'global') {
       secModelo = secModelo.map((s, i) => {
-        if (afecta(alcance, s.clave) || normal(s.texto) === normal(secBase[i].texto)) return s
+        if (afecta(alcance, s.clave) || normal(s.texto) === normal(secRef[i].texto)) return s
         if (!restauradas.includes(s.titulo)) restauradas.push(s.titulo)
-        return secBase[i]
+        return secRef[i]
       })
     }
   }
   // Líneas de evaluación de cada día: si la instrucción no habla de
   // evaluación, son las de la base (aunque el día cambie por otra razón).
-  if (secBase && secModelo && !mencionaEvaluacion(entrada.instruccion)) {
+  if (secRef && secModelo && !mencionaEvaluacion(entrada.instruccion)) {
     secModelo = secModelo.map((s) => {
-      const b = s.clave.startsWith('dia:') ? secBase.find((x) => x.clave === s.clave) : undefined
+      const b = s.clave.startsWith('dia:') ? secRef.find((x) => x.clave === s.clave) : undefined
       if (!b) return s
       const evalBase = b.texto.split('\n').filter((l) => ES_LINEA_EVALUACION.test(l))
       const lineas = s.texto.split('\n')
@@ -236,7 +264,7 @@ export function construirBorradorAjustado(entrada: { textoModelo: string; base: 
   const evaluacionPedida = mencionaEvaluacion(entrada.instruccion)
   {
     for (const c of CAMPOS_RESUMEN) {
-      const valorBase = c.valor(base.estructura)
+      const valorBase = c.valor(ref.estructura)
       if (valorBase === null) continue
       // Con alcance global solo se protegen lo curricular y los indicadores
       // (salvo que se mencionen); con alcance acotado, todo lo no pedido.
@@ -362,19 +390,33 @@ export function heredarAjuste(textoNuevo: string, textoPrevio: string): string |
 }
 
 // Seguir corrigiendo un borrador de ajuste (desde el historial o desde el
-// documento activo): el nuevo borrador hereda la línea y, SOLO si el previo
-// tiene metadata registrada (huella), también su identidad estructurada
-// (planeación, versión base, grupo) con la huella nueva. Sin metadata
-// confiable no se registra nada: el borrador queda bloqueado para aprobarse
-// como nuevo y no será publicable (falla de forma segura).
-export async function continuarAjuste(sb: SupabaseClient, conversacionId: string | null, textoPrevio: string, textoNuevo: string): Promise<string | null> {
-  const heredado = heredarAjuste(textoNuevo, textoPrevio)
-  if (!heredado || !conversacionId) return heredado
+// documento activo). SOLO si el previo tiene metadata registrada (huella):
+// se aplican las mismas garantías de conservación que en el primer ajuste,
+// con el último borrador confiable como referencia (no se pierden los
+// cambios ya pedidos) y el resumen de cambios contra la versión base; el
+// nuevo borrador hereda la identidad (planeación, versión base, grupo) con
+// su huella. Sin metadata confiable no se registra nada: solo se copia la
+// línea (bloquea aprobarlo como nuevo) y no será publicable.
+export async function continuarAjuste(sb: SupabaseClient, conversacionId: string | null, textoPrevio: string, textoNuevo: string, instruccion = ''): Promise<string | null> {
+  const soloLinea = heredarAjuste(textoNuevo, textoPrevio)
+  if (!soloLinea || !conversacionId) return soloLinea
   const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
   const origen = ajustePublicable(textoPrevio, (data as { planeacion_activa?: unknown } | null)?.planeacion_activa ?? null)
-  if (origen) await registrarAjuste(sb, conversacionId, { planeacionId: origen.planeacionId, versionBase: origen.versionBase, grupoId: origen.grupoId, huella: huellaBorrador(heredado) })
-  else console.warn('[PLANEACION_AJUSTE] borrador de ajuste sin metadata registrada: no será publicable')
-  return heredado
+  if (!origen) {
+    console.warn('[PLANEACION_AJUSTE] borrador de ajuste sin metadata registrada: no será publicable')
+    return soloLinea
+  }
+  const base = await baseDeVersion(sb, origen.planeacionId, origen.grupoId, origen.versionBase)
+  const resumenPrevio = extraerResumenBorrador([{ role: 'assistant', content: textoPrevio }])
+  const ajustado = base && resumenPrevio
+    ? construirBorradorAjustado({ textoModelo: textoNuevo, base, instruccion, referencia: { contenido: textoPrevio, estructura: estructuraDesdeResumen(resumenPrevio) } })
+    : null
+  if (!ajustado) {
+    console.warn('[PLANEACION_AJUSTE] no se pudo verificar la conservación del borrador: no será publicable')
+    return soloLinea
+  }
+  await registrarAjuste(sb, conversacionId, { planeacionId: origen.planeacionId, versionBase: origen.versionBase, grupoId: origen.grupoId, huella: huellaBorrador(ajustado.textoFinal) })
+  return ajustado.textoFinal
 }
 
 // Identidad CONFIABLE para publicar (etapa 3b): solo la metadata del
@@ -385,4 +427,4 @@ export function ajustePublicable(contenido: string, referencia: unknown): Ajuste
   return ajustesDe(referencia).find((a) => a.huella === huella) ?? null
 }
 
-export const MENSAJE_AJUSTE_SIN_APROBACION = 'Este borrador es un ajuste de una planeación ya guardada. Guardarlo como su nueva versión estará disponible muy pronto; no lo guardaré como una planeación distinta.'
+export const MENSAJE_AJUSTE_SIN_APROBACION = 'Este borrador es un ajuste de una planeación ya guardada, así que no lo guardaré como una planeación distinta. Pídeme que lo prepare de nuevo sobre la planeación y luego apruébalo.'

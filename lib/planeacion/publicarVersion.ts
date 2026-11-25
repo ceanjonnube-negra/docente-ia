@@ -2,8 +2,8 @@
 //
 // Hito 2, etapa 3 — publicación de una versión N+1 de una planeación con
 // protección de su evaluación (publicar_version_planeacion, migración
-// 20261127000000). Todavía NO se usa desde el Chat: la modificación
-// conversacional se habilita en un paso posterior.
+// 20261127000000). La usa la aprobación de ajustes del Chat
+// (aprobarAjuste.ts, etapa 3b).
 //
 // - La decisión sobre la hoja (conservar, reemplazar o proteger) ocurre
 //   en la MISMA transacción de la publicación.

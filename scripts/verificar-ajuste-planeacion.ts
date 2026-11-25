@@ -212,10 +212,12 @@ async function main() {
   // 13. Identidad persistente al seguir editando (documento activo, varias rondas, consultas intermedias).
   {
     const conv: Record<string, unknown> = { planeacion_activa: { esquema: 'referencia-planeacion-v1', planeacionId: 'pl-1', numero: 3, opciones: [] } }
-    const sb = { from: () => {
+    // Versión base exacta (planeación del grupo y su versión 3), para verificar la conservación.
+    const filas: Record<string, unknown> = { planeaciones: { id: 'pl-1', nombre: 'Cuentos propios', version: 3, grupo_id: 'g-1' }, planeacion_versiones: { numero: 3, contenido: BASE_TEXTO, estructura: ESTRUCTURA, trazabilidad_curricular: null } }
+    const sb = { from: (tabla: string) => {
       let cambios: Record<string, unknown> | null = null
       const q = { select: () => q, eq: () => q, update: (d: Record<string, unknown>) => { cambios = d; return q },
-        maybeSingle: async () => ({ data: JSON.parse(JSON.stringify(conv)), error: null }),
+        maybeSingle: async () => ({ data: JSON.parse(JSON.stringify(filas[tabla] ?? conv)), error: null }),
         then: (ok: (r: unknown) => unknown) => { if (cambios) Object.assign(conv, cambios); return Promise.resolve({ error: null }).then(ok) } }
       return q
     } } as unknown as SupabaseClient
