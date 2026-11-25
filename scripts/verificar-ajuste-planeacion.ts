@@ -77,7 +77,7 @@ async function main() {
     verificar(r.textoFinal.includes('Contenidos: Comprensión y producción de cuentos.') && r.textoFinal.includes('PDA: Escribe cuentos con secuencia causal.') && r.textoFinal.includes('Indicadores de evaluación: Identifica partes del cuento; Escribe con secuencia') && r.textoFinal.includes('Recursos: Hojas; Colores') && r.textoFinal.includes('Propósito: Que el grupo escriba cuentos propios.'),
       '2b. Contenidos, PDA, indicadores, recursos y propósito del resumen se conservan de la versión confirmada')
     verificar(sec.findIndex((s) => s.clave === 'curricular') === 2 && r.restauradas.includes('Contenidos y PDA'), '2c. La sección curricular (omitida por el modelo) vuelve a ser la de la base: la selección original no se altera')
-    verificar(JSON.stringify(r.cambios) === JSON.stringify(['Día 2']) && r.verificado && r.textoFinal.includes('Cambios respecto a la versión 3: Día 2. Verifiqué que el resto es idéntico a la versión 3.') && r.textoFinal.trim().endsWith('¿Quieres corregir algo más o guardarlo como versión 4?'),
+    verificar(JSON.stringify(r.cambios) === JSON.stringify(['Día 2']) && r.verificado && r.textoFinal.includes('Cambios respecto a la versión 3: Día 2. Verifiqué que el resto es idéntico a la versión 3.') && r.textoFinal.trim().endsWith('¿Quieres corregir algo más? Si está bien, dime «apruébala» y la guardo como versión 4.'),
       '2d. Resumen de cambios real (solo Día 2) y la verificación del resto es cierta; se propone la versión 4')
     verificar(new RegExp(`^${ETIQUETA_AJUSTE}: «Cuentos propios», versión 3$`, 'm').test(r.textoFinal) && r.textoFinal.indexOf(ETIQUETA_AJUSTE) > r.textoFinal.indexOf('📎 RESUMEN PARA GUARDAR'), '2e. El resumen lleva la línea de ajuste (respaldo de la identidad)')
   }

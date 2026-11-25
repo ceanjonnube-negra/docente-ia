@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { aprobarAjusteSiCorresponde } from '@/lib/planeacion/aprobarAjuste'
-import { ajusteDesdeConsultada, anotarFormatoPendiente, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
+import { ajusteDesdeConsultada, anotarFormatoPendiente, decidirEdicionGuardada, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
 import { ajustePublicable, anotarFormatoDelAjuste, baseDeVersion, estructuraDesdeResumen, sinPeticionDeFormato, soloPideFormato, type AjusteRegistrado, type FormatoAjuste, type ReferenciaAjuste } from '@/lib/planeacion/modificarPlaneacion'
 import { MENSAJE_AJUSTE_SIN_IDENTIDAD } from '@/lib/planeacion/aprobarAjuste'
 import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorradorAjustado, contextoParaAjuste, continuarAjuste, huellaBorrador, registrarAjuste, ETIQUETA_AJUSTE, type BaseAjuste } from '@/lib/planeacion/modificarPlaneacion'
@@ -616,7 +616,7 @@ export async function POST(req: NextRequest) {
       if (!pideCambio) {
         // Solo pidió el archivo de un ajuste aún no aprobado: se anota el formato.
         if (formatoOriginal) await anotarFormatoDelAjuste(supabaseUser, conversacion, origen.huella, formatoOriginal)
-        return respuestaTexto(`Este ajuste todavía no está guardado. Revísalo y apruébalo para guardarlo como versión ${origen.versionBase + 1}${formatoOriginal ? `; tomé nota de que lo quieres en ${formatoOriginal === 'word' ? 'Word' : 'PDF'}` : ''}.`)
+        return respuestaTexto(`Este ajuste todavía no está guardado. Revísalo y, si está bien, dime «apruébala» para guardarlo como versión ${origen.versionBase + 1}${formatoOriginal ? `; tomé nota de que lo quieres en ${formatoOriginal === 'word' ? 'Word' : 'PDF'}` : ''}.`)
       }
       continuacionAjuste = { previo: previoAjuste, origen, instruccion: sinPeticionDeFormato(instruccionCompuesta) || instruccionCompuesta }
       formatoDelAjuste = formatoOriginal
@@ -627,10 +627,20 @@ export async function POST(req: NextRequest) {
     const consultada = await versionConsultada(supabaseUser, await conversacionPropia())
     if (consultada && contieneContenidoConsultado(textoDocumento, consultada)) {
       const instruccion = esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')
-      if ((esEdicionDocumento || formatoOriginal) && pideModificar(sinPeticionDeFormato(instruccion))) {
-        ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) }
+      // Edición de una planeación guardada confirmada por el servidor: manda
+      // el contexto, no la lista de verbos (decidirEdicionGuardada). Nunca cae
+      // en la edición convencional del texto del cliente.
+      const decision = esEdicionDocumento
+        ? decidirEdicionGuardada(sinPeticionDeFormato(instruccion), { hoy: fechaISOHoy(zonaHoraria), soloArchivo: soloPideFormato(instruccion) })
+        : formatoOriginal && pideModificar(sinPeticionDeFormato(instruccion)) ? 'ajuste' : 'archivo'
+      console.log(`[PLANEACION_CONSULTA] edición sobre la versión ${consultada.numero}: ${decision}`)
+      if (decision === 'ajuste') {
+        ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) || instruccion }
         formatoDelAjuste = formatoOriginal
-      } else if (esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion(instruccion, fechaISOHoy(zonaHoraria))) consultaDesdeEdicion = instruccion
+      } else if (decision === 'consulta' && !formatoOriginal) consultaDesdeEdicion = instruccion
+      else if (decision === 'negativa') return respuestaTexto('De acuerdo, la planeación queda como está.')
+      else if (decision === 'nuevo') return respuestaTexto('Tienes abierta una planeación guardada. Si quieres un documento nuevo, pídemelo como algo nuevo (por ejemplo: «Haz una planeación nueva de…»); si es un cambio para esta planeación, dime qué cambiar.')
+      else if (decision === 'otro_tema' || (decision === 'archivo' && !formatoOriginal)) return respuestaTexto('No me queda claro si es un cambio para la planeación que tienes abierta. Si quieres modificarla, dime qué cambiar (por ejemplo: «Haz más dinámica la sesión 2»).')
       if (formatoOriginal && !ajusteDesdeEdicion) {
         console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} original de la versión ${consultada.numero} — sin regenerar`)
         return respuestaTexto(`${await respuestaArchivoOriginal(consultada, formatoOriginal, firmarOriginalPropio(userId))}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
@@ -939,6 +949,11 @@ export async function POST(req: NextRequest) {
   // Contexto curricular cargado en este turno (solo servidor): con él se
   // validan, al terminar el streaming, las referencias que citó el modelo.
   let curricularDelTurno: ResultadoContextoCurricularPlaneacion | null = null
+  // Ajuste de una planeación guardada sin sesión resuelta: se dice; nunca
+  // cae en la edición convencional del texto del cliente.
+  if (!sesion && (ajusteDesdeEdicion || continuacionAjuste || formatoDelAjuste)) {
+    return respuestaTexto('No pude preparar el ajuste de la planeación en este momento. Intenta de nuevo en unos segundos.')
+  }
   if (supabaseUser && userId && sesion) {
     try {
       // Últimos turnos reales — solo para que el clasificador pueda
@@ -992,8 +1007,8 @@ export async function POST(req: NextRequest) {
       // Solicitud compuesta o continuación de un ajuste que no se pudo
       // resolver (p. ej. sin grupo activo): se dice, nunca se cae en
       // convertir el texto del cliente ni en generar un archivo.
-      if ((formatoDelAjuste || continuacionAjuste) && !ajusteDelTurno) {
-        return respuestaTexto(mensajeGrupoNoDisponible(sesion) ?? (continuacionAjuste ? 'No pude preparar el ajuste de la planeación en este momento. Intenta de nuevo en unos segundos.' : 'No encontré esa planeación guardada en tu grupo activo. Dime su nombre como aparece en Planeación.'))
+      if ((formatoDelAjuste || continuacionAjuste || ajusteDesdeEdicion) && !ajusteDelTurno) {
+        return respuestaTexto(mensajeGrupoNoDisponible(sesion) ?? (continuacionAjuste || ajusteDesdeEdicion ? 'No pude preparar el ajuste de la planeación en este momento. Intenta de nuevo en unos segundos.' : 'No encontré esa planeación guardada en tu grupo activo. Dime su nombre como aparece en Planeación.'))
       }
 
       // Consulta inequívoca de planeaciones guardadas (Hito 2): sin

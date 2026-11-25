@@ -55,8 +55,12 @@ export type ConsultaPlaneacion =
   | { tipo: 'version'; version: VersionSolicitada }
 
 const VERBO_CONSULTA = /\b(muestrame|muestramela|ensename|ensenamela|abreme|abre|abrir|abrela|consulta|consultar|recupera|recuperar|recuperame|busca|buscar|buscame|quiero ver|ver|mostrar|mostrarme|revisar|revisa|lee|leeme|cual es|cuales son|que planeaciones|cuantas planeaciones)\b/
-const GENERAR = /\b(elabora|elaborar|genera|generar|crea|crear|haz|hacer|hazme|prepara|preparar|preparame|disena|disenar|redacta|redactar|planea|planear|arma|armar|nueva planeacion|otra planeacion)\b/
-const MODIFICAR = /\b(hazla|hazle|ponle|vuelvela|cambia|cambiale|cambiar|modifica|modificar|ajusta|ajustala|ajustar|agrega|agregale|agregar|anade|quita|quitale|quitar|corrige|corregir|reemplaza|sustituye|actualiza|actualizar|edita|editar|mejora|mejorar|alarga|acorta|reduce|amplia)\b/
+// "haz"/"hacer" solo crean algo nuevo con artículo ("haz una planeación"); "haz más dinámica…" es un cambio.
+const GENERAR = /\b(elabora|elaborar|genera|generar|crea|crear|haz (un|una|unos|unas)|hacer (un|una)|hazme|prepara|preparar|preparame|disena|disenar|redacta|redactar|planea|planear|arma|armar|nueva planeacion|otra planeacion)\b/
+// Apoyo para entender un cambio sin documento activo; con una planeación
+// guardada confirmada como documento activo manda el contexto
+// (decidirEdicionGuardada), no esta lista.
+const MODIFICAR = /\b(haz|hazla|hazle|ponle|vuelvela|incorpora|incorporale|incluye|incluyele|integra|integrale|elimina|eliminale|simplifica|simplificala|enriquece|enriquecela|adapta|adaptala|reorganiza|reorganizala|extiende|extiendela|cambia|cambiale|cambiar|modifica|modificar|ajusta|ajustala|ajustar|agrega|agregale|agregar|anade|quita|quitale|quitar|corrige|corregir|reemplaza|sustituye|actualiza|actualizar|edita|editar|mejora|mejorar|alarga|acorta|reduce|amplia)\b/
 const APROBAR = /\b(apruebala|aprueba|aprobar|guardala|guarda|guardar)\b/
 const SUSTANTIVO = /\bplaneaci(on|ones)\b/
 const SENALA_DOCUMENTO = /\b(cambiale|cambiala|modificala|modificale|ajustala|ajustale|corrigela|corrigele|mejorala|editala|agregale|quitale|anadele|actualizala|reducela|ampliala|alargala|acortala)\b/
@@ -355,6 +359,24 @@ export function esRespuestaDeCambio(mensaje: string, hoy: string): boolean {
   if (!n || n.split(/\s+/).length > 30 || /\?/.test(mensaje) && !pideModificar(mensaje)) return false
   if (NEGATIVA.test(n) || GENERAR.test(n) || NUEVO_TEMA.test(n) || detectarConsultaPlaneacion(mensaje, hoy)) return false
   return pideModificar(mensaje) || RESPUESTA_CAMBIO.test(n)
+}
+
+// Edición (documento activo) cuyo texto es una planeación GUARDADA que el
+// servidor confirmó (versión consultada en esta conversación). El contexto
+// confirmado manda: es un AJUSTE salvo que sea una consulta, solo pida el
+// archivo, pida crear un documento nuevo, cambie de tema o lo rechace —en
+// esos casos nunca cae en la edición convencional—. Los verbos son apoyo.
+export type DecisionEdicionGuardada = 'ajuste' | 'consulta' | 'archivo' | 'nuevo' | 'negativa' | 'otro_tema'
+export function decidirEdicionGuardada(instruccion: string, opciones: { hoy: string; soloArchivo: boolean }): DecisionEdicionGuardada {
+  const n = normalizar(instruccion)
+  if (opciones.soloArchivo) return 'archivo'
+  if (!n) return 'otro_tema'
+  if (detectarConsultaPlaneacion(instruccion, opciones.hoy)) return 'consulta'
+  if (NEGATIVA.test(n)) return 'negativa'
+  if (GENERAR.test(n) && !PARTES_PLANEACION.test(n) && !SENALA_DOCUMENTO.test(n)) return 'nuevo'
+  if (pideModificar(instruccion)) return 'ajuste'
+  if (NUEVO_TEMA.test(n) || (/\?/.test(instruccion) && !PARTES_PLANEACION.test(n))) return 'otro_tema'
+  return 'ajuste'
 }
 
 export async function resolverAjustePendiente(entrada: { sb: SupabaseClient; grupoId: string; conversacionId: string | null; mensaje: string; historial: { role: string; content: string }[]; hoy?: string }): Promise<ResolucionAjuste | null> {

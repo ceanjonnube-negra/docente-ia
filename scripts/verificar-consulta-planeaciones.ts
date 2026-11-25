@@ -248,7 +248,7 @@ async function main() {
     verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*await clasificarNivel0/.test(ruta),
       '8a. La consulta inequívoca se resuelve antes del clasificador (sin llamada de IA)')
     verificar(/ultimaRespuestaEsPregunta\(historialMensajes\)/.test(ruta) && /referencia\?\.opciones\.length/.test(ruta), '8b. "la 2" solo tras la pregunta de elegir y con opciones guardadas')
-    const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) }')
+    const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) || instruccion }')
     const iConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento && !formatoDelAjuste) {')
     verificar(iGuard > 0 && iGuard < iConversion && /respuestaArchivoOriginal\(consultada, formatoOriginal, firmarOriginalPropio/.test(ruta), '8c. Modificar (como ajuste sobre su base canónica) o convertir la planeación consultada se resuelve antes de editar o regenerar')
     const herramienta = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
@@ -329,6 +329,12 @@ async function main() {
       verificar(ajusteDe(r) === 'pl-cuentos' && r?.tipo === 'ajuste' && !r.instruccion.includes('Word') && elegida?.tipo === 'ajuste' && elegida.formato === 'pdf' && !elegida.instruccion.includes('PDF'),
         '9n. Cambio + archivo: se resuelve el ajuste (no el archivo original); tras aclarar, el formato pendiente se conserva')
     }
+    {
+      // Regresión Preview 28a123b: la misma frase sin documento activo, tras consultar.
+      const r = await modificar(tablas, historial, 'Haz más dinámica la sesión 2 e incorpora una actividad en equipos.')
+      verificar(ajusteDe(r) === 'pl-cuentos' && await modificar(datos(), [], 'Haz una planeación de las leyendas') === null,
+        '9o. "Haz más dinámica la sesión 2 e incorpora…" tras consultar → ajuste; "Haz una planeación…" sigue siendo crear')
+    }
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     verificar(ruta.indexOf('resolverModificacionGuardada({') > 0 && ruta.indexOf('resolverModificacionGuardada({') < ruta.indexOf('await clasificarNivel0(mensaje, sesion') && /ajusteDelTurno\s*\n?\s*\? clasificacionAjustePlaneacion\(\)/.test(ruta),
       '9j. Se resuelve antes del clasificador: el ajuste usa una sola llamada (la generación), sin clasificador')
@@ -383,7 +389,7 @@ ${MARCADOR_DOCUMENTO_RECUPERADO}` // lo que añade la ruta a toda consulta
     verificar(!!porClasificador?.includes('Trabajaste 4 planeaciones en noviembre') && rangoDeFechasEnTexto('noviembre de 2026', HOY)?.desde === '2026-11-01' && rangoDeFechasEnTexto('noviembre 2025', HOY)?.desde === '2025-11-01',
       '11d. El periodo dicho sin preposición ("noviembre", como lo entrega el clasificador) y con año explícito se interpreta igual')
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    verificar(/if \(esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion\(instruccion/.test(ruta) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),
+    verificar(ruta.includes("else if (decision === 'consulta' && !formatoOriginal) consultaDesdeEdicion = instruccion") && /if \(detectarConsultaPlaneacion\(instruccion, opciones\.hoy\)\) return 'consulta'/.test(readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'consultaPlaneaciones.ts'), 'utf-8')) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),
       '11e. Servidor: una consulta enviada como edición de la planeación consultada (cliente anterior) se atiende como consulta, sin IA')
   }
 

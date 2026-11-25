@@ -305,7 +305,7 @@ export function construirBorradorAjustado(entrada: { textoModelo: string; base: 
   const notaFormato = entrada.formato ? ` Tomé nota de que lo quieres en ${entrada.formato === 'word' ? 'Word' : 'PDF'}: primero revisa el ajuste y apruébalo.` : ''
   const cierre = cambios.length === 0
     ? `${aviso}No encontré diferencias con la versión ${base.numero}: el ajuste no cambió nada. ¿Quieres intentarlo con otra indicación?`
-    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${verificado ? ` Verifiqué que el resto es idéntico a la versión ${base.numero}.` : ''}${notaFormato} ¿Quieres corregir algo más o guardarlo como versión ${siguiente}?`
+    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${verificado ? ` Verifiqué que el resto es idéntico a la versión ${base.numero}.` : ''}${notaFormato} ¿Quieres corregir algo más? Si está bien, dime «apruébala» y la guardo como versión ${siguiente}.`
   return { textoFinal: `${cuerpoFinal}\n\n${resumen}\n\n${cierre}`, cambios, verificado, restauradas }
 }
 
