@@ -1,7 +1,8 @@
 // lib/planeacion/consultaPlaneaciones.ts
 //
-// Hito 2, etapa 2 — consulta de planeaciones guardadas desde el Chat IA.
-// Solo LECTURA de la planeación: nunca la modifica ni regenera archivos.
+// Hito 2 — consulta de planeaciones guardadas desde el Chat IA (etapa 2) y
+// resolución del referente de un ajuste (etapa 3). Aquí nunca se modifica
+// la planeación ni se regeneran archivos.
 //
 // - Fuente canónica: planeacion_versiones (texto, estructura y archivos
 //   originales de cada versión). La vigente por omisión; una anterior solo
@@ -55,7 +56,7 @@ export type ConsultaPlaneacion =
 
 const VERBO_CONSULTA = /\b(muestrame|muestramela|ensename|ensenamela|abreme|abre|abrir|abrela|consulta|consultar|recupera|recuperar|recuperame|busca|buscar|buscame|quiero ver|ver|mostrar|mostrarme|revisar|revisa|lee|leeme|cual es|cuales son|que planeaciones|cuantas planeaciones)\b/
 const GENERAR = /\b(elabora|elaborar|genera|generar|crea|crear|haz|hacer|hazme|prepara|preparar|preparame|disena|disenar|redacta|redactar|planea|planear|arma|armar|nueva planeacion|otra planeacion)\b/
-const MODIFICAR = /\b(cambia|cambiale|cambiar|modifica|modificar|ajusta|ajustala|ajustar|agrega|agregale|agregar|anade|quita|quitale|quitar|corrige|corregir|reemplaza|sustituye|actualiza|actualizar|edita|editar|mejora|mejorar|alarga|acorta|reduce|amplia)\b/
+const MODIFICAR = /\b(hazla|hazle|ponle|vuelvela|cambia|cambiale|cambiar|modifica|modificar|ajusta|ajustala|ajustar|agrega|agregale|agregar|anade|quita|quitale|quitar|corrige|corregir|reemplaza|sustituye|actualiza|actualizar|edita|editar|mejora|mejorar|alarga|acorta|reduce|amplia)\b/
 const APROBAR = /\b(apruebala|aprueba|aprobar|guardala|guarda|guardar)\b/
 const SUSTANTIVO = /\bplaneaci(on|ones)\b/
 const SENALA_DOCUMENTO = /\b(cambiale|cambiala|modificala|modificale|ajustala|ajustale|corrigela|corrigele|mejorala|editala|agregale|quitale|anadele|actualizala|reducela|ampliala|alargala|acortala)\b/
@@ -194,11 +195,12 @@ export function trabajadasEnRango<T extends { fecha_inicio: string | null; fecha
 // Referencia contextual (conversaciones_chat.planeacion_activa)
 // ------------------------------------------------------------------
 // intencion 'modificar': las opciones pendientes vienen de una petición de
-// modificar (al elegir, se responde que aún no está disponible).
+// modificar (al elegir, se aplica la instrucción pendiente o se pregunta
+// qué cambiar). formatoPendiente: archivo pedido junto con el cambio.
 // instruccionPendiente: el cambio pedido mientras se aclara a qué planeación
 // (o desde qué versión) se aplica. ajustes: identidad de los borradores de
 // ajuste (modificarPlaneacion.ts), que se conserva al reescribir la referencia.
-export type ReferenciaPlaneacion = { esquema: 'referencia-planeacion-v1'; planeacionId: string | null; numero: number | null; opciones: string[]; intencion?: 'modificar'; instruccionPendiente?: string; ajustes?: unknown[] }
+export type ReferenciaPlaneacion = { esquema: 'referencia-planeacion-v1'; planeacionId: string | null; numero: number | null; opciones: string[]; intencion?: 'modificar'; instruccionPendiente?: string; formatoPendiente?: 'word' | 'pdf'; ajustes?: unknown[] }
 
 export function esReferenciaPlaneacion(v: unknown): v is ReferenciaPlaneacion {
   const r = v as Partial<ReferenciaPlaneacion> | null
@@ -305,32 +307,16 @@ export function preguntaCambio(nombre: string): string {
   return `${PREGUNTA_CAMBIO} «${nombre}»?`
 }
 
-export function mensajeModificacionNoDisponible(nombre: string): string {
-  return `Todavía no puedo modificar «${nombre}» desde el Chat. Puedo mostrártela o darte sus archivos originales.`
-}
-
 // ------------------------------------------------------------------
-// Modificar una planeación GUARDADA (etapa 3, aún no habilitada)
+// Modificar una planeación GUARDADA (Hito 2, etapa 3): referente y ajuste
 // ------------------------------------------------------------------
-// Resuelve en el servidor a qué se refiere "cambia…/modifica…" cuando el
-// cliente no trae documento activo, para que nunca caiga en crear una
-// planeación nueva. Referente, en este orden:
-//   1. Nombre citado ("…la planeación de las leyendas"): si es el borrador
-//      vigente de la conversación, edición normal (null); si coincide con
-//      planeaciones guardadas del docente y grupo activo: una → bloqueo;
-//      varias → pregunta breve.
-//   2. Sin nombre: el ÚLTIMO documento de la conversación. Borrador →
-//      edición normal (null). La planeación guardada mostrada aquí (su
-//      texto canónico, según la referencia persistida) → bloqueo.
-//   3. "…la planeación" sin documentos en la conversación: la planeación
-//      en contexto (referencia) → bloqueo; si no hay, se pide su nombre.
-// null = no se refiere a una planeación guardada: sigue el flujo normal.
 // Resultado de resolver una modificación: un ajuste listo para generarse
 // (planeación del docente y grupo activo; se parte de su versión vigente) o
 // un texto (aclaración breve). null = no es sobre una planeación guardada.
 export type ResolucionAjuste =
   | { tipo: 'texto'; texto: string }
-  | { tipo: 'ajuste'; planeacion: Planeacion; instruccion: string; numeroConsultado: number | null }
+  // formato: archivo pedido junto con el cambio y guardado con la aclaración.
+  | { tipo: 'ajuste'; planeacion: Planeacion; instruccion: string; numeroConsultado: number | null; formato?: 'word' | 'pdf' | null }
 
 const AFIRMACION = /^(si|sí|si por favor|claro|de acuerdo|ok|okay|adelante|hazlo|aplicalo|aplicala|esa|esa misma|la vigente)\.?$/
 
@@ -378,7 +364,8 @@ export async function resolverAjustePendiente(entrada: { sb: SupabaseClient; gru
     if (!esRespuestaDeCambio(mensaje, entrada.hoy ?? new Date().toISOString().slice(0, 10))) return null
     const ref = await leerReferenciaPlaneacion(sb, conversacionId)
     const p = ref?.intencion === 'modificar' && ref.planeacionId ? (await planeacionesDelGrupo(sb, grupoId)).find((x) => x.id === ref.planeacionId) ?? null : null
-    return p ? ajusteSobre(sb, conversacionId, p, mensaje, mensaje) : null
+    const r = p ? await ajusteSobre(sb, conversacionId, p, mensaje, mensaje) : null
+    return r?.tipo === 'ajuste' ? { ...r, formato: ref?.formatoPendiente ?? null } : r
   }
   const indice = seleccionEnTexto(mensaje)
   const afirma = AFIRMACION.test(normalizar(mensaje))
@@ -395,7 +382,7 @@ export async function resolverAjustePendiente(entrada: { sb: SupabaseClient; gru
     elegida = todas.find((p) => p.id === ref.planeacionId) ?? null
   }
   if (!elegida) return null
-  return { tipo: 'ajuste', planeacion: elegida, instruccion: ref.instruccionPendiente, numeroConsultado: null }
+  return { tipo: 'ajuste', planeacion: elegida, instruccion: ref.instruccionPendiente, numeroConsultado: null, formato: ref.formatoPendiente ?? null }
 }
 
 // Resuelve en el servidor a qué planeación GUARDADA se refiere
@@ -455,6 +442,15 @@ export async function resolverModificacionGuardada(entrada: {
   return (await planeacionesDelGrupo(sb, grupoId)).length > 0 ? { tipo: 'texto', texto: '¿Qué planeación guardada quieres modificar? Dime su nombre.' } : null
 }
 
+// Una aclaración pendiente de una solicitud compuesta conserva el formato
+// pedido ("…y dámela en Word") para aplicarlo al resolverla.
+export async function anotarFormatoPendiente(sb: SupabaseClient, conversacionId: string | null, formato: 'word' | 'pdf'): Promise<void> {
+  const ref = await leerReferenciaPlaneacion(sb, conversacionId)
+  if (ref?.intencion !== 'modificar') return
+  const { esquema: _esquema, ajustes: _ajustes, ...resto } = ref
+  await guardarReferenciaPlaneacion(sb, conversacionId, { ...resto, formatoPendiente: formato })
+}
+
 // Ajuste pedido editando el texto de una planeación consultada (documento
 // activo del cliente): el referente es la planeación de esa versión, del
 // docente y grupo activo; el texto del cliente NO se usa como base.
@@ -462,8 +458,6 @@ export async function ajusteDesdeConsultada(sb: SupabaseClient, grupoId: string,
   const p = (await planeacionesDelGrupo(sb, grupoId)).find((x) => x.id === planeacionId)
   return p ? ajusteSobre(sb, conversacionId, p, instruccion, instruccion) : null
 }
-
-export const MENSAJE_MODIFICAR_NO_DISPONIBLE = 'Por ahora puedo mostrarte tus planeaciones guardadas, pero todavía no modificarlas desde el Chat. Puedo enseñarte otra versión o sus archivos originales.'
 
 // ------------------------------------------------------------------
 // Presentación

@@ -45,7 +45,7 @@ const posTipo = ruta.indexOf('const tipoHerramientaSolicitado = tipoArchivoSolic
 const posAuth = ruta.indexOf('const userId = autenticacion?.ok')
 const posNivel0 = ruta.indexOf('await clasificarNivel0(')
 const llamadasModelo = [...ruta.matchAll(/client\.messages\.create\(/g)].map((m) => m.index ?? 0)
-const posConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento) {')
+const posConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento && !formatoDelAjuste) {')
 verificar(posAviso > posTipo && posAviso > posAuth && posTipo > 0, '2a. El aviso se decide con la sesión ya resuelta y el archivo ya detectado')
 verificar(posAviso < posNivel0 && llamadasModelo.length > 0 && llamadasModelo.every((p) => p > posAviso) && posAviso < posConversion, '2b. El aviso va antes de Nivel 0, de la conversión y de TODA llamada al modelo')
 verificar(/if \(archivoSinSesion\(tipoHerramientaSolicitado, userId\)\) \{[\s\S]{0,250}return respuestaTexto\(MENSAJE_ARCHIVO_SIN_SESION\)\s*\n\s*\}/.test(ruta), '2c. Sin sesión responde el aviso y termina (sin texto alternativo)')

@@ -206,7 +206,7 @@ export type AjusteCalculado = {
 // calcula SIEMPRE contra la versión base.
 export type ReferenciaAjuste = { contenido: string; estructura: EstructuraVersion }
 
-export function construirBorradorAjustado(entrada: { textoModelo: string; base: BaseAjuste; instruccion: string; avisoBase?: string | null; referencia?: ReferenciaAjuste }): AjusteCalculado | null {
+export function construirBorradorAjustado(entrada: { textoModelo: string; base: BaseAjuste; instruccion: string; avisoBase?: string | null; referencia?: ReferenciaAjuste; formato?: FormatoAjuste | null }): AjusteCalculado | null {
   const { base } = entrada
   const ref = entrada.referencia ?? base
   const modelo = separarResumen(entrada.textoModelo)
@@ -302,16 +302,23 @@ export function construirBorradorAjustado(entrada: { textoModelo: string; base: 
 
   const siguiente = base.numero + 1
   const aviso = entrada.avisoBase ? `${entrada.avisoBase}\n` : ''
+  const notaFormato = entrada.formato ? ` Tomé nota de que lo quieres en ${entrada.formato === 'word' ? 'Word' : 'PDF'}: primero revisa el ajuste y apruébalo.` : ''
   const cierre = cambios.length === 0
     ? `${aviso}No encontré diferencias con la versión ${base.numero}: el ajuste no cambió nada. ¿Quieres intentarlo con otra indicación?`
-    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${verificado ? ` Verifiqué que el resto es idéntico a la versión ${base.numero}.` : ''} ¿Quieres corregir algo más o guardarlo como versión ${siguiente}?`
+    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${verificado ? ` Verifiqué que el resto es idéntico a la versión ${base.numero}.` : ''}${notaFormato} ¿Quieres corregir algo más o guardarlo como versión ${siguiente}?`
   return { textoFinal: `${cuerpoFinal}\n\n${resumen}\n\n${cierre}`, cambios, verificado, restauradas }
 }
 
 // ------------------------------------------------------------------
 // Contexto de la única llamada de IA
 // ------------------------------------------------------------------
-export function contextoParaAjuste(base: BaseAjuste, instruccion: string): string {
+// enCurso: seguir corrigiendo un borrador de ajuste; el texto de partida es
+// ese borrador (último confiable), no la versión guardada.
+export function contextoParaAjuste(base: BaseAjuste, instruccion: string, enCurso?: ReferenciaAjuste): string {
+  if (enCurso) {
+    const texto = contextoParaAjuste({ ...base, contenido: enCurso.contenido, estructura: enCurso.estructura }, instruccion)
+    return texto.replace(`PLANEACIÓN VIGENTE (versión ${base.numero}):`, `BORRADOR DE AJUSTE EN CURSO (sobre la versión ${base.numero}; conserva sus cambios):`)
+  }
   const e = base.estructura
   const resumenBase = [
     `${ETIQUETA_INICIO_BLOQUE}`,
@@ -338,7 +345,11 @@ ${resumenBase}`
 // ------------------------------------------------------------------
 // Identidad del ajuste (metadata del servidor)
 // ------------------------------------------------------------------
-export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string }
+// formatoSolicitado: el archivo que el docente pidió junto con el cambio
+// ("…y dámela en Word"); se conserva para entregarlo sobre la versión
+// aprobada sin que tenga que repetirlo.
+export type FormatoAjuste = 'word' | 'pdf'
+export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string; formatoSolicitado?: FormatoAjuste | null }
 export const MAXIMO_AJUSTES_REGISTRADOS = 20
 
 // Huella del DOCUMENTO del borrador: hasta su línea de ajuste (el mensaje
@@ -415,8 +426,33 @@ export async function continuarAjuste(sb: SupabaseClient, conversacionId: string
     console.warn('[PLANEACION_AJUSTE] no se pudo verificar la conservación del borrador: no será publicable')
     return soloLinea
   }
-  await registrarAjuste(sb, conversacionId, { planeacionId: origen.planeacionId, versionBase: origen.versionBase, grupoId: origen.grupoId, huella: huellaBorrador(ajustado.textoFinal) })
+  await registrarAjuste(sb, conversacionId, { planeacionId: origen.planeacionId, versionBase: origen.versionBase, grupoId: origen.grupoId, huella: huellaBorrador(ajustado.textoFinal), formatoSolicitado: origen.formatoSolicitado ?? null })
   return ajustado.textoFinal
+}
+
+// Petición de archivo dentro de una solicitud compuesta ("…y dámela en
+// Word", "…y pásala a PDF"): se separa de la instrucción del cambio.
+const PETICION_FORMATO = /[\s,;]*(?:\b(?:y|e)\s+)?(?:\b(?:d[aá]mela|d[aá]melo|p[aá]sala|p[aá]salo|gu[aá]rdala|gu[aá]rdalo|entr[eé]gamela|m[aá]ndamela|convi[eé]rtela|d[eé]jala|exp[oó]rtala|desc[aá]rgala|ponla|la\s+quiero|lo\s+quiero)\s+)?\b(?:en|a|como)\s+(?:un\s+)?(?:(?:archivo|documento|formato)\s+(?:de\s+)?)?(word|pdf)\b[.!]?/gi
+export function formatoPedido(texto: string): FormatoAjuste | null {
+  const m = [...texto.matchAll(PETICION_FORMATO)].pop()
+  return m ? (m[1].toLowerCase() as FormatoAjuste) : null
+}
+export function sinPeticionDeFormato(texto: string): string {
+  return texto.replace(PETICION_FORMATO, '').replace(/\s+([.,;])/g, '$1').trim()
+}
+// Solo pide el archivo ("pásala a Word"), sin ningún cambio.
+export function soloPideFormato(texto: string): boolean {
+  return formatoPedido(texto) !== null && /^(por favor|porfa|ok|ahora|tambien|ya)?[\s.,!]*$/i.test(norm(sinPeticionDeFormato(texto)))
+}
+
+// Anota el formato pedido sobre un borrador de ajuste ya registrado.
+export async function anotarFormatoDelAjuste(sb: SupabaseClient, conversacionId: string | null, huella: string, formato: FormatoAjuste): Promise<void> {
+  if (!conversacionId) return
+  const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
+  const actual = ((data as { planeacion_activa?: Record<string, unknown> | null } | null)?.planeacion_activa ?? {}) as Record<string, unknown>
+  const ajustes = ajustesDe(actual).map((a) => (a.huella === huella ? { ...a, formatoSolicitado: formato } : a))
+  const { error } = await sb.from('conversaciones_chat').update({ planeacion_activa: { ...actual, ajustes } }).eq('id', conversacionId)
+  if (error) console.error('[PLANEACION_AJUSTE] no se pudo anotar el formato pedido:', error.message)
 }
 
 // Identidad CONFIABLE para publicar (etapa 3b): solo la metadata del

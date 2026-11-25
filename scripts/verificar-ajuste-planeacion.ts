@@ -174,7 +174,7 @@ async function main() {
   // 10. Ruta del Chat (estático): una sola llamada, base canónica, sin publicar nada todavía.
   {
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    verificar(ruta.includes('mensajeConDocumento = resolucion.instruccion') && ruta.includes('contextoParaAjuste(ajusteDelTurno.base, ajusteDelTurno.instruccion)') && /ajusteDelTurno\s*\n?\s*\? clasificacionAjustePlaneacion\(\)/.test(ruta),
+    verificar(ruta.includes('mensajeConDocumento = resolucion.instruccion') && ruta.includes('contextoParaAjuste(ajusteDelTurno.base, ajusteDelTurno.instruccion, ajusteDelTurno.referencia)') && /ajusteDelTurno\s*\n?\s*\? clasificacionAjustePlaneacion\(\)/.test(ruta),
       '10a. El modelo recibe solo la instrucción; la base canónica va en el contexto; sin clasificador')
     verificar(ruta.includes('mencionaCurricular(ajusteDelTurno.instruccion) && curricularDelTurno') && ruta.includes('registrarAjuste(supabaseUser!, ajusteDelTurno.conversacionId'),
       '10b. La sección curricular solo se recalcula si se pidió; la identidad del ajuste se registra en el servidor')

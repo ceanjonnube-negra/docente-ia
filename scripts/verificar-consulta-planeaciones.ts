@@ -2,6 +2,7 @@
 // Sin red, sin IA: cliente de Supabase falso con RLS simulada por docente.
 //   npx tsx scripts/verificar-consulta-planeaciones.ts
 
+import { sinPeticionDeFormato } from '../lib/planeacion/modificarPlaneacion'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -14,6 +15,7 @@ import {
   rangoDeFechasEnTexto,
   respuestaArchivoOriginal,
   seleccionEnTexto,
+  anotarFormatoPendiente,
   preguntaCambio,
   resolverAjustePendiente,
   resolverModificacionGuardada,
@@ -246,8 +248,8 @@ async function main() {
     verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*await clasificarNivel0/.test(ruta),
       '8a. La consulta inequívoca se resuelve antes del clasificador (sin llamada de IA)')
     verificar(/ultimaRespuestaEsPregunta\(historialMensajes\)/.test(ruta) && /referencia\?\.opciones\.length/.test(ruta), '8b. "la 2" solo tras la pregunta de elegir y con opciones guardadas')
-    const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion }')
-    const iConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento) {')
+    const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) }')
+    const iConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento && !formatoDelAjuste) {')
     verificar(iGuard > 0 && iGuard < iConversion && /respuestaArchivoOriginal\(consultada, formatoOriginal, firmarOriginalPropio/.test(ruta), '8c. Modificar (como ajuste sobre su base canónica) o convertir la planeación consultada se resuelve antes de editar o regenerar')
     const herramienta = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
     verificar(/versionesDePlaneacion\(ctx\.sb, p\.id\)/.test(herramienta) && !/planeacion_proyectos/.test(herramienta) && !/obtenerPlaneacionPorId/.test(herramienta), '8d. La consulta lee planeacion_versiones, nunca la proyección')
@@ -314,6 +316,18 @@ async function main() {
       const otro = await resolverAjustePendiente({ sb: crearCliente(A, t4, []), grupoId: GA, conversacionId: CONV, mensaje: 'Muéstrame la planeación de las leyendas', historial: pregunta, hoy: '2026-11-25' })
       verificar(r?.tipo === 'ajuste' && r.planeacion.id === 'pl-cuentos' && r.instruccion === 'Para trabajar en equipos' && otro === null,
         '9m. "Para trabajar en equipos" responde a la pregunta y se aplica a la planeación elegida; una consulta nueva no')
+    }
+    {
+      // Solicitud compuesta (3c): el cambio sin la petición de archivo resuelve el ajuste; con
+      // aclaración, el formato queda pendiente y se aplica al elegir.
+      const t5 = datos()
+      const r = await modificar(t5, [], sinPeticionDeFormato('Modifica la planeación de cuentos propios: agrega una lectura y dámela en Word'))
+      const t6 = datos()
+      const ambigua = await modificar(t6, [], sinPeticionDeFormato('Cambia la planeación de las leyendas: agrega una salida y pásala a PDF'))
+      await anotarFormatoPendiente(crearCliente(A, t6, []), CONV, 'pdf')
+      const elegida = await resolverAjustePendiente({ sb: crearCliente(A, t6, []), grupoId: GA, conversacionId: CONV, mensaje: 'la 1', historial: [{ role: 'assistant', content: texto(ambigua) ?? '' }] })
+      verificar(ajusteDe(r) === 'pl-cuentos' && r?.tipo === 'ajuste' && !r.instruccion.includes('Word') && elegida?.tipo === 'ajuste' && elegida.formato === 'pdf' && !elegida.instruccion.includes('PDF'),
+        '9n. Cambio + archivo: se resuelve el ajuste (no el archivo original); tras aclarar, el formato pendiente se conserva')
     }
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     verificar(ruta.indexOf('resolverModificacionGuardada({') > 0 && ruta.indexOf('resolverModificacionGuardada({') < ruta.indexOf('await clasificarNivel0(mensaje, sesion') && /ajusteDelTurno\s*\n?\s*\? clasificacionAjustePlaneacion\(\)/.test(ruta),

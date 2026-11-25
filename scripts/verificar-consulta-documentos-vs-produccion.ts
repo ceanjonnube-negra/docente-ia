@@ -91,7 +91,7 @@ verificar((ruta.match(/ejecutarHerramientaDeModulo\(/g) || []).length === 1, '6d
 
 // 7. Datos que llegan al generador DOCX tras evitar el atajo (ruta real).
 const iAtajo = ruta.indexOf('const accionDocumental')
-const iCaso3 = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado) {', iAtajo)
+const iCaso3 = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !ajusteDelTurno && !formatoDelAjuste && !continuacionAjuste) {', iAtajo)
 const iTipo = ruta.indexOf('const tipoHerramientaSolicitado = tipoArchivoSolicitado({ mensaje: mensaje ||')
 verificar(iTipo > 0 && iTipo < iAtajo, '7a. El formato solicitado (word) se calcula del mensaje original antes del atajo y no se modifica después')
 verificar(ruta.slice(iTipo, iTipo + 6) === 'const ' && (ruta.match(/\b(let|var)\s+tipoHerramientaSolicitado\b/g) || []).length === 0, '7b. tipoHerramientaSolicitado es const: ningún paso posterior puede reasignarlo')
