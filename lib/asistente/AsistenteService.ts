@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, identificadorDeDocumento, documentoTieneIdentificador, nombraOtroDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -1899,7 +1899,7 @@ class AsistenteServiceImpl {
     // Ver el documento actual ("Muéstrame el documento actual"): se muestra
     // la versión vigente (también una restaurada), igual que una consulta
     // de versiones, sin generar archivos ni llamar a la IA.
-    if (this.documentoActivo && !this.documentoActivo.noRecuperado && !adjunto && esConsultaDocumentoActual(limpio)) {
+    if (this.documentoActivo && !this.documentoActivo.noRecuperado && !adjunto && esConsultaDocumentoActual(limpio, this.documentoActivo.texto)) {
       return (await this.mostrarDocumentoActual(limpio)) ? 'enviado' : 'otra_conversacion'
     }
 
@@ -2049,6 +2049,11 @@ class AsistenteServiceImpl {
     }
     const delTipo = documentos.filter((d) => destino.tipos.some((t) => tituloNombraTipo(d.titulo ?? '', t)))
     const delActivo = documentos.find((d) => d.id === activo.id)
+    // Identificado por su nombre ("la planeación de las leyendas"): solo los
+    // documentos de la conversación que corresponden a ese nombre. Si
+    // ninguno, no es de esta conversación: el servidor lo busca.
+    const identificador = identificadorDeDocumento(limpio)
+    const identificados = identificador.length > 0 ? delTipo.filter((d) => this.documentoConIdentificador(d, identificador)) : delTipo
     let candidatos: typeof documentos
     if (destino.ordinal) {
       if (destino.tipos.length > 1) candidatos = delTipo
@@ -2058,12 +2063,14 @@ class AsistenteServiceImpl {
         if (!elegido) return this.responderSinCambios(limpio, adjunto, MENSAJE_ORDINAL_INEXISTENTE)
         candidatos = [elegido]
       }
-    } else if (destino.tipos.length === 1 && tituloNombraTipo(activo.texto, destino.tipos[0])) {
+    } else if (destino.tipos.length === 1 && tituloNombraTipo(activo.texto, destino.tipos[0]) && !nombraOtroDocumento(limpio, activo.texto)) {
       candidatos = delActivo ? [delActivo] : []
       if (!destino.seleccion) return null
+    } else if (identificador.length > 0 && identificados.length === 0) {
+      return null
     } else if (delTipo.length === 0) {
       return this.responderSinCambios(limpio, adjunto, sinDocumentoDelTipo(destino.tipos[0], incompleta))
-    } else candidatos = delTipo
+    } else candidatos = identificados
     if (candidatos.length === 0) return null
     // Con la conversación posiblemente incompleta, el único candidato
     // visible se confirma (P3b lo buscará en Supabase); salvo el activo.
@@ -2136,7 +2143,7 @@ class AsistenteServiceImpl {
     const destino = this.mensajes.find((m) => m.id === destinoId)
     const texto = destino ? contenidoDocumentoDe(destino) : null
     if (!destino || !texto) return this.responderSinCambios(textoVisible, adjunto, MENSAJE_DOCUMENTO_NOMBRADO_NO_DISPONIBLE)
-    if (esConsultaDocumentoActual(instruccion)) {
+    if (esConsultaDocumentoActual(instruccion, texto)) {
       this.aplicarSeleccionVersion(textoVisible, 'consultar', 'anterior', { id: destino.id, distinto: true }, adjunto, destino.id === this.documentoActivo?.id ? MENSAJE_DOCUMENTO_ACTUAL_CONSULTADO : MENSAJE_DOCUMENTO_NOMBRADO_CONSULTADO)
       return 'enviado'
     }
@@ -2414,9 +2421,17 @@ class AsistenteServiceImpl {
   // El mensaje trabaja sobre el documento activo (edición o conversión),
   // con las mismas excepciones de siempre: aprobar la planeación, pedir
   // un documento nuevo o editar y entregar otro documento.
+  private documentoConIdentificador(d: { id: string; titulo?: string }, identificador: string[]): boolean {
+    const mensaje = this.mensajes.find((m) => m.id === d.id)
+    return documentoTieneIdentificador((mensaje ? contenidoDocumentoDe(mensaje) : null) ?? d.titulo ?? '', identificador)
+  }
+
   private trabajaSobreDocumentoActivo(limpio: string): boolean {
     const documento = this.documentoActivo
-    return !!documento && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(documento.texto) }) && !esPedidoDocumentoNuevo(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, documento.texto))
+    // Un documento identificado por su nombre que no es el activo ("la
+    // planeación de las leyendas" con otra abierta) no es trabajo sobre él:
+    // va como mensaje normal (el servidor lo busca entre los guardados).
+    return !!documento && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(documento.texto) }) && !esPedidoDocumentoNuevo(limpio) && !nombraOtroDocumento(limpio, documento.texto) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, documento.texto))
   }
 
   // Mismo camino que el envío normal de arriba (asegurarMotor,

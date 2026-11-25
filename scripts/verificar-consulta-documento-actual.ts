@@ -231,6 +231,41 @@ async function main() {
   await pedir('Muéstrame el documento actual', { texto: 'Todavía no hay un documento en esta conversación.' })
   verificar(llamadas.length === 1 && !llamadas[0].finalizar, '6b. Sin documento activo: sigue el camino normal del chat')
 
+  // ---- 7. Regresión (Preview 786d720): planeación guardada consultada y luego OTRA por su nombre ----
+  // 1) Conversación nueva: "Muéstrame la planeación de cuentos propios" → el servidor muestra su texto.
+  // 2) "Muéstrame la planeación de las leyendas" → antes: "Este es el documento actual" (el cliente
+  //    la tomaba por el documento activo). Debe llegar al servidor como mensaje normal.
+  {
+    const CUENTOS = '📋 PLANEACIÓN DIDÁCTICA\nProyecto: ¡A contar historias! Elaboración de cuentos propios\nSesión 1: Escuchar cuentos y reconocer su estructura.\n\nVersión 1 · 24 nov – 30 nov 2026'
+    chat.nuevaConversacion()
+    const consulta = await pedir('Muéstrame la planeación de cuentos propios', { texto: CUENTOS })
+    verificar(consulta.resultado === 'enviado' && llamadas.length === 1 && !llamadas[0].edicion && !llamadas[0].finalizar && chat.documentoActivo?.texto === CUENTOS,
+      '7a. Paso 1: la consulta llega al servidor y la planeación mostrada queda como documento activo')
+    const leyendas = await pedir('Muéstrame la planeación de las leyendas', { texto: 'Encontré 3 planeaciones que coinciden:\n1. Las Leyendas de Nuestra Comunidad · 23 nov – 4 dic 2026\n¿Cuál quieres ver? Responde con su número.' })
+    verificar(leyendas.resultado === 'enviado' && llamadas.length === 1 && llamadas[0].texto === 'Muéstrame la planeación de las leyendas' && !llamadas[0].edicion && !llamadas[0].finalizar
+      && leyendas.m.texto.startsWith('Encontré 3 planeaciones') && !chat.mensajes.some((x) => x.texto === 'Este es el documento actual; lo resalté más arriba.'),
+      '7b. Paso 2: otra planeación por su nombre tiene prioridad sobre el documento activo — va al servidor como mensaje normal (ni consulta local, ni edición, ni archivo)')
+    // Las demás intenciones sobre el documento activo no cambian.
+    chat.documentoActivo = { id: consulta.m.id, texto: CUENTOS }
+    const actual = await pedir('Muéstrame la planeación de cuentos propios')
+    const actualSinNombre = await pedir('Muéstrame la planeación')
+    verificar(llamadas.length === 0 && actual.m.texto === 'Este es el documento actual; lo resalté más arriba.' && actualSinNombre.m.texto === 'Este es el documento actual; lo resalté más arriba.',
+      '7c. Mostrar el documento actual (por su propio nombre o solo por su tipo): local, sin IA')
+    interno.documentoFinalizandoId = null
+    await pedir('Dame el Word')
+    verificar(llamadas.length === 1 && llamadas[0].finalizar?.tipo === 'word' && llamadas[0].finalizar.documentoTexto === CUENTOS, '7d. Recuperar un archivo del documento actual: sigue siendo del documento activo (el servidor entrega su original)')
+    interno.documentoFinalizandoId = null
+    await pedir('Cámbiale la sesión 2', null)
+    verificar(llamadas.length === 1 && llamadas[0].edicion === true && llamadas[0].texto.includes(CUENTOS), '7e. Modificar el documento actual: edición del documento activo (el servidor la bloquea para una planeación guardada)')
+    interno.editandoDocumentoId = null
+    await pedir('Agrégale una actividad a la planeación de las leyendas', null)
+    verificar(llamadas.length === 1 && !llamadas[0].edicion && llamadas[0].texto === 'Agrégale una actividad a la planeación de las leyendas', '7f. Modificar OTRA planeación nombrada no edita el documento activo: va al servidor')
+    verificar(d.identificadorDeDocumento('Muéstrame la planeación de las leyendas').join() === 'leyendas' && d.identificadorDeDocumento('Muéstrame la planeación').length === 0
+      && d.identificadorDeDocumento('El oficio de la semana pasada').length === 0 && d.identificadorDeDocumento('Haz un resumen del examen').length === 0 && d.identificadorDeDocumento('muéstrame la planeación de nuevo').length === 0
+      && d.identificadorDeDocumento('Convierte el documento de excursión escolar más reciente a Word').join() === 'excursion,escolar',
+      '7g. Identificador genérico: nombre o tema tras el tipo; nunca el tipo solo, un tiempo, un orden ("más reciente"), una versión o una parte de otro documento')
+  }
+
   console.log('')
   if (fallos > 0) {
     console.error(`${fallos} prueba(s) fallaron.`)

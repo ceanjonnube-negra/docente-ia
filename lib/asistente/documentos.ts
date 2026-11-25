@@ -327,9 +327,13 @@ const VER_DOCUMENTO = /\b(muestrame|muestramelo|muestramela|muestra|ensename|ens
 const REFERENCIA_DOCUMENTO_ACTUAL = /\b(documento|citatorio|oficio|examen|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso|borrador)\b|\b(muestramelo|muestramela|ensenamelo|ensenamela)\b/
 const ENTREGA_O_ARCHIVO = /\b(manda|mandame|mandamelo|envia|enviame|enviamelo|descarga|descargalo|descargamelo|pasa|pasalo|pasamelo|convierte|conviertelo|comparte|compartelo|compartir|imprime|imprimelo|imprimir|abre|abrelo|dame|bajalo|entregalo|genera|generame)\b|\barchivos?\b/
 const ALGO_NUEVO = /\b(un|una|unos|unas|otro|otra|ejemplo|ejemplos|nuevo|nueva)\b/
-export function esConsultaDocumentoActual(texto: string): boolean {
+// documentoTexto: el documento actual. Si el mensaje identifica un
+// documento concreto ("la planeación de las leyendas") que no es este, no
+// es una consulta del documento actual.
+export function esConsultaDocumentoActual(texto: string, documentoTexto?: string): boolean {
   const n = normalizar(texto)
   if (!VER_DOCUMENTO.test(n) || !REFERENCIA_DOCUMENTO_ACTUAL.test(n)) return false
+  if (identificadorDeDocumento(texto).length > 0 && !(documentoTexto && documentoTieneIdentificador(documentoTexto, identificadorDeDocumento(texto)))) return false
   if (detectarFormatoExplicito(texto) || ENTREGA_O_ARCHIVO.test(n) || VERBO_EDICION.test(n) || ALGO_NUEVO.test(n)) return false
   return detectarSolicitudVersion(texto) === null
 }
@@ -585,12 +589,51 @@ export function pideProducirDocumento(texto: string): 'crear' | 'convertir' | nu
   return null
 }
 
+const TIPOS_DOCUMENTO_IDENTIFICABLES = '(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular|ficha|reporte|informe|presentacion|aviso|documento)'
+// --- Documento concreto identificado por su nombre o tema ---
+// "la planeación de las leyendas", "el examen de fracciones", "el
+// citatorio de Juan Pérez": las palabras significativas que siguen al tipo
+// identifican UN documento. Solo el tipo ("muéstrame la planeación"), un
+// tiempo ("el oficio de la semana pasada"), una versión ("de nuevo", "la
+// anterior") o una parte de otro ("el resumen del examen") no identifican
+// ninguno: [] y se conserva el comportamiento de siempre. Tampoco cuentan
+// palabras de orden o tiempo ("más reciente", "definitivo").
+const INICIO_IDENTIFICADOR = new RegExp(`\\b${TIPOS_DOCUMENTO_IDENTIFICABLES}\\s+(?:de\\s+(?:la|las|los|el)\\s+|del\\s+|de\\s+|sobre\\s+(?:(?:la|las|los|el)\\s+)?|acerca\\s+de\\s+(?:(?:la|las|los|el)\\s+)?|llamad[oa]\\s+|que\\s+se\\s+llama\\s+|titulad[oa]\\s+)([^.,;:!?¿¡\\n]+)`)
+const FIN_IDENTIFICADOR = new Set(['y', 'e', 'o', 'para', 'que', 'porque', 'pero', 'con', 'en', 'a', 'al', 'por', 'como', 'donde', 'cuando'])
+const NO_IDENTIFICAN = new Set([
+  'la', 'las', 'los', 'el', 'del', 'de', 'un', 'una', 'mi', 'mis', 'tu', 'su', 'este', 'esta', 'ese', 'esa', 'nuestra', 'nuestro',
+  'actual', 'anterior', 'vigente', 'nuevo', 'nueva', 'otra', 'otro', 'vez', 'favor', 'completo', 'completa', 'version', 'original', 'ultima', 'ultimo',
+  'mas', 'menos', 'reciente', 'recientes', 'antiguo', 'antigua', 'viejo', 'vieja', 'previo', 'previa', 'siguiente', 'final', 'definitivo', 'definitiva', 'actualizado', 'actualizada',
+  'hoy', 'ayer', 'antier', 'manana', 'semana', 'pasada', 'pasado', 'mes', 'ano', 'dia', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes',
+  'primer', 'primero', 'primera', 'segundo', 'segunda', 'tercer', 'tercero', 'tercera', 'cuarto', 'cuarta',
+  'oficio', 'examen', 'citatorio', 'planeacion', 'rubrica', 'resumen', 'carta', 'circular', 'ficha', 'reporte', 'informe', 'presentacion', 'aviso', 'documento', 'borrador',
+])
+export function identificadorDeDocumento(texto: string): string[] {
+  const m = normalizar(texto).match(INICIO_IDENTIFICADOR)
+  if (!m) return []
+  const palabras: string[] = []
+  for (const p of m[2].trim().split(/\s+/)) {
+    if (FIN_IDENTIFICADOR.has(p)) break
+    if (p.length >= 3 && !NO_IDENTIFICAN.has(p)) palabras.push(p)
+  }
+  return palabras
+}
+export function documentoTieneIdentificador(documentoTexto: string, palabras: string[]): boolean {
+  const t = normalizar(documentoTexto)
+  return palabras.every((w) => t.includes(w) || (w.length >= 5 && t.includes(w.slice(0, w.length - 2))))
+}
+// ¿El mensaje identifica por su nombre un documento que NO es este?
+export function nombraOtroDocumento(mensaje: string, documentoTexto: string): boolean {
+  const palabras = identificadorDeDocumento(mensaje)
+  return palabras.length > 0 && !documentoTieneIdentificador(documentoTexto, palabras)
+}
+
 // ¿El documento que se tiene corresponde a lo que el docente nombró? Si
 // nombra un tipo cuyo título lo dice siempre ("el oficio", "el examen",
 // "el citatorio"...) y el título del documento no lo dice, no es ese.
 const TIPO_CON_TITULO = /\b(el|la|este|esta|ese|esa|mi)\s+(oficio|examen|citatorio|planeacion|rubrica|resumen|carta|circular)\b/
 export function referenciaCompatibleConDocumento(mensaje: string, documentoTexto: string): boolean {
-  if (referenciaDocumento(mensaje) === 'otro') return false
+  if (referenciaDocumento(mensaje) === 'otro' || nombraOtroDocumento(mensaje, documentoTexto)) return false
   const tipo = normalizar(mensaje).match(TIPO_CON_TITULO)?.[2]
   if (!tipo) return true
   return normalizar(documentoTexto.trim().split('\n')[0] ?? '').includes(tipo)
