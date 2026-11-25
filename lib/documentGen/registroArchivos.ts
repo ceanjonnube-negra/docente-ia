@@ -12,7 +12,7 @@
 // ('fallido' = nunca entregado). Nada aquí borra archivos ni registros.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { BUCKET_DOCUMENTOS_GENERADOS, descargarBuffer } from './almacenamiento'
+import { BUCKET_DOCUMENTOS_GENERADOS, crearUrlFirmada, descargarBuffer } from './almacenamiento'
 import { TAMANO_MAXIMO_DESCARGA_PDF } from './descargaPdf'
 
 export type ClaseArchivo = 'conservar' | 'efimero'
@@ -223,4 +223,29 @@ export async function recuperarArchivoPropio(docenteId: string, referencia: Refe
     return { ok: false, estado: 413, mensaje: 'El archivo es demasiado grande para abrirlo desde aquí. Pídelo de nuevo en el Chat.', motivo: 'tamano' }
   }
   return { ok: true, nombre: data.nombre, tipoMime: data.tipo_mime, contenido }
+}
+
+// --- Enlaces firmados de un archivo ORIGINAL propio (consulta de
+// planeaciones guardadas, Hito 2): mismas comprobaciones que
+// recuperarArchivoPropio — registro del docente, 'activo', en el bucket y
+// la carpeta del docente — sin descargarlo ni regenerarlo. null si no se
+// puede entregar.
+export async function enlacesArchivoPropio(docenteId: string, archivoId: string): Promise<{ nombre: string; url: string; urlVer: string } | null> {
+  if (!UUID.test(docenteId) || !UUID.test(archivoId)) return null
+  try {
+    const { data, error } = (await cliente()
+      .from('archivos_generados')
+      .select('docente_id, bucket, ruta, nombre, estado')
+      .eq('id', archivoId)
+      .eq('docente_id', docenteId)
+      .maybeSingle()) as { data: { docente_id: string; bucket: string; ruta: string; nombre: string; estado: string } | null; error: ErrorBD }
+    if (error || !data || data.docente_id !== docenteId || data.estado !== 'activo' || data.bucket !== BUCKET_DOCUMENTOS_GENERADOS) return null
+    if (!data.ruta.startsWith(`${docenteId}/`) || data.ruta.split('/').some((s) => s === '' || s === '.' || s === '..')) return null
+    const url = await crearUrlFirmada(cliente(), data.ruta, data.nombre, data.bucket)
+    const urlVer = await crearUrlFirmada(cliente(), data.ruta, undefined, data.bucket)
+    return { nombre: data.nombre, url, urlVer }
+  } catch (e) {
+    console.error('[REGISTRO_ARCHIVOS] no se pudieron firmar los enlaces del original:', mensajeDe(e))
+    return null
+  }
 }

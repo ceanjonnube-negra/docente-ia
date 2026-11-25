@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { clasificacionAprobarPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { MENSAJE_MODIFICAR_NO_DISPONIBLE, contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
+import { MARCADOR_DOCUMENTO_RECUPERADO } from '@/lib/asistente/documentos'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -552,6 +554,34 @@ export async function POST(req: NextRequest) {
     return respuestaTexto(MENSAJE_CONVERSACION_ELIMINADA)
   }
 
+  // Conversación propia validada (RLS), para la referencia contextual de
+  // las planeaciones consultadas (conversaciones_chat.planeacion_activa).
+  const conversacionPropia = async (): Promise<string | null> => {
+    const v = await vinculoConversacionPromise
+    return v.estado === 'con_grupo' || v.estado === 'sin_grupo' || v.estado === 'antigua' ? v.id : null
+  }
+
+  // Planeación GUARDADA mostrada en esta conversación (Hito 2, etapa 2):
+  // su texto puede llegar como documento activo. Modificarla todavía no
+  // está habilitado, y pedir su Word/PDF entrega el ORIGINAL de esa
+  // versión — nunca se regenera. Una sola lectura, solo en estos turnos.
+  const formatoOriginal = tipoHerramientaSolicitado === 'word' || tipoHerramientaSolicitado === 'pdf' ? tipoHerramientaSolicitado : null
+  if (supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
+    const textoDocumento = typeof finalizarArchivo?.documentoTexto === 'string' ? `${String(mensaje ?? '')}\n${finalizarArchivo.documentoTexto}` : String(mensaje ?? '')
+    const consultada = await versionConsultada(supabaseUser, await conversacionPropia())
+    if (consultada && contieneContenidoConsultado(textoDocumento, consultada)) {
+      const instruccion = esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')
+      if (pideModificar(instruccion)) {
+        console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada')
+        return respuestaTexto(MENSAJE_MODIFICAR_NO_DISPONIBLE)
+      }
+      if (formatoOriginal) {
+        console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} original de la versión ${consultada.numero} — sin regenerar`)
+        return respuestaTexto(`${await respuestaArchivoOriginal(consultada, formatoOriginal, firmarOriginalPropio(userId))}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
+      }
+    }
+  }
+
   // Archivo de documento (nuevo, conversión o edición con formato) sin
   // docente autenticado: se avisa aquí, antes de Nivel 0 y de cualquier
   // llamada al modelo — nunca texto alternativo en lugar del archivo.
@@ -853,9 +883,37 @@ export async function POST(req: NextRequest) {
       const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion(String(mensaje ?? ''), {
         hayBorradorPlaneacion: historialMensajes.some((h) => h.role === 'assistant' && esBorradorPlaneacion(h.content)),
       })
+      // Modificar una planeación GUARDADA sin documento activo en el
+      // cliente (Hito 2): el referente se resuelve aquí, con el historial,
+      // la referencia de la conversación y las planeaciones del docente y
+      // grupo activo; nunca cae en crear una planeación nueva. La etapa 3
+      // aún no está habilitada: se bloquea o se pide aclarar. Un borrador
+      // en curso sigue su edición normal (null).
+      if (!esEdicionDocumento && !ordenAprobarPlaneacion && sesion.grupo_activo_id && pideModificar(String(mensaje ?? ''))) {
+        const respuestaModificacion = await resolverModificacionGuardada({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: await conversacionPropia(), historial: historialMensajes, mensaje: String(mensaje ?? ''), voz: channel === 'voice' })
+        if (respuestaModificacion) {
+          console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada (sin documento activo)')
+          return respuestaTexto(respuestaModificacion)
+        }
+      }
+
+      // Consulta inequívoca de planeaciones guardadas (Hito 2): sin
+      // modelo. Elegir de una lista ("la 2") solo si la última respuesta
+      // fue esa pregunta; pedir otra versión, solo con una planeación en
+      // contexto en esta conversación.
+      let consultaPlaneacion = !esEdicionDocumento && !ordenAprobarPlaneacion ? detectarConsultaPlaneacion(String(mensaje ?? ''), sesion.fecha_actual) : null
+      if (consultaPlaneacion?.tipo === 'seleccion' && !ultimaRespuestaEsPregunta(historialMensajes)) consultaPlaneacion = null
+      if (consultaPlaneacion?.tipo === 'seleccion' || consultaPlaneacion?.tipo === 'version') {
+        const referencia = await leerReferenciaPlaneacion(supabaseUser, await conversacionPropia())
+        const aplica = consultaPlaneacion.tipo === 'seleccion' ? (referencia?.opciones.length ?? 0) > 0 : !!referencia?.planeacionId
+        if (!aplica) consultaPlaneacion = null
+      }
       const clasificacion = ordenAprobarPlaneacion
         ? clasificacionAprobarPlaneacion()
-        : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+        : consultaPlaneacion
+          ? clasificacionConsultaPlaneacion(consultaPlaneacion)
+          : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+      if (consultaPlaneacion) console.log(`[PLANEACION_CONSULTA] determinista tipo=${consultaPlaneacion.tipo} — sin clasificador`)
       marcarTelemetria('intent:classification_finished')
       // Duración de una planeación expresada en sesiones, clases, días o
       // semanas (determinista): completa lo que el clasificador no tomó y
@@ -930,6 +988,7 @@ export async function POST(req: NextRequest) {
         userId,
         zonaHoraria,
         canal: channel === 'voice' ? 'voice' : 'text',
+        conversacionId: clasificacion.intencion_principal === 'planeacion_consultar' ? await conversacionPropia() : null,
       })
       marcarTelemetria('tool:execution_finished')
       if (respuestaDeModulo !== null) {
@@ -949,7 +1008,9 @@ export async function POST(req: NextRequest) {
           console.log(`[IMAGEN][DISPATCHER] ${clasificacion.intencion_principal} coincidió con una Herramienta, pero hay ${cantidadImagenesAdjuntas} imagen(es) este turno — se inyecta como contexto real y se deja pasar al modelo grande en vez de responder directo`)
           contextoEnriquecido += `\n\nDATOS REALES YA CONSULTADOS PARA ESTE TURNO (usa esto junto con la imagen adjunta — nunca inventes ni ignores ninguno de los dos):\n${respuestaDeModulo}`
         } else {
-          return respuestaTexto(respuestaDeModulo)
+          // Consulta de planeaciones: contenido RECUPERADO, no generado —
+          // nunca se guarda otra vez en Historial (ver documentoParaHistorial).
+          return respuestaTexto(clasificacion.intencion_principal === 'planeacion_consultar' ? `${respuestaDeModulo}\n${MARCADOR_DOCUMENTO_RECUPERADO}` : respuestaDeModulo)
         }
       }
 

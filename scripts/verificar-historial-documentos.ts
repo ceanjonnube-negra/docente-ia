@@ -125,7 +125,7 @@ async function main() {
     '4c. La migración no toca datos, permisos ni otras estructuras')
   verificar(ORIGENES_DOCUMENTO.join() === 'archivo,texto', '4d. Los orígenes del código coinciden con el CHECK de la migración')
   const motor = readFileSync('lib/asistente/motores/motorTextoClaude.ts', 'utf8')
-  verificar(/const documento = documentoParaHistorial\(respuestaLimpia, \{ contenidoOriginal, archivos \}\)\s*\n\s*if \(user && documento\) await this\.guardarEnHistorial\(documento, perfil, user\.id\)/.test(motor)
+  verificar(/const documento = documentoParaHistorial\(respuestaLimpia, \{ contenidoOriginal, archivos, recuperado \}\)\s*\n\s*if \(user && documento\) await this\.guardarEnHistorial\(documento, perfil, user\.id\)/.test(motor)
     && motor.includes('origen: documento.origen,') && (motor.match(/guardarEnHistorial\(/g) || []).length === 2,
     '4e. El motor guarda solo lo que devuelve documentoParaHistorial, con su origen, en un único punto')
   verificar(!motor.includes('archivos_generados'), '4f. El historial no escribe en archivos_generados (cada tabla conserva su responsabilidad)')

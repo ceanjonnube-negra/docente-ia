@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { construirInstrucciones, obtenerPerfilYSesion } from '../perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { asegurarConversacionRemota } from '../persistencia'
-import { documentoParaHistorial, type ArchivoOriginal, type FormatoEntrega, type GrupoDocumento, type OrigenDocumento } from '../documentos'
+import { documentoParaHistorial, extraerMarcadorRecuperado, type ArchivoOriginal, type FormatoEntrega, type GrupoDocumento, type OrigenDocumento } from '../documentos'
 import type {
   AccionNavegacion,
   AdjuntoImagen,
@@ -259,12 +259,13 @@ export class MotorTextoClaude implements MotorConversacional {
           if (done) break
           respuesta += decoder.decode(value, { stream: true })
           // El marcador de propuesta (largo, en base64) nunca se pinta.
-          emitir({ tipo: 'respuesta-parcial', texto: sinTextoFinalParcial(respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '')).trim() })
+          emitir({ tipo: 'respuesta-parcial', texto: sinTextoFinalParcial(extraerMarcadorRecuperado(respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '')).texto).trim() })
         }
       }
 
       // Texto final normalizado por el servidor (ver textoFinalChat.ts).
-      const { texto: respuestaSinFinal, textoFinal } = extraerTextoFinal(respuesta)
+      const { texto: respuestaSinRecuperado, recuperado } = extraerMarcadorRecuperado(respuesta)
+      const { texto: respuestaSinFinal, textoFinal } = extraerTextoFinal(respuestaSinRecuperado)
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuestaSinFinal, texto, user?.id)
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
       const { texto: sinContenido, contenidoOriginal } = this.procesarMarcadorDeContenido(sinArchivo)
@@ -278,7 +279,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // Solo los documentos van al historial de documentos (primero por los
       // metadatos de entrega del servidor); las respuestas conversacionales
       // (saludos, consultas) no.
-      const documento = documentoParaHistorial(respuestaLimpia, { contenidoOriginal, archivos })
+      const documento = documentoParaHistorial(respuestaLimpia, { contenidoOriginal, archivos, recuperado })
       if (user && documento) await this.guardarEnHistorial(documento, perfil, user.id)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {

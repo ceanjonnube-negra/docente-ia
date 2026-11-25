@@ -12,6 +12,7 @@
 // comportamiento actual de la app, sin cambios).
 
 import Anthropic from '@anthropic-ai/sdk';
+import type { ConsultaPlaneacion, RangoFechas, VersionSolicitada } from './planeacion/consultaPlaneaciones';
 import type { SesionContexto } from './sesionContexto';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -93,7 +94,14 @@ export type ClasificacionNivel0 = {
   // fecha de inicio. 'por_nombre': busca una en particular por nombre
   // o tema (nombre_planeacion_consulta). null en cualquier otra
   // intención.
-  tipo_consulta_planeacion: 'listado_general' | 'por_periodo' | 'por_estado' | 'actual' | 'ultima' | 'por_nombre' | null;
+  // Hito 2: 'por_fechas', 'seleccion' y 'version' solo los produce la
+  // detección determinista (clasificacionConsultaPlaneacion), nunca el modelo.
+  tipo_consulta_planeacion: 'listado_general' | 'por_periodo' | 'por_estado' | 'actual' | 'ultima' | 'por_nombre' | 'por_fechas' | 'seleccion' | 'version' | null;
+  // Hito 2 (solo detección determinista; el modelo no los devuelve):
+  // versión pedida, periodo de fechas y número elegido de una lista.
+  version_planeacion_consulta?: VersionSolicitada | null;
+  rango_planeacion_consulta?: RangoFechas | null;
+  seleccion_planeacion_consulta?: number | null;
   // Solo relevante con tipo_consulta_planeacion="por_periodo" — el
   // trimestre/periodo tal cual lo dijo el maestro (ej. "primer
   // trimestre", "trimestre 2"). La resolución exacta contra el
@@ -193,6 +201,24 @@ const FALLBACK: ClasificacionNivel0 = {
 // anterior es el borrador, y tras un error de guardado o una aclaración
 // podría clasificarlo como 'ajustar' y redactar otra planeación.
 // aprobarBorradorPlaneacion vuelve a validar todo de forma determinista.
+// Consulta inequívoca de planeaciones guardadas (Hito 2), reconocida de
+// forma determinista (detectarConsultaPlaneacion): sin llamada al modelo.
+export function clasificacionConsultaPlaneacion(c: ConsultaPlaneacion): ClasificacionNivel0 {
+  const tipo = c.tipo === 'listado' ? 'listado_general' : c.tipo
+  return {
+    ...FALLBACK,
+    intencion_principal: 'planeacion_consultar',
+    nivel_ejecucion: 1,
+    requiere_ia: false,
+    nivel_confianza: 1,
+    tipo_consulta_planeacion: tipo,
+    nombre_planeacion_consulta: c.tipo === 'por_nombre' ? c.nombre : null,
+    version_planeacion_consulta: c.tipo === 'por_nombre' || c.tipo === 'version' ? c.version : null,
+    rango_planeacion_consulta: c.tipo === 'por_fechas' ? c.rango : null,
+    seleccion_planeacion_consulta: c.tipo === 'seleccion' ? c.indice : null,
+  };
+}
+
 export function clasificacionAprobarPlaneacion(): ClasificacionNivel0 {
   return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 1, requiere_ia: false, accion_planeacion_generar: 'aprobar', nivel_confianza: 1 };
 }

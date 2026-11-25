@@ -194,6 +194,15 @@ function datosBase(): Record<string, Fila[]> {
   }
 }
 
+// Hito 2: fuente canónica de cada planeación (una versión vigente, su texto).
+function conVersiones(datos: Record<string, Fila[]>): Record<string, Fila[]> {
+  datos.planeacion_versiones = datos.planeaciones.map((p) => ({
+    id: `v-${p.id}`, planeacion_id: p.id, docente_id: p.docente_id, numero: 1, origen: 'aprobacion',
+    contenido: `📋 PLANEACIÓN DIDÁCTICA\n${p.nombre}`, documento_word_archivo_id: null, documento_pdf_archivo_id: null, creada_en: '2026-08-01T00:00:00Z',
+  }))
+  return datos
+}
+
 function sesion(overrides: Partial<SesionContexto> = {}): SesionContexto {
   return {
     docente_id: 'docente-1',
@@ -249,84 +258,84 @@ function contexto(sb: SupabaseClient, overrides: Partial<ContextoEjecucionHerram
 async function main() {
   // 1. "¿Qué planeaciones tengo?" — listado general
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb))
-    verificar(r !== null && r.includes('4 planeación'), '1. "¿Qué planeaciones tengo?" devuelve el listado general (4 planeaciones en grupo-1)')
+    verificar(r !== null && r.includes('Tienes 4 planeaciones guardadas') && r.includes('¿Cuál quieres ver?'), '1. "¿Qué planeaciones tengo?" devuelve el listado general numerado (4 planeaciones en grupo-1)')
   }
 
   // 2. Consulta sin registros
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb, { sesion: sesion({ grupo_activo_id: 'grupo-vacio' }) }))
     verificar(r === 'Todavía no tienes planeaciones guardadas para este grupo.', '2. Consulta sin registros devuelve el mensaje exacto requerido')
   }
 
   // 3. Consulta con una sola planeación
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb, { sesion: sesion({ grupo_activo_id: 'grupo-3' }) }))
-    verificar(r !== null && r.includes('Cuerpos geométricos') && r.includes('Periodo:') && r.includes('Fechas:') && r.includes('Estado:'), '3. Con una sola planeación muestra nombre, periodo, fechas y estado')
+    verificar(r !== null && r.startsWith('📋 PLANEACIÓN DIDÁCTICA\nCuerpos geométricos') && r.includes('Versión 1'), '3. Con una sola planeación muestra su texto canónico (versión vigente)')
   }
 
   // 4. Consulta con varias planeaciones
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb))
     verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Fracciones y decimales') && r.includes('Historia de México') && r.includes('Leyendas del desierto'), '4. Con varias planeaciones se listan todas, resumidas')
   }
 
   // 5. Filtro por trimestre
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_periodo', periodo_planeacion_consulta: 'primer trimestre' }), contexto(sb))
     verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Historia de México') && !r.includes('Fracciones'), '5. Filtro por trimestre devuelve solo las del periodo correcto')
   }
 
   // 6. Filtro por estado archivado
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_estado', estado_planeacion_consulta: 'archivada' }), contexto(sb))
-    verificar(r !== null && r.includes('Historia de México') && r.includes('archivada') && !r.includes('Leyendas de mi comunidad'), '6. Filtro por estado archivado devuelve solo la archivada')
+    verificar(r !== null && r.startsWith('📋 PLANEACIÓN DIDÁCTICA\nHistoria de México') && !r.includes('Leyendas de mi comunidad'), '6. Filtro por estado archivado devuelve solo la archivada')
   }
 
   // 7. Consulta de planeación actual (vigente hoy)
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'actual' }), contexto(sb))
     verificar(r !== null && r.includes('Leyendas de mi comunidad'), '7. Consulta de planeación actual devuelve la vigente para la fecha de hoy')
   }
 
   // 8. Consulta de última planeación
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'ultima' }), contexto(sb))
     verificar(r !== null && r.includes('Leyendas del desierto'), '8. Consulta de última planeación devuelve la de fecha de inicio más reciente')
   }
 
   // 9. Búsqueda exacta por nombre
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_nombre', nombre_planeacion_consulta: 'Fracciones y decimales' }), contexto(sb))
-    verificar(r !== null && r.includes('Fracciones y decimales') && r.includes('Periodo:'), '9. Búsqueda exacta por nombre abre directamente el detalle')
+    verificar(r !== null && r.startsWith('📋 PLANEACIÓN DIDÁCTICA\nFracciones y decimales') && r.includes('Versión 1'), '9. Búsqueda exacta por nombre abre directamente su texto canónico')
   }
 
   // 10. Varias coincidencias por nombre — pide aclaración, no elige arbitrariamente
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_nombre', nombre_planeacion_consulta: 'Leyendas' }), contexto(sb))
-    verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Leyendas del desierto') && r.includes('¿Cuál te interesa?'), '10. Varias coincidencias por nombre: muestra ambas y pide aclaración')
+    verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Leyendas del desierto') && r.includes('¿Cuál quieres ver?') && /\n1\. /.test(r) && /\n2\. /.test(r), '10. Varias coincidencias por nombre: lista numerada y pide aclaración')
   }
 
   // 11. Planeación inexistente (búsqueda por nombre sin coincidencias)
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_nombre', nombre_planeacion_consulta: 'Volcanes de Marte' }), contexto(sb))
     verificar(r === 'No encontré planeaciones que coincidan con esa búsqueda.', '11. Planeación inexistente por nombre: mensaje distinto de "no tienes ninguna" (sí existen otras)')
   }
 
   // 12. Protección entre docentes — docente-2 nunca ve datos de docente-1
   {
-    const { sb } = clienteFalso(DOCENTE_2, datosBase())
+    const { sb } = clienteFalso(DOCENTE_2, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(
       clasificacion({ tipo_consulta_planeacion: 'listado_general' }),
       contexto(sb, { sesion: sesion({ docente_id: 'docente-2', grupo_activo_id: 'grupo-2', ciclo_escolar_id: 'ciclo-2' }), userId: 'docente-2' })
@@ -336,14 +345,14 @@ async function main() {
 
   // 13. Protección entre grupos — grupo activo sin planeaciones propias no ve las de otro grupo
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb, { sesion: sesion({ grupo_activo_id: 'grupo-3' }) }))
     verificar(r !== null && r.includes('Cuerpos geométricos') && !r.includes('Leyendas') && !r.includes('Fracciones'), '13. Protección entre grupos: grupo-3 no ve las planeaciones de grupo-1')
   }
 
   // 14. Confirmación de que no se ejecutan escrituras
   {
-    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb, interno } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb))
     await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_nombre', nombre_planeacion_consulta: 'Leyendas' }), contexto(sb))
     await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'actual' }), contexto(sb))
@@ -352,7 +361,7 @@ async function main() {
 
   // 15. Respuesta breve en canal de voz
   {
-    const { sb } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const rDetalleVoz = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'ultima' }), contexto(sb, { canal: 'voice' }))
     const rListaVoz = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'listado_general' }), contexto(sb, { canal: 'voice' }))
     verificar(rDetalleVoz !== null && !rDetalleVoz.includes('\n') && rDetalleVoz.split('.').length <= 3, '15a. Detalle en voz: una frase, sin estructura de bloque (sin saltos de línea)')
@@ -364,7 +373,7 @@ async function main() {
   //     conversacion_general — se simula ese resultado y se confirma que el
   //     dispatcher NO la intercepta, dejándola seguir el flujo normal).
   {
-    const { sb, interno } = clienteFalso(DOCENTE_1, datosBase())
+    const { sb, interno } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(
       clasificacion({ intencion_principal: 'conversacion_general', tipo_consulta_planeacion: null, nivel_ejecucion: 3, requiere_contexto_memoria: false }),
       contexto(sb)

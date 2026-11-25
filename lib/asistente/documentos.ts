@@ -39,6 +39,9 @@ export const ORIGENES_DOCUMENTO: readonly OrigenDocumento[] = ['archivo', 'texto
 // Sin metadatos, una respuesta solo es documento si es un documento
 // formal visible (esDocumentoFormal), origen 'texto'; una conversación no
 // se guarda.
+//   - [[DOCUMENTO_RECUPERADO]] → el servidor RECUPERÓ contenido que ya
+//     existía (p. ej. una planeación guardada y sus archivos originales):
+//     no es un documento nuevo y nunca se guarda, con o sin archivos.
 // Grado y grupo: los del archivo entregado (el grupo de la conversación con
 // el que se armó su encabezado); sin archivo, o sin grupo confirmado, ninguno
 // —nunca los del perfil, que puede ser de otro grupo—.
@@ -53,8 +56,9 @@ export type ArchivoOriginal = { id: string; formato: FormatoArchivoOriginal }
 const UUID_ARCHIVO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function documentoParaHistorial(
   respuesta: string,
-  entrega: { contenidoOriginal?: string; archivos?: readonly unknown[] } = {},
+  entrega: { contenidoOriginal?: string; archivos?: readonly unknown[]; recuperado?: boolean } = {},
 ): { contenido: string; origen: OrigenDocumento; grupo: GrupoDocumento; archivo: ArchivoOriginal | null } | null {
+  if (entrega.recuperado) return null
   const conArchivo = (entrega.archivos?.length ?? 0) > 0
   if (conArchivo) {
     if (!entrega.contenidoOriginal?.trim()) return null
@@ -69,6 +73,14 @@ export function documentoParaHistorial(
     return { contenido: entrega.contenidoOriginal, origen: 'archivo', grupo: { grado: texto(g?.grado), grupo: texto(g?.grupo) }, archivo }
   }
   return esDocumentoFormal(respuesta) ? { contenido: respuesta, origen: 'texto', grupo: { grado: null, grupo: null }, archivo: null } : null
+}
+
+// Marcador del servidor: contenido recuperado, no generado (ver
+// documentoParaHistorial). El cliente lo retira antes de mostrar el texto.
+export const MARCADOR_DOCUMENTO_RECUPERADO = '[[DOCUMENTO_RECUPERADO]]'
+export function extraerMarcadorRecuperado(texto: string): { texto: string; recuperado: boolean } {
+  if (!texto.includes(MARCADOR_DOCUMENTO_RECUPERADO)) return { texto, recuperado: false }
+  return { texto: texto.split(MARCADOR_DOCUMENTO_RECUPERADO).join('').trim(), recuperado: true }
 }
 
 // Regla única de lectura del historial de documentos (Chat e Historial):
