@@ -509,6 +509,15 @@ export function esFormatoEntrega(valor: unknown): valor is FormatoEntrega {
 // AsistenteService.ts), la instrucción real del maestro del documento que
 // la precede — así nada se calcula sobre el texto del documento.
 export const MARCADOR_INSTRUCCION_EDICION = 'INSTRUCCIÓN DEL MAESTRO:'
+// Documento exacto que el cliente envió para editar (el que precede a la
+// instrucción en construirPromptEdicion). null si no tiene esa forma.
+export const INICIO_DOCUMENTO_EDICION = 'DOCUMENTO/CONTENIDO ACTUAL:\n'
+export function documentoDeEdicion(promptEdicion: string): string | null {
+  const i = promptEdicion.indexOf(INICIO_DOCUMENTO_EDICION)
+  const f = promptEdicion.lastIndexOf(`\n\n${MARCADOR_INSTRUCCION_EDICION}`)
+  return i === -1 || f <= i ? null : promptEdicion.slice(i + INICIO_DOCUMENTO_EDICION.length, f)
+}
+
 export function instruccionDeEdicion(promptEdicion: string): string | null {
   const i = promptEdicion.lastIndexOf(MARCADOR_INSTRUCCION_EDICION)
   return i === -1 ? null : promptEdicion.slice(i + MARCADOR_INSTRUCCION_EDICION.length).trim() || null
@@ -531,8 +540,7 @@ Si la instrucción es vaga o pide completar/mejorar el documento en general ("co
 
 Si el mensaje trae una foto adjunta, en la gran mayoría de los casos esa foto ES este mismo documento (una captura de pantalla, una foto del papel ya impreso o firmado, una foto de lo que el maestro escribió a mano) — a menos que el maestro claramente esté pidiendo comparar o analizar algo distinto, interprétala como parte de este documento (para copiar datos que aparecen en ella, verificar que coincide, o completar/corregir con base en lo que se ve) y no como un tema nuevo e independiente.
 
-DOCUMENTO/CONTENIDO ACTUAL:
-${documentoTexto}
+${INICIO_DOCUMENTO_EDICION}${documentoTexto}
 
 ${MARCADOR_INSTRUCCION_EDICION}
 ${instruccion}`

@@ -14,6 +14,8 @@ import {
   rangoDeFechasEnTexto,
   respuestaArchivoOriginal,
   seleccionEnTexto,
+  preguntaCambio,
+  resolverAjustePendiente,
   resolverModificacionGuardada,
   ultimaRespuestaEsPregunta,
   versionConsultada,
@@ -244,39 +246,44 @@ async function main() {
     verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*await clasificarNivel0/.test(ruta),
       '8a. La consulta inequívoca se resuelve antes del clasificador (sin llamada de IA)')
     verificar(/ultimaRespuestaEsPregunta\(historialMensajes\)/.test(ruta) && /referencia\?\.opciones\.length/.test(ruta), '8b. "la 2" solo tras la pregunta de elegir y con opciones guardadas')
-    const iGuard = ruta.indexOf('MENSAJE_MODIFICAR_NO_DISPONIBLE)')
+    const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion }')
     const iConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento) {')
-    verificar(iGuard > 0 && iGuard < iConversion && /respuestaArchivoOriginal\(consultada, formatoOriginal, firmarOriginalPropio/.test(ruta), '8c. Modificar o convertir la planeación consultada se resuelve antes de editar o regenerar')
+    verificar(iGuard > 0 && iGuard < iConversion && /respuestaArchivoOriginal\(consultada, formatoOriginal, firmarOriginalPropio/.test(ruta), '8c. Modificar (como ajuste sobre su base canónica) o convertir la planeación consultada se resuelve antes de editar o regenerar')
     const herramienta = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
     verificar(/versionesDePlaneacion\(ctx\.sb, p\.id\)/.test(herramienta) && !/planeacion_proyectos/.test(herramienta) && !/obtenerPlaneacionPorId/.test(herramienta), '8d. La consulta lee planeacion_versiones, nunca la proyección')
   }
 
-  // 9. Modificar una planeación GUARDADA sin documento activo en el cliente (regresión)
+  // 9. Modificar una planeación GUARDADA (Hito 2, 3a): el referente se resuelve en el servidor y produce un AJUSTE
+  //    (o una aclaración), nunca la creación de una planeación nueva.
   {
     const modificar = async (tablas: Record<string, Fila[]>, historial: { role: string; content: string }[], mensaje: string, usuario = A, grupo = GA) =>
       resolverModificacionGuardada({ sb: crearCliente(usuario, tablas, []), grupoId: grupo, conversacionId: CONV, historial, mensaje })
-    const NO_DISPONIBLE = (nombre: string) => `Todavía no puedo modificar «${nombre}» desde el Chat. Puedo mostrártela o darte sus archivos originales.`
-    const CUENTOS = '¡A contar historias! Elaboración de cuentos propios'
+    const CUENTOS_NOMBRE = '¡A contar historias! Elaboración de cuentos propios'
+    const ajusteDe = (r: Awaited<ReturnType<typeof modificar>>) => (r?.tipo === 'ajuste' ? r.planeacion.id : null)
+    const texto = (r: Awaited<ReturnType<typeof modificar>>) => (r?.tipo === 'texto' ? r.texto : null)
 
-    // Tras consultar (el historial trae el texto mostrado), sin documento activo.
     const tablas = datos()
     const consulta = await consultar(tablas, 'Muéstrame la planeación de cuentos propios')
     const historial = [{ role: 'user', content: 'Muéstrame la planeación de cuentos propios' }, { role: 'assistant', content: extraerMarcadorRecuperado(consulta.texto ?? '').texto }]
-    verificar(await modificar(tablas, historial, 'Cámbiale la sesión 2') === NO_DISPONIBLE(CUENTOS) && await modificar(tablas, historial, 'ajústala') === NO_DISPONIBLE(CUENTOS),
-      '9a. "Cámbiale la sesión 2" / "ajústala" tras consultar: referente = planeación mostrada (contexto persistido) → bloqueo, nunca creación')
+    const r9a = await modificar(tablas, historial, 'Cámbiale la sesión 2')
+    verificar(ajusteDe(r9a) === 'pl-cuentos' && r9a?.tipo === 'ajuste' && r9a.instruccion === 'Cámbiale la sesión 2' && r9a.numeroConsultado === 1 && ajusteDe(await modificar(tablas, historial, 'ajústala')) === 'pl-cuentos',
+      '9a. "Cámbiale la sesión 2" / "ajústala" tras consultar: ajuste de la planeación mostrada (contexto persistido), con la instrucción')
     verificar(await modificar(tablas, historial, 'Cambia mi grupo a cuarto') === null && await modificar(tablas, [...historial, { role: 'user', content: 'gracias' }, { role: 'assistant', content: '¡De nada!' }], 'Cámbiala') === null,
-      '9b. Un cambio ajeno ("cambia mi grupo a cuarto") o un pronombre lejos de la planeación no se bloquean')
-    verificar(await modificar(datos(), [], 'Modifica la planeación de cuentos propios: agrega una sesión de lectura') === NO_DISPONIBLE(CUENTOS) && referencia(tablas)?.planeacionId === 'pl-cuentos',
-      '9c. Nombre citado sin conversación previa: se resuelve contra las planeaciones guardadas del docente y grupo → bloqueo')
+      '9b. Un cambio ajeno ("cambia mi grupo a cuarto") o un pronombre lejos de la planeación no son ajustes')
+    verificar(ajusteDe(await modificar(datos(), [], 'Modifica la planeación de cuentos propios: agrega una sesión de lectura')) === 'pl-cuentos',
+      '9c. Nombre citado desde una conversación nueva: se resuelve contra las planeaciones guardadas del docente y grupo → ajuste')
     {
       const t2 = datos()
-      const r = await modificar(t2, [], 'Cambia la planeación de las leyendas')
-      verificar(!!r?.includes('Encontré 2 planeaciones guardadas con ese nombre.') && r.includes('¿Cuál quieres modificar?') && referencia(t2)?.opciones.length === 2 && (t2.conversaciones_chat[0].planeacion_activa as { intencion?: string }).intencion === 'modificar',
-        '9d. Referente ambiguo: pregunta breve numerada, sin elegir')
-      const sb = crearCliente(A, t2, [])
-      const eleccion = await ejecutarHerramientaDeModulo(clasificacionConsultaPlaneacion({ tipo: 'seleccion', indice: 1 }), { sb, sesion: sesion(), userId: A, zonaHoraria: null, canal: 'text', conversacionId: CONV })
-      verificar(eleccion === NO_DISPONIBLE('Las Leyendas de Nuestra Comunidad') && ultimaRespuestaEsPregunta([{ role: 'assistant', content: r ?? '' }]) && referencia(t2)?.planeacionId === 'pl-leyendas-2',
-        '9e. "la 1" tras la pregunta de modificar: identifica la planeación y responde que aún no se puede (no la modifica ni la muestra)')
+      const r = await modificar(t2, [], 'Cambia la planeación de las leyendas: agrega una salida al museo')
+      const ref = t2.conversaciones_chat[0].planeacion_activa as { intencion?: string; instruccionPendiente?: string; opciones: string[] }
+      verificar(!!texto(r)?.includes('¿Cuál quieres modificar?') && ref.opciones.length === 2 && ref.intencion === 'modificar' && ref.instruccionPendiente === 'Cambia la planeación de las leyendas: agrega una salida al museo',
+        '9d. Referente ambiguo: pregunta breve numerada y la instrucción queda PENDIENTE')
+      const historialPregunta = [{ role: 'assistant', content: texto(r) ?? '' }]
+      const eleccion = await resolverAjustePendiente({ sb: crearCliente(A, t2, []), grupoId: GA, conversacionId: CONV, mensaje: 'la 1', historial: historialPregunta })
+      verificar(eleccion?.tipo === 'ajuste' && eleccion.planeacion.id === 'pl-leyendas-2' && eleccion.instruccion === 'Cambia la planeación de las leyendas: agrega una salida al museo',
+        '9e. "la 1" aplica la instrucción pendiente a la planeación elegida')
+      verificar(await resolverAjustePendiente({ sb: crearCliente(A, t2, []), grupoId: GA, conversacionId: CONV, mensaje: 'la 1', historial: [{ role: 'assistant', content: 'Otra cosa' }] }) === null,
+        '9e2. Un número fuera de la pregunta de elegir no aplica nada')
     }
     const BORRADOR = '📋 PLANEACIÓN DIDÁCTICA\nLas Leyendas de Nuestra Comunidad\n\n📎 RESUMEN PARA GUARDAR\nNombre: Las Leyendas de Nuestra Comunidad\nFecha de inicio: 2026-12-01\nFecha de fin: 2026-12-12'
     const conBorrador = [...historial, { role: 'user', content: 'Ahora una nueva de leyendas' }, { role: 'assistant', content: BORRADOR }]
@@ -284,11 +291,33 @@ async function main() {
       '9f. Con un borrador en curso, la edición normal sigue intacta (aunque exista una guardada homónima)')
     verificar(await modificar(datos(), [], 'Elabora una planeación de las leyendas y agrega una evaluación') === null && await modificar(datos(), [], '¿Qué día es hoy?') === null,
       '9g. Crear una planeación (aunque diga "agrega") o conversar no es modificar')
-    verificar(await modificar(datos(), [], 'Cambia la planeación') === '¿Qué planeación guardada quieres modificar? Dime su nombre.', '9h. "Cambia la planeación" sin documento ni contexto: pide su nombre (nunca crea)')
-    verificar(await modificar(datos(), [], 'Modifica la planeación de fracciones del otro grupo') === null && await modificar(datos(), [], 'Modifica la planeación de cuentos propios', B, GB) === NO_DISPONIBLE(CUENTOS)
-      && referencia(datos())?.planeacionId !== 'pl-otro-docente', '9i. Solo planeaciones del docente y grupo activo (server-side)')
+    verificar(texto(await modificar(datos(), [], 'Cambia la planeación')) === '¿Qué planeación guardada quieres modificar? Dime su nombre.', '9h. "Cambia la planeación" sin documento ni contexto: pide su nombre (nunca crea)')
+    verificar(await modificar(datos(), [], 'Modifica la planeación de fracciones del otro grupo') === null && ajusteDe(await modificar(datos(), [], 'Modifica la planeación de cuentos propios', B, GB)) === 'pl-otro-docente',
+      '9i. Solo planeaciones del docente y grupo activo (server-side)')
+    {
+      // Versión histórica nombrada explícitamente: no se cambia el referente en silencio.
+      const t3 = datos()
+      t3.planeaciones = t3.planeaciones.filter((p) => p.id !== 'pl-leyendas-2')
+      const r = await modificar(t3, [], 'Modifica la versión 1 de la planeación de las leyendas: agrega una salida')
+      const ref = t3.conversaciones_chat[0].planeacion_activa as { instruccionPendiente?: string; planeacionId?: string }
+      verificar(!!texto(r)?.includes('parten siempre de la versión vigente') && texto(r)!.includes('es la 2') && ref.planeacionId === 'pl-leyendas-1' && !!ref.instruccionPendiente,
+        '9k. Pedir modificar una versión anterior: aclara que la base es la vigente (2) y deja la instrucción pendiente')
+      const si = await resolverAjustePendiente({ sb: crearCliente(A, t3, []), grupoId: GA, conversacionId: CONV, mensaje: 'Sí', historial: [{ role: 'assistant', content: texto(r) ?? '' }] })
+      verificar(si?.tipo === 'ajuste' && si.planeacion.id === 'pl-leyendas-1', '9l. "Sí" aplica la instrucción pendiente sobre la versión vigente')
+    }
+    {
+      // Respuesta natural a "¿Qué cambio quieres hacer en «X»?" tras elegir la planeación.
+      const t4 = datos()
+      t4.conversaciones_chat[0].planeacion_activa = { esquema: 'referencia-planeacion-v1', planeacionId: 'pl-cuentos', numero: 1, opciones: [], intencion: 'modificar' }
+      const pregunta = [{ role: 'assistant', content: preguntaCambio(CUENTOS_NOMBRE) }]
+      const r = await resolverAjustePendiente({ sb: crearCliente(A, t4, []), grupoId: GA, conversacionId: CONV, mensaje: 'Para trabajar en equipos', historial: pregunta, hoy: '2026-11-25' })
+      const otro = await resolverAjustePendiente({ sb: crearCliente(A, t4, []), grupoId: GA, conversacionId: CONV, mensaje: 'Muéstrame la planeación de las leyendas', historial: pregunta, hoy: '2026-11-25' })
+      verificar(r?.tipo === 'ajuste' && r.planeacion.id === 'pl-cuentos' && r.instruccion === 'Para trabajar en equipos' && otro === null,
+        '9m. "Para trabajar en equipos" responde a la pregunta y se aplica a la planeación elegida; una consulta nueva no')
+    }
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    verificar(ruta.indexOf('resolverModificacionGuardada({') > 0 && ruta.indexOf('resolverModificacionGuardada({') < ruta.indexOf('await clasificarNivel0(mensaje, sesion'), '9j. Se resuelve antes del clasificador: sin IA y sin llegar al flujo de creación')
+    verificar(ruta.indexOf('resolverModificacionGuardada({') > 0 && ruta.indexOf('resolverModificacionGuardada({') < ruta.indexOf('await clasificarNivel0(mensaje, sesion') && /ajusteDelTurno\s*\n?\s*\? clasificacionAjustePlaneacion\(\)/.test(ruta),
+      '9j. Se resuelve antes del clasificador: el ajuste usa una sola llamada (la generación), sin clasificador')
   }
 
   // 10. Una consulta nunca crea registros en Historial (regresión)

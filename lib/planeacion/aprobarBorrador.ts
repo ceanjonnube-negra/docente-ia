@@ -44,6 +44,7 @@ import { camposDeHistorial } from '../asistente/documentos'
 import { crearUrlFirmada, BUCKET_HOJAS_SEGUIMIENTO } from '../documentGen/almacenamiento'
 import { nombreArchivoHoja } from '../documentGen/generarHojaSeguimientoPdf'
 import { enlacesArchivoPropio, marcarArchivoNoEntregado } from '../documentGen/registroArchivos'
+import { ajusteDelBorrador, ETIQUETA_AJUSTE, MENSAJE_AJUSTE_SIN_APROBACION } from './modificarPlaneacion'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
@@ -60,6 +61,8 @@ export type CodigoErrorAprobacion =
   | 'ERROR_GUARDADO'
   // Otra solicitud tiene la concesión de esta misma aprobación.
   | 'EN_PROCESO'
+  // Borrador de ajuste de una planeación guardada: no se aprueba como nueva.
+  | 'AJUSTE_PENDIENTE'
   // El mensaje del borrador aún no está persistido: no hay identidad.
   | 'BORRADOR_NO_PERSISTIDO'
 
@@ -99,6 +102,13 @@ export type ResultadoAprobacion =
 export type HojaAprobacion = { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string | null; reemplazada?: true }
 
 type TurnoHistorial = { role: string; content: string }
+
+async function esBorradorDeAjuste(sb: SupabaseClient, conversacionId: string | null, contenido: string): Promise<boolean> {
+  if (new RegExp(`^${ETIQUETA_AJUSTE}:`, 'mi').test(contenido)) return true
+  if (!conversacionId) return false
+  const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
+  return ajusteDelBorrador(contenido, (data as { planeacion_activa?: unknown } | null)?.planeacion_activa ?? null) !== null
+}
 
 // Estado final visible tras una aprobación completa y exitosa. Único
 // valor real del esquema (EstadoPlaneacion) distinto de 'borrador'
@@ -415,6 +425,13 @@ export async function aprobarBorradorPlaneacion(
   }
   if (seleccion.estado === 'sin_borrador') {
     return { ok: false, codigo: 'SIN_BORRADOR', mensaje: 'No encontré un borrador de planeación listo para guardar en esta conversación. ¿Quieres que prepare uno?' }
+  }
+  // Un borrador de AJUSTE de una planeación guardada (Hito 2, etapa 3a)
+  // nunca se guarda como planeación nueva: se reconoce por la metadata del
+  // servidor (huella registrada en la conversación) o por su línea de
+  // resumen. Su publicación como versión N+1 es la etapa 3b.
+  if (await esBorradorDeAjuste(sb, conversacionId, seleccion.contenido)) {
+    return { ok: false, codigo: 'AJUSTE_PENDIENTE', mensaje: MENSAJE_AJUSTE_SIN_APROBACION }
   }
   const resumen = seleccion.resumen
 

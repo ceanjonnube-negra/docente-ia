@@ -195,7 +195,10 @@ export function trabajadasEnRango<T extends { fecha_inicio: string | null; fecha
 // ------------------------------------------------------------------
 // intencion 'modificar': las opciones pendientes vienen de una petición de
 // modificar (al elegir, se responde que aún no está disponible).
-export type ReferenciaPlaneacion = { esquema: 'referencia-planeacion-v1'; planeacionId: string | null; numero: number | null; opciones: string[]; intencion?: 'modificar' }
+// instruccionPendiente: el cambio pedido mientras se aclara a qué planeación
+// (o desde qué versión) se aplica. ajustes: identidad de los borradores de
+// ajuste (modificarPlaneacion.ts), que se conserva al reescribir la referencia.
+export type ReferenciaPlaneacion = { esquema: 'referencia-planeacion-v1'; planeacionId: string | null; numero: number | null; opciones: string[]; intencion?: 'modificar'; instruccionPendiente?: string; ajustes?: unknown[] }
 
 export function esReferenciaPlaneacion(v: unknown): v is ReferenciaPlaneacion {
   const r = v as Partial<ReferenciaPlaneacion> | null
@@ -213,7 +216,10 @@ export async function leerReferenciaPlaneacion(sb: SupabaseClient, conversacionI
 // Mejor esfuerzo: si no se guarda, la consulta igual se entrega.
 export async function guardarReferenciaPlaneacion(sb: SupabaseClient, conversacionId: string | null, ref: Omit<ReferenciaPlaneacion, 'esquema'>): Promise<void> {
   if (!conversacionId) return
-  const { error } = await sb.from('conversaciones_chat').update({ planeacion_activa: { esquema: 'referencia-planeacion-v1', ...ref } }).eq('id', conversacionId)
+  // Conserva los ajustes registrados (identidad de borradores de ajuste).
+  const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
+  const ajustes = (data as { planeacion_activa?: { ajustes?: unknown } | null } | null)?.planeacion_activa?.ajustes
+  const { error } = await sb.from('conversaciones_chat').update({ planeacion_activa: { esquema: 'referencia-planeacion-v1', ...ref, ...(Array.isArray(ajustes) ? { ajustes } : {}) } }).eq('id', conversacionId)
   if (error) console.error('[PLANEACION_CONSULTA] no se pudo guardar la referencia de la conversación:', error.message)
 }
 
@@ -294,6 +300,11 @@ export function ultimaRespuestaEsPregunta(historial: { role: string; content: st
   return !!ultima && (ultima.content.includes(PREGUNTA_ELEGIR) || ultima.content.includes(PREGUNTA_ELEGIR_MODIFICAR))
 }
 
+export const PREGUNTA_CAMBIO = '¿Qué cambio quieres hacer en'
+export function preguntaCambio(nombre: string): string {
+  return `${PREGUNTA_CAMBIO} «${nombre}»?`
+}
+
 export function mensajeModificacionNoDisponible(nombre: string): string {
   return `Todavía no puedo modificar «${nombre}» desde el Chat. Puedo mostrártela o darte sus archivos originales.`
 }
@@ -314,6 +325,91 @@ export function mensajeModificacionNoDisponible(nombre: string): string {
 //   3. "…la planeación" sin documentos en la conversación: la planeación
 //      en contexto (referencia) → bloqueo; si no hay, se pide su nombre.
 // null = no se refiere a una planeación guardada: sigue el flujo normal.
+// Resultado de resolver una modificación: un ajuste listo para generarse
+// (planeación del docente y grupo activo; se parte de su versión vigente) o
+// un texto (aclaración breve). null = no es sobre una planeación guardada.
+export type ResolucionAjuste =
+  | { tipo: 'texto'; texto: string }
+  | { tipo: 'ajuste'; planeacion: Planeacion; instruccion: string; numeroConsultado: number | null }
+
+const AFIRMACION = /^(si|sí|si por favor|claro|de acuerdo|ok|okay|adelante|hazlo|aplicalo|aplicala|esa|esa misma|la vigente)\.?$/
+
+async function planeacionesDelGrupo(sb: SupabaseClient, grupoId: string): Promise<Planeacion[]> {
+  const r = await listarPlaneaciones({ supabase: sb }, { grupo_id: grupoId })
+  if (!r.ok) throw new Error(r.error.mensaje)
+  return r.datos
+}
+
+// Ajuste sobre una planeación ya identificada. Si el docente nombró una
+// versión que no es la vigente, se aclara (los ajustes parten siempre de la
+// vigente) antes de generar nada.
+async function ajusteSobre(sb: SupabaseClient, conversacionId: string | null, p: Planeacion, instruccion: string, mensaje: string): Promise<ResolucionAjuste> {
+  const ref = await leerReferenciaPlaneacion(sb, conversacionId)
+  const pedida = versionEnTexto(normalizar(mensaje))
+  const numeroPedido = typeof pedida === 'number' ? pedida : pedida === 'original' ? 1 : pedida === 'anterior' ? p.version - 1 : null
+  if (numeroPedido !== null && numeroPedido !== p.version) {
+    await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: p.id, numero: p.version, opciones: [], intencion: 'modificar', instruccionPendiente: instruccion })
+    return { tipo: 'texto', texto: `Los ajustes parten siempre de la versión vigente de «${p.nombre}», que es la ${p.version}; la versión ${numeroPedido} se conserva tal cual. ¿Aplico el cambio sobre la versión ${p.version}? Si querías partir de lo que tenía la versión ${numeroPedido}, dime qué recuperar de ella.` }
+  }
+  return { tipo: 'ajuste', planeacion: p, instruccion, numeroConsultado: ref?.planeacionId === p.id ? ref.numero : null }
+}
+
+// Respuesta a una aclaración pendiente ("la 2", "sí"): aplica la
+// instrucción guardada a la planeación elegida.
+// Respuesta natural a "¿Qué cambio quieres hacer en «X»?" ("que dure 3
+// días", "más dinámicas", "para trabajar en equipos", "con menos
+// materiales", "solo la segunda sesión"): sin verbo de modificación. Es una
+// instrucción para X salvo que sea una consulta, crear algo nuevo, otro
+// tema u otra pregunta, una negativa o un mensaje largo. Determinista.
+const RESPUESTA_CAMBIO = /^(que|con|sin|para|mas|menos|solo|solamente|unicamente|nada mas|en (el|la|los|las)|el|la|los|las|un|una|unos|unas|y|tambien|agregale|ponle|quitale|incluye|incluir|usa|usar|usando|mejor|otra|otro|otras|otros)\b/
+const NUEVO_TEMA = /\b(asistencia|pasa lista|pasar lista|incidencias?|registra|registrar|calificaciones?|calendario escolar|recordatorios?|muestrame|ensename|busca|buscar|cuantos|cuantas|olvidalo|cancela|cancelalo|cancelar)\b/
+const NEGATIVA = /^(no|nada|ninguno|ninguna|ya no|mejor no|gracias|hola|adios|asi esta bien)( (gracias|por ahora|asi esta bien))?\.?$/
+export function esRespuestaDeCambio(mensaje: string, hoy: string): boolean {
+  const n = normalizar(mensaje)
+  if (!n || n.split(/\s+/).length > 30 || /\?/.test(mensaje) && !pideModificar(mensaje)) return false
+  if (NEGATIVA.test(n) || GENERAR.test(n) || NUEVO_TEMA.test(n) || detectarConsultaPlaneacion(mensaje, hoy)) return false
+  return pideModificar(mensaje) || RESPUESTA_CAMBIO.test(n)
+}
+
+export async function resolverAjustePendiente(entrada: { sb: SupabaseClient; grupoId: string; conversacionId: string | null; mensaje: string; historial: { role: string; content: string }[]; hoy?: string }): Promise<ResolucionAjuste | null> {
+  const { sb, grupoId, conversacionId, mensaje } = entrada
+  const ultima = [...entrada.historial].reverse().find((h) => h.role === 'assistant')
+  if (ultima?.content.startsWith(PREGUNTA_CAMBIO)) {
+    if (!esRespuestaDeCambio(mensaje, entrada.hoy ?? new Date().toISOString().slice(0, 10))) return null
+    const ref = await leerReferenciaPlaneacion(sb, conversacionId)
+    const p = ref?.intencion === 'modificar' && ref.planeacionId ? (await planeacionesDelGrupo(sb, grupoId)).find((x) => x.id === ref.planeacionId) ?? null : null
+    return p ? ajusteSobre(sb, conversacionId, p, mensaje, mensaje) : null
+  }
+  const indice = seleccionEnTexto(mensaje)
+  const afirma = AFIRMACION.test(normalizar(mensaje))
+  if (indice === null && !afirma) return null
+  const ref = await leerReferenciaPlaneacion(sb, conversacionId)
+  if (ref?.intencion !== 'modificar' || !ref.instruccionPendiente) return null
+  const todas = await planeacionesDelGrupo(sb, grupoId)
+  let elegida: Planeacion | null = null
+  if (indice !== null && ref.opciones.length > 0 && ultimaRespuestaEsPregunta(entrada.historial)) {
+    const id = indice === -1 ? ref.opciones[ref.opciones.length - 1] : ref.opciones[indice - 1]
+    elegida = todas.find((p) => p.id === id) ?? null
+    if (!elegida) return { tipo: 'texto', texto: `Elige un número del 1 al ${ref.opciones.length}.` }
+  } else if (afirma && ref.planeacionId) {
+    elegida = todas.find((p) => p.id === ref.planeacionId) ?? null
+  }
+  if (!elegida) return null
+  return { tipo: 'ajuste', planeacion: elegida, instruccion: ref.instruccionPendiente, numeroConsultado: null }
+}
+
+// Resuelve en el servidor a qué planeación GUARDADA se refiere
+// "cambia…/modifica…" (también sin documento activo en el cliente), para
+// que nunca caiga en crear una planeación nueva. Referente, en este orden:
+//   1. Nombre citado: si es el borrador vigente de la conversación, edición
+//      normal (null); si coincide con planeaciones guardadas del docente y
+//      grupo activo: una → ajuste; varias → pregunta breve (la instrucción
+//      queda pendiente).
+//   2. Sin nombre: el ÚLTIMO documento de la conversación. Borrador →
+//      edición normal (null). La planeación guardada mostrada aquí (su
+//      texto canónico, según la referencia persistida) → ajuste.
+//   3. "…la planeación" sin documentos: la planeación en contexto
+//      (referencia) → ajuste; si no hay, se pide su nombre.
 export async function resolverModificacionGuardada(entrada: {
   sb: SupabaseClient
   grupoId: string
@@ -322,7 +418,7 @@ export async function resolverModificacionGuardada(entrada: {
   mensaje: string
   voz?: boolean
   zonaHoraria?: string | null
-}): Promise<string | null> {
+}): Promise<ResolucionAjuste | null> {
   const { sb, grupoId, conversacionId, historial, mensaje } = entrada
   if (!pideModificar(mensaje)) return null
   const n = normalizar(mensaje)
@@ -330,29 +426,21 @@ export async function resolverModificacionGuardada(entrada: {
   const nombre = SUSTANTIVO.test(n) ? nombreTrasPlaneacion(mensaje) : ''
   const ultimoDocumento = [...historial].reverse().find((h) => h.role === 'assistant' && (esBorradorPlaneacion(h.content) || esDocumentoFormal(h.content)))
   const borrador = ultimoDocumento && esBorradorPlaneacion(ultimoDocumento.content) ? ultimoDocumento : null
-  const listar = async () => {
-    const r = await listarPlaneaciones({ supabase: sb }, { grupo_id: grupoId })
-    if (!r.ok) throw new Error(r.error.mensaje)
-    return r.datos
-  }
-  const bloquear = async (p: Planeacion) => {
-    await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: p.id, numero: p.version, opciones: [] })
-    return mensajeModificacionNoDisponible(p.nombre)
-  }
+  const ajustar = (p: Planeacion) => ajusteSobre(sb, conversacionId, p, mensaje, mensaje)
 
   if (palabras(nombre).length > 0) {
     const nombreBorrador = borrador ? extraerResumenBorrador([{ role: 'assistant', content: borrador.content }])?.nombre : null
     if (nombreBorrador && coincidenciasPorNombre([{ nombre: nombreBorrador }], nombre).length > 0) return null
-    const coincidencias = coincidenciasPorNombre(await listar(), nombre)
+    const coincidencias = coincidenciasPorNombre(await planeacionesDelGrupo(sb, grupoId), nombre)
     if (coincidencias.length === 0) return null
-    if (coincidencias.length === 1) return bloquear(coincidencias[0])
-    await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: null, numero: null, opciones: coincidencias.slice(0, MAXIMO_OPCIONES).map((p) => p.id), intencion: 'modificar' })
-    return textoOpciones(`Encontré ${coincidencias.length} planeaciones guardadas con ese nombre.`, coincidencias, entrada.voz ?? false, PREGUNTA_ELEGIR_MODIFICAR, entrada.zonaHoraria)
+    if (coincidencias.length === 1) return ajustar(coincidencias[0])
+    await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: null, numero: null, opciones: coincidencias.slice(0, MAXIMO_OPCIONES).map((p) => p.id), intencion: 'modificar', instruccionPendiente: mensaje })
+    return { tipo: 'texto', texto: textoOpciones(`Encontré ${coincidencias.length} planeaciones guardadas con ese nombre.`, coincidencias, entrada.voz ?? false, PREGUNTA_ELEGIR_MODIFICAR, entrada.zonaHoraria) }
   }
 
   if (borrador) return null
   const consultada = await versionConsultada(sb, conversacionId)
-  const enContexto = consultada ? (await listar()).find((p) => p.id === consultada.planeacion_id) ?? null : null
+  const enContexto = consultada ? (await planeacionesDelGrupo(sb, grupoId)).find((p) => p.id === consultada.planeacion_id) ?? null : null
   if (ultimoDocumento) {
     // La planeación consultada es el referente si el mensaje habla de
     // partes de una planeación, o si la señala con un pronombre
@@ -360,11 +448,19 @@ export async function resolverModificacionGuardada(entrada: {
     // grupo a cuarto" no la señala.
     const inmediata = [...historial].reverse().find((h) => h.role === 'assistant') === ultimoDocumento
     const hablaDePlaneacion = SUSTANTIVO.test(n) || PARTES_PLANEACION.test(n) || (inmediata && SENALA_DOCUMENTO.test(n))
-    return enContexto && contieneContenidoConsultado(ultimoDocumento.content, consultada) && hablaDePlaneacion ? bloquear(enContexto) : null
+    return enContexto && contieneContenidoConsultado(ultimoDocumento.content, consultada) && hablaDePlaneacion ? ajustar(enContexto) : null
   }
   if (!SUSTANTIVO.test(n)) return null
-  if (enContexto) return bloquear(enContexto)
-  return (await listar()).length > 0 ? '¿Qué planeación guardada quieres modificar? Dime su nombre.' : null
+  if (enContexto) return ajustar(enContexto)
+  return (await planeacionesDelGrupo(sb, grupoId)).length > 0 ? { tipo: 'texto', texto: '¿Qué planeación guardada quieres modificar? Dime su nombre.' } : null
+}
+
+// Ajuste pedido editando el texto de una planeación consultada (documento
+// activo del cliente): el referente es la planeación de esa versión, del
+// docente y grupo activo; el texto del cliente NO se usa como base.
+export async function ajusteDesdeConsultada(sb: SupabaseClient, grupoId: string, conversacionId: string | null, planeacionId: string, instruccion: string): Promise<ResolucionAjuste | null> {
+  const p = (await planeacionesDelGrupo(sb, grupoId)).find((x) => x.id === planeacionId)
+  return p ? ajusteSobre(sb, conversacionId, p, instruccion, instruccion) : null
 }
 
 export const MENSAJE_MODIFICAR_NO_DISPONIBLE = 'Por ahora puedo mostrarte tus planeaciones guardadas, pero todavía no modificarlas desde el Chat. Puedo enseñarte otra versión o sus archivos originales.'

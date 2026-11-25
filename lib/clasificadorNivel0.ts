@@ -219,6 +219,13 @@ export function clasificacionConsultaPlaneacion(c: ConsultaPlaneacion): Clasific
   };
 }
 
+// Ajuste de una planeación GUARDADA ya resuelto de forma determinista
+// (resolverModificacionGuardada): sin clasificador; la única llamada de IA
+// es la generación del borrador ajustado.
+export function clasificacionAjustePlaneacion(): ClasificacionNivel0 {
+  return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 4, requiere_ia: true, requiere_contexto_memoria: true, accion_planeacion_generar: 'ajustar', datos_faltantes: [], nivel_confianza: 1 };
+}
+
 export function clasificacionAprobarPlaneacion(): ClasificacionNivel0 {
   return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 1, requiere_ia: false, accion_planeacion_generar: 'aprobar', nivel_confianza: 1 };
 }

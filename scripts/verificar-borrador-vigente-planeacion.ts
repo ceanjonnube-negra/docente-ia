@@ -110,9 +110,13 @@ verificar(seleccionarBorradorVigente([a('📝 EXAMEN DE CIENCIAS\n\n1. …')]).e
   // La aprobación lee mensajes_chat SOLO para la identidad del borrador
   // (el id persistido del mensaje), nunca para elegir el borrador.
   const lecturasMensajes = aprobar.match(/\.from\('mensajes_chat'\)[\s\S]{0,40}\.select\('[^']*'\)/g) ?? []
-  verificar(!/mensajes_chat|conversaciones_chat|conversacionId/.test(extraer) && !/conversaciones_chat/.test(aprobar)
+  // Hito 2 (3a): la aprobación lee conversaciones_chat SOLO para saber si el borrador es un ajuste
+  // de una planeación guardada (planeacion_activa), nunca para elegir el borrador.
+  const lecturasConversacion = aprobar.match(/\.from\('conversaciones_chat'\)[\s\S]{0,40}\.select\('[^']*'\)/g) ?? []
+  verificar(!/mensajes_chat|conversaciones_chat|conversacionId/.test(extraer)
+    && lecturasConversacion.length === 1 && lecturasConversacion[0].endsWith(".select('planeacion_activa')") && aprobar.indexOf(".from('conversaciones_chat')") > aprobar.indexOf('async function esBorradorDeAjuste')
     && lecturasMensajes.length === 1 && lecturasMensajes[0].endsWith(".select('id')"),
-    '10a. La selección del borrador usa solo el historial recibido; la aprobación lee de mensajes_chat únicamente el id (identidad)')
+    '10a. La selección del borrador usa solo el historial recibido; la aprobación lee de mensajes_chat únicamente el id (identidad) y de la conversación solo si el borrador es un ajuste')
   verificar(seleccionarBorradorVigente([u('Apruébala')]).estado === 'sin_borrador' && nombreDe(seleccionarBorradorVigente([a(A)])) === 'Los insectos', '10b. Función pura: el resultado depende solo del historial que se le pasa')
 }
 

@@ -54,7 +54,7 @@ import {
   firmarOriginalPropio,
   guardarReferenciaPlaneacion,
   leerReferenciaPlaneacion,
-  mensajeModificacionNoDisponible,
+  preguntaCambio,
   rangoDeFechasEnTexto,
   rangoLegible,
   textoOpciones,
@@ -421,9 +421,9 @@ const herramientaConsultarPlaneaciones = definir({
           const elegida = delGrupo(id ?? null)
           if (!elegida) return ok({ tipo: 'texto', texto: opciones.length > 0 ? `Elige un número del 1 al ${opciones.length}.` : MENSAJE_SIN_CONTEXTO })
           if (ref?.intencion === 'modificar') {
-            // Etapa 3 aún no habilitada: se identifica la planeación, sin modificarla.
-            await guardarReferenciaPlaneacion(ctx.sb, ctx.conversacionId ?? null, { planeacionId: elegida.id, numero: elegida.version, opciones: [] })
-            return ok({ tipo: 'texto', texto: mensajeModificacionNoDisponible(elegida.nombre) })
+            // Elegida la planeación a modificar sin un cambio pendiente: se pregunta cuál.
+            await guardarReferenciaPlaneacion(ctx.sb, ctx.conversacionId ?? null, { planeacionId: elegida.id, numero: elegida.version, opciones: [], intencion: 'modificar' })
+            return ok({ tipo: 'texto', texto: preguntaCambio(elegida.nombre) })
           }
           return ok(await mostrarPlaneacion(elegida, null, null, ctx))
         }

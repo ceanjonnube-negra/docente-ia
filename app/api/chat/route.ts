@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
-import { MENSAJE_MODIFICAR_NO_DISPONIBLE, contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
-import { MARCADOR_DOCUMENTO_RECUPERADO } from '@/lib/asistente/documentos'
+import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { ajusteDesdeConsultada, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
+import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorradorAjustado, contextoParaAjuste, continuarAjuste, huellaBorrador, registrarAjuste, ETIQUETA_AJUSTE, type BaseAjuste } from '@/lib/planeacion/modificarPlaneacion'
+import { contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
+import { MARCADOR_DOCUMENTO_RECUPERADO, documentoDeEdicion } from '@/lib/asistente/documentos'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -570,17 +572,17 @@ export async function POST(req: NextRequest) {
   // planeación consultada (p. ej. un cliente anterior): se atiende como
   // consulta, sin editar ni pasar por el clasificador.
   let consultaDesdeEdicion: string | null = null
+  // Modificar la planeación consultada desde su documento activo (Hito 2,
+  // etapa 3a): ajuste sobre su versión vigente, resuelto más abajo.
+  let ajusteDesdeEdicion: { planeacionId: string; instruccion: string } | null = null
   if (supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
     const textoDocumento = typeof finalizarArchivo?.documentoTexto === 'string' ? `${String(mensaje ?? '')}\n${finalizarArchivo.documentoTexto}` : String(mensaje ?? '')
     const consultada = await versionConsultada(supabaseUser, await conversacionPropia())
     if (consultada && contieneContenidoConsultado(textoDocumento, consultada)) {
       const instruccion = esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')
-      if (pideModificar(instruccion)) {
-        console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada')
-        return respuestaTexto(MENSAJE_MODIFICAR_NO_DISPONIBLE)
-      }
-      if (esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion(instruccion, fechaISOHoy(zonaHoraria))) consultaDesdeEdicion = instruccion
-      if (formatoOriginal) {
+      if (esEdicionDocumento && pideModificar(instruccion)) ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion }
+      else if (esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion(instruccion, fechaISOHoy(zonaHoraria))) consultaDesdeEdicion = instruccion
+      if (formatoOriginal && !ajusteDesdeEdicion) {
         console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} original de la versión ${consultada.numero} — sin regenerar`)
         return respuestaTexto(`${await respuestaArchivoOriginal(consultada, formatoOriginal, firmarOriginalPropio(userId))}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
       }
@@ -871,6 +873,8 @@ export async function POST(req: NextRequest) {
   // importar qué pasó dentro de ese try — mismo criterio ya usado por
   // requiereConsultaOficial.
   let esTurnoDeBorradorPlaneacion = false
+  // Ajuste de una planeación guardada en este turno (Hito 2, etapa 3a).
+  let ajusteDelTurno: { base: BaseAjuste; instruccion: string; avisoBase: string | null; conversacionId: string | null } | null = null
   // Contexto curricular cargado en este turno (solo servidor): con él se
   // validan, al terminar el streaming, las referencias que citó el modelo.
   let curricularDelTurno: ResultadoContextoCurricularPlaneacion | null = null
@@ -888,17 +892,30 @@ export async function POST(req: NextRequest) {
       const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion(String(mensaje ?? ''), {
         hayBorradorPlaneacion: historialMensajes.some((h) => h.role === 'assistant' && esBorradorPlaneacion(h.content)),
       })
-      // Modificar una planeación GUARDADA sin documento activo en el
-      // cliente (Hito 2): el referente se resuelve aquí, con el historial,
-      // la referencia de la conversación y las planeaciones del docente y
-      // grupo activo; nunca cae en crear una planeación nueva. La etapa 3
-      // aún no está habilitada: se bloquea o se pide aclarar. Un borrador
-      // en curso sigue su edición normal (null).
-      if (!esEdicionDocumento && !ordenAprobarPlaneacion && sesion.grupo_activo_id && pideModificar(String(mensaje ?? ''))) {
-        const respuestaModificacion = await resolverModificacionGuardada({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: await conversacionPropia(), historial: historialMensajes, mensaje: String(mensaje ?? ''), voz: channel === 'voice', zonaHoraria })
-        if (respuestaModificacion) {
-          console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada (sin documento activo)')
-          return respuestaTexto(respuestaModificacion)
+      // Ajuste de una planeación GUARDADA (Hito 2, etapa 3a): el referente
+      // se resuelve aquí, sin clasificador — instrucción pendiente de una
+      // aclaración ("la 2", "sí"), edición de la planeación consultada o
+      // "cambia…/modifica…" (nombre, último documento, referencia
+      // persistida; docente y grupo activo). Nunca cae en crear una
+      // planeación nueva. Un borrador en curso conserva su edición normal.
+      if (sesion.grupo_activo_id && !ordenAprobarPlaneacion) {
+        const conversacionAjuste = await conversacionPropia()
+        let resolucion: ResolucionAjuste | null = null
+        if (ajusteDesdeEdicion) resolucion = await ajusteDesdeConsultada(supabaseUser, sesion.grupo_activo_id, conversacionAjuste, ajusteDesdeEdicion.planeacionId, ajusteDesdeEdicion.instruccion)
+        else if (!esEdicionDocumento) {
+          resolucion = await resolverAjustePendiente({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: conversacionAjuste, mensaje: String(mensaje ?? ''), historial: historialMensajes, hoy: fechaISOHoy(zonaHoraria) })
+            ?? (pideModificar(String(mensaje ?? '')) ? await resolverModificacionGuardada({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: conversacionAjuste, historial: historialMensajes, mensaje: String(mensaje ?? ''), voz: channel === 'voice', zonaHoraria }) : null)
+        }
+        if (resolucion?.tipo === 'texto') return respuestaTexto(resolucion.texto)
+        if (resolucion?.tipo === 'ajuste') {
+          const base = await baseVigente(supabaseUser, resolucion.planeacion)
+          if (!base) return respuestaTexto(`«${resolucion.planeacion.nombre}» es una planeación anterior y no tengo su texto completo guardado, así que no puedo ajustarla con seguridad.`)
+          const avisoBase = resolucion.numeroConsultado !== null && resolucion.numeroConsultado !== base.numero ? `Estabas viendo la versión ${resolucion.numeroConsultado}; el ajuste parte de la versión vigente (${base.numero}).` : null
+          ajusteDelTurno = { base, instruccion: resolucion.instruccion, avisoBase, conversacionId: conversacionAjuste }
+          await guardarReferenciaPlaneacion(supabaseUser, conversacionAjuste, { planeacionId: base.planeacion.id, numero: base.numero, opciones: [] })
+          // El modelo recibe SOLO la instrucción; la base va en el contexto (nunca el texto del cliente).
+          mensajeConDocumento = resolucion.instruccion
+          console.log(`[PLANEACION_AJUSTE] ajuste de la versión ${base.numero} — sin clasificador`)
         }
       }
 
@@ -907,14 +924,16 @@ export async function POST(req: NextRequest) {
       // fue esa pregunta; pedir otra versión, solo con una planeación en
       // contexto en esta conversación.
       const textoConsulta = consultaDesdeEdicion ?? (!esEdicionDocumento ? String(mensaje ?? '') : null)
-      let consultaPlaneacion = textoConsulta !== null && !ordenAprobarPlaneacion ? detectarConsultaPlaneacion(textoConsulta, sesion.fecha_actual) : null
+      let consultaPlaneacion = textoConsulta !== null && !ordenAprobarPlaneacion && !ajusteDelTurno ? detectarConsultaPlaneacion(textoConsulta, sesion.fecha_actual) : null
       if (consultaPlaneacion?.tipo === 'seleccion' && !ultimaRespuestaEsPregunta(historialMensajes)) consultaPlaneacion = null
       if (consultaPlaneacion?.tipo === 'seleccion' || consultaPlaneacion?.tipo === 'version') {
         const referencia = await leerReferenciaPlaneacion(supabaseUser, await conversacionPropia())
         const aplica = consultaPlaneacion.tipo === 'seleccion' ? (referencia?.opciones.length ?? 0) > 0 : !!referencia?.planeacionId
         if (!aplica) consultaPlaneacion = null
       }
-      const clasificacion = ordenAprobarPlaneacion
+      const clasificacion = ajusteDelTurno
+        ? clasificacionAjustePlaneacion()
+        : ordenAprobarPlaneacion
         ? clasificacionAprobarPlaneacion()
         : consultaPlaneacion
           ? clasificacionConsultaPlaneacion(consultaPlaneacion)
@@ -1332,10 +1351,15 @@ export async function POST(req: NextRequest) {
             // evaluación vigente y trae un resumen de planeaciones previas
             // para evitar repetir tema — todo de solo lectura, sin
             // persistir nada en este paso.
+            // Ajuste de una planeación guardada: tema, fechas y duración de
+            // su versión vigente, salvo que la instrucción cambie fechas o
+            // duración (alcance global: se calculan como siempre).
+            const ajusteGlobal = ajusteDelTurno ? alcanceDeInstruccion(ajusteDelTurno.instruccion) === 'global' : false
+            const datosBase = ajusteDelTurno?.base.estructura.planeacion
             const { paraPrompt: resultadoGeneracion, curricularServidor } = await prepararContextoGeneracionPlaneacion(supabaseUser, sesion, {
-              tema: clasificacion.tema_planeacion,
-              fechaInicio: clasificacion.fecha_inicio_planeacion,
-              fechaFin: clasificacion.fecha_fin_planeacion,
+              tema: ajusteDelTurno ? ajusteDelTurno.base.planeacion.nombre : clasificacion.tema_planeacion,
+              fechaInicio: ajusteDelTurno && !ajusteGlobal ? datosBase?.fecha_inicio ?? ajusteDelTurno.base.planeacion.fecha_inicio : clasificacion.fecha_inicio_planeacion,
+              fechaFin: ajusteDelTurno && !ajusteGlobal ? datosBase?.fecha_fin ?? ajusteDelTurno.base.planeacion.fecha_fin : clasificacion.fecha_fin_planeacion,
               duracionDias: clasificacion.duracion_dias_planeacion,
               duracionSemanas: clasificacion.duracion_semanas_planeacion,
               momentoRelativo: clasificacion.momento_relativo_planeacion,
@@ -1345,6 +1369,8 @@ export async function POST(req: NextRequest) {
             curricularDelTurno = curricularServidor
             contextoEnriquecido += `\n\nCONTEXTO REAL PARA GENERAR LA PLANEACIÓN (usa estos datos, no inventes otros):\n${JSON.stringify(resultadoGeneracion)}`
             contextoEnriquecido += `\n\n${INSTRUCCIONES_PLANEACION_GENERAR}`
+            // La base canónica y las reglas del ajuste van al final: tienen prioridad.
+            if (ajusteDelTurno) contextoEnriquecido += `\n\n${contextoParaAjuste(ajusteDelTurno.base, ajusteDelTurno.instruccion)}`
             esTurnoDeBorradorPlaneacion = true
             console.log(
               `[NIVEL4][planeacion_generar] calendarioConsultado=true diasExcluidosPorCalendario=${resultadoGeneracion.eventosCalendarioDelPeriodo.length} cicloEscolarPresente=${!!sesion.ciclo_escolar_id} periodoEvaluacionPresente=${!!resultadoGeneracion.periodoEvaluacionActual} conflicto=${resultadoGeneracion.fechas.conflicto} totalDiasEfectivos=${resultadoGeneracion.fechas.totalDiasEfectivos}`
@@ -1998,7 +2024,31 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
         // Se añade al final del turno con la pregunta de cierre, y las
         // vistas previas usan el texto con la sección ya insertada. Sin IA
         // ni consultas adicionales; si algo falla, el borrador queda igual.
-        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && curricularDelTurno) {
+        // Hito 2, etapa 3a — borrador de AJUSTE de una planeación guardada:
+        // la sección curricular solo se recalcula si la instrucción la toca
+        // (si no, se conserva la de la base); después se restauran las
+        // secciones no pedidas, se calcula el resumen de cambios real y se
+        // registra la identidad del ajuste (metadata del servidor). Nada de
+        // la planeación aprobada, su proyecto ni su evaluación cambia.
+        if (esTurnoDeBorradorPlaneacion && ajusteDelTurno) {
+          try {
+            const alcance = alcanceDeInstruccion(ajusteDelTurno.instruccion)
+            let textoModelo = textoBorradorAcumulado
+            if (mencionaCurricular(ajusteDelTurno.instruccion) && curricularDelTurno) {
+              const completado = completarBorradorCurricular({ textoModelo, curricular: curricularDelTurno, textosDocente: [ajusteDelTurno.instruccion] })
+              if (completado) textoModelo = completado.textoParaVistaPrevia
+            }
+            const ajustado = construirBorradorAjustado({ textoModelo, base: ajusteDelTurno.base, instruccion: ajusteDelTurno.instruccion, avisoBase: ajusteDelTurno.avisoBase })
+            if (ajustado) {
+              controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(ajustado.textoFinal, 'utf-8').toString('base64')}]]`))
+              textoBorradorAcumulado = ajustado.textoFinal
+              await registrarAjuste(supabaseUser!, ajusteDelTurno.conversacionId, { planeacionId: ajusteDelTurno.base.planeacion.id, versionBase: ajusteDelTurno.base.numero, grupoId: ajusteDelTurno.base.planeacion.grupo_id, huella: huellaBorrador(ajustado.textoFinal) })
+              console.log(`[PLANEACION_AJUSTE] cambios=${ajustado.cambios.length} restauradas=${ajustado.restauradas.length} verificado=${ajustado.verificado}`)
+            }
+          } catch (e) {
+            console.error('[PLANEACION_AJUSTE] no se pudo completar el borrador ajustado:', e)
+          }
+        } else if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && curricularDelTurno) {
           try {
             const completado = completarBorradorCurricular({
               textoModelo: textoBorradorAcumulado,
@@ -2008,7 +2058,14 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
             if (completado) {
               // El texto final del mensaje (ver textoFinalChat.ts): el
               // cliente lo adopta en lugar del transmitido por el modelo.
-              controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(completado.textoFinal, 'utf-8').toString('base64')}]]`))
+              // Seguir corrigiendo un borrador de ajuste: hereda su identidad.
+              // Al editar desde el documento activo, el previo es el documento EXACTO reenviado.
+              const previo = esEdicionDocumento ? documentoDeEdicion(String(mensaje ?? '')) ?? '' : [...historialMensajes].reverse().find((h) => h.role === 'assistant' && h.content.includes('📎 RESUMEN PARA GUARDAR'))?.content ?? ''
+              const heredado = new RegExp(`^${ETIQUETA_AJUSTE}:`, 'mi').test(previo) && supabaseUser
+                ? await continuarAjuste(supabaseUser, await conversacionPropia(), previo, completado.textoFinal)
+                : null
+              const textoFinalTurno = heredado ?? completado.textoFinal
+              controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(textoFinalTurno, 'utf-8').toString('base64')}]]`))
               textoBorradorAcumulado = completado.textoParaVistaPrevia
               console.log(`[PLANEACION_GENERAR] seccionCurricular=${!!completado.identidad} contenidosDelCatalogo=${completado.identidad?.contenidos.length ?? 0}`)
             }

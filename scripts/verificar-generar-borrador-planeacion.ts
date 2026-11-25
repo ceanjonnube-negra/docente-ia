@@ -607,9 +607,11 @@ async function main() {
     verificar(ruta.includes('const { paraPrompt: resultadoGeneracion, curricularServidor } = await prepararContextoGeneracionPlaneacion(') && ruta.includes('${JSON.stringify(resultadoGeneracion)}')
       && !/JSON\.stringify\(curricularServidor|JSON\.stringify\(curricularDelTurno/.test(ruta),
       '28k. Al prompt solo va paraPrompt; los candidatos del servidor nunca se serializan')
-    const posterior = ruta.slice(ruta.indexOf('const completado = completarBorradorCurricular({'), ruta.indexOf('const completado = completarBorradorCurricular({') + 1400)
-    verificar(posterior.includes('curricular: curricularDelTurno,') && posterior.includes('controller.enqueue(encoder.encode(`\\n\\n[[TEXTO_FINAL:${Buffer.from(completado.textoFinal, \'utf-8\').toString(\'base64\')}]]`))') && posterior.includes('textoBorradorAcumulado = completado.textoParaVistaPrevia')
-      && ruta.indexOf('const completado = completarBorradorCurricular({') < ruta.indexOf('const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)'),
+    // Rama del borrador normal (la de un ajuste de planeación guardada va antes, con su propio texto final).
+    const inicioNormal = ruta.indexOf('const completado = completarBorradorCurricular({\n              textoModelo: textoBorradorAcumulado,')
+    const posterior = ruta.slice(inicioNormal, inicioNormal + 2200)
+    verificar(posterior.includes('curricular: curricularDelTurno,') && posterior.includes('const textoFinalTurno = heredado ?? completado.textoFinal') && posterior.includes('controller.enqueue(encoder.encode(`\\n\\n[[TEXTO_FINAL:${Buffer.from(textoFinalTurno, \'utf-8\').toString(\'base64\')}]]`))') && posterior.includes('textoBorradorAcumulado = completado.textoParaVistaPrevia')
+      && inicioNormal > 0 && inicioNormal < ruta.indexOf('const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)'),
       '28l. Tras el streaming: texto final normalizado (una sola sección curricular) para el Chat y las vistas previas')
     const t = INSTRUCCIONES_PLANEACION_GENERAR
     verificar(!/REFERENCIAS_CURRICULARES|"ref"/.test(t) && t.includes('Nunca escribas identificadores, códigos ni claves técnicas en el borrador') && t.includes('copia los textos EXACTAMENTE como vienen'),
