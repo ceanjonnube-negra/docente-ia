@@ -330,14 +330,14 @@ function clienteFalso(usuario: { id: string } | null, datos: Record<string, Fila
   return { sb: interno as unknown as SupabaseClient, interno }
 }
 
-const DOCENTE_1 = { id: 'docente-1' }
-const DOCENTE_2 = { id: 'docente-2' }
+const DOCENTE_1 = { id: 'd0000000-0000-4000-8000-000000000001' }
+const DOCENTE_2 = { id: 'd0000000-0000-4000-8000-000000000002' }
 
 function datosBase(): Record<string, Fila[]> {
   return {
     grupos: [
-      { id: 'grupo-1', docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' },
-      { id: 'grupo-2', docente_id: 'docente-2', ciclo_escolar_id: 'ciclo-2', institucion_id: 'institucion-2' },
+      { id: 'grupo-1', docente_id: 'd0000000-0000-4000-8000-000000000001', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' },
+      { id: 'grupo-2', docente_id: 'd0000000-0000-4000-8000-000000000002', ciclo_escolar_id: 'ciclo-2', institucion_id: 'institucion-2' },
     ],
     planeaciones: [],
     planeacion_proyectos: [],
@@ -349,15 +349,15 @@ function datosBase(): Record<string, Fila[]> {
       { grupo_id: 'grupo-2', estatus: 'activo', alumnos: { id: 'a2', nombre: 'Andrés Pérez', curp: null, sexo: 'H', fecha_nacimiento: null } },
     ],
     perfiles_docentes: [
-      { id: 'docente-1', escuela: 'Escuela de prueba', grado: '4°', grupo: 'B', ciclo_escolar: '2026-2027' },
-      { id: 'docente-2', escuela: 'Escuela de prueba', grado: '5°', grupo: 'A', ciclo_escolar: '2026-2027' },
+      { id: 'd0000000-0000-4000-8000-000000000001', escuela: 'Escuela de prueba', grado: '4°', grupo: 'B', ciclo_escolar: '2026-2027' },
+      { id: 'd0000000-0000-4000-8000-000000000002', escuela: 'Escuela de prueba', grado: '5°', grupo: 'A', ciclo_escolar: '2026-2027' },
     ],
   }
 }
 
 function sesion(overrides: Partial<SesionContexto> = {}): SesionContexto {
   return {
-    docente_id: 'docente-1',
+    docente_id: 'd0000000-0000-4000-8000-000000000001',
     institucion_id: 'institucion-1',
     ciclo_escolar_id: 'ciclo-1',
     grupo_activo_id: 'grupo-1',
@@ -424,13 +424,14 @@ configurarClienteRegistroArchivos({
   from: () => {
     let fila: Record<string, unknown> | null = null
     let cambios: Record<string, unknown> | null = null
+    let unica = false
     const filtros: [string, unknown][] = []
     const consulta = {
       insert: (d: Record<string, unknown>) => { fila = d; return consulta },
       update: (d: Record<string, unknown>) => { cambios = d; return consulta },
       select: () => consulta,
       eq: (c: string, v: unknown) => { filtros.push([c, v]); return consulta },
-      maybeSingle: () => consulta,
+      maybeSingle: () => { unica = true; return consulta },
       then: (ok: (r: unknown) => unknown) => {
         if (fila) {
           if ((fila.clase === 'efimero') !== (fila.conversacion_id != null)) return Promise.resolve({ error: { code: '23514', message: 'check' } }).then(ok)
@@ -442,11 +443,14 @@ configurarClienteRegistroArchivos({
         if (cambios && afectadas.some((f) => { const r = { ...f, ...cambios }; return (r.estado === 'activo') !== (r.activado_en != null) })) return Promise.resolve({ data: null, error: { code: '23514', message: 'archivos_generados_activo_con_fecha' } }).then(ok)
         if (cambios) afectadas.forEach((f) => Object.assign(f, cambios))
         if (cambios && (cambios as { estado?: string }).estado === 'activo' && afectadas.length > 0 && alConfirmarArchivo) { const g = alConfirmarArchivo; alConfirmarArchivo = null; g() }
+        if (unica && !cambios) return Promise.resolve({ data: afectadas[0] ?? null, error: null }).then(ok)
         return Promise.resolve({ data: afectadas.map((f) => ({ id: f.id, estado: f.estado })), error: null }).then(ok)
       },
     }
     return consulta
   },
+  // Enlaces firmados de un original (enlacesArchivoPropio): sin red.
+  storage: { from: () => ({ createSignedUrl: async (ruta: string) => ({ data: { signedUrl: `https://registro.local/${ruta}` }, error: null }) }) },
 } as never)
 
 // Conversación de prueba: el mensaje de cada borrador se persiste con un id
@@ -459,7 +463,7 @@ function persistirMensajesDePrueba(sb: SupabaseClient, historial: { role: string
   const tabla = (sb as unknown as ClienteSupabaseFalso)._tabla('mensajes_chat')
   historial.forEach((h, n) => {
     if (h.role !== 'assistant' || tabla.some((f) => f.id === idMensajePrueba(h.content))) return
-    tabla.push({ id: idMensajePrueba(h.content), conversacion_id: CONV_PRUEBA, docente_id: 'docente-1', rol: 'asistente', texto: h.content, creado_en: new Date(Date.UTC(2026, 7, 10, 10, 0, n + tabla.length)).toISOString() })
+    tabla.push({ id: idMensajePrueba(h.content), conversacion_id: CONV_PRUEBA, docente_id: 'd0000000-0000-4000-8000-000000000001', rol: 'asistente', texto: h.content, creado_en: new Date(Date.UTC(2026, 7, 10, 10, 0, n + tabla.length)).toISOString() })
   })
 }
 function aprobarBorradorPlaneacion(sb: SupabaseClient, s: SesionContexto, historial: { role: string; content: string }[], mensaje = '', conversacionId?: string | null) {
@@ -663,8 +667,8 @@ async function main() {
   {
     const { sb: sb1 } = clienteFalso(DOCENTE_1, datosBase())
     const { sb: sb2 } = clienteFalso(DOCENTE_2, datosBase())
-    const r1 = await aprobarBorradorPlaneacion(sb1, sesion({ docente_id: 'docente-1', grupo_activo_id: 'grupo-1' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
-    const r2 = await aprobarBorradorPlaneacion(sb2, sesion({ docente_id: 'docente-2', grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r1 = await aprobarBorradorPlaneacion(sb1, sesion({ docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_activo_id: 'grupo-1' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
+    const r2 = await aprobarBorradorPlaneacion(sb2, sesion({ docente_id: 'd0000000-0000-4000-8000-000000000002', grupo_activo_id: 'grupo-2' }), [{ role: 'assistant', content: BLOQUE_VALIDO }])
     verificar(r1.ok === true && r2.ok === true, '18. Cada docente guarda correctamente en su propio grupo, sin mezclar datos')
     if (r1.ok && r2.ok) verificar(r1.planeacion.docente_id !== r2.planeacion.docente_id, '18b. Las planeaciones quedan asociadas a docentes distintos')
   }
@@ -833,7 +837,7 @@ async function main() {
   // quedaron en el Storage simulado.
   {
     const datos = datosBase()
-    datos.perfiles_docentes[0] = { id: 'docente-1', escuela: 'Escuela Contraste AB', nombre: 'Docente Contraste', grado: '4°', grupo: 'A', ciclo_escolar: '2026-2027' }
+    datos.perfiles_docentes[0] = { id: 'd0000000-0000-4000-8000-000000000001', escuela: 'Escuela Contraste AB', nombre: 'Docente Contraste', grado: '4°', grupo: 'A', ciclo_escolar: '2026-2027' }
     const { sb, interno } = clienteFalso(DOCENTE_1, datos)
     const r = await aprobarBorradorPlaneacion(sb, sesion({ grupo_activo_datos: { grado: '4', grupo: 'B' } }), [{ role: 'assistant', content: BLOQUE_VALIDO }], 'Apruébala')
     verificar(r.ok === true, 'AB1. La aprobación con perfil 4° A y grupo efectivo 4 B se completa')
@@ -895,7 +899,7 @@ async function main() {
       return {
         ...d,
         ...extra,
-        grupos: [...d.grupos, ...curriculo.grupos.map((g) => ({ ...g, docente_id: 'docente-1', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' }))],
+        grupos: [...d.grupos, ...curriculo.grupos.map((g) => ({ ...g, docente_id: 'd0000000-0000-4000-8000-000000000001', ciclo_escolar_id: 'ciclo-1', institucion_id: 'institucion-1' }))],
         inscripciones: [...d.inscripciones, { grupo_id: 'grupo-3a', estatus: 'activo', alumnos: { id: 'a3', nombre: 'Carla Ruiz', curp: null, sexo: 'M', fecha_nacimiento: null } }, { grupo_id: 'grupo-4b', estatus: 'activo', alumnos: { id: 'a4', nombre: 'Diego Sol', curp: null, sexo: 'H', fecha_nacimiento: null } }, { grupo_id: 'grupo-sec', estatus: 'activo', alumnos: { id: 'a5', nombre: 'Elena Mar', curp: null, sexo: 'M', fecha_nacimiento: null } }],
         periodos_evaluacion: periodos,
       }
@@ -935,8 +939,8 @@ async function main() {
       verificar(ps.planeacion_proyecto_id === pp.id && ps.periodo_evaluacion_id === 'p1' && pl.periodo_evaluacion_id === 'p1' && ps.hoja_id === (pp.evaluacion.hoja_id as string),
         'H1e. Vínculos: proyecto de seguimiento → proyecto de planeación, periodo por fecha de inicio y su hoja canónica')
       const ev = pp.evaluacion as { documento_word?: { archivo_id?: string }; documento_pdf?: { archivo_id?: string } }
-      verificar(r.ok && !!r.documentoPlaneacion?.word.archivoId && r.documentoPlaneacion.word.archivoId === ev.documento_word?.archivo_id && !!r.documentoPlaneacion.pdf.archivoId && r.documentoPlaneacion.pdf.archivoId === ev.documento_pdf?.archivo_id
-        && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.word.archivoId) && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.pdf.archivoId),
+      verificar(r.ok && !!r.documentoPlaneacion?.word?.archivoId && r.documentoPlaneacion.word?.archivoId === ev.documento_word?.archivo_id && !!r.documentoPlaneacion.pdf?.archivoId && r.documentoPlaneacion.pdf?.archivoId === ev.documento_pdf?.archivo_id
+        && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.word?.archivoId) && registroArchivos.some((f) => f.id === r.documentoPlaneacion?.pdf?.archivoId),
         'H1f. Word y PDF conservan su archivoId real (registrados) en la respuesta y en los metadatos persistidos')
       const def = r.ok ? r.documentoPlaneacion?.contenidoDefinitivo ?? '' : ''
       verificar(def.split(ENCABEZADO_IDENTIDAD_VISIBLE).length === 2 && def.split(PDA_CUERPO).length === 2 && def.includes(`Fuente: ${ROTULO_PENDIENTE_VALIDACION}`) && !REGEX_TECNICO.test(def),
@@ -946,8 +950,8 @@ async function main() {
       const planWord = [...archivos].find(([k]) => k.startsWith('documentos-generados-ia/') && k.endsWith('.docx'))
       const xml = planWord ? await (await JSZip.loadAsync(planWord[1])).file('word/document.xml')!.async('string') : ''
       verificar(xml.split('CONTENIDOS Y PDA DE ESTA PLANEACIÓN').length === 2 && xml.includes(PDA_CUERPO.slice(0, 40)) && !/RESUMEN PARA GUARDAR|Deseas corregir/.test(xml), 'H1i. Word real: una sola sección curricular, sin resumen ni pregunta')
-      const hist = documentoParaHistorial('Listo, guardé la planeación de Cuidamos nuestro cuerpo.', { contenidoOriginal: def, archivos: [{ tipo: 'word', nombre: 'a.docx', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.word.archivoId : undefined, grupoAcademico: { grado: '3°', grupo: 'A' } }, { tipo: 'pdf', nombre: 'a.pdf', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.pdf.archivoId : undefined }] })
-      verificar(hist?.origen === 'archivo' && hist.archivo?.formato === 'word' && hist.archivo.id === (r.ok ? r.documentoPlaneacion?.word.archivoId : '') && hist.contenido === def,
+      const hist = documentoParaHistorial('Listo, guardé la planeación de Cuidamos nuestro cuerpo.', { contenidoOriginal: def, archivos: [{ tipo: 'word', nombre: 'a.docx', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.word?.archivoId : undefined, grupoAcademico: { grado: '3°', grupo: 'A' } }, { tipo: 'pdf', nombre: 'a.pdf', url: 'x', archivoId: r.ok ? r.documentoPlaneacion?.pdf?.archivoId : undefined }] })
+      verificar(hist?.origen === 'archivo' && hist.archivo?.formato === 'word' && hist.archivo.id === (r.ok ? r.documentoPlaneacion?.word?.archivoId : '') && hist.contenido === def,
         'H1j. Historial (B2): un solo registro de la planeación aprobada, vinculado al Word original; el PDF queda recuperable por su archivoId')
 
       // H2. Reintento: sin duplicados ni sobrescritura.
@@ -963,9 +967,9 @@ async function main() {
       const datos = datosCurriculares(baseCurricular(), PERIODOS)
       const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
       const consolidada = { esquema: 'planeacion-curricular-v1', marca: 'consolidada-antes' }
-      datos.planeaciones.push({ id: 'pl-prev', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
+      datos.planeaciones.push({ id: 'pl-prev', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
       datos.planeacion_proyectos.push({ id: 'pp-prev', planeacion_id: 'pl-prev', nombre: 'Cuidamos nuestro cuerpo', evaluacion: { trazabilidad_curricular: consolidada } })
-      datos.proyectos_seguimiento.push({ id: 'ps-prev', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: 'pp-prev', periodo_evaluacion_id: null })
+      datos.proyectos_seguimiento.push({ id: 'ps-prev', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: 'pp-prev', periodo_evaluacion_id: null })
       const { sb, interno } = clienteFalso(DOCENTE_1, datos)
       const r = await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
       const pp = interno._tabla('planeacion_proyectos') as { id: string; evaluacion: Record<string, unknown> }[]
@@ -978,7 +982,7 @@ async function main() {
     {
       const datos = datosCurriculares(baseCurricular(), PERIODOS)
       const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
-      datos.proyectos_seguimiento.push({ id: 'ps-otro', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: 'pp-de-otra', periodo_evaluacion_id: 'p2' })
+      datos.proyectos_seguimiento.push({ id: 'ps-otro', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', hoja_id: null, planeacion_proyecto_id: 'pp-de-otra', periodo_evaluacion_id: 'p2' })
       const { sb, interno } = clienteFalso(DOCENTE_1, datos)
       await aprobarBorradorPlaneacion(sb, ses('grupo-3a'), [{ role: 'assistant', content: mensaje }], 'Apruébala')
       const ps = interno._tabla('proyectos_seguimiento')[0] as { planeacion_proyecto_id: string; periodo_evaluacion_id: string }
@@ -1072,7 +1076,7 @@ async function main() {
       nueva.curriculo_pda = nueva.curriculo_pda.map((x) => (x.id === 'pda-2' ? { ...x, texto: 'Texto nuevo del PDA en la versión vigente.' } : x))
       const datos = datosCurriculares(nueva, PERIODOS)
       const WORD_PREVIO = '7a1b2c3d-0000-4000-8000-00000000aaaa'
-      datos.planeaciones.push({ id: 'pl-h8', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
+      datos.planeaciones.push({ id: 'pl-h8', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
       datos.planeacion_proyectos.push({ id: 'pp-h8', planeacion_id: 'pl-h8', nombre: 'Cuidamos nuestro cuerpo', contenidos: [TITULO], pda: [PDA_CUERPO], evaluacion: { trazabilidad_curricular: primera.trazabilidad, documento_word: { nombre: 'Plan.docx', url: 'https://fake-storage.local/previo.docx', archivo_id: WORD_PREVIO, grupo_academico: { grado: '3', grupo: 'A' } } } })
       const { sb, interno } = clienteFalso(DOCENTE_1, datos)
       const registrosAntes = registroArchivos.length
@@ -1088,16 +1092,16 @@ async function main() {
       verificar(pp.length === 1 && interno._tabla('planeaciones').length === 1 && interno._tabla('proyectos_seguimiento').length === 1 && interno._tabla('hojas_evaluacion').length === 1,
         'H8d. Sin proyectos, planeaciones ni hojas duplicados')
       verificar(pp[0].evaluacion.documento_word.archivo_id === WORD_PREVIO && registroArchivos.length === registrosAntes + 1 && !!pp[0].evaluacion.documento_pdf?.archivo_id
-        && r.ok && r.documentoPlaneacion?.word.archivoId === WORD_PREVIO && r.documentoPlaneacion.pdf.archivoId === pp[0].evaluacion.documento_pdf?.archivo_id,
+        && r.ok && r.documentoPlaneacion?.word?.archivoId === WORD_PREVIO && r.documentoPlaneacion.pdf?.archivoId === pp[0].evaluacion.documento_pdf?.archivo_id,
         'H8e. El Word ya registrado se reutiliza; solo se genera y registra el PDF que faltaba')
       const reg = registroArchivos[registroArchivos.length - 1] as { docente_id?: string; clase?: string }
-      verificar(reg.docente_id === 'docente-1' && reg.clase === 'conservar', 'H8f. El archivo nuevo queda registrado a nombre del docente y protegido (conservar)')
+      verificar(reg.docente_id === 'd0000000-0000-4000-8000-000000000001' && reg.clase === 'conservar', 'H8f. El archivo nuevo queda registrado a nombre del docente y protegido (conservar)')
     }
     // H9. Proyecto anterior sin trazabilidad y con otros contenidos: no se reconstruye por aproximación.
     for (const [contenidosPrevios, coincide, etiqueta] of [[['Otro contenido distinto'], false, 'no coincide'], [[TITULO], true, 'coincide']] as [string[], boolean, string][]) {
       const datos = datosCurriculares(baseCurricular(), PERIODOS)
       const mensaje = await borradorParte2(datos, 'grupo-3a', TITULO)
-      datos.planeaciones.push({ id: 'pl-h9', docente_id: 'docente-1', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
+      datos.planeaciones.push({ id: 'pl-h9', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-3a', nombre: 'Cuidamos nuestro cuerpo', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Saberes y Pensamiento Científico', borrador_clave: claveDePrueba(mensaje), aprobacion_token: null, aprobacion_expira_en: null })
       datos.planeacion_proyectos.push({ id: 'pp-h9', planeacion_id: 'pl-h9', nombre: 'Cuidamos nuestro cuerpo', contenidos: contenidosPrevios, pda: coincide ? [PDA_CUERPO] : [], evaluacion: {} })
       const { sb, interno } = clienteFalso(DOCENTE_1, datos)
       const registrosAntes = registroArchivos.length
@@ -1111,7 +1115,7 @@ async function main() {
     //    20261125000000): mensaje persistido, concesión atómica y relaciones únicas.
     {
       const MSG = BLOQUE_VALIDO
-      const mensajeChat = (conv: string, id: string, creado: string) => ({ id: `${conv}:${id}`, conversacion_id: conv, docente_id: 'docente-1', rol: 'asistente', texto: MSG, creado_en: creado })
+      const mensajeChat = (conv: string, id: string, creado: string) => ({ id: `${conv}:${id}`, conversacion_id: conv, docente_id: 'd0000000-0000-4000-8000-000000000001', rol: 'asistente', texto: MSG, creado_en: creado })
       const conteo = (interno: ClienteSupabaseFalso) => ['planeaciones', 'planeacion_proyectos', 'proyectos_seguimiento', 'hojas_evaluacion'].map((t) => interno._tabla(t).length).join(',')
       const aprobar = (sb: SupabaseClient, conv: string | null) => aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: MSG }], 'Apruébala', conv)
       const CONV_A = '0a000000-0000-4000-8000-00000000000a', CONV_B = '0b000000-0000-4000-8000-00000000000b'
@@ -1167,7 +1171,7 @@ async function main() {
       for (const [vencida, etiqueta] of [[false, 'vigente'], [true, 'vencida']] as [boolean, string][]) {
         const datos = datosBase()
         ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
-        datos.planeaciones.push({ id: 'pl-i4', docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes',
+        datos.planeaciones.push({ id: 'pl-i4', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes',
           borrador_clave: `msg:${CONV_A}:msg-1`, aprobacion_token: 'otro-proceso', aprobacion_expira_en: new Date(Date.now() + (vencida ? -1000 : 60_000)).toISOString() })
         const { sb, interno } = clienteFalso(DOCENTE_1, datos)
         const r = await aprobar(sb, CONV_A)
@@ -1180,8 +1184,8 @@ async function main() {
       {
         const datos = datosBase()
         ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
-        datos.planeaciones.push({ id: 'pl-hist', docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 1, estado: 'publicada', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes' })
-        datos.planeaciones.push({ id: 'pl-hist-0', docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes' })
+        datos.planeaciones.push({ id: 'pl-hist', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 1, estado: 'publicada', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes' })
+        datos.planeaciones.push({ id: 'pl-hist-0', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-1', nombre: 'Leyendas de mi comunidad', fecha_inicio: '2026-08-10', fecha_fin: '2026-08-21', version: 0, estado: 'borrador', institucion_id: 'institucion-1', ciclo_escolar_id: 'ciclo-1', campo_formativo: 'Lenguajes' })
         const { sb, interno } = clienteFalso(DOCENTE_1, datos)
         const r = await aprobar(sb, CONV_A)
         const pl = interno._tabla('planeaciones') as { id: string; version: number }[]
@@ -1191,7 +1195,7 @@ async function main() {
 
       // I6. La identidad por mensaje exige la conversación validada.
       {
-        const { sb } = clienteFalso(DOCENTE_1, { ...datosBase(), mensajes_chat: [{ id: `${CONV_B}:msg-1`, conversacion_id: CONV_A, docente_id: 'docente-1', rol: 'asistente', texto: MSG, creado_en: '2026-08-10T10:00:00Z' }] })
+        const { sb } = clienteFalso(DOCENTE_1, { ...datosBase(), mensajes_chat: [{ id: `${CONV_B}:msg-1`, conversacion_id: CONV_A, docente_id: 'd0000000-0000-4000-8000-000000000001', rol: 'asistente', texto: MSG, creado_en: '2026-08-10T10:00:00Z' }] })
         verificar(await resolverIdentidadBorrador(sb, CONV_A, MSG) === null && await resolverIdentidadBorrador(sb, null, MSG) === null,
           'I6. Un id de mensaje que no pertenece a la conversación, o la falta de conversación, no dan identidad')
       }
@@ -1204,7 +1208,7 @@ async function main() {
         const r1 = await aprobar(sb, CONV_A)
         const antes = { conteo: conteo(interno), archivos: registroArchivos.length, storage: (interno['archivosStorage'] as Map<string, Buffer>).size, historial: interno._tabla('documentos_generados').length }
         const r2 = await aprobar(sb, CONV_A) // mismo historial: el docente no recibió la confirmación
-        verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word.archivoId === r1.documentoPlaneacion?.word.archivoId && r2.documentoPlaneacion?.pdf.archivoId === r1.documentoPlaneacion?.pdf.archivoId
+        verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word?.archivoId === r1.documentoPlaneacion?.word?.archivoId && r2.documentoPlaneacion?.pdf?.archivoId === r1.documentoPlaneacion?.pdf?.archivoId
           && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
           'I8a. El reintento recupera la planeación existente con sus tarjetas originales (mismos archivoId, hoja y contenido)')
         verificar(conteo(interno) === antes.conteo && registroArchivos.length === antes.archivos && (interno['archivosStorage'] as Map<string, Buffer>).size === antes.storage && interno._tabla('documentos_generados').length === antes.historial,
@@ -1213,9 +1217,9 @@ async function main() {
         // I9. Historial canónico escrito por el servidor, una sola vez.
         const doc1 = r1.ok ? r1.documentoPlaneacion : null
         const hist = interno._tabla('documentos_generados') as { archivo_id: string; archivo_formato: string; origen: string; user_id: string; contenido: string }[]
-        verificar(hist.length === 1 && hist[0].archivo_id === doc1?.word.archivoId && hist[0].archivo_formato === 'word' && hist[0].origen === 'archivo' && hist[0].user_id === 'docente-1' && hist[0].contenido === doc1?.contenidoDefinitivo,
+        verificar(hist.length === 1 && hist[0].archivo_id === doc1?.word?.archivoId && hist[0].archivo_formato === 'word' && hist[0].origen === 'archivo' && hist[0].user_id === 'd0000000-0000-4000-8000-000000000001' && hist[0].contenido === doc1?.contenidoDefinitivo,
           'I9a. El servidor registra la planeación en Historial (vinculada a su Word), sin depender de que el cliente reciba la respuesta')
-        const { error } = await sb.from('documentos_generados').insert({ user_id: 'docente-1', contenido: 'x', archivo_id: doc1?.word.archivoId, archivo_formato: 'word', origen: 'archivo' }) as { error: { code?: string } | null }
+        const { error } = await sb.from('documentos_generados').insert({ user_id: 'd0000000-0000-4000-8000-000000000001', contenido: 'x', archivo_id: doc1?.word?.archivoId, archivo_formato: 'word', origen: 'archivo' }) as { error: { code?: string } | null }
         verificar(error?.code === '23505' && interno._tabla('documentos_generados').length === 1, 'I9b. Un segundo registro del mismo original (p. ej. el del cliente) choca con el índice único: nunca hay duplicados')
       }
 
@@ -1269,8 +1273,8 @@ async function main() {
         const historialConfirmado = [{ role: 'assistant', content: MSG }, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: confirmacion }]
         const antes = { conteo: conteo(interno), archivos: registroArchivos.length, storage: (interno['archivosStorage'] as Map<string, Buffer>).size, historial: interno._tabla('documentos_generados').length, escrituras: interno.escrituras.length }
         const r2 = await aprobarBorradorPlaneacion(sb, sesion(), historialConfirmado, 'Aprueba y guarda esta planeación.', CONV_A)
-        verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word.archivoId === r1.documentoPlaneacion?.word.archivoId
-          && r2.documentoPlaneacion?.pdf.archivoId === r1.documentoPlaneacion?.pdf.archivoId && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url
+        verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word?.archivoId === r1.documentoPlaneacion?.word?.archivoId
+          && r2.documentoPlaneacion?.pdf?.archivoId === r1.documentoPlaneacion?.pdf?.archivoId && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url
           && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
           'I13a. Con la confirmación en el historial, se recuperan las tarjetas originales (misma planeación, Word, PDF, hoja y contenido)')
         verificar(conteo(interno) === antes.conteo && registroArchivos.length === antes.archivos && (interno['archivosStorage'] as Map<string, Buffer>).size === antes.storage
@@ -1288,7 +1292,7 @@ async function main() {
       {
         const datos = datosBase()
         ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
-        const { sb, interno } = clienteFalso(DOCENTE_1, { ...datos, planeaciones: [{ id: 'pl-historica', docente_id: 'docente-1', grupo_id: 'grupo-1', nombre: 'X', version: 1, estado: 'publicada', borrador_clave: null }] })
+        const { sb, interno } = clienteFalso(DOCENTE_1, { ...datos, planeaciones: [{ id: 'pl-historica', docente_id: 'd0000000-0000-4000-8000-000000000001', grupo_id: 'grupo-1', nombre: 'X', version: 1, estado: 'publicada', borrador_clave: null }] })
         const historial = [{ role: 'assistant', content: MSG }, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: 'Listo, guardé la planeación de X para 5 días.' }]
         const r = await aprobarBorradorPlaneacion(sb, sesion(), historial, 'Apruébala', CONV_A)
         const sinBorrador = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: 'Listo, guardé la planeación de X para 5 días.' }], 'Apruébala', CONV_A)
@@ -1307,8 +1311,8 @@ async function main() {
         verificar(r1.ok && versiones.length === 1 && versiones[0].planeacion_id === r1.planeacion.id && versiones[0].numero === 1 && versiones[0].origen === 'aprobacion'
           && versiones[0].borrador_clave === `msg:${CONV_A}:msg-1` && pl.version === 1 && pl.aprobacion_token === null,
           'VA. La primera aprobación confirma publicando la versión 1 en el mismo paso (identidad del borrador, concesión liberada)')
-        verificar(r1.ok && versiones[0].contenido === r1.documentoPlaneacion?.contenidoDefinitivo && versiones[0].documento_word_archivo_id === r1.documentoPlaneacion?.word.archivoId
-          && versiones[0].documento_pdf_archivo_id === r1.documentoPlaneacion?.pdf.archivoId && versiones[0].trazabilidad_curricular?.esquema === 'planeacion-curricular-v1'
+        verificar(r1.ok && versiones[0].contenido === r1.documentoPlaneacion?.contenidoDefinitivo && versiones[0].documento_word_archivo_id === r1.documentoPlaneacion?.word?.archivoId
+          && versiones[0].documento_pdf_archivo_id === r1.documentoPlaneacion?.pdf?.archivoId && versiones[0].trazabilidad_curricular?.esquema === 'planeacion-curricular-v1'
           && versiones[0].estructura.planeacion?.nombre === r1.planeacion.nombre && Array.isArray(versiones[0].estructura.proyecto?.contenidos),
           'VB. La versión 1 guarda el mismo texto, Word, PDF, trazabilidad y estructura que se entregaron: una sola fuente canónica')
         const r2 = await aprobar(sb, CONV_A)
@@ -1328,6 +1332,68 @@ async function main() {
         const migracion = readFileSync(join(__dirname, '..', 'supabase', 'migrations', '20261126000000_planeacion_versiones.sql'), 'utf-8')
         verificar(/if \(contenidoDefinitivoFinal && canonico\)/.test(codigo) && /p_version_base: 0/.test(codigo) && /create trigger planeaciones_deriva_version after update of version/.test(migracion) && /security definer/.test(migracion),
           'VE. Sin texto canónico no se inventa contenido: confirmación directa y la base deriva la versión de lo guardado')
+      }
+
+      // VR. Etapa 3 (requisito previo): repetir la aprobación ORIGINAL de una planeación que ya tiene
+      //     versión 2 recupera exclusivamente la versión 1 (texto, archivos, nombre y fechas).
+      {
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        const r1 = await aprobar(sb, CONV_A)
+        const v1 = (interno._tabla('planeacion_versiones') as Fila[])[0]
+        // Copia: el doble devuelve las filas por referencia.
+        const original = r1.ok ? { ...r1.planeacion } : null
+        // Versión 2 publicada después (otro borrador): otro texto, otros archivos, otro nombre y fechas.
+        const W2 = randomUUID(), P2 = randomUUID()
+        registroArchivos.push({ id: W2, docente_id: 'd0000000-0000-4000-8000-000000000001', bucket: 'documentos-generados-ia', ruta: 'd0000000-0000-4000-8000-000000000001/v2.docx', nombre: 'PLANEACION_V2.docx', estado: 'activo' })
+        registroArchivos.push({ id: P2, docente_id: 'd0000000-0000-4000-8000-000000000001', bucket: 'documentos-generados-ia', ruta: 'd0000000-0000-4000-8000-000000000001/v2.pdf', nombre: 'PLANEACION_V2.pdf', estado: 'activo' })
+        ;(interno._tabla('planeacion_versiones') as Fila[]).push({ id: 'version-2', planeacion_id: v1.planeacion_id, docente_id: v1.docente_id, grupo_id: v1.grupo_id, numero: 2, origen: 'modificacion', borrador_clave: `msg:${CONV_A}:msg-2`,
+          contenido: '📋 PLANEACIÓN DIDÁCTICA\nVERSIÓN 2 AJUSTADA', estructura: { planeacion: { nombre: 'Leyendas (ajustada)', fecha_inicio: '2026-09-01', fecha_fin: '2026-09-12' }, proyecto: { duracion_dias: 9 } }, documento_word_archivo_id: W2, documento_pdf_archivo_id: P2 })
+        const pl = (interno._tabla('planeaciones') as Fila[])[0]
+        Object.assign(pl, { version: 2, nombre: 'Leyendas (ajustada)', fecha_inicio: '2026-09-01', fecha_fin: '2026-09-12' })
+        const proyecto = (interno._tabla('planeacion_proyectos') as { evaluacion: Record<string, unknown> }[])[0]
+        proyecto.evaluacion = { ...proyecto.evaluacion, documento_word: { nombre: 'PLANEACION_V2.docx', url: 'x', archivo_id: W2 }, documento_pdf: { nombre: 'PLANEACION_V2.pdf', url: 'y', archivo_id: P2 } }
+        const antes = { filas: conteo(interno), archivos: registroArchivos.length, escrituras: interno.escrituras.length, historial: interno._tabla('documentos_generados').length }
+        const r2 = await aprobar(sb, CONV_A)
+        verificar(!!original && r2.ok && r2.planeacion.id === original.id && r2.planeacion.version === 1 && r2.planeacion.nombre === original.nombre && r2.planeacion.fecha_inicio === original.fecha_inicio && r2.planeacion.fecha_fin === original.fecha_fin
+          && r2.documentoPlaneacion?.word?.archivoId === v1.documento_word_archivo_id && r2.documentoPlaneacion?.pdf?.archivoId === v1.documento_pdf_archivo_id && r2.documentoPlaneacion?.contenidoDefinitivo === v1.contenido
+          && !JSON.stringify(r2).includes(W2) && !JSON.stringify(r2).includes(P2) && !JSON.stringify(r2).includes('VERSIÓN 2'),
+          'VR1. Con versión 2 vigente, repetir la aprobación original recupera EXCLUSIVAMENTE la versión 1: su texto, Word, PDF, nombre y fechas (nada de la vigente)')
+        verificar(conteo(interno) === antes.filas && registroArchivos.length === antes.archivos && interno.escrituras.length === antes.escrituras && interno._tabla('documentos_generados').length === antes.historial,
+          'VR2. Sin regenerar ni escribir: ni filas, ni archivos, ni Historial')
+        const historialConfirmado = [{ role: 'assistant', content: MSG }, { role: 'user', content: 'Apruébala' }, { role: 'assistant', content: `Listo, guardé la planeación de ${original?.nombre ?? ''}.` }]
+        const r3 = await aprobarBorradorPlaneacion(sb, sesion(), historialConfirmado, 'Apruébala', CONV_A)
+        verificar(r3.ok && r3.planeacion.version === 1 && r3.documentoPlaneacion?.word?.archivoId === v1.documento_word_archivo_id, 'VR3. Con la confirmación en el historial, la misma recuperación de la versión 1')
+        // Original de la v1 ya no entregable: nunca se sustituye por el de la vigente.
+        const registroW1 = registroArchivos.find((f) => f.id === v1.documento_word_archivo_id)!
+        registroW1.estado = 'fallido'
+        const r4 = await aprobar(sb, CONV_A)
+        verificar(r4.ok && r4.planeacion.version === 1 && r4.documentoPlaneacion?.word === null && r4.documentoPlaneacion?.pdf?.archivoId === v1.documento_pdf_archivo_id && !JSON.stringify(r4).includes(W2) && !JSON.stringify(r4).includes(P2),
+          'VR4. Si el Word de la versión 1 ya no está disponible, se entrega solo su PDF — nunca el Word de la versión 2')
+        registroArchivos.find((f) => f.id === v1.documento_pdf_archivo_id)!.estado = 'fallido'
+        const r4b = await aprobar(sb, CONV_A)
+        verificar(r4b.ok && r4b.documentoPlaneacion === null && !JSON.stringify(r4b).includes(W2), 'VR4b. Sin ningún original disponible de la versión 1: sin tarjetas de documento, nunca las de la vigente')
+        registroArchivos.find((f) => f.id === v1.documento_pdf_archivo_id)!.estado = 'activo'
+        registroW1.estado = 'activo'
+        const { sb: sbOtro } = clienteFalso({ id: 'd0000000-0000-4000-8000-000000000002' }, datos)
+        const otroGrupo = await aprobarBorradorPlaneacion(sb, { ...sesion(), grupo_activo_id: 'grupo-ajeno' } as SesionContexto, [{ role: 'assistant', content: MSG }], 'Apruébala', CONV_A)
+        verificar(!otroGrupo.ok && otroGrupo.codigo === 'YA_GUARDADA' && !JSON.stringify(otroGrupo).includes(String(v1.documento_word_archivo_id)), 'VR7. Con otro grupo activo no se recupera la planeación de este grupo ni sus archivos (aislamiento por grupo)')
+        verificar(!(await aprobarBorradorPlaneacion(sbOtro, { ...sesion(), docente_id: 'd0000000-0000-4000-8000-000000000002' } as SesionContexto, [{ role: 'assistant', content: MSG }], 'Apruébala', CONV_A)).ok, 'VR5. Otro docente no recupera la aprobación (aislamiento)')
+      }
+      {
+        // Versión histórica derivada sin texto ni archivos (y una versión 2 con ambos): nada que asociar.
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        const r1 = await aprobar(sb, CONV_A)
+        Object.assign((interno._tabla('planeacion_versiones') as Fila[])[0], { origen: 'derivada', contenido: null, documento_word_archivo_id: null, documento_pdf_archivo_id: null })
+        const W2 = randomUUID(), P2 = randomUUID()
+        registroArchivos.push({ id: W2, docente_id: 'd0000000-0000-4000-8000-000000000001', bucket: 'documentos-generados-ia', ruta: 'd0000000-0000-4000-8000-000000000001/v2b.docx', nombre: 'V2.docx', estado: 'activo' }, { id: P2, docente_id: 'd0000000-0000-4000-8000-000000000001', bucket: 'documentos-generados-ia', ruta: 'd0000000-0000-4000-8000-000000000001/v2b.pdf', nombre: 'V2.pdf', estado: 'activo' })
+        ;(interno._tabla('planeacion_versiones') as Fila[]).push({ id: 'v2b', planeacion_id: r1.ok ? r1.planeacion.id : '', docente_id: 'd0000000-0000-4000-8000-000000000001', numero: 2, origen: 'modificacion', borrador_clave: `msg:${CONV_A}:msg-2`, contenido: 'V2', estructura: {}, documento_word_archivo_id: W2, documento_pdf_archivo_id: P2 })
+        ;(interno._tabla('planeaciones') as Fila[])[0].version = 2
+        const r = await aprobar(sb, CONV_A)
+        verificar(r.ok && r.planeacion.version === 1 && r.documentoPlaneacion === null && !JSON.stringify(r).includes(W2), 'VR6. Versión 1 histórica sin texto ni archivos: se respeta (sin tarjetas de documento), nunca se rellenan con la vigente')
       }
 
       // I12. Ninguna escritura de consolidación fuera de la función atómica.
@@ -1352,8 +1418,8 @@ async function main() {
     {
       const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
       verificar(ruta.includes("archivoId: word.archivoId, grupoAcademico: word.grupoAcademico, tipoDocumento: 'planeacion'") && ruta.includes("archivoId: pdf.archivoId, grupoAcademico: pdf.grupoAcademico, tipoDocumento: 'planeacion'")
-        && ruta.includes('if (word.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:'),
-        'H7. Tarjetas de la planeación aprobada con archivoId (B1) y contenido definitivo para el registro del historial (B2)')
+        && ruta.includes('if (word?.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:') && ruta.includes('if (word) {') && ruta.includes('if (pdf) {'),
+        'H7. Tarjetas de la planeación aprobada con archivoId (B1), cada original por separado, y contenido definitivo para el registro del historial (B2)')
     }
   }
   } finally {

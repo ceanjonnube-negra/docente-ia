@@ -39,6 +39,8 @@ const ORDINALES: Record<string, number> = { primera: 1, primero: 1, segunda: 2, 
 // ------------------------------------------------------------------
 // Detección determinista
 // ------------------------------------------------------------------
+// etiqueta: complemento listo para la frase ("en noviembre", "esta semana",
+// "del 3 al 14 de noviembre"): "Trabajaste 4 planeaciones en noviembre".
 export type RangoFechas = { desde: string; hasta: string; etiqueta: string }
 export type VersionSolicitada = number | 'anterior' | 'original' | 'vigente'
 export type ConsultaPlaneacion =
@@ -103,7 +105,7 @@ export function rangoDeFechasEnTexto(texto: string, hoy: string): RangoFechas | 
   if (m) {
     const i = MESES.indexOf(m[1])
     const a = m[2] ? Number(m[2]) : (i > h.getUTCMonth() ? anio - 1 : anio)
-    return { desde: iso(new Date(Date.UTC(a, i, 1))), hasta: iso(new Date(Date.UTC(a, i + 1, 0))), etiqueta: `${m[1]}${m[2] ? ` de ${m[2]}` : ''}` }
+    return { desde: iso(new Date(Date.UTC(a, i, 1))), hasta: iso(new Date(Date.UTC(a, i + 1, 0))), etiqueta: `en ${m[1]}${m[2] ? ` de ${m[2]}` : ''}` }
   }
   return null
 }

@@ -150,6 +150,10 @@ async function main() {
   verificar(r1?.desde === '2026-11-01' && r1?.hasta === '2026-11-30' && r2?.desde === '2026-11-23' && r2?.hasta === '2026-11-29' && r3?.desde === '2026-11-03' && r3?.hasta === '2026-11-14' && r4?.desde === '2026-10-28' && r4?.hasta === '2026-11-05',
     '2a. Mes, semana y rangos "del 3 al 14 de noviembre" / "del 28 de octubre al 5 de noviembre"')
   verificar(rangoDeFechasEnTexto('en diciembre', HOY)?.desde === '2025-12-01', '2b. Un mes posterior al actual se entiende del año anterior (ya trabajado)')
+  const frase = (t: string) => `Trabajaste 4 planeaciones ${rangoDeFechasEnTexto(t, HOY)?.etiqueta}`
+  verificar(frase('en noviembre') === 'Trabajaste 4 planeaciones en noviembre' && frase('noviembre') === 'Trabajaste 4 planeaciones en noviembre' && frase('en noviembre de 2025') === 'Trabajaste 4 planeaciones en noviembre de 2025'
+    && frase('esta semana') === 'Trabajaste 4 planeaciones esta semana' && frase('el mes pasado') === 'Trabajaste 4 planeaciones el mes pasado' && frase('del 3 al 14 de noviembre') === 'Trabajaste 4 planeaciones del 3 al 14 de noviembre',
+    '2c. El periodo se expresa como complemento correcto de la frase ("en noviembre", "esta semana", "del 3 al 14 de noviembre")')
 
   // 3. Búsqueda por nombre y versión
   const lista = datos().planeaciones as { nombre: string }[]
@@ -205,7 +209,7 @@ async function main() {
   {
     const tablas = datos()
     const nov = await consultar(tablas, '¿Qué planeaciones trabajé en noviembre?')
-    verificar(!!nov.texto?.includes('Trabajaste 3 planeaciones noviembre') && !nov.texto.includes('Fracciones'), '6a. Planeaciones trabajadas en un periodo (traslape de fechas), solo confirmadas del grupo')
+    verificar(!!nov.texto?.includes('Trabajaste 3 planeaciones en noviembre') && !nov.texto.includes('Fracciones'), '6a. Planeaciones trabajadas en un periodo (traslape de fechas), solo confirmadas del grupo')
     const todas = await consultar(tablas, 'mis planeaciones')
     verificar(!!todas.texto?.includes('Tienes 4 planeaciones') && !todas.texto.includes('a medias') && !todas.texto.includes('otro grupo') && !todas.texto.includes('OTRO DOCENTE'), '6b. Listado: sin borradores sin confirmar, ni otro grupo, ni otro docente')
     const antigua = await consultar(tablas, 'Muéstrame la planeación de fracciones')
@@ -328,12 +332,12 @@ ${MARCADOR_DOCUMENTO_RECUPERADO}` // lo que añade la ruta a toda consulta
     verificar(!!segunda.texto?.startsWith('otro texto de leyendas') && referencia(tablas)?.planeacionId === 'pl-leyendas-2' && tarjetas(segunda.texto).length === 2 && segunda.texto.includes('_Versión 1 · guardada el 24 nov 2026, 17:25 · 24 nov – 7 dic 2026_'),
       '11b. "La 2" muestra esa planeación con su Word y PDF y, discreta, su versión y fecha en que se guardó')
     const noviembre = await consultar(tablas, '¿Qué planeaciones trabajé en noviembre?')
-    verificar(!!noviembre.texto?.includes('Trabajaste 4 planeaciones noviembre') && ['pl-leyendas-1', 'pl-leyendas-2', 'pl-leyendas-3', 'pl-cuentos'].every((id) => referencia(tablas)?.opciones.includes(id)) && !noviembre.texto.includes('Fracciones'),
+    verificar(!!noviembre.texto?.includes('Trabajaste 4 planeaciones en noviembre') && ['pl-leyendas-1', 'pl-leyendas-2', 'pl-leyendas-3', 'pl-cuentos'].every((id) => referencia(tablas)?.opciones.includes(id)) && !noviembre.texto.includes('Fracciones'),
       '11c. "¿Qué planeaciones trabajé en noviembre?" tras ver una planeación: las 4 cuyo intervalo coincide total o parcialmente con noviembre (incluye la que termina en diciembre)')
     // Por el orquestador (clasificador) el periodo llega como "noviembre", sin preposición.
     const sb = crearCliente(A, tablas, [])
     const porClasificador = await ejecutarHerramientaDeModulo({ ...clasificacionConsultaPlaneacion({ tipo: 'listado' }), tipo_consulta_planeacion: 'por_periodo', periodo_planeacion_consulta: 'noviembre' }, { sb, sesion: sesion(), userId: A, zonaHoraria: 'America/Hermosillo', canal: 'text', conversacionId: CONV })
-    verificar(!!porClasificador?.includes('Trabajaste 4 planeaciones noviembre') && rangoDeFechasEnTexto('noviembre de 2026', HOY)?.desde === '2026-11-01' && rangoDeFechasEnTexto('noviembre 2025', HOY)?.desde === '2025-11-01',
+    verificar(!!porClasificador?.includes('Trabajaste 4 planeaciones en noviembre') && rangoDeFechasEnTexto('noviembre de 2026', HOY)?.desde === '2026-11-01' && rangoDeFechasEnTexto('noviembre 2025', HOY)?.desde === '2025-11-01',
       '11d. El periodo dicho sin preposición ("noviembre", como lo entrega el clasificador) y con año explícito se interpreta igual')
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     verificar(/if \(esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion\(instruccion/.test(ruta) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),

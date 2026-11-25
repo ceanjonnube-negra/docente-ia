@@ -43,7 +43,7 @@ import { randomUUID } from 'node:crypto'
 import { camposDeHistorial } from '../asistente/documentos'
 import { crearUrlFirmada, BUCKET_HOJAS_SEGUIMIENTO } from '../documentGen/almacenamiento'
 import { nombreArchivoHoja } from '../documentGen/generarHojaSeguimientoPdf'
-import { marcarArchivoNoEntregado } from '../documentGen/registroArchivos'
+import { enlacesArchivoPropio, marcarArchivoNoEntregado } from '../documentGen/registroArchivos'
 import { generarYGuardarHojaSeguimiento } from '../seguimiento/generarYGuardarHoja'
 import { CAMPOS_FORMATIVOS, CANTIDAD_INDICADORES_HOJA, type IndicadorProyecto } from '../seguimiento/tipos'
 import { ejecutarHerramientaDocumento } from '../documentGen/herramientas'
@@ -90,7 +90,7 @@ export type ResultadoAprobacion =
   // chat, igual que antes de que existiera esta mejora.
   // contenidoDefinitivo: texto con el que se generaron Word y PDF (el del
   // registro del historial).
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado; pdf: DocumentoPlaneacionGenerado; contenidoDefinitivo: string } | null }
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado | null; pdf: DocumentoPlaneacionGenerado | null; contenidoDefinitivo: string } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
 
 type TurnoHistorial = { role: string; content: string }
@@ -275,43 +275,69 @@ function filaHistorial(contenido: string, word: DocumentoGuardado | null): Recor
   }
 }
 
-// REQUISITO OBLIGATORIO DE LA ETAPA 3 (Hito 2): esta recuperación lee los
-// archivos originales de la PROYECCIÓN vigente (planeacion_proyectos.
-// evaluacion), que publicar_version_planeacion reemplaza al publicar una
-// versión N+1. Antes de habilitar modificaciones conversacionales, la
-// recuperación de aprobaciones y archivos originales debe leer la versión
-// que originó ese borrador (planeacion_versiones por borrador_clave), nunca
-// la proyección vigente.
 // Aprobación ya terminada (reintento cuya respuesta anterior se perdió, o
-// confirmación ya visible en el historial): se entregan sus tarjetas
-// originales a partir de lo persistido — sin regenerar archivos ni hoja,
-// sin IA y SIN escribir: su registro en Historial ya se consolidó en la
-// misma transacción que precede a la confirmación (y no se revive uno
-// que el docente haya borrado).
-async function recuperarAprobacionTerminada(sb: SupabaseClient, planeacionId: string, contenidoBorrador: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
+// confirmación ya visible en el historial): se entregan las tarjetas de la
+// VERSIÓN EXACTA que creó ese borrador — planeacion_versiones por su
+// identidad (borrador_clave), nunca la proyección vigente: si después se
+// publicó otra versión, repetir la aprobación original devuelve la suya
+// (texto, Word, PDF, nombre y fechas), jamás los archivos de la vigente.
+// Sin regenerar archivos ni hoja, sin IA y SIN escribir: su registro en
+// Historial ya se consolidó antes de confirmar. La hoja de evaluación es
+// del proyecto (la misma para todas sus versiones).
+type VersionAprobada = {
+  numero: number
+  contenido: string | null
+  estructura: { planeacion?: { nombre?: string | null; proposito?: string | null; fecha_inicio?: string | null; fecha_fin?: string | null }; proyecto?: { duracion_dias?: number | null } | null } | null
+  documento_word_archivo_id: string | null
+  documento_pdf_archivo_id: string | null
+}
+async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: string, grupoId: string, planeacionId: string, clave: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
   const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
-  const { data: planeacion } = await sb.from('planeaciones').select(COLUMNAS_PLANEACION_APROBADA).eq('id', planeacionId).maybeSingle()
+  // Del docente Y del grupo activo: de otro grupo no se entrega nada.
+  const { data: planeacion } = await sb.from('planeaciones').select(COLUMNAS_PLANEACION_APROBADA).eq('id', planeacionId).eq('docente_id', docenteId).eq('grupo_id', grupoId).maybeSingle()
+  if (!planeacion || (planeacion as Planeacion).version < 1) return yaGuardada
+  const { data: filaVersion } = await sb
+    .from('planeacion_versiones')
+    .select('numero, contenido, estructura, documento_word_archivo_id, documento_pdf_archivo_id')
+    .eq('planeacion_id', planeacionId)
+    .eq('docente_id', docenteId)
+    .eq('borrador_clave', clave)
+    .maybeSingle()
+  const version = filaVersion as VersionAprobada | null
+  if (!version) return yaGuardada // sin versión de ese borrador (planeación anterior): nada que asociar
   const { data: proyecto } = await sb.from('planeacion_proyectos').select('evaluacion').eq('planeacion_id', planeacionId).maybeSingle()
-  const ev = ((proyecto as { evaluacion?: Record<string, unknown> } | null)?.evaluacion ?? {}) as { hoja_id?: string; proyecto_seguimiento_id?: string; documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado; trazabilidad_curricular?: unknown }
-  if (!planeacion || (planeacion as Planeacion).version < 1 || !ev.hoja_id || !ev.proyecto_seguimiento_id) return yaGuardada
+  const ev = ((proyecto as { evaluacion?: Record<string, unknown> } | null)?.evaluacion ?? {}) as { hoja_id?: string; proyecto_seguimiento_id?: string; documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado }
+  if (!ev.hoja_id || !ev.proyecto_seguimiento_id) return yaGuardada
   const { data: hoja } = await sb.from('hojas_evaluacion').select('identificador_visible, storage_path').eq('id', ev.hoja_id).maybeSingle()
   const filaHoja = hoja as { identificador_visible: string; storage_path: string | null } | null
   if (!filaHoja?.storage_path) return yaGuardada
   const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
   const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
-  const contenidoDefinitivo = esTrazabilidadCanonica(ev.trazabilidad_curricular) ? textoDefinitivoConIdentidad(contenidoBorrador, identidadDesdeTrazabilidad(ev.trazabilidad_curricular)) : ''
-  const word = ev.documento_word ?? null
-  const pdf = ev.documento_pdf ?? null
+  // Archivos ORIGINALES de esa versión (registro propio y activo). El grupo
+  // del encabezado solo se toma de la proyección si es ese mismo archivo.
+  const word = version.documento_word_archivo_id ? await enlacesArchivoPropio(docenteId, version.documento_word_archivo_id) : null
+  const pdf = version.documento_pdf_archivo_id ? await enlacesArchivoPropio(docenteId, version.documento_pdf_archivo_id) : null
+  const grupoDe = (guardado: DocumentoGuardado | undefined, id: string | null) => (guardado?.archivo_id && guardado.archivo_id === id ? guardado.grupo_academico : undefined)
+  const est = version.estructura?.planeacion ?? {}
   return {
     ok: true,
-    planeacion: planeacion as Planeacion,
-    duracionDias,
+    // Nombre, propósito y fechas de ESA versión; identidad de la planeación.
+    planeacion: {
+      ...(planeacion as Planeacion),
+      nombre: est.nombre ?? (planeacion as Planeacion).nombre,
+      proposito: est.proposito !== undefined ? est.proposito : (planeacion as Planeacion).proposito,
+      fecha_inicio: est.fecha_inicio ?? (planeacion as Planeacion).fecha_inicio,
+      fecha_fin: est.fecha_fin ?? (planeacion as Planeacion).fecha_fin,
+      version: version.numero,
+    },
+    duracionDias: version.estructura?.proyecto?.duracion_dias ?? duracionDias,
     hoja: { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: ev.proyecto_seguimiento_id },
-    documentoPlaneacion: word && pdf
+    // Cada original por separado: si solo uno está disponible, se entrega ese.
+    documentoPlaneacion: word || pdf
       ? {
-          word: { nombre: word.nombre, url: word.url, tamanoBytes: word.tamano_bytes, archivoId: word.archivo_id, grupoAcademico: word.grupo_academico },
-          pdf: { nombre: pdf.nombre, url: pdf.url, tamanoBytes: pdf.tamano_bytes, urlVer: pdf.url_ver, archivoId: pdf.archivo_id, grupoAcademico: pdf.grupo_academico },
-          contenidoDefinitivo,
+          word: word ? { nombre: word.nombre, url: word.url, archivoId: version.documento_word_archivo_id!, grupoAcademico: grupoDe(ev.documento_word, version.documento_word_archivo_id) } : null,
+          pdf: pdf ? { nombre: pdf.nombre, url: pdf.url, urlVer: pdf.urlVer, archivoId: version.documento_pdf_archivo_id!, grupoAcademico: grupoDe(ev.documento_pdf, version.documento_pdf_archivo_id) } : null,
+          contenidoDefinitivo: version.contenido ?? '',
         }
       : null,
   }
@@ -322,13 +348,13 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, planeacionId: st
 // y, si está confirmada, se entregan sus tarjetas originales (misma
 // recuperación que un reintento). Sin identidad (planeaciones anteriores)
 // no se busca nada más ni se escribe: el mensaje de siempre.
-async function recuperarBorradorConfirmado(sb: SupabaseClient, docenteId: string, conversacionId: string | null, contenido: string | null): Promise<ResultadoAprobacion> {
+async function recuperarBorradorConfirmado(sb: SupabaseClient, docenteId: string, grupoId: string, conversacionId: string | null, contenido: string | null): Promise<ResultadoAprobacion> {
   const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
   const clave = contenido ? await resolverIdentidadBorrador(sb, conversacionId, contenido) : null
   const fila = clave ? await buscarPorIdentidad(sb, docenteId, clave) : null
   if (!fila || !contenido) return yaGuardada
   if (fila.version < 1) return { ok: false, codigo: 'EN_PROCESO', mensaje: MENSAJE_EN_PROCESO }
-  return recuperarAprobacionTerminada(sb, fila.id, contenido, extraerResumenBorrador([{ role: 'assistant', content: contenido }])?.duracionDias ?? null)
+  return recuperarAprobacionTerminada(sb, docenteId, grupoId, fila.id, clave!, extraerResumenBorrador([{ role: 'assistant', content: contenido }])?.duracionDias ?? null)
 }
 
 type FilaProyectoSeguimiento = { id: string; hoja_id: string | null; periodo_evaluacion_id: string | null }
@@ -360,7 +386,7 @@ export async function aprobarBorradorPlaneacion(
     return { ok: false, codigo: 'BORRADOR_INCOMPLETO', mensaje: 'El borrador que tengo no está completo (le falta el nombre o las fechas) — pídeme que lo genere de nuevo antes de guardarlo.' }
   }
   if (seleccion.estado === 'ya_aprobado') {
-    return recuperarBorradorConfirmado(sb, sesion.docente_id, conversacionId, seleccion.contenido)
+    return recuperarBorradorConfirmado(sb, sesion.docente_id, sesion.grupo_activo_id, conversacionId, seleccion.contenido)
   }
   if (seleccion.estado === 'otro_documento') {
     return { ok: false, codigo: 'BORRADOR_NO_DETERMINADO', mensaje: 'Después de la planeación trabajamos en otro documento, así que no puedo saber con certeza cuál guardar. Pídeme que vuelva a mostrar la planeación y luego apruébala.' }
@@ -407,7 +433,7 @@ export async function aprobarBorradorPlaneacion(
     // con la concesión) o nueva.
     const clave = await resolverIdentidadBorrador(sb, conversacionId, seleccion.contenido)
     if (!clave) return { ok: false, codigo: 'BORRADOR_NO_PERSISTIDO', mensaje: MENSAJE_NO_PERSISTIDO }
-    const recuperar = (id: string) => recuperarAprobacionTerminada(sb, id, seleccion.contenido, resumen.duracionDias)
+    const recuperar = (id: string) => recuperarAprobacionTerminada(sb, sesion.docente_id, sesion.grupo_activo_id!, id, clave, resumen.duracionDias)
     const existente = await buscarPorIdentidad(sb, sesion.docente_id, clave)
     if (existente && existente.version >= 1) return recuperar(existente.id)
     const token = randomUUID()

@@ -1169,12 +1169,16 @@ export async function POST(req: NextRequest) {
             // definitivo de [[DOCUMENTO_CONTENIDO]]. El PDF queda
             // recuperable por su archivoId en la tarjeta y en
             // planeacion_proyectos.evaluacion.documento_pdf.
-            const { word, pdf, contenidoDefinitivo } = resultado.documentoPlaneacion
-            const archivoWord = { tipo: 'word', nombre: word.nombre, url: word.url, archivoId: word.archivoId, grupoAcademico: word.grupoAcademico, tipoDocumento: 'planeacion' as const }
-            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`)
-            const archivoPdfPlaneacion = { tipo: 'pdf', nombre: pdf.nombre, url: pdf.url, urlVer: pdf.urlVer, archivoId: pdf.archivoId, grupoAcademico: pdf.grupoAcademico, tipoDocumento: 'planeacion' as const }
-            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoPdfPlaneacion), 'utf-8').toString('base64')}]]`)
-            if (word.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:${Buffer.from(contenidoDefinitivo, 'utf-8').toString('base64')}]]`)
+            const { word, pdf, contenidoDefinitivo } = resultado.documentoPlaneacion // cada original por separado
+            if (word) {
+              const archivoWord = { tipo: 'word', nombre: word.nombre, url: word.url, archivoId: word.archivoId, grupoAcademico: word.grupoAcademico, tipoDocumento: 'planeacion' as const }
+              marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoWord), 'utf-8').toString('base64')}]]`)
+            }
+            if (pdf) {
+              const archivoPdfPlaneacion = { tipo: 'pdf', nombre: pdf.nombre, url: pdf.url, urlVer: pdf.urlVer, archivoId: pdf.archivoId, grupoAcademico: pdf.grupoAcademico, tipoDocumento: 'planeacion' as const }
+              marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoPdfPlaneacion), 'utf-8').toString('base64')}]]`)
+            }
+            if (word?.archivoId && contenidoDefinitivo) marcadores.push(`[[DOCUMENTO_CONTENIDO:${Buffer.from(contenidoDefinitivo, 'utf-8').toString('base64')}]]`)
           }
           // EVAL-1G — proyectoSeguimientoId viaja en la tarjeta para
           // que "Subir foto ya contestada" (CapturaHoja.tsx) sepa a
