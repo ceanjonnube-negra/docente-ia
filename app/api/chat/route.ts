@@ -20,7 +20,7 @@ import {
   ejecutarRegistroEscolar,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
-import { obtenerFechaHora } from '@/lib/tiempo/TimeService'
+import { fechaISOHoy, obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
 import { instruccionesPresentacion, seccionesDePresentacion, tieneCantidadExplicita } from '@/lib/asistente/instruccionesPresentacion'
@@ -566,6 +566,10 @@ export async function POST(req: NextRequest) {
   // está habilitado, y pedir su Word/PDF entrega el ORIGINAL de esa
   // versión — nunca se regenera. Una sola lectura, solo en estos turnos.
   const formatoOriginal = tipoHerramientaSolicitado === 'word' || tipoHerramientaSolicitado === 'pdf' ? tipoHerramientaSolicitado : null
+  // Una consulta de planeaciones que el cliente envió como edición de la
+  // planeación consultada (p. ej. un cliente anterior): se atiende como
+  // consulta, sin editar ni pasar por el clasificador.
+  let consultaDesdeEdicion: string | null = null
   if (supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
     const textoDocumento = typeof finalizarArchivo?.documentoTexto === 'string' ? `${String(mensaje ?? '')}\n${finalizarArchivo.documentoTexto}` : String(mensaje ?? '')
     const consultada = await versionConsultada(supabaseUser, await conversacionPropia())
@@ -575,6 +579,7 @@ export async function POST(req: NextRequest) {
         console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada')
         return respuestaTexto(MENSAJE_MODIFICAR_NO_DISPONIBLE)
       }
+      if (esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion(instruccion, fechaISOHoy(zonaHoraria))) consultaDesdeEdicion = instruccion
       if (formatoOriginal) {
         console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} original de la versión ${consultada.numero} — sin regenerar`)
         return respuestaTexto(`${await respuestaArchivoOriginal(consultada, formatoOriginal, firmarOriginalPropio(userId))}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
@@ -890,7 +895,7 @@ export async function POST(req: NextRequest) {
       // aún no está habilitada: se bloquea o se pide aclarar. Un borrador
       // en curso sigue su edición normal (null).
       if (!esEdicionDocumento && !ordenAprobarPlaneacion && sesion.grupo_activo_id && pideModificar(String(mensaje ?? ''))) {
-        const respuestaModificacion = await resolverModificacionGuardada({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: await conversacionPropia(), historial: historialMensajes, mensaje: String(mensaje ?? ''), voz: channel === 'voice' })
+        const respuestaModificacion = await resolverModificacionGuardada({ sb: supabaseUser, grupoId: sesion.grupo_activo_id, conversacionId: await conversacionPropia(), historial: historialMensajes, mensaje: String(mensaje ?? ''), voz: channel === 'voice', zonaHoraria })
         if (respuestaModificacion) {
           console.log('[PLANEACION_CONSULTA] modificación de una planeación guardada — aún no habilitada (sin documento activo)')
           return respuestaTexto(respuestaModificacion)
@@ -901,7 +906,8 @@ export async function POST(req: NextRequest) {
       // modelo. Elegir de una lista ("la 2") solo si la última respuesta
       // fue esa pregunta; pedir otra versión, solo con una planeación en
       // contexto en esta conversación.
-      let consultaPlaneacion = !esEdicionDocumento && !ordenAprobarPlaneacion ? detectarConsultaPlaneacion(String(mensaje ?? ''), sesion.fecha_actual) : null
+      const textoConsulta = consultaDesdeEdicion ?? (!esEdicionDocumento ? String(mensaje ?? '') : null)
+      let consultaPlaneacion = textoConsulta !== null && !ordenAprobarPlaneacion ? detectarConsultaPlaneacion(textoConsulta, sesion.fecha_actual) : null
       if (consultaPlaneacion?.tipo === 'seleccion' && !ultimaRespuestaEsPregunta(historialMensajes)) consultaPlaneacion = null
       if (consultaPlaneacion?.tipo === 'seleccion' || consultaPlaneacion?.tipo === 'version') {
         const referencia = await leerReferenciaPlaneacion(supabaseUser, await conversacionPropia())

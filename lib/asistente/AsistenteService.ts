@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { MENSAJE_CONVERSACION_ELIMINADA } from '@/lib/vinculoConversacion'
 import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
-import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, identificadorDeDocumento, documentoTieneIdentificador, nombraOtroDocumento, type FormatoEntrega, type TipoHerramienta } from './documentos'
+import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, identificadorDeDocumento, documentoTieneIdentificador, nombraOtroDocumento, refiereColeccionDeDocumentos, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
 import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
@@ -2429,9 +2429,10 @@ class AsistenteServiceImpl {
   private trabajaSobreDocumentoActivo(limpio: string): boolean {
     const documento = this.documentoActivo
     // Un documento identificado por su nombre que no es el activo ("la
-    // planeación de las leyendas" con otra abierta) no es trabajo sobre él:
-    // va como mensaje normal (el servidor lo busca entre los guardados).
-    return !!documento && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(documento.texto) }) && !esPedidoDocumentoNuevo(limpio) && !nombraOtroDocumento(limpio, documento.texto) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, documento.texto))
+    // planeación de las leyendas" con otra abierta), o una pregunta sobre
+    // la colección ("¿qué planeaciones trabajé en noviembre?"), no es
+    // trabajo sobre él: va como mensaje normal (el servidor la resuelve).
+    return !!documento && !detectarAprobarPlaneacion(limpio, { hayBorradorPlaneacion: esBorradorPlaneacion(documento.texto) }) && !esPedidoDocumentoNuevo(limpio) && !nombraOtroDocumento(limpio, documento.texto) && !refiereColeccionDeDocumentos(limpio) && !(esEdicionConFormato(limpio) && !referenciaCompatibleConDocumento(limpio, documento.texto))
   }
 
   // Mismo camino que el envío normal de arriba (asegurarMotor,

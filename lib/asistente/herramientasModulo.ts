@@ -373,7 +373,7 @@ async function mostrarPlaneacion(p: Planeacion, pedida: VersionSolicitada | null
     const tiene = versiones.length === 1 ? 'solo tiene la versión 1' : `tiene las versiones 1 a ${versiones.length}`
     return { tipo: 'texto', texto: `«${p.nombre}» ${tiene}; no encontré ${describirVersion(pedida ?? 'vigente')}.` }
   }
-  const texto = await textoPlaneacion(p, version, versiones.length, firmarOriginalPropio(ctx.userId), ctx.canal === 'voice')
+  const texto = await textoPlaneacion(p, version, versiones.length, firmarOriginalPropio(ctx.userId), ctx.canal === 'voice', ctx.zonaHoraria)
   await guardarReferenciaPlaneacion(ctx.sb, ctx.conversacionId ?? null, { planeacionId: p.id, numero: version.numero, opciones: [] })
   return { tipo: 'texto', texto }
 }
@@ -381,7 +381,7 @@ async function mostrarPlaneacion(p: Planeacion, pedida: VersionSolicitada | null
 async function elegirEntre(encabezado: string, planeaciones: Planeacion[], pedida: VersionSolicitada | null, ctx: ContextoEjecucionHerramienta): Promise<ResultadoConsultaPlaneaciones> {
   if (planeaciones.length === 1) return mostrarPlaneacion(planeaciones[0], pedida, null, ctx)
   await guardarReferenciaPlaneacion(ctx.sb, ctx.conversacionId ?? null, { planeacionId: null, numero: null, opciones: planeaciones.slice(0, MAXIMO_OPCIONES).map((p) => p.id) })
-  return { tipo: 'texto', texto: textoOpciones(encabezado, planeaciones, ctx.canal === 'voice') }
+  return { tipo: 'texto', texto: textoOpciones(encabezado, planeaciones, ctx.canal === 'voice', undefined, ctx.zonaHoraria) }
 }
 
 function porFechas(planeaciones: Planeacion[], rango: RangoFechas, ctx: ContextoEjecucionHerramienta): Promise<ResultadoConsultaPlaneaciones> | ResultadoConsultaPlaneaciones {
@@ -406,7 +406,9 @@ const herramientaConsultarPlaneaciones = definir({
       // Solo planeaciones confirmadas del docente y del grupo activo.
       const r = await listarPlaneaciones({ supabase: ctx.sb }, { grupo_id: grupoId })
       if (!r.ok) return { exito: false, error: r.error.mensaje }
-      const todas = r.datos
+      // Orden estable: inicio más reciente y, a igual inicio, creación más
+      // reciente — la numeración mostrada y las opciones guardadas coinciden.
+      const todas = [...r.datos].sort((x, y) => (y.fecha_inicio ?? '').localeCompare(x.fecha_inicio ?? '') || (y.creado_en ?? '').localeCompare(x.creado_en ?? ''))
       const delGrupo = (id: string | null) => todas.find((p) => p.id === id) ?? null
 
       // Seguimiento de la conversación: elegir de la lista o pedir otra versión.

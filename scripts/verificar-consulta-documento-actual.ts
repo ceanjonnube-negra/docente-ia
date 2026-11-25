@@ -260,6 +260,14 @@ async function main() {
     interno.editandoDocumentoId = null
     await pedir('Agrégale una actividad a la planeación de las leyendas', null)
     verificar(llamadas.length === 1 && !llamadas[0].edicion && llamadas[0].texto === 'Agrégale una actividad a la planeación de las leyendas', '7f. Modificar OTRA planeación nombrada no edita el documento activo: va al servidor')
+    // Regresión (Preview 34bb723): tras "la 2" la planeación de leyendas es el documento activo; la
+    // pregunta por el periodo habla de la colección, no de ella: va al servidor como mensaje normal.
+    chat.documentoActivo = { id: consulta.m.id, texto: '📋 PLANEACIÓN DIDÁCTICA\nLas Leyendas de Nuestra Comunidad\nSesión 1…' }
+    const periodo = await pedir('¿Qué planeaciones trabajé en noviembre?', { texto: 'Trabajaste 4 planeaciones noviembre:' })
+    verificar(periodo.resultado === 'enviado' && llamadas.length === 1 && llamadas[0].texto === '¿Qué planeaciones trabajé en noviembre?' && !llamadas[0].edicion && !llamadas[0].finalizar,
+      '7h. "¿Qué planeaciones trabajé en noviembre?" con una planeación abierta: pregunta sobre la colección → mensaje normal (nunca edición del documento activo)')
+    verificar(d.refiereColeccionDeDocumentos('¿Cuántos citatorios tengo?') && d.refiereColeccionDeDocumentos('Muéstrame mis planeaciones') && !d.refiereColeccionDeDocumentos('Agrega las fichas de trabajo') && !d.refiereColeccionDeDocumentos('Cámbiale la sesión 2') && !d.refiereColeccionDeDocumentos('Haz un resumen del examen'),
+      '7i. Colección = tipo en plural con determinante o interrogativo, sin verbo de edición ("agrega las fichas…" sigue siendo edición)')
     verificar(d.identificadorDeDocumento('Muéstrame la planeación de las leyendas').join() === 'leyendas' && d.identificadorDeDocumento('Muéstrame la planeación').length === 0
       && d.identificadorDeDocumento('El oficio de la semana pasada').length === 0 && d.identificadorDeDocumento('Haz un resumen del examen').length === 0 && d.identificadorDeDocumento('muéstrame la planeación de nuevo').length === 0
       && d.identificadorDeDocumento('Convierte el documento de excursión escolar más reciente a Word').join() === 'excursion,escolar',

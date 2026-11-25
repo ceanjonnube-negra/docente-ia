@@ -99,7 +99,7 @@ export function rangoDeFechasEnTexto(texto: string, hoy: string): RangoFechas | 
     const hasta = new Date(Date.UTC(a, mesFin, Number(r[3])))
     if (desde <= hasta) return { desde: iso(desde), hasta: iso(hasta), etiqueta: `del ${r[1]}${r[2] ? ` de ${r[2]}` : ''} al ${r[3]} de ${r[4]}` }
   }
-  const m = n.match(new RegExp(`\\b(?:en|de|durante|del mes de) ${mes}(?: de (\\d{4}))?\\b`))
+  const m = n.match(new RegExp(`\\b(?:(?:en|de|durante|del mes de) )?${mes}(?: (?:de )?(\\d{4}))?\\b`))
   if (m) {
     const i = MESES.indexOf(m[1])
     const a = m[2] ? Number(m[2]) : (i > h.getUTCMonth() ? anio - 1 : anio)
@@ -319,6 +319,7 @@ export async function resolverModificacionGuardada(entrada: {
   historial: { role: string; content: string }[]
   mensaje: string
   voz?: boolean
+  zonaHoraria?: string | null
 }): Promise<string | null> {
   const { sb, grupoId, conversacionId, historial, mensaje } = entrada
   if (!pideModificar(mensaje)) return null
@@ -344,7 +345,7 @@ export async function resolverModificacionGuardada(entrada: {
     if (coincidencias.length === 0) return null
     if (coincidencias.length === 1) return bloquear(coincidencias[0])
     await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: null, numero: null, opciones: coincidencias.slice(0, MAXIMO_OPCIONES).map((p) => p.id), intencion: 'modificar' })
-    return textoOpciones(`Encontré ${coincidencias.length} planeaciones guardadas con ese nombre.`, coincidencias, entrada.voz ?? false, PREGUNTA_ELEGIR_MODIFICAR)
+    return textoOpciones(`Encontré ${coincidencias.length} planeaciones guardadas con ese nombre.`, coincidencias, entrada.voz ?? false, PREGUNTA_ELEGIR_MODIFICAR, entrada.zonaHoraria)
   }
 
   if (borrador) return null
@@ -378,6 +379,15 @@ export function firmarOriginalPropio(docenteId: string | null): FirmarArchivo {
 }
 
 const FORMATO_FECHA: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', timeZone: 'UTC' }
+const ZONA_RESPALDO = 'America/Mexico_City'
+// Marca de tiempo de la base (timestamptz, o timestamp sin zona guardado en
+// UTC) en la hora local del docente: "24 nov 2026, 21:38".
+export function fechaHoraLegible(marca: string, zonaHoraria?: string | null): string {
+  const iso = /[zZ]|[+-]\d{2}:?\d{2}$/.test(marca) ? marca : `${marca.replace(' ', 'T')}Z`
+  const opciones: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }
+  const formatear = (zona: string) => new Intl.DateTimeFormat('es-MX', { ...opciones, timeZone: zona }).format(new Date(iso)).replace('.', '')
+  try { return formatear(zonaHoraria || ZONA_RESPALDO) } catch { return formatear(ZONA_RESPALDO) }
+}
 export function rangoLegible(p: { fecha_inicio: string | null; fecha_fin: string | null }): string {
   if (!p.fecha_inicio || !p.fecha_fin) return 'sin fechas'
   const f = (s: string) => new Date(`${s}T00:00:00Z`).toLocaleDateString('es-MX', FORMATO_FECHA).replace('.', '')
@@ -393,10 +403,17 @@ function marcador(archivo: Record<string, unknown>): string {
 export const PREGUNTA_ELEGIR = '¿Cuál quieres ver?'
 export const PREGUNTA_ELEGIR_MODIFICAR = '¿Cuál quieres modificar?'
 export const MAXIMO_OPCIONES = 8
-export function textoOpciones(encabezado: string, planeaciones: Pick<Planeacion, 'nombre' | 'fecha_inicio' | 'fecha_fin'>[], voz: boolean, pregunta: string = PREGUNTA_ELEGIR): string {
+// El número va en negrita y no como lista de Markdown: el chat no muestra
+// los marcadores de lista (sin estilos tipográficos), y el docente debe ver
+// qué número responder. Dos con el mismo nombre y periodo se distinguen por
+// su fecha y hora real de creación.
+export function textoOpciones(encabezado: string, planeaciones: Pick<Planeacion, 'nombre' | 'fecha_inicio' | 'fecha_fin' | 'creado_en'>[], voz: boolean, pregunta: string = PREGUNTA_ELEGIR, zonaHoraria?: string | null): string {
   const visibles = planeaciones.slice(0, MAXIMO_OPCIONES)
-  if (voz) return `${encabezado} ${visibles.map((p, i) => `${i + 1}, ${p.nombre}, ${rangoLegible(p)}`).join('; ')}. ${pregunta}`
-  const lineas = [encabezado, ...visibles.map((p, i) => `${i + 1}. ${p.nombre} · ${rangoLegible(p)}`)]
+  const clave = (p: Pick<Planeacion, 'nombre' | 'fecha_inicio' | 'fecha_fin'>) => `${normalizar(p.nombre ?? '')}|${p.fecha_inicio}|${p.fecha_fin}`
+  const repetida = (p: Pick<Planeacion, 'nombre' | 'fecha_inicio' | 'fecha_fin'>) => visibles.filter((q) => clave(q) === clave(p)).length > 1
+  const creacion = (p: Pick<Planeacion, 'nombre' | 'fecha_inicio' | 'fecha_fin' | 'creado_en'>) => (repetida(p) && p.creado_en ? ` · creada el ${fechaHoraLegible(p.creado_en, zonaHoraria)}` : '')
+  if (voz) return `${encabezado} ${visibles.map((p, i) => `${i + 1}, ${p.nombre}, ${rangoLegible(p)}${creacion(p)}`).join('; ')}. ${pregunta}`
+  const lineas = [encabezado, ...visibles.map((p, i) => `**${i + 1}** · ${p.nombre} · ${rangoLegible(p)}${creacion(p)}`)]
   if (planeaciones.length > MAXIMO_OPCIONES) lineas.push(`…y ${planeaciones.length - MAXIMO_OPCIONES} más. Dime un nombre o un periodo para acotar.`)
   lineas.push(`${pregunta} Responde con su número.`)
   return lineas.join('\n')
@@ -405,7 +422,7 @@ export function textoOpciones(encabezado: string, planeaciones: Pick<Planeacion,
 // Una planeación en su versión elegida: el texto canónico tal cual, sus
 // archivos originales como tarjetas y una línea discreta de versión. Sin
 // texto recuperable (planeación anterior) no se inventa nada.
-export async function textoPlaneacion(p: Planeacion, version: VersionPlaneacion, total: number, firmar: FirmarArchivo, voz: boolean): Promise<string> {
+export async function textoPlaneacion(p: Planeacion, version: VersionPlaneacion, total: number, firmar: FirmarArchivo, voz: boolean, zonaHoraria?: string | null): Promise<string> {
   const tarjetas: string[] = []
   const word = version.documento_word_archivo_id ? await firmar(version.documento_word_archivo_id) : null
   if (word) tarjetas.push(marcador({ tipo: 'word', nombre: word.nombre, url: word.url, archivoId: version.documento_word_archivo_id, tipoDocumento: 'planeacion' }))
@@ -414,7 +431,7 @@ export async function textoPlaneacion(p: Planeacion, version: VersionPlaneacion,
 
   const vigente = version.numero === p.version
   const etiquetaVersion = total > 1 ? `Versión ${version.numero} de ${total}${vigente ? ' (vigente)' : ''}` : `Versión ${version.numero}`
-  const pie = `${etiquetaVersion} · ${rangoLegible(p)}${total > 1 && vigente ? ' · Pídeme «la versión anterior» si la necesitas.' : ''}`
+  const pie = `_${etiquetaVersion} · guardada el ${fechaHoraLegible(version.creada_en, zonaHoraria)} · ${rangoLegible(p)}${total > 1 && vigente ? ' · Pídeme «la versión anterior» si la necesitas.' : ''}_`
   const archivos = tarjetas.length > 0 ? `\n${tarjetas.join('\n')}` : ''
 
   if (!version.contenido) {

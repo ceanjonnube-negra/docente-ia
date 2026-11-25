@@ -323,7 +323,7 @@ async function main() {
   {
     const { sb } = clienteFalso(DOCENTE_1, conVersiones(datosBase()))
     const r = await ejecutarHerramientaDeModulo(clasificacion({ tipo_consulta_planeacion: 'por_nombre', nombre_planeacion_consulta: 'Leyendas' }), contexto(sb))
-    verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Leyendas del desierto') && r.includes('¿Cuál quieres ver?') && /\n1\. /.test(r) && /\n2\. /.test(r), '10. Varias coincidencias por nombre: lista numerada y pide aclaración')
+    verificar(r !== null && r.includes('Leyendas de mi comunidad') && r.includes('Leyendas del desierto') && r.includes('¿Cuál quieres ver?') && r.includes('**1** · ') && r.includes('**2** · '), '10. Varias coincidencias por nombre: lista numerada (número visible) y pide aclaración')
   }
 
   // 11. Planeación inexistente (búsqueda por nombre sin coincidencias)

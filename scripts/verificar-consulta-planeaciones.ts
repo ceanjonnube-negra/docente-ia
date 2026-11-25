@@ -100,7 +100,7 @@ function datos(): Record<string, Fila[]> {
       { id: 'pl-leyendas-1', docente_id: A, grupo_id: GA, nombre: 'Las Leyendas de Nuestra Comunidad', fecha_inicio: '2026-11-23', fecha_fin: '2026-12-04', estado: 'publicada', version: 2 },
       { id: 'pl-leyendas-2', docente_id: A, grupo_id: GA, nombre: 'Las Leyendas de Nuestra Comunidad', fecha_inicio: '2026-11-24', fecha_fin: '2026-12-07', estado: 'publicada', version: 1 },
       { id: 'pl-cuentos', docente_id: A, grupo_id: GA, nombre: '¡A contar historias! Elaboración de cuentos propios', fecha_inicio: '2026-11-24', fecha_fin: '2026-11-30', estado: 'publicada', version: 1 },
-      { id: 'pl-antigua', docente_id: A, grupo_id: GA, nombre: 'Fracciones en la vida diaria', fecha_inicio: '2026-10-05', fecha_fin: '2026-10-16', estado: 'publicada', version: 1 },
+      { id: 'pl-antigua', docente_id: A, grupo_id: GA, nombre: 'Fracciones en la vida diaria', fecha_inicio: '2026-10-05', fecha_fin: '2026-10-16', estado: 'publicada', version: 1, creado_en: '2026-10-01T15:00:00' },
       { id: 'pl-borrador', docente_id: A, grupo_id: GA, nombre: 'Fracciones a medias', fecha_inicio: '2026-10-05', fecha_fin: '2026-10-16', estado: 'borrador', version: 0 },
       { id: 'pl-otro-grupo', docente_id: A, grupo_id: GA2, nombre: 'Fracciones del otro grupo', fecha_inicio: '2026-10-05', fecha_fin: '2026-10-16', estado: 'publicada', version: 1 },
       { id: 'pl-otro-docente', docente_id: B, grupo_id: GB, nombre: '¡A contar historias! Elaboración de cuentos propios', fecha_inicio: '2026-11-24', fecha_fin: '2026-11-30', estado: 'publicada', version: 1 },
@@ -192,8 +192,8 @@ async function main() {
   {
     const tablas = datos()
     const r = await consultar(tablas, 'Muéstrame la planeación de las leyendas')
-    verificar(!!r.texto?.includes('Encontré 2 planeaciones') && r.texto.includes('1. Las Leyendas de Nuestra Comunidad · 24 nov – 7 dic 2026') && r.texto.includes('2. Las Leyendas de Nuestra Comunidad · 23 nov – 4 dic 2026') && ultimaRespuestaEsPregunta([{ role: 'assistant', content: r.texto }]),
-      '5a. Dos homónimas: lista numerada con fechas para distinguirlas, sin elegir ninguna')
+    verificar(!!r.texto?.includes('Encontré 2 planeaciones') && r.texto.includes('**1** · Las Leyendas de Nuestra Comunidad · 24 nov – 7 dic 2026') && r.texto.includes('**2** · Las Leyendas de Nuestra Comunidad · 23 nov – 4 dic 2026') && !r.texto.includes('creada el') && ultimaRespuestaEsPregunta([{ role: 'assistant', content: r.texto }]),
+      '5a. Dos homónimas: número visible (no lista de Markdown) y fechas para distinguirlas, sin elegir ninguna')
     verificar(JSON.stringify(referencia(tablas)?.opciones) === JSON.stringify(['pl-leyendas-2', 'pl-leyendas-1']), '5b. Las opciones quedan en la referencia, en el mismo orden mostrado')
     const sel = await consultar(tablas, 'la 2')
     verificar(!!sel.texto?.startsWith(TEXTO_V2) && referencia(tablas)?.planeacionId === 'pl-leyendas-1' && referencia(tablas)?.opciones.length === 0, '5c. "la 2" muestra la segunda opción y limpia las opciones')
@@ -235,7 +235,7 @@ async function main() {
   // 8. Ruta del Chat (estático)
   {
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    const iDetecta = ruta.indexOf('detectarConsultaPlaneacion(String(mensaje')
+    const iDetecta = ruta.indexOf('detectarConsultaPlaneacion(textoConsulta')
     const iClasifica = ruta.indexOf('await clasificarNivel0(mensaje, sesion')
     verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*await clasificarNivel0/.test(ruta),
       '8a. La consulta inequívoca se resuelve antes del clasificador (sin llamada de IA)')
@@ -309,6 +309,35 @@ ${MARCADOR_DOCUMENTO_RECUPERADO}` // lo que añade la ruta a toda consulta
     verificar(ruta.includes("intencion_principal === 'planeacion_consultar' ? `${respuestaDeModulo}\\n${MARCADOR_DOCUMENTO_RECUPERADO}`") && ruta.includes('firmarOriginalPropio(userId))}\\n${MARCADOR_DOCUMENTO_RECUPERADO}`')
       && motor.includes('documentoParaHistorial(respuestaLimpia, { contenidoOriginal, archivos, recuperado })') && motor.indexOf('extraerMarcadorRecuperado(respuesta)') < motor.indexOf('extraerTextoFinal(respuestaSinRecuperado)'),
       '10d. La ruta marca toda consulta y entrega de originales; el cliente lo respeta antes de decidir el Historial')
+  }
+
+  // 11. Regresión (Preview 34bb723): secuencia real cuentos → leyendas → "la 2" → "¿Qué planeaciones trabajé en noviembre?"
+  {
+    const tablas = datos()
+    // Cuarta planeación de noviembre: mismo nombre y periodo que otra (solo las distingue su creación).
+    tablas.planeaciones.push({ id: 'pl-leyendas-3', docente_id: A, grupo_id: GA, nombre: 'Las Leyendas de Nuestra Comunidad', fecha_inicio: '2026-11-24', fecha_fin: '2026-12-07', estado: 'publicada', version: 1, creado_en: '2026-11-25T00:25:36.1' })
+    tablas.planeaciones.find((p) => p.id === 'pl-leyendas-2')!.creado_en = '2026-11-24T18:10:00'
+    Object.assign(tablas.planeacion_versiones.find((v) => v.id === 'v-l2-1')!, { documento_word_archivo_id: W1, documento_pdf_archivo_id: P1 })
+    tablas.planeacion_versiones.push({ id: 'v-l3-1', planeacion_id: 'pl-leyendas-3', docente_id: A, numero: 1, origen: 'aprobacion', contenido: '📋 PLANEACIÓN DIDÁCTICA\nLas Leyendas (tercera)\nSesión 1: relatos orales de la comunidad.', documento_word_archivo_id: W1, documento_pdf_archivo_id: P1, creada_en: '2026-11-25T00:25:40+00:00' })
+    await consultar(tablas, 'Muéstrame la planeación de cuentos propios')
+    const leyendas = await consultar(tablas, 'Muéstrame la planeación de las leyendas')
+    verificar(!!leyendas.texto?.includes('Encontré 3 planeaciones') && /\*\*1\*\* · Las Leyendas de Nuestra Comunidad · 24 nov – 7 dic 2026 · creada el 24 nov 2026, 17:25/.test(leyendas.texto) && /\*\*2\*\* · Las Leyendas de Nuestra Comunidad · 24 nov – 7 dic 2026 · creada el 24 nov 2026, 11:10/.test(leyendas.texto)
+      && /\*\*3\*\* · Las Leyendas de Nuestra Comunidad · 23 nov – 4 dic 2026\n/.test(leyendas.texto),
+      '11a. Homónimas en nombre y periodo: orden estable y distinguidas por su fecha y hora real de creación (hora local del docente); la de otro periodo no lo necesita')
+    const segunda = await consultar(tablas, 'la 2')
+    verificar(!!segunda.texto?.startsWith('otro texto de leyendas') && referencia(tablas)?.planeacionId === 'pl-leyendas-2' && tarjetas(segunda.texto).length === 2 && segunda.texto.includes('_Versión 1 · guardada el 24 nov 2026, 17:25 · 24 nov – 7 dic 2026_'),
+      '11b. "La 2" muestra esa planeación con su Word y PDF y, discreta, su versión y fecha en que se guardó')
+    const noviembre = await consultar(tablas, '¿Qué planeaciones trabajé en noviembre?')
+    verificar(!!noviembre.texto?.includes('Trabajaste 4 planeaciones noviembre') && ['pl-leyendas-1', 'pl-leyendas-2', 'pl-leyendas-3', 'pl-cuentos'].every((id) => referencia(tablas)?.opciones.includes(id)) && !noviembre.texto.includes('Fracciones'),
+      '11c. "¿Qué planeaciones trabajé en noviembre?" tras ver una planeación: las 4 cuyo intervalo coincide total o parcialmente con noviembre (incluye la que termina en diciembre)')
+    // Por el orquestador (clasificador) el periodo llega como "noviembre", sin preposición.
+    const sb = crearCliente(A, tablas, [])
+    const porClasificador = await ejecutarHerramientaDeModulo({ ...clasificacionConsultaPlaneacion({ tipo: 'listado' }), tipo_consulta_planeacion: 'por_periodo', periodo_planeacion_consulta: 'noviembre' }, { sb, sesion: sesion(), userId: A, zonaHoraria: 'America/Hermosillo', canal: 'text', conversacionId: CONV })
+    verificar(!!porClasificador?.includes('Trabajaste 4 planeaciones noviembre') && rangoDeFechasEnTexto('noviembre de 2026', HOY)?.desde === '2026-11-01' && rangoDeFechasEnTexto('noviembre 2025', HOY)?.desde === '2025-11-01',
+      '11d. El periodo dicho sin preposición ("noviembre", como lo entrega el clasificador) y con año explícito se interpreta igual')
+    const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+    verificar(/if \(esEdicionDocumento && !formatoOriginal && detectarConsultaPlaneacion\(instruccion/.test(ruta) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),
+      '11e. Servidor: una consulta enviada como edición de la planeación consultada (cliente anterior) se atiende como consulta, sin IA')
   }
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)

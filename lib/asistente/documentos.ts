@@ -622,6 +622,16 @@ export function documentoTieneIdentificador(documentoTexto: string, palabras: st
   const t = normalizar(documentoTexto)
   return palabras.every((w) => t.includes(w) || (w.length >= 5 && t.includes(w.slice(0, w.length - 2))))
 }
+// ¿El mensaje habla de la COLECCIÓN de documentos guardados ("¿qué
+// planeaciones trabajé en noviembre?", "mis citatorios", "cuántos
+// exámenes") y no de uno abierto? Tipo en plural con determinante o
+// interrogativo, sin verbo de edición ("agrega las fichas…" sí edita).
+const COLECCION_DOCUMENTOS = /\b(mis|tus|sus|las|los|todas las|todos los|que|cuales|cuantas|cuantos)\s+(planeaciones|examenes|citatorios|oficios|rubricas|resumenes|cartas|circulares|fichas|reportes|informes|presentaciones|avisos|documentos|archivos)\b/
+export function refiereColeccionDeDocumentos(texto: string): boolean {
+  const n = normalizar(texto)
+  return (COLECCION_DOCUMENTOS.test(n) || CONSULTA_DOCUMENTOS_GUARDADOS.test(n)) && !VERBO_EDICION.test(n)
+}
+
 // ¿El mensaje identifica por su nombre un documento que NO es este?
 export function nombraOtroDocumento(mensaje: string, documentoTexto: string): boolean {
   const palabras = identificadorDeDocumento(mensaje)
