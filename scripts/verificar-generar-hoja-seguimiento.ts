@@ -101,7 +101,7 @@ class ConsultaFalsa {
       return { data: coincidentes, error: null }
     }
 
-    const resultado = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v))
+    const resultado = filas.filter((f) => this.filtros.every(([c, v]) => f[c] === v) && this.condiciones.every((p) => p(f)))
     return { data: resultado, error: null }
   }
 
@@ -276,6 +276,31 @@ async function main() {
     const r = await generarYGuardarHojaSeguimiento(sb, DOCENTE_1, DATOS_HOJA, perfil, null)
     verificar(r.ok === true && r.identificadorVisible === 'SG-TEST', 'Si ya existe una hoja completa, se reutiliza tal cual (mismo identificador)')
     verificar(interno.escrituras.filter((e) => e.tabla === 'hojas_evaluacion' && e.tipo === 'insert').length === 0, 'No se inserta una segunda fila en hojas_evaluacion')
+  }
+
+  // Hito 2 — hoja reemplazada por una versión N+1 y hoja NUEVA pendiente (indicadores congelados por la
+  // publicación, sin roster ni PDF): se completa SOLO la vigente, nunca se crea otra ni se toca la anterior.
+  {
+    const datos = datosBase()
+    const indicadoresNuevos = [{ numero_indicador: 1, indicador_especifico: 'Indicador de la versión 2', aspecto_general: 'logro_aprendizaje' }]
+    datos.hojas_evaluacion = [
+      { id: 'hoja-vieja', proyecto_id: PROYECTO_1, identificador_visible: 'SG-VJA2', storage_path: `${DOCENTE_1}/SG-VJA2.pdf`, indicadores: [{ numero_indicador: 1, indicador_especifico: 'Viejo', aspecto_general: 'logro_aprendizaje' }], roster_congelado: [{ alumno_id: 'x', inscripcion_id: 'y', nombre: 'Antes', posicion: 1 }], reemplazada_por: 'hoja-nueva', reemplazada_en: new Date().toISOString() },
+      { id: 'hoja-nueva', proyecto_id: PROYECTO_1, identificador_visible: 'SG-NVA2', storage_path: null, indicadores: indicadoresNuevos, roster_congelado: null, reemplazada_por: null },
+    ]
+    const { sb, interno } = clienteFalso(datos)
+    const vieja = JSON.stringify(interno._tabla('hojas_evaluacion')[0])
+    const perfil = interno._tabla('perfiles_docentes')[0]
+    const r = await generarYGuardarHojaSeguimiento(sb, DOCENTE_1, DATOS_HOJA, perfil, null)
+    const nueva = interno._tabla('hojas_evaluacion').find((h) => h.id === 'hoja-nueva') as { storage_path: string | null; roster_congelado: unknown[] | null; indicadores: unknown }
+    verificar(r.ok === true && r.identificadorVisible === 'SG-NVA2' && interno.escrituras.filter((e) => e.tabla === 'hojas_evaluacion' && e.tipo === 'insert').length === 0,
+      'H2-1. Con una hoja reemplazada y una vigente pendiente, se completa la VIGENTE (su código) sin insertar otra hoja')
+    verificar(!!nueva.storage_path && Array.isArray(nueva.roster_congelado) && nueva.roster_congelado.length > 0 && JSON.stringify(nueva.indicadores) === JSON.stringify(indicadoresNuevos),
+      'H2-2. La hoja nueva congela su roster UNA vez y conserva los indicadores congelados por la publicación')
+    verificar(JSON.stringify(interno._tabla('hojas_evaluacion')[0]) === vieja, 'H2-3. La hoja reemplazada queda intacta (código, indicadores, roster y PDF)')
+    const subidas = interno.escrituras.length
+    const r2 = await generarYGuardarHojaSeguimiento(sb, DOCENTE_1, DATOS_HOJA, perfil, null)
+    verificar(r2.ok === true && r2.identificadorVisible === 'SG-NVA2' && interno._tabla('hojas_evaluacion').length === 2 && interno.escrituras.filter((e, i) => i >= subidas && e.tabla === 'hojas_evaluacion').length === 0,
+      'H2-4. Repetir (p. ej. tras un fallo del PDF) es idempotente: misma hoja, sin filas ni cambios nuevos en hojas')
   }
 
   // Colisión de identificador — reintenta con uno nuevo, nunca falla por eso solo

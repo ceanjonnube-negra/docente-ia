@@ -104,7 +104,7 @@ function main() {
   verificar(/proyectoSeguimientoId\?:\s*string/.test(tiposAsistente), '25. ArchivoGeneradoInfo.proyectoSeguimientoId es un campo opcional/aditivo')
   verificar(/hoja:\s*\{[^}]*proyectoSeguimientoId[^}]*\}/.test(aprobarBorrador), '26. aprobarBorrador.ts devuelve proyectoSeguimientoId dentro de `hoja` (ya calculado en la Fase 3, no se recalcula)')
   verificar(
-    chatRoute.includes("const archivoHoja = { tipo: 'pdf'") && chatRoute.includes('proyectoSeguimientoId: resultado.hoja.proyectoSeguimientoId'),
+    chatRoute.includes("const archivoHoja = { tipo: 'pdf'") && chatRoute.includes('...(hoja.proyectoSeguimientoId ? { proyectoSeguimientoId: hoja.proyectoSeguimientoId } : {})'),
     '27. chat/route.ts incluye proyectoSeguimientoId al construir el marcador de la tarjeta de la hoja'
   )
 

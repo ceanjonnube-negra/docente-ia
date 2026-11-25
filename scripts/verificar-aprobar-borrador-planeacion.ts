@@ -296,7 +296,11 @@ class ClienteSupabaseFalso {
     if (!a.p_contenido?.trim()) return { data: { estado: 'datos_invalidos' }, error: null }
     const idMensaje = a.p_borrador_clave.slice(4)
     if (!this._tabla('mensajes_chat').some((m) => m.id === idMensaje && m.rol === 'asistente' && idMensaje.startsWith(`${m.conversacion_id}:`))) return { data: { estado: 'borrador_no_valido' }, error: null }
-    versiones.push({ id: `version-${versiones.length + 1}`, planeacion_id: pl.id, docente_id: pl.docente_id, grupo_id: pl.grupo_id, numero: 1, origen: 'aprobacion', borrador_clave: a.p_borrador_clave, contenido: a.p_contenido, estructura: a.p_estructura, trazabilidad_curricular: a.p_trazabilidad, documento_word_archivo_id: a.p_documento_word, documento_pdf_archivo_id: a.p_documento_pdf })
+    // Hoja del proyecto de seguimiento vinculado explícitamente (como _hoja_de_planeacion).
+    const pp = this._tabla('planeacion_proyectos').filter((f) => f.planeacion_id === pl.id)
+    const ps = pp.length === 1 ? this._tabla('proyectos_seguimiento').filter((f) => f.planeacion_proyecto_id === pp[0].id) : []
+    const hojaId = ps.length === 1 ? ps[0].hoja_id ?? null : null
+    versiones.push({ id: `version-${versiones.length + 1}`, planeacion_id: pl.id, docente_id: pl.docente_id, grupo_id: pl.grupo_id, numero: 1, origen: 'aprobacion', borrador_clave: a.p_borrador_clave, contenido: a.p_contenido, estructura: a.p_estructura, trazabilidad_curricular: a.p_trazabilidad, documento_word_archivo_id: a.p_documento_word, documento_pdf_archivo_id: a.p_documento_pdf, hoja_id: hojaId })
     this._registrarEscritura('planeacion_versiones', 'insert')
     Object.assign(pl, { version: 1, estado: 'publicada', aprobacion_token: null, aprobacion_expira_en: null, actualizado_en: new Date().toISOString() })
     this._registrarEscritura('planeaciones', 'update')
@@ -1209,7 +1213,7 @@ async function main() {
         const antes = { conteo: conteo(interno), archivos: registroArchivos.length, storage: (interno['archivosStorage'] as Map<string, Buffer>).size, historial: interno._tabla('documentos_generados').length }
         const r2 = await aprobar(sb, CONV_A) // mismo historial: el docente no recibió la confirmación
         verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word?.archivoId === r1.documentoPlaneacion?.word?.archivoId && r2.documentoPlaneacion?.pdf?.archivoId === r1.documentoPlaneacion?.pdf?.archivoId
-          && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
+          && r2.hoja?.identificadorVisible === r1.hoja?.identificadorVisible && !!r2.hoja?.url && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
           'I8a. El reintento recupera la planeación existente con sus tarjetas originales (mismos archivoId, hoja y contenido)')
         verificar(conteo(interno) === antes.conteo && registroArchivos.length === antes.archivos && (interno['archivosStorage'] as Map<string, Buffer>).size === antes.storage && interno._tabla('documentos_generados').length === antes.historial,
           'I8b. Sin regenerar: ni filas, ni archivos, ni objetos en Storage, ni registros de Historial nuevos')
@@ -1274,7 +1278,7 @@ async function main() {
         const antes = { conteo: conteo(interno), archivos: registroArchivos.length, storage: (interno['archivosStorage'] as Map<string, Buffer>).size, historial: interno._tabla('documentos_generados').length, escrituras: interno.escrituras.length }
         const r2 = await aprobarBorradorPlaneacion(sb, sesion(), historialConfirmado, 'Aprueba y guarda esta planeación.', CONV_A)
         verificar(r1.ok && r2.ok && r2.planeacion.id === r1.planeacion.id && r2.documentoPlaneacion?.word?.archivoId === r1.documentoPlaneacion?.word?.archivoId
-          && r2.documentoPlaneacion?.pdf?.archivoId === r1.documentoPlaneacion?.pdf?.archivoId && r2.hoja.identificadorVisible === r1.hoja.identificadorVisible && !!r2.hoja.url
+          && r2.documentoPlaneacion?.pdf?.archivoId === r1.documentoPlaneacion?.pdf?.archivoId && r2.hoja?.identificadorVisible === r1.hoja?.identificadorVisible && !!r2.hoja?.url
           && r2.documentoPlaneacion?.contenidoDefinitivo === r1.documentoPlaneacion?.contenidoDefinitivo,
           'I13a. Con la confirmación en el historial, se recuperan las tarjetas originales (misma planeación, Word, PDF, hoja y contenido)')
         verificar(conteo(interno) === antes.conteo && registroArchivos.length === antes.archivos && (interno['archivosStorage'] as Map<string, Buffer>).size === antes.storage
@@ -1394,6 +1398,37 @@ async function main() {
         ;(interno._tabla('planeaciones') as Fila[])[0].version = 2
         const r = await aprobar(sb, CONV_A)
         verificar(r.ok && r.planeacion.version === 1 && r.documentoPlaneacion === null && !JSON.stringify(r).includes(W2), 'VR6. Versión 1 histórica sin texto ni archivos: se respeta (sin tarjetas de documento), nunca se rellenan con la vigente')
+      }
+
+      // VH. Cada versión entrega SU hoja: si una versión posterior la reemplazó, se entrega para consulta
+      //     (marcada, sin proyecto: no habilita captura), nunca la vigente en su lugar.
+      {
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        const r1 = await aprobar(sb, CONV_A)
+        const v1 = (interno._tabla('planeacion_versiones') as Fila[])[0]
+        const hojaOriginal = (interno._tabla('hojas_evaluacion') as Fila[])[0]
+        const ps = (interno._tabla('proyectos_seguimiento') as Fila[])[0]
+        const vigente = await aprobar(sb, CONV_A)
+        verificar(r1.ok && v1.hoja_id === hojaOriginal.id && vigente.ok && vigente.hoja?.identificadorVisible === hojaOriginal.identificador_visible && vigente.hoja?.proyectoSeguimientoId === ps.id && !vigente.hoja?.reemplazada,
+          'VH1. La versión 1 queda ligada a su hoja; mientras es la vigente, la recuperación la entrega con su proyecto (captura habilitada)')
+        // Versión 2 que reemplazó la hoja (indicadores distintos, sin capturas).
+        const H2 = 'hoja-v2'
+        ;(interno._tabla('hojas_evaluacion') as Fila[]).push({ id: H2, proyecto_id: ps.id, identificador_visible: 'SG-NVA2', storage_path: hojaOriginal.storage_path, reemplazada_por: null })
+        Object.assign(hojaOriginal, { reemplazada_por: H2, reemplazada_en: new Date().toISOString() })
+        Object.assign(ps, { hoja_id: H2 })
+        ;(interno._tabla('planeacion_versiones') as Fila[]).push({ id: 'v2h', planeacion_id: v1.planeacion_id, docente_id: v1.docente_id, grupo_id: v1.grupo_id, numero: 2, origen: 'modificacion', borrador_clave: `msg:${CONV_A}:msg-2`, contenido: 'V2', estructura: {}, hoja_id: H2 })
+        ;(interno._tabla('planeaciones') as Fila[])[0].version = 2
+        const proyecto = (interno._tabla('planeacion_proyectos') as { evaluacion: Record<string, unknown> }[])[0]
+        proyecto.evaluacion = { ...proyecto.evaluacion, hoja_id: H2, hoja_identificador_visible: 'SG-NVA2' }
+        const replay = await aprobar(sb, CONV_A)
+        verificar(replay.ok && replay.hoja?.identificadorVisible === hojaOriginal.identificador_visible && replay.hoja?.reemplazada === true && replay.hoja?.proyectoSeguimientoId === null && !JSON.stringify(replay).includes('SG-NVA2'),
+          'VH2. Repetir la aprobación original entrega la hoja de la versión 1, marcada como reemplazada y SIN proyecto (no se captura sobre ella); nunca la vigente')
+        // Versión histórica sin hoja registrada y que ya no es la vigente: sin tarjeta de hoja (nunca se toma la del proyecto).
+        delete v1.hoja_id
+        const sinHoja = await aprobar(sb, CONV_A)
+        verificar(sinHoja.ok && sinHoja.hoja === null, 'VH3. Versión anterior sin hoja registrada: sin tarjeta de hoja; no se asocia la vigente por aproximación')
       }
 
       // I12. Ninguna escritura de consolidación fuera de la función atómica.

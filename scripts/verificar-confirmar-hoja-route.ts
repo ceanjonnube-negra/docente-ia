@@ -58,18 +58,23 @@ function main() {
   }
 
   // Persistencia real — upsert (no insert plano) por retry-seguridad, onConflict correcto.
-  verificar(contenido.includes(".from('seguimiento_resultados')") && contenido.includes('.upsert('), '10. Escribe en seguimiento_resultados con upsert (nunca insert plano) — un reintento tras un fallo parcial no choca con la UNIQUE real')
-  verificar(contenido.includes("onConflict: 'proyecto_id,inscripcion_id,indicador_numero'"), '10b. El onConflict coincide EXACTAMENTE con la UNIQUE real de la tabla (proyecto_id, inscripcion_id, indicador_numero)')
+  // Hito 2 (etapa 3): la escritura vive en la RPC atómica confirmar_resultados_hoja (resultados + estado
+  // en una transacción, solo sobre la hoja vigente esperada).
+  const migracionHojas = readFileSync(join(__dirname, '..', 'supabase', 'migrations', '20261127000000_hojas_por_version.sql'), 'utf-8')
+  verificar(contenido.includes("supabase.rpc('confirmar_resultados_hoja'") && contenido.includes('p_hoja_id: proyecto.hoja_id') && !contenido.includes(".from('seguimiento_resultados')"),
+    '10. Escribe los resultados con la RPC atómica (upsert + estado en una transacción, sobre la hoja vigente), nunca con escrituras separadas')
+  verificar(migracionHojas.includes('on conflict (proyecto_id, inscripcion_id, indicador_numero) do update'), '10b. El conflicto coincide EXACTAMENTE con la UNIQUE real de la tabla (proyecto_id, inscripcion_id, indicador_numero): un reintento nunca duplica')
 
-  // Transición de estado real al confirmar.
-  verificar(contenido.includes("estado: 'confirmado'"), "11. Transiciona el proyecto a estado 'confirmado' tras guardar los resultados"
-  )
-  verificar(contenido.includes('confirmado_por: docenteId') && contenido.includes("origen_resultados: 'fotografia'"), "11b. Registra confirmado_por (el docente real, nunca uno que mande el cliente) y origen_resultados='fotografia' (columnas ya preparadas en EVAL-1B, nunca escritas hasta ahora)")
+  // Transición de estado real al confirmar (dentro de confirmar_resultados_hoja).
+  const funcionConfirmar = migracionHojas.slice(migracionHojas.indexOf('create function public.confirmar_resultados_hoja'))
+  verificar(funcionConfirmar.includes("set estado = 'confirmado'"), "11. Transiciona el proyecto a estado 'confirmado' tras guardar los resultados")
+  verificar(funcionConfirmar.includes('confirmado_por = v_uid') && funcionConfirmar.includes("v_uid uuid := auth.uid()") && funcionConfirmar.includes("origen_resultados = 'fotografia'"),
+    "11b. Registra confirmado_por (el docente real de la sesión, auth.uid(), nunca uno que mande el cliente) y origen_resultados='fotografia'")
 
-  // Orden real: primero se guardan los resultados, luego se marca confirmado — nunca al revés.
-  const idxUpsert = contenido.indexOf(".from('seguimiento_resultados')\n      .upsert(")
-  const idxUpdateConfirmado = contenido.indexOf("estado: 'confirmado'")
-  verificar(idxUpsert > -1 && idxUpdateConfirmado > -1 && idxUpsert < idxUpdateConfirmado, '12. Los resultados se guardan (upsert) ANTES de marcar el proyecto como confirmado — nunca al revés')
+  // Orden real: primero se guardan los resultados, luego se marca confirmado — y en la misma transacción.
+  const idxUpsert = funcionConfirmar.indexOf('insert into public.seguimiento_resultados')
+  const idxUpdateConfirmado = funcionConfirmar.indexOf("set estado = 'confirmado'")
+  verificar(idxUpsert > -1 && idxUpdateConfirmado > -1 && idxUpsert < idxUpdateConfirmado, '12. Los resultados se guardan ANTES de marcar el proyecto como confirmado, en la misma transacción — nunca al revés ni a medias')
 
   // 0 IA — este endpoint es 100% determinista sobre datos ya extraídos.
   verificar(!/anthropic\.messages|new Anthropic|openai\.|OpenAI\(/i.test(contenido), '13. 0 llamadas a IA/visión — toda la lógica es determinista sobre extraidoBruto ya existente')

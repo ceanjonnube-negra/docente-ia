@@ -89,6 +89,9 @@ export async function generarYGuardarHojaSeguimiento(
     .from('hojas_evaluacion')
     .select('id, identificador_visible, storage_path, roster_congelado, indicadores')
     .eq('proyecto_id', datos.proyectoId)
+    // Solo la hoja VIGENTE: las reemplazadas (Hito 2) se conservan como
+    // historial y nunca se reutilizan.
+    .is('reemplazada_por', null)
     .maybeSingle()
 
   let hojaId: string
@@ -132,6 +135,16 @@ export async function generarYGuardarHojaSeguimiento(
     // vivo, igual que siempre.
     hojaId = hojaExistente.id
     identificadorVisible = hojaExistente.identificador_visible
+    // Excepción única: la hoja NUEVA de una versión N+1 (creada por
+    // publicar_version_planeacion con sus indicadores ya congelados, sin
+    // roster ni PDF) congela su roster UNA vez aquí, justo antes de su
+    // primer PDF. Condicional: dos intentos simultáneos usan el mismo.
+    if (!Array.isArray(hojaExistente.roster_congelado) && Array.isArray(hojaExistente.indicadores) && hojaExistente.indicadores.length > 0) {
+      const rosterActual: AlumnoRosterCongelado[] = (roster || []).map((a) => ({ alumno_id: a.id, inscripcion_id: a.inscripcion_id, nombre: a.nombre, posicion: a.posicion }))
+      await sb.from('hojas_evaluacion').update({ roster_congelado: rosterActual }).eq('id', hojaExistente.id).is('roster_congelado', null)
+      const { data: releida } = await sb.from('hojas_evaluacion').select('roster_congelado').eq('id', hojaExistente.id).maybeSingle()
+      hojaExistente.roster_congelado = (releida as { roster_congelado?: unknown } | null)?.roster_congelado ?? null
+    }
     const rosterYaCongelado = hojaExistente.roster_congelado as AlumnoRosterCongelado[] | null
     if (Array.isArray(rosterYaCongelado) && rosterYaCongelado.length > 0) {
       alumnosParaPdf = rosterYaCongelado.map((a) => ({ nombre: a.nombre, posicion: a.posicion }))

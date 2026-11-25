@@ -63,6 +63,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       .from('hojas_evaluacion')
       .select('id, roster_congelado, indicadores')
       .eq('id', proyecto.hoja_id)
+      .is('reemplazada_por', null)
       .maybeSingle()
     if (errorHoja) {
       return NextResponse.json({ error: 'No se pudo verificar la hoja de evaluación.' }, { status: 500 })

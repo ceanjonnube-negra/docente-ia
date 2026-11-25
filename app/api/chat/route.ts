@@ -1147,7 +1147,7 @@ export async function POST(req: NextRequest) {
           const p = resultado.planeacion
           const fechas = p.fecha_inicio && p.fecha_fin ? `, del ${p.fecha_inicio} al ${p.fecha_fin}` : ''
           const duracion = resultado.duracionDias ? ` para ${resultado.duracionDias} días efectivos` : ''
-          console.log(`[NIVEL0] planeacion_generar — aprobación OK, planeacion_id=${p.id}, hoja=${resultado.hoja.identificadorVisible}`)
+          console.log(`[NIVEL0] planeacion_generar — aprobación OK, planeacion_id=${p.id}, hoja=${resultado.hoja?.identificadorVisible ?? 'ninguna'}`)
           const mensajeVoz = `${PREFIJO_CONFIRMACION_APROBACION}${p.nombre}${duracion}${fechas}.`
           const mensajeTexto = `${mensajeVoz} Ya aparece en Planeación, queda disponible para consulta, y la hoja de evaluación se utilizará al finalizar el proyecto.`
           // Documento(s) DEFINITIVO(s) — mismo marcador [[DOCUMENTO_ARCHIVO:...]]
@@ -1184,9 +1184,15 @@ export async function POST(req: NextRequest) {
           // que "Subir foto ya contestada" (CapturaHoja.tsx) sepa a
           // qué proyecto pertenece esta hoja, sin tener que adivinarlo
           // ni volver a resolverlo por nombre/fecha.
-          const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${resultado.hoja.identificadorVisible}.pdf`, url: resultado.hoja.url, urlVer: resultado.hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const, proyectoSeguimientoId: resultado.hoja.proyectoSeguimientoId }
-          marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
-          return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}\n${marcadores.join('\n')}`)
+          // Hoja reemplazada por una versión posterior: solo consulta (sin
+          // proyecto, sin captura) y un aviso discreto.
+          const hoja = resultado.hoja
+          if (hoja) {
+            const archivoHoja = { tipo: 'pdf', nombre: `hoja-evaluacion-${hoja.identificadorVisible}${hoja.reemplazada ? '-reemplazada' : ''}.pdf`, url: hoja.url, urlVer: hoja.urlVer, tipoDocumento: 'hoja_evaluacion' as const, ...(hoja.proyectoSeguimientoId ? { proyectoSeguimientoId: hoja.proyectoSeguimientoId } : {}) }
+            marcadores.push(`[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivoHoja), 'utf-8').toString('base64')}]]`)
+          }
+          const avisoHoja = hoja?.reemplazada ? ` La hoja de evaluación ${hoja.identificadorVisible} de esta versión ya fue reemplazada; captura solo sobre la vigente.` : ''
+          return respuestaTexto(`${channel === 'voice' ? mensajeVoz : mensajeTexto}${avisoHoja}\n${marcadores.join('\n')}`)
         } catch (e) {
           console.error('[NIVEL0] planeacion_generar — excepción aprobando el borrador:', e)
           return respuestaTexto('No fue posible guardar la planeación en este momento. Intenta de nuevo en unos segundos.')

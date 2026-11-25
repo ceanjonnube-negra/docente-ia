@@ -89,8 +89,8 @@ verificar(
 
 const generarYGuardarHoja = readFileSync(raiz('lib', 'seguimiento', 'generarYGuardarHoja.ts'), 'utf-8')
 verificar(
-  /\.eq\('proyecto_id', datos\.proyectoId\)\s*\n\s*\.maybeSingle\(\)/.test(generarYGuardarHoja),
-  '6. generarYGuardarHoja.ts sigue buscando por proyecto_id con .maybeSingle() ANTES de insertar (comportamiento con el que el nuevo UNIQUE es coherente, nunca contradictorio)'
+  /\.eq\('proyecto_id', datos\.proyectoId\)\s*\n(?:\s*\/\/.*\n)*\s*\.is\('reemplazada_por', null\)\s*\n\s*\.maybeSingle\(\)/.test(generarYGuardarHoja),
+  '6. generarYGuardarHoja.ts sigue buscando por proyecto_id (solo la hoja vigente, Hito 2) con .maybeSingle() ANTES de insertar (coherente con el índice único de hoja vigente)'
 )
 verificar(
   /if \(hojaExistente && hojaExistente\.storage_path\)/.test(generarYGuardarHoja),

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { MENSAJE_HOJA_CAMBIADA } from '@/lib/seguimiento/capturaHojaVigente'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { prepararResultadosConfirmacion } from '@/lib/seguimiento/confirmarResultadosHoja'
 import type { ResultadoExtraccionHojaEvaluacion } from '@/lib/seguimiento/analisisHojaEvaluacion'
@@ -103,6 +104,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from('hojas_evaluacion')
       .select('id, roster_congelado, indicadores')
       .eq('id', proyecto.hoja_id)
+      .is('reemplazada_por', null)
       .maybeSingle()
     if (errorHoja) {
       return NextResponse.json({ error: 'No se pudo verificar la hoja de evaluación.' }, { status: 500 })
@@ -131,28 +133,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // abajo), un reintento del mismo POST nunca choca con
     // seguimiento_resultados_proyecto_inscripcion_indicador_key — vuelve
     // a escribir exactamente los mismos valores, de forma segura.
-    const { error: errorInsert } = await supabase
-      .from('seguimiento_resultados')
-      .upsert(filas, { onConflict: 'proyecto_id,inscripcion_id,indicador_numero' })
-    if (errorInsert) {
+    // Resultados y estado en UNA transacción, solo sobre la hoja vigente
+    // con la que se preparó la confirmación (confirmar_resultados_hoja,
+    // migración 20261127000000): si la hoja cambió o el proyecto ya no
+    // está en revisión, no se escribe nada.
+    const { data: confirmacion, error: errorConfirmacion } = await supabase.rpc('confirmar_resultados_hoja', {
+      p_proyecto_id: proyectoId,
+      p_hoja_id: proyecto.hoja_id,
+      p_filas: filas,
+    })
+    const estadoConfirmacion = (confirmacion as { estado?: string } | null)?.estado
+    if (errorConfirmacion || !estadoConfirmacion) {
       return NextResponse.json({ error: 'No se pudieron guardar los resultados. Intenta de nuevo.' }, { status: 500 })
     }
-
-    const { error: errorUpdate } = await supabase
-      .from('proyectos_seguimiento')
-      .update({
-        estado: 'confirmado',
-        confirmado_en: new Date().toISOString(),
-        confirmado_por: docenteId,
-        origen_resultados: 'fotografia',
-        actualizado_en: new Date().toISOString(),
-      })
-      .eq('id', proyectoId)
-    if (errorUpdate) {
-      // Los resultados YA se guardaron (upsert de arriba) — un
-      // reintento de este mismo POST es seguro (el upsert no
-      // duplicará nada) y volverá a intentar únicamente este UPDATE.
-      return NextResponse.json({ error: 'Los resultados se guardaron pero no se pudo marcar la hoja como confirmada. Intenta de nuevo.' }, { status: 500 })
+    if (estadoConfirmacion === 'hoja_cambiada') {
+      return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+    }
+    if (estadoConfirmacion === 'estado_invalido') {
+      return NextResponse.json({ error: 'Esta hoja no está lista para confirmarse (debe tener un análisis pendiente de revisión).' }, { status: 409 })
+    }
+    if (estadoConfirmacion !== 'confirmado') {
+      return NextResponse.json({ error: 'No se pudo confirmar esta hoja. Intenta de nuevo.' }, { status: 409 })
     }
 
     return NextResponse.json({ ok: true, estado: 'confirmado', resultados: filas.length })

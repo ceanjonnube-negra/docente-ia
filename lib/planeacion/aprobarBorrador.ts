@@ -90,8 +90,13 @@ export type ResultadoAprobacion =
   // chat, igual que antes de que existiera esta mejora.
   // contenidoDefinitivo: texto con el que se generaron Word y PDF (el del
   // registro del historial).
-  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string }; documentoPlaneacion: { word: DocumentoPlaneacionGenerado | null; pdf: DocumentoPlaneacionGenerado | null; contenidoDefinitivo: string } | null }
+  | { ok: true; planeacion: Planeacion; duracionDias: number | null; hoja: HojaAprobacion | null; documentoPlaneacion: { word: DocumentoPlaneacionGenerado | null; pdf: DocumentoPlaneacionGenerado | null; contenidoDefinitivo: string } | null }
   | { ok: false; codigo: CodigoErrorAprobacion; mensaje: string }
+
+// Hoja de evaluación de la versión entregada. reemplazada: una versión
+// posterior la sustituyó; se entrega para consulta, SIN el proyecto
+// (proyectoSeguimientoId null), para que no se capture sobre ella.
+export type HojaAprobacion = { identificadorVisible: string; url: string; urlVer: string; proyectoSeguimientoId: string | null; reemplazada?: true }
 
 type TurnoHistorial = { role: string; content: string }
 
@@ -179,7 +184,7 @@ function estructuraDeVersion(resumen: ResumenBorrador, campoFormativo: string, p
 
 const CAMPOS_FORMATIVOS_VALIDOS = new Set<string>(CAMPOS_FORMATIVOS)
 
-function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorProyecto[] {
+export function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorProyecto[] {
   // Los indicadores del borrador son texto libre, sin aspecto general
   // clasificado — 'logro_aprendizaje' es el valor por defecto más
   // aplicable de los 5 reales (ver lib/seguimiento/tipos.ts), nunca un
@@ -290,6 +295,7 @@ type VersionAprobada = {
   estructura: { planeacion?: { nombre?: string | null; proposito?: string | null; fecha_inicio?: string | null; fecha_fin?: string | null }; proyecto?: { duracion_dias?: number | null } | null } | null
   documento_word_archivo_id: string | null
   documento_pdf_archivo_id: string | null
+  hoja_id: string | null
 }
 async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: string, grupoId: string, planeacionId: string, clave: string, duracionDias: number | null): Promise<ResultadoAprobacion> {
   const yaGuardada: ResultadoAprobacion = { ok: false, codigo: 'YA_GUARDADA', mensaje: MENSAJE_YA_GUARDADA }
@@ -298,7 +304,7 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
   if (!planeacion || (planeacion as Planeacion).version < 1) return yaGuardada
   const { data: filaVersion } = await sb
     .from('planeacion_versiones')
-    .select('numero, contenido, estructura, documento_word_archivo_id, documento_pdf_archivo_id')
+    .select('numero, contenido, estructura, documento_word_archivo_id, documento_pdf_archivo_id, hoja_id')
     .eq('planeacion_id', planeacionId)
     .eq('docente_id', docenteId)
     .eq('borrador_clave', clave)
@@ -307,12 +313,22 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
   if (!version) return yaGuardada // sin versión de ese borrador (planeación anterior): nada que asociar
   const { data: proyecto } = await sb.from('planeacion_proyectos').select('evaluacion').eq('planeacion_id', planeacionId).maybeSingle()
   const ev = ((proyecto as { evaluacion?: Record<string, unknown> } | null)?.evaluacion ?? {}) as { hoja_id?: string; proyecto_seguimiento_id?: string; documento_word?: DocumentoGuardado; documento_pdf?: DocumentoGuardado }
-  if (!ev.hoja_id || !ev.proyecto_seguimiento_id) return yaGuardada
-  const { data: hoja } = await sb.from('hojas_evaluacion').select('identificador_visible, storage_path').eq('id', ev.hoja_id).maybeSingle()
-  const filaHoja = hoja as { identificador_visible: string; storage_path: string | null } | null
-  if (!filaHoja?.storage_path) return yaGuardada
-  const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
-  const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
+  // Hoja de ESA versión (planeacion_versiones.hoja_id). Una versión sin
+  // hoja registrada solo usa la del proyecto si es la vigente (mismo
+  // vínculo explícito); nunca se asocia otra.
+  const hojaId = version.hoja_id ?? (version.numero === (planeacion as Planeacion).version ? ev.hoja_id ?? null : null)
+  const { data: filaHojaLeida } = hojaId
+    ? await sb.from('hojas_evaluacion').select('identificador_visible, storage_path, proyecto_id, reemplazada_por').eq('id', hojaId).maybeSingle()
+    : { data: null }
+  const filaHoja = filaHojaLeida as { identificador_visible: string; storage_path: string | null; proyecto_id: string; reemplazada_por: string | null } | null
+  let hojaEntregada: HojaAprobacion | null = null
+  if (filaHoja?.storage_path) {
+    const url = await crearUrlFirmada(sb, filaHoja.storage_path, nombreArchivoHoja(filaHoja.identificador_visible), BUCKET_HOJAS_SEGUIMIENTO)
+    const urlVer = await crearUrlFirmada(sb, filaHoja.storage_path, undefined, BUCKET_HOJAS_SEGUIMIENTO)
+    hojaEntregada = filaHoja.reemplazada_por
+      ? { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: null, reemplazada: true }
+      : { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: filaHoja.proyecto_id }
+  }
   // Archivos ORIGINALES de esa versión (registro propio y activo). El grupo
   // del encabezado solo se toma de la proyección si es ese mismo archivo.
   const word = version.documento_word_archivo_id ? await enlacesArchivoPropio(docenteId, version.documento_word_archivo_id) : null
@@ -331,7 +347,7 @@ async function recuperarAprobacionTerminada(sb: SupabaseClient, docenteId: strin
       version: version.numero,
     },
     duracionDias: version.estructura?.proyecto?.duracion_dias ?? duracionDias,
-    hoja: { identificadorVisible: filaHoja.identificador_visible, url, urlVer, proyectoSeguimientoId: ev.proyecto_seguimiento_id },
+    hoja: hojaEntregada,
     // Cada original por separado: si solo uno está disponible, se entrega ese.
     documentoPlaneacion: word || pdf
       ? {

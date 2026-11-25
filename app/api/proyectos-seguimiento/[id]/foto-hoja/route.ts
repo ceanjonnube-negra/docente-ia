@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { MENSAJE_HOJA_CAMBIADA, actualizarCapturaSobreHoja } from '@/lib/seguimiento/capturaHojaVigente'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { subirBuffer, eliminarArchivo, rutaArchivo, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
 import { calcularCantidadPaginasHoja } from '@/lib/documentGen/generarHojaSeguimientoPdf'
@@ -160,6 +161,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from('hojas_evaluacion')
       .select('id, identificador_visible, roster_congelado')
       .eq('id', proyecto.hoja_id)
+      .is('reemplazada_por', null)
       .maybeSingle()
     if (errorHoja) {
       return NextResponse.json({ error: 'No se pudo verificar la hoja de evaluación.' }, { status: 500 })
@@ -231,15 +233,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // completo con SOLO el arreglo de fotos actualizado, nunca se
     // conserva un extraidoBruto/extraidoEn que ya no corresponde al
     // conjunto real de fotografías.
-    const { error: errorUpdate } = await supabase
-      .from('proyectos_seguimiento')
-      .update({
+    const errorUpdate = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
         captura_pendiente: { fotos: fotosActualizadas },
         estado: 'fotografia_cargada',
         actualizado_en: new Date().toISOString(),
       })
-      .eq('id', proyectoId)
-    if (errorUpdate) {
+    if (errorUpdate === 'hoja_cambiada') {
+      // La hoja se reemplazó durante la carga: la foto no se registra y se borra.
+      await eliminarArchivo(supabase, ruta, BUCKET_HOJAS_SEGUIMIENTO)
+      return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+    }
+    if (errorUpdate === 'error') {
       // El archivo SÍ se subió pero no se pudo registrar — se elimina
       // el archivo huérfano en vez de dejarlo sin referencia (mismo
       // criterio que generarYGuardarHoja.ts).

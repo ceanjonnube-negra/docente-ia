@@ -161,7 +161,7 @@ async function main() {
   // un campo propio, nunca una extracción vacía disfrazada.
   // ============================================================
   const inicioRechazo = rutaAnalizar.indexOf('Gate de identidad')
-  const inicioExito = rutaAnalizar.indexOf('const { error: errorUpdate }')
+  const inicioExito = rutaAnalizar.indexOf('const errorUpdate = await actualizarCapturaSobreHoja')
   const bloqueRechazo = rutaAnalizar.slice(inicioRechazo, inicioExito)
   verificar(!sinComentariosDeLinea(bloqueRechazo).includes('extraidoBruto'), 'G1. El bloque de rechazo NUNCA escribe extraidoBruto en código real (ni vacío, ni de ninguna forma — solo se menciona en un comentario explicando la regla) — extraidoBruto sigue significando exclusivamente "identidad ya validada"')
   verificar(bloqueRechazo.includes("validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida'"), 'G2. El bloque de rechazo persiste una señal explícita y propia: captura_pendiente.validacionIdentidad')

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { MENSAJE_HOJA_CAMBIADA, actualizarCapturaSobreHoja, esHojaReemplazadaDelProyecto, mensajeHojaReemplazadaImpresa } from '@/lib/seguimiento/capturaHojaVigente'
 import Anthropic from '@anthropic-ai/sdk'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { descargarBuffer, BUCKET_HOJAS_SEGUIMIENTO } from '@/lib/documentGen/almacenamiento'
@@ -137,6 +138,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from('hojas_evaluacion')
       .select('id, identificador_visible, roster_congelado')
       .eq('id', proyecto.hoja_id)
+      .is('reemplazada_por', null)
       .maybeSingle()
     if (errorHoja) {
       return NextResponse.json({ error: 'No se pudo verificar la hoja de evaluación.' }, { status: 500 })
@@ -241,17 +243,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // fuente del motivo mostrado, que siempre se vuelve a leer del
       // valor ya persistido.
       if (e instanceof ErrorHojaIlegible) {
-        const { error: errorRechazoIlegible } = await supabase
-          .from('proyectos_seguimiento')
-          .update({
+        const errorRechazoIlegible = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
             captura_pendiente: {
               ...capturaPendiente,
               validacionIdentidad: { estado: 'rechazada', razon: 'hoja_ilegible', validadaEn: new Date().toISOString() },
             },
             actualizado_en: new Date().toISOString(),
           })
-          .eq('id', proyectoId)
-        if (errorRechazoIlegible) {
+        if (errorRechazoIlegible === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+        if (errorRechazoIlegible === 'error') {
           return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
         }
         return NextResponse.json({ error: e.message, razon: 'identidad_no_valida' }, { status: 409 })
@@ -288,18 +288,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // reemplaza captura_pendiente por completo y esta señal
     // desaparece sola.
     if (!identidadHojaValida(resultado.identificadorVisibleObservado, hoja.identificador_visible)) {
-      const { error: errorRechazo } = await supabase
-        .from('proyectos_seguimiento')
-        .update({
+      const errorRechazo = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
           captura_pendiente: {
             ...capturaPendiente,
             validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida', validadaEn: new Date().toISOString() },
           },
           actualizado_en: new Date().toISOString(),
         })
-        .eq('id', proyectoId)
-      if (errorRechazo) {
+      if (errorRechazo === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+      if (errorRechazo === 'error') {
         return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+      }
+      // Una hoja impresa de una versión anterior (reemplazada) se explica,
+      // nunca se acepta.
+      const observado = resultado.identificadorVisibleObservado ? normalizarIdentificadorHoja(resultado.identificadorVisibleObservado) : null
+      if (await esHojaReemplazadaDelProyecto(supabase, proyectoId, observado)) {
+        return NextResponse.json({ error: mensajeHojaReemplazadaImpresa(observado!, hoja.identificador_visible), razon: 'hoja_reemplazada' }, { status: 409 })
       }
       return NextResponse.json({ error: MENSAJE_IDENTIDAD_NO_VALIDA, razon: 'identidad_no_valida' }, { status: 409 })
     }
@@ -317,25 +321,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       filas: resultado.extraccion.filas,
     })
     if (!identidadPaginas.ok) {
-      const { error: errorRechazoPaginas } = await supabase
-        .from('proyectos_seguimiento')
-        .update({
+      const errorRechazoPaginas = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
           captura_pendiente: {
             ...capturaPendiente,
             validacionIdentidad: { estado: 'rechazada', razon: identidadPaginas.razon, validadaEn: new Date().toISOString() },
           },
           actualizado_en: new Date().toISOString(),
         })
-        .eq('id', proyectoId)
-      if (errorRechazoPaginas) {
+      if (errorRechazoPaginas === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+      if (errorRechazoPaginas === 'error') {
         return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
       }
       return NextResponse.json({ error: identidadPaginas.mensaje, razon: 'identidad_no_valida' }, { status: 409 })
     }
 
-    const { error: errorUpdate } = await supabase
-      .from('proyectos_seguimiento')
-      .update({
+    const errorUpdate = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
         captura_pendiente: {
           ...capturaPendiente,
           // Limpia explícitamente cualquier rechazo previo (defensivo:
@@ -349,8 +349,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         estado: 'requiere_revision',
         actualizado_en: new Date().toISOString(),
       })
-      .eq('id', proyectoId)
-    if (errorUpdate) {
+    if (errorUpdate === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+    if (errorUpdate === 'error') {
       return NextResponse.json({ error: 'El análisis se completó pero no se pudo registrar. Intenta de nuevo.' }, { status: 500 })
     }
 

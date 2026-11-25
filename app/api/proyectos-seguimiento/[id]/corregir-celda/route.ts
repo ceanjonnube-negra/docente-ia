@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { MENSAJE_HOJA_CAMBIADA, actualizarCapturaSobreHoja } from '@/lib/seguimiento/capturaHojaVigente'
 import { autenticarRequestApi } from '@/lib/server/authApi'
 import { esCeldaBloqueante, contarCeldasBloqueantes } from '@/lib/seguimiento/confirmarResultadosHoja'
 import type { ResultadoExtraccionHojaEvaluacion, CeldaHojaEvaluacion } from '@/lib/seguimiento/analisisHojaEvaluacion'
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const { data: proyecto, error: errorProyecto } = await supabase
       .from('proyectos_seguimiento')
-      .select('id, docente_id, estado, captura_pendiente')
+      .select('id, docente_id, hoja_id, estado, captura_pendiente')
       .eq('id', proyectoId)
       .maybeSingle()
     if (errorProyecto) {
@@ -124,14 +125,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     const extraidoBrutoActualizado: ResultadoExtraccionHojaEvaluacion = { ...extraidoBruto, filas: filasActualizadas }
 
-    const { error: errorUpdate } = await supabase
-      .from('proyectos_seguimiento')
-      .update({
+    const errorUpdate = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
         captura_pendiente: { ...capturaPendiente, extraidoBruto: extraidoBrutoActualizado },
         actualizado_en: new Date().toISOString(),
       })
-      .eq('id', proyectoId)
-    if (errorUpdate) {
+    if (errorUpdate === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+    if (errorUpdate === 'error') {
       return NextResponse.json({ error: 'No se pudo guardar la corrección. Intenta de nuevo.' }, { status: 500 })
     }
 
