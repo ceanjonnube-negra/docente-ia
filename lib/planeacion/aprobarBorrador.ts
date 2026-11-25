@@ -153,6 +153,30 @@ function construirProyecto(resumen: ResumenBorrador, planeacionId: string, curri
 // Campos formativos válidos únicamente (mismo criterio que ya usa
 // POST /api/proyectos-seguimiento) — nunca se inserta uno fuera del
 // enum real por confiar ciegamente en lo que Claude escribió.
+// planeacion_versiones.estructura: los campos estructurados de una versión,
+// con los mismos nombres que la proyección (planeaciones +
+// planeacion_proyectos) que publicar_version_planeacion actualiza.
+function estructuraDeVersion(resumen: ResumenBorrador, campoFormativo: string, proyecto: ReturnType<typeof construirProyecto>) {
+  const evaluacion = proyecto.evaluacion as { indicadores?: unknown; producto_final?: unknown; evidencias?: unknown }
+  return {
+    planeacion: { nombre: resumen.nombre, proposito: resumen.proposito, fecha_inicio: resumen.fechaInicio, fecha_fin: resumen.fechaFin, campo_formativo: campoFormativo },
+    proyecto: {
+      nombre: proyecto.nombre,
+      campos_formativos: proyecto.campos_formativos,
+      contenidos: proyecto.contenidos,
+      pda: proyecto.pda,
+      ejes_articuladores: proyecto.ejes_articuladores,
+      metodologia: proyecto.metodologia,
+      duracion_dias: proyecto.duracion_dias,
+      actividades: proyecto.actividades,
+      recursos: proyecto.recursos,
+      indicadores: evaluacion.indicadores ?? null,
+      producto_final: evaluacion.producto_final ?? null,
+      evidencias: evaluacion.evidencias ?? null,
+    },
+  }
+}
+
 const CAMPOS_FORMATIVOS_VALIDOS = new Set<string>(CAMPOS_FORMATIVOS)
 
 function construirIndicadoresSeguimiento(resumen: ResumenBorrador): IndicadorProyecto[] {
@@ -251,6 +275,13 @@ function filaHistorial(contenido: string, word: DocumentoGuardado | null): Recor
   }
 }
 
+// REQUISITO OBLIGATORIO DE LA ETAPA 3 (Hito 2): esta recuperación lee los
+// archivos originales de la PROYECCIÓN vigente (planeacion_proyectos.
+// evaluacion), que publicar_version_planeacion reemplaza al publicar una
+// versión N+1. Antes de habilitar modificaciones conversacionales, la
+// recuperación de aprobaciones y archivos originales debe leer la versión
+// que originó ese borrador (planeacion_versiones por borrador_clave), nunca
+// la proyección vigente.
 // Aprobación ya terminada (reintento cuya respuesta anterior se perdió, o
 // confirmación ya visible en el historial): se entregan sus tarjetas
 // originales a partir de lo persistido — sin regenerar archivos ni hoja,
@@ -716,19 +747,48 @@ export async function aprobarBorradorPlaneacion(
     // hoja, PDF) está confirmado como una sola operación lógica. Solo con
     // la concesión propia (token): si otra solicitud la tomó, esta no
     // confirma; la concesión se libera al confirmar.
-    const { data: confirmadas, error: errorConfirmar } = await sb
-      .from('planeaciones')
-      .update({ version: 1, estado: ESTADO_FINAL_TRAS_APROBAR, aprobacion_token: null, aprobacion_expira_en: null, actualizado_en: new Date().toISOString() })
-      .eq('id', planeacionId)
-      .eq('version', 0)
-      .eq('aprobacion_token', token)
-      .select(COLUMNAS_PLANEACION_APROBADA)
-    if (errorConfirmar) {
-      console.error('[PLANEACION_GENERAR][aprobar] fallo confirmando la planeación:', errorConfirmar)
-      return fallar()
+    // Con texto canónico, la confirmación publica en la MISMA transacción
+    // su versión 1 (planeacion_versiones: fuente canónica de la
+    // planeación, migración 20261126000000). Sin texto canónico no se
+    // inventa: se confirma como antes y la base deriva la versión de lo
+    // ya guardado.
+    let confirmada: Planeacion | undefined
+    if (contenidoDefinitivoFinal && canonico) {
+      const { data: publicacion, error: errorPublicar } = await sb.rpc('publicar_version_planeacion', {
+        p_planeacion_id: planeacionId,
+        p_version_base: 0,
+        p_borrador_clave: clave,
+        p_contenido: contenidoDefinitivoFinal,
+        p_estructura: estructuraDeVersion(resumen, campoFormativoValidado, construirProyecto(resumen, planeacionId, curricular)),
+        p_trazabilidad: canonico.trazabilidad,
+        p_documento_word: documentoWord?.archivo_id ?? null,
+        p_documento_pdf: documentoPdf?.archivo_id ?? null,
+        p_token: token,
+      })
+      const estado = (publicacion as { estado?: string } | null)?.estado
+      if (errorPublicar || (estado !== 'publicada' && estado !== 'ya_publicada' && estado !== 'conflicto')) {
+        console.error('[PLANEACION_GENERAR][aprobar] fallo publicando la versión 1:', errorPublicar ?? estado)
+        return fallar()
+      }
+      if (estado === 'conflicto') return sinConcesion(planeacionId)
+      const { data: publicada } = await sb.from('planeaciones').select(COLUMNAS_PLANEACION_APROBADA).eq('id', planeacionId).maybeSingle()
+      confirmada = (publicada as Planeacion | null) ?? undefined
+      if (!confirmada) return fallar()
+    } else {
+      const { data: confirmadas, error: errorConfirmar } = await sb
+        .from('planeaciones')
+        .update({ version: 1, estado: ESTADO_FINAL_TRAS_APROBAR, aprobacion_token: null, aprobacion_expira_en: null, actualizado_en: new Date().toISOString() })
+        .eq('id', planeacionId)
+        .eq('version', 0)
+        .eq('aprobacion_token', token)
+        .select(COLUMNAS_PLANEACION_APROBADA)
+      if (errorConfirmar) {
+        console.error('[PLANEACION_GENERAR][aprobar] fallo confirmando la planeación:', errorConfirmar)
+        return fallar()
+      }
+      confirmada = (confirmadas ?? [])[0] as Planeacion | undefined
+      if (!confirmada) return sinConcesion(planeacionId)
     }
-    const confirmada = (confirmadas ?? [])[0] as Planeacion | undefined
-    if (!confirmada) return sinConcesion(planeacionId)
 
     return {
       ok: true,

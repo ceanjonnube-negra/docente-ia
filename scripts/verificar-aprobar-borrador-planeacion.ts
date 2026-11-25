@@ -263,7 +263,9 @@ class ClienteSupabaseFalso {
   // una transacción, renueva la concesión solo con el token propio y
   // escribe evaluación + Historial; sin el token, no escribe nada.
   public antesDeConsolidarFinal: (() => void) | null = null
-  async rpc(nombre: string, args: { p_planeacion_id: string; p_token: string; p_evaluacion: Record<string, unknown>; p_historial: Record<string, unknown> | null }) {
+  async rpc(nombre: string, argumentos: Record<string, unknown>) {
+    if (nombre === 'publicar_version_planeacion') return this._publicarVersion(argumentos as never)
+    const args = argumentos as { p_planeacion_id: string; p_token: string; p_evaluacion: Record<string, unknown>; p_historial: Record<string, unknown> | null }
     if (nombre !== 'consolidar_aprobacion_planeacion') return { data: null, error: { message: `rpc desconocida ${nombre}` } }
     if (this._debeFallar('planeacion_proyectos', 'update')) return { data: null, error: { message: 'Error simulado en consolidar' } }
     if (args.p_historial && this.antesDeConsolidarFinal) { const g = this.antesDeConsolidarFinal; this.antesDeConsolidarFinal = null; g() }
@@ -279,6 +281,26 @@ class ClienteSupabaseFalso {
       this._registrarEscritura('documentos_generados', 'insert')
     }
     return { data: true, error: null }
+  }
+
+  // Emula public.publicar_version_planeacion, versión base 0 (primera
+  // aprobación): con la concesión propia crea la versión 1 y confirma en
+  // un solo paso; el mismo borrador otra vez → ya_publicada.
+  _publicarVersion(a: { p_planeacion_id: string; p_version_base: number; p_borrador_clave: string; p_contenido: string; p_estructura: Record<string, unknown>; p_trazabilidad: unknown; p_documento_word: string | null; p_documento_pdf: string | null; p_token: string }) {
+    const versiones = this._tabla('planeacion_versiones')
+    const previa = versiones.find((v) => v.borrador_clave === a.p_borrador_clave)
+    if (previa) return { data: { estado: previa.planeacion_id === a.p_planeacion_id ? 'ya_publicada' : 'conflicto', numero: previa.numero }, error: null }
+    const pl = this._tabla('planeaciones').find((f) => f.id === a.p_planeacion_id && f.docente_id === this.usuario?.id)
+    if (!pl) return { data: { estado: 'no_encontrada' }, error: null }
+    if (a.p_version_base !== 0 || pl.version !== 0 || pl.aprobacion_token !== a.p_token || pl.borrador_clave !== a.p_borrador_clave) return { data: { estado: 'conflicto', numero: pl.version }, error: null }
+    if (!a.p_contenido?.trim()) return { data: { estado: 'datos_invalidos' }, error: null }
+    const idMensaje = a.p_borrador_clave.slice(4)
+    if (!this._tabla('mensajes_chat').some((m) => m.id === idMensaje && m.rol === 'asistente' && idMensaje.startsWith(`${m.conversacion_id}:`))) return { data: { estado: 'borrador_no_valido' }, error: null }
+    versiones.push({ id: `version-${versiones.length + 1}`, planeacion_id: pl.id, docente_id: pl.docente_id, grupo_id: pl.grupo_id, numero: 1, origen: 'aprobacion', borrador_clave: a.p_borrador_clave, contenido: a.p_contenido, estructura: a.p_estructura, trazabilidad_curricular: a.p_trazabilidad, documento_word_archivo_id: a.p_documento_word, documento_pdf_archivo_id: a.p_documento_pdf })
+    this._registrarEscritura('planeacion_versiones', 'insert')
+    Object.assign(pl, { version: 1, estado: 'publicada', aprobacion_token: null, aprobacion_expira_en: null, actualizado_en: new Date().toISOString() })
+    this._registrarEscritura('planeaciones', 'update')
+    return { data: { estado: 'publicada', numero: 1 }, error: null }
   }
 
   forzarErrorEn(tabla: string, operacion: 'insert' | 'update' | 'select') {
@@ -665,13 +687,14 @@ async function main() {
     const tablasEscritas = new Set(interno.escrituras.map((e) => e.tabla))
     verificar(interno.escrituras.every((e) => e.tipo === 'insert' || e.tipo === 'update'), '23. Solo se ejecutan operaciones insert/update (nunca delete) durante una aprobación exitosa')
     verificar(
-      tablasEscritas.size === 5 &&
+      tablasEscritas.size === 6 &&
+        tablasEscritas.has('planeacion_versiones') &&
         tablasEscritas.has('planeaciones') &&
         tablasEscritas.has('planeacion_proyectos') &&
         tablasEscritas.has('proyectos_seguimiento') &&
         tablasEscritas.has('hojas_evaluacion') &&
         tablasEscritas.has('documentos_generados'),
-      '23b. Las únicas tablas escritas son planeaciones, planeacion_proyectos, proyectos_seguimiento, hojas_evaluacion y documentos_generados (registro canónico en Historial) — ninguna otra'
+      '23b. Las únicas tablas escritas son planeaciones, planeacion_proyectos, proyectos_seguimiento, hojas_evaluacion, documentos_generados (registro canónico en Historial) y planeacion_versiones (versión 1) — ninguna otra'
     )
   }
 
@@ -1271,6 +1294,40 @@ async function main() {
         const sinBorrador = await aprobarBorradorPlaneacion(sb, sesion(), [{ role: 'assistant', content: 'Listo, guardé la planeación de X para 5 días.' }], 'Apruébala', CONV_A)
         verificar(!r.ok && r.codigo === 'YA_GUARDADA' && !sinBorrador.ok && sinBorrador.codigo === 'YA_GUARDADA' && interno.escrituras.length === 0 && interno._tabla('planeaciones').length === 1,
           'I15. Sin identidad persistida (planeación histórica) o sin el borrador en el historial: "ya está guardada", sin crear registros ni asociar documentos')
+      }
+
+      // V. Hito 2, etapa 1 — la primera aprobación publica su versión 1 (fuente canónica única).
+      {
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        const r1 = await aprobar(sb, CONV_A)
+        const versiones = interno._tabla('planeacion_versiones') as { planeacion_id: string; numero: number; origen: string; borrador_clave: string; contenido: string; documento_word_archivo_id: string; documento_pdf_archivo_id: string; trazabilidad_curricular: { esquema?: string }; estructura: { planeacion?: { nombre?: string }; proyecto?: { contenidos?: unknown } } }[]
+        const pl = (interno._tabla('planeaciones') as { version: number; aprobacion_token: string | null }[])[0]
+        verificar(r1.ok && versiones.length === 1 && versiones[0].planeacion_id === r1.planeacion.id && versiones[0].numero === 1 && versiones[0].origen === 'aprobacion'
+          && versiones[0].borrador_clave === `msg:${CONV_A}:msg-1` && pl.version === 1 && pl.aprobacion_token === null,
+          'VA. La primera aprobación confirma publicando la versión 1 en el mismo paso (identidad del borrador, concesión liberada)')
+        verificar(r1.ok && versiones[0].contenido === r1.documentoPlaneacion?.contenidoDefinitivo && versiones[0].documento_word_archivo_id === r1.documentoPlaneacion?.word.archivoId
+          && versiones[0].documento_pdf_archivo_id === r1.documentoPlaneacion?.pdf.archivoId && versiones[0].trazabilidad_curricular?.esquema === 'planeacion-curricular-v1'
+          && versiones[0].estructura.planeacion?.nombre === r1.planeacion.nombre && Array.isArray(versiones[0].estructura.proyecto?.contenidos),
+          'VB. La versión 1 guarda el mismo texto, Word, PDF, trazabilidad y estructura que se entregaron: una sola fuente canónica')
+        const r2 = await aprobar(sb, CONV_A)
+        verificar(r2.ok && r2.planeacion.id === (r1.ok ? r1.planeacion.id : '') && interno._tabla('planeacion_versiones').length === 1, 'VC. El reintento recupera la misma planeación sin otra versión')
+      }
+      {
+        // Concesión perdida antes de confirmar: ni confirma ni publica versión.
+        const datos = datosBase()
+        ;(datos as Record<string, Fila[]>).mensajes_chat = [mensajeChat(CONV_A, 'msg-1', '2026-08-10T10:00:00Z')]
+        const { sb, interno } = clienteFalso(DOCENTE_1, datos)
+        interno.antesDeConsolidarFinal = () => { Object.assign((interno._tabla('planeaciones') as Fila[])[0], { aprobacion_token: 'token-nuevo', aprobacion_expira_en: new Date(Date.now() + 60_000).toISOString() }) }
+        const r = await aprobar(sb, CONV_A)
+        verificar(!r.ok && r.codigo === 'EN_PROCESO' && interno._tabla('planeacion_versiones').length === 0, 'VD. Sin la concesión no se publica ninguna versión')
+      }
+      {
+        const codigo = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarBorrador.ts'), 'utf-8')
+        const migracion = readFileSync(join(__dirname, '..', 'supabase', 'migrations', '20261126000000_planeacion_versiones.sql'), 'utf-8')
+        verificar(/if \(contenidoDefinitivoFinal && canonico\)/.test(codigo) && /p_version_base: 0/.test(codigo) && /create trigger planeaciones_deriva_version after update of version/.test(migracion) && /security definer/.test(migracion),
+          'VE. Sin texto canónico no se inventa contenido: confirmación directa y la base deriva la versión de lo guardado')
       }
 
       // I12. Ninguna escritura de consolidación fuera de la función atómica.
