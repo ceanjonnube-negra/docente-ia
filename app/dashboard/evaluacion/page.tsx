@@ -33,6 +33,7 @@ import { resolverGrupoActivo } from '@/lib/grupoActivo'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
+import { COLOR_ESTADO_HOJA, ETIQUETA_ESTADO_HOJA } from '@/lib/seguimiento/etiquetasEstadoHoja'
 
 type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
 
@@ -47,17 +48,9 @@ type Proyecto = {
   hojas_evaluacion: HojaEmbebida
 }
 
-// Lenguaje llano para el docente — nunca el enum técnico
-// (EstadoCapturaHoja) ni el estado interno de proyectos_seguimiento.
-const ETIQUETA_ESTADO: Record<EstadoCapturaHoja, string> = {
-  sin_fotografia: 'Pendiente de resultados',
-  captura_incompleta: 'Captura incompleta',
-  lista_para_analizar: 'Lista para analizar',
-  identidad_no_valida: 'Foto incorrecta',
-  revision_pendiente: 'Requiere revisión',
-  lista_para_confirmar: 'Lista para confirmar',
-  confirmado: 'Resultados registrados',
-}
+// Lenguaje llano del estado: lib/seguimiento/etiquetasEstadoHoja.ts
+// (misma fuente que Planeación).
+const ETIQUETA_ESTADO = ETIQUETA_ESTADO_HOJA
 
 // Record COMPLETO (no Partial) a propósito — ver auditoría "tarjeta de
 // Evaluación queda inaccesible tras recargar": el botón que alterna
@@ -91,15 +84,7 @@ const ICONO_ACCION: Record<EstadoCapturaHoja, string | null> = {
   confirmado: null,
 }
 
-const COLOR_ESTADO: Record<EstadoCapturaHoja, string> = {
-  sin_fotografia: 'text-gray-500',
-  captura_incompleta: 'text-amber-600',
-  lista_para_analizar: 'text-blue-600',
-  identidad_no_valida: 'text-amber-600',
-  revision_pendiente: 'text-amber-600',
-  lista_para_confirmar: 'text-blue-600',
-  confirmado: 'text-green-600',
-}
+const COLOR_ESTADO = COLOR_ESTADO_HOJA
 
 export default function EvaluacionPage() {
   const asistente = useAsistente()
@@ -202,6 +187,18 @@ export default function EvaluacionPage() {
     cargar()
   }, [cargar])
 
+  // Enlace directo desde Planeación (?proyecto=<id>): se lleva a la vista y
+  // se resalta ese proyecto, solo si es uno de los de este grupo.
+  const [destacado, setDestacado] = useState<string | null>(null)
+  useEffect(() => {
+    if (cargando) return
+    const id = new URLSearchParams(window.location.search).get('proyecto')
+    if (!id || !proyectos.some((p) => p.id === id)) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- se lee una sola vez de la URL al terminar de cargar.
+    setDestacado(id)
+    document.getElementById(`proyecto-${id}`)?.scrollIntoView({ block: 'center' })
+  }, [cargando, proyectos])
+
   const verHoja = async (proyectoId: string) => {
     if (cargandoUrl) return
     setCargandoUrl(proyectoId)
@@ -265,7 +262,7 @@ export default function EvaluacionPage() {
           const resultadosVisibles = verResultados && resultadosAbiertos === proyecto.id
 
           return (
-            <div key={proyecto.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div key={proyecto.id} id={`proyecto-${proyecto.id}`} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${destacado === proyecto.id ? 'border-green-300 ring-2 ring-green-200' : 'border-gray-100'}`}>
               <div className="p-4 flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-teal-50 flex items-center justify-center text-lg flex-shrink-0">📄</div>
                 <div className="flex-1 min-w-0">

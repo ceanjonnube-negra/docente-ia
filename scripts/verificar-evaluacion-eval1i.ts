@@ -101,7 +101,9 @@ function main() {
   verificar(paginaEvaluacion.includes("captura_incompleta: 'Continuar captura'"), "30. captura_incompleta -> acción 'Continuar captura'")
   verificar(paginaEvaluacion.includes("revision_pendiente: 'Revisar resultados'"), "31. revision_pendiente -> acción 'Revisar resultados'")
   verificar(paginaEvaluacion.includes("lista_para_confirmar: 'Confirmar resultados'"), "32. lista_para_confirmar -> acción 'Confirmar resultados'")
-  verificar(paginaEvaluacion.includes("confirmado: 'Resultados registrados'"), "33. confirmado -> etiqueta 'Resultados registrados'")
+  // La etiqueta vive en lib/seguimiento/etiquetasEstadoHoja.ts (compartida con Planeación).
+  verificar(readFileSync(join(__dirname, '..', 'lib', 'seguimiento', 'etiquetasEstadoHoja.ts'), 'utf-8').includes("confirmado: 'Resultados registrados'")
+    && paginaEvaluacion.includes('const ETIQUETA_ESTADO = ETIQUETA_ESTADO_HOJA'), "33. confirmado -> etiqueta 'Resultados registrados'")
   // confirmado es terminal: NUNCA debe tener una acción real. Desde la
   // corrección "tarjeta de Evaluación queda inaccesible tras
   // recargar", ETIQUETA_ACCION es un Record COMPLETO (ya no Partial) a
