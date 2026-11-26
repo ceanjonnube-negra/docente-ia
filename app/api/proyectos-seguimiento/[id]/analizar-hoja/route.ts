@@ -10,6 +10,7 @@ import {
   normalizarImagenesHojaParaVision,
   extraerFotosCapturaPendiente,
   ErrorHojaIlegible,
+  ErrorEstructuraHoja,
 } from '@/lib/seguimiento/analisisHojaEvaluacion'
 import { normalizarIdentificadorHoja, esIdentificadorHojaValido } from '@/lib/identificadorHoja'
 
@@ -206,6 +207,90 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo preparar una de las fotografías para el análisis.' }, { status: 409 })
     }
 
+    // Identidad PRIMERO, estructura después: este gate se aplica tanto a
+    // una extracción válida como a un rechazo estructural de las filas
+    // (ErrorEstructuraHoja), con la observación de identidad de la MISMA
+    // respuesta del modelo — nunca una llamada adicional. Así una foto de
+    // otra hoja se rechaza siempre como "no corresponde" (con su
+    // validacionIdentidad persistida y "Volver a fotografiar"), nunca como
+    // "estructura inválida".
+    const hojaId = proyecto.hoja_id
+    const rechazoPorIdentidad = async (
+      observacion: { identificadorVisibleObservado: string | null; paginasObservadas: unknown },
+      filas: { posicion: number; imagen?: number }[]
+    ): Promise<NextResponse | null> => {
+      // Gate de identidad — ANTES de persistir cualquier fila y ANTES de
+      // que exista la más mínima posibilidad de que
+      // fila.posicion -> rosterCongelado.posicion -> alumno se ejecute
+      // (esa asociación solo vive en construirMatrizRevision/
+      // prepararResultadosConfirmacion, lib/seguimiento/
+      // confirmarResultadosHoja.ts, que NUNCA se llaman con un
+      // extraidoBruto que no haya pasado por aquí primero — ver
+      // revisar-hoja/route.ts y confirmar-hoja/route.ts, ambos leen
+      // captura_pendiente.extraidoBruto YA persistido, nunca antes).
+      //
+      // captura_pendiente.extraidoBruto significa EXCLUSIVAMENTE
+      // "extracción de una fotografía cuya identidad ya fue validada" —
+      // un rechazo NUNCA lo escribe, ni siquiera vacío (eso falsearía
+      // esa semántica de cara a consumidores futuros de historial
+      // individual/grupal). La señal de rechazo vive en su propio campo,
+      // validacionIdentidad, que determinarEstadoCapturaHoja ya sabe
+      // distinguir de "todavía no se analizó nada" (estado
+      // 'identidad_no_valida', nunca 'lista_para_analizar') sin
+      // necesidad de tocar Storage ni captura_pendiente.fotos: en cuanto
+      // el docente sube una fotografía nueva, foto-hoja/route.ts
+      // reemplaza captura_pendiente por completo y esta señal
+      // desaparece sola.
+      if (!identidadHojaValida(observacion.identificadorVisibleObservado, hoja.identificador_visible)) {
+        const errorRechazo = await actualizarCapturaSobreHoja(supabase, proyectoId, hojaId, {
+            captura_pendiente: {
+              ...capturaPendiente,
+              validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida', validadaEn: new Date().toISOString() },
+            },
+            actualizado_en: new Date().toISOString(),
+          })
+        if (errorRechazo === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+        if (errorRechazo === 'error') {
+          return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+        }
+        // Una hoja impresa de una versión anterior (reemplazada) se explica,
+        // nunca se acepta.
+        const observado = observacion.identificadorVisibleObservado ? normalizarIdentificadorHoja(observacion.identificadorVisibleObservado) : null
+        if (await esHojaReemplazadaDelProyecto(supabase, proyectoId, observado)) {
+          return NextResponse.json({ error: mensajeHojaReemplazadaImpresa(observado!, hoja.identificador_visible), razon: 'hoja_reemplazada' }, { status: 409 })
+        }
+        return NextResponse.json({ error: MENSAJE_IDENTIDAD_NO_VALIDA, razon: 'identidad_no_valida' }, { status: 409 })
+      }
+
+      // Identidad por página — el gate anterior valida UN código para todo
+      // el lote; aquí cada imagen debe mostrar el código de esta hoja y su
+      // "Página n de m", y cada fila debe pertenecer a la página en la que
+      // se leyó. Mismo mecanismo de rechazo que arriba (validacionIdentidad,
+      // nunca extraidoBruto), con su propio motivo persistido.
+      const identidadPaginas = validarIdentidadPaginasHoja({
+        identificadorEsperado: hoja.identificador_visible,
+        cantidadAlumnos: rosterCongelado.length,
+        cantidadImagenes: imagenesNormalizadas.length,
+        paginasObservadas: observacion.paginasObservadas,
+        filas,
+      })
+      if (!identidadPaginas.ok) {
+        const errorRechazoPaginas = await actualizarCapturaSobreHoja(supabase, proyectoId, hojaId, {
+            captura_pendiente: {
+              ...capturaPendiente,
+              validacionIdentidad: { estado: 'rechazada', razon: identidadPaginas.razon, validadaEn: new Date().toISOString() },
+            },
+            actualizado_en: new Date().toISOString(),
+          })
+        if (errorRechazoPaginas === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
+        if (errorRechazoPaginas === 'error') {
+          return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
+        }
+        return NextResponse.json({ error: identidadPaginas.mensaje, razon: 'identidad_no_valida' }, { status: 409 })
+      }
+      return null
+    }
+
     let resultado
     try {
       // EL MODELO NUNCA RECIBE hoja.identificador_visible — analizar-
@@ -256,6 +341,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
         return NextResponse.json({ error: e.message, razon: 'identidad_no_valida' }, { status: 409 })
       }
+      // Filas con estructura inválida: si la foto es de otra hoja, el
+      // rechazo es de identidad; solo con la hoja correcta se informa el
+      // error de estructura (abajo, sin cambios). Sin filas validadas, el
+      // gate por página revisa solo código y "Página n de m".
+      if (e instanceof ErrorEstructuraHoja) {
+        const rechazoIdentidad = await rechazoPorIdentidad(e, [])
+        if (rechazoIdentidad) return rechazoIdentidad
+      }
       // Cualquier otro error (red/API/timeout/estructura/parseo
       // inesperado) conserva EXACTAMENTE el comportamiento previo:
       // fail-closed sin tocar captura_pendiente ni el estado del
@@ -265,75 +358,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: e instanceof Error ? e.message : 'No se pudo analizar la fotografía.' }, { status: 422 })
     }
 
-    // Gate de identidad — ANTES de persistir cualquier fila y ANTES de
-    // que exista la más mínima posibilidad de que
-    // fila.posicion -> rosterCongelado.posicion -> alumno se ejecute
-    // (esa asociación solo vive en construirMatrizRevision/
-    // prepararResultadosConfirmacion, lib/seguimiento/
-    // confirmarResultadosHoja.ts, que NUNCA se llaman con un
-    // extraidoBruto que no haya pasado por aquí primero — ver
-    // revisar-hoja/route.ts y confirmar-hoja/route.ts, ambos leen
-    // captura_pendiente.extraidoBruto YA persistido, nunca antes).
-    //
-    // captura_pendiente.extraidoBruto significa EXCLUSIVAMENTE
-    // "extracción de una fotografía cuya identidad ya fue validada" —
-    // un rechazo NUNCA lo escribe, ni siquiera vacío (eso falsearía
-    // esa semántica de cara a consumidores futuros de historial
-    // individual/grupal). La señal de rechazo vive en su propio campo,
-    // validacionIdentidad, que determinarEstadoCapturaHoja ya sabe
-    // distinguir de "todavía no se analizó nada" (estado
-    // 'identidad_no_valida', nunca 'lista_para_analizar') sin
-    // necesidad de tocar Storage ni captura_pendiente.fotos: en cuanto
-    // el docente sube una fotografía nueva, foto-hoja/route.ts
-    // reemplaza captura_pendiente por completo y esta señal
-    // desaparece sola.
-    if (!identidadHojaValida(resultado.identificadorVisibleObservado, hoja.identificador_visible)) {
-      const errorRechazo = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
-          captura_pendiente: {
-            ...capturaPendiente,
-            validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida', validadaEn: new Date().toISOString() },
-          },
-          actualizado_en: new Date().toISOString(),
-        })
-      if (errorRechazo === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
-      if (errorRechazo === 'error') {
-        return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
-      }
-      // Una hoja impresa de una versión anterior (reemplazada) se explica,
-      // nunca se acepta.
-      const observado = resultado.identificadorVisibleObservado ? normalizarIdentificadorHoja(resultado.identificadorVisibleObservado) : null
-      if (await esHojaReemplazadaDelProyecto(supabase, proyectoId, observado)) {
-        return NextResponse.json({ error: mensajeHojaReemplazadaImpresa(observado!, hoja.identificador_visible), razon: 'hoja_reemplazada' }, { status: 409 })
-      }
-      return NextResponse.json({ error: MENSAJE_IDENTIDAD_NO_VALIDA, razon: 'identidad_no_valida' }, { status: 409 })
-    }
-
-    // Identidad por página — el gate anterior valida UN código para todo
-    // el lote; aquí cada imagen debe mostrar el código de esta hoja y su
-    // "Página n de m", y cada fila debe pertenecer a la página en la que
-    // se leyó. Mismo mecanismo de rechazo que arriba (validacionIdentidad,
-    // nunca extraidoBruto), con su propio motivo persistido.
-    const identidadPaginas = validarIdentidadPaginasHoja({
-      identificadorEsperado: hoja.identificador_visible,
-      cantidadAlumnos: rosterCongelado.length,
-      cantidadImagenes: imagenesNormalizadas.length,
-      paginasObservadas: resultado.paginasObservadas,
-      filas: resultado.extraccion.filas,
-    })
-    if (!identidadPaginas.ok) {
-      const errorRechazoPaginas = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
-          captura_pendiente: {
-            ...capturaPendiente,
-            validacionIdentidad: { estado: 'rechazada', razon: identidadPaginas.razon, validadaEn: new Date().toISOString() },
-          },
-          actualizado_en: new Date().toISOString(),
-        })
-      if (errorRechazoPaginas === 'hoja_cambiada') return NextResponse.json({ error: MENSAJE_HOJA_CAMBIADA, razon: 'hoja_cambiada' }, { status: 409 })
-      if (errorRechazoPaginas === 'error') {
-        return NextResponse.json({ error: 'No se pudo registrar el resultado del análisis. Intenta de nuevo.' }, { status: 500 })
-      }
-      return NextResponse.json({ error: identidadPaginas.mensaje, razon: 'identidad_no_valida' }, { status: 409 })
-    }
+    const rechazoIdentidad = await rechazoPorIdentidad(resultado, resultado.extraccion.filas)
+    if (rechazoIdentidad) return rechazoIdentidad
 
     const errorUpdate = await actualizarCapturaSobreHoja(supabase, proyectoId, proyecto.hoja_id, {
         captura_pendiente: {

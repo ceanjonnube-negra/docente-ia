@@ -162,7 +162,9 @@ async function main() {
   // ============================================================
   const inicioRechazo = rutaAnalizar.indexOf('Gate de identidad')
   const inicioExito = rutaAnalizar.indexOf('const errorUpdate = await actualizarCapturaSobreHoja')
-  const bloqueRechazo = rutaAnalizar.slice(inicioRechazo, inicioExito)
+  // El gate vive en rechazoPorIdentidad, definido antes de la única
+  // llamada de visión: el bloque de rechazo termina donde empieza esa llamada.
+  const bloqueRechazo = rutaAnalizar.slice(inicioRechazo, rutaAnalizar.indexOf('let resultado', inicioRechazo))
   verificar(!sinComentariosDeLinea(bloqueRechazo).includes('extraidoBruto'), 'G1. El bloque de rechazo NUNCA escribe extraidoBruto en código real (ni vacío, ni de ninguna forma — solo se menciona en un comentario explicando la regla) — extraidoBruto sigue significando exclusivamente "identidad ya validada"')
   verificar(bloqueRechazo.includes("validacionIdentidad: { estado: 'rechazada', razon: 'identidad_no_valida'"), 'G2. El bloque de rechazo persiste una señal explícita y propia: captura_pendiente.validacionIdentidad')
   verificar(bloqueRechazo.includes('...capturaPendiente'), 'G3. El rechazo conserva capturaPendiente.fotos tal cual (spread) — nunca lo modifica ni borra Storage')

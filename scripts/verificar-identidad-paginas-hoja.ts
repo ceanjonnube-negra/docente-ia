@@ -211,7 +211,7 @@ async function main() {
     const iPaginas = ruta.indexOf('validarIdentidadPaginasHoja({')
     const iGuardado = ruta.indexOf('extraidoBruto: resultado.extraccion')
     verificar(iGlobal > 0 && iPaginas > iGlobal && iGuardado > iPaginas, '6a. analizar-hoja valida identidad global, luego por página, y solo después guarda la extracción')
-    const bloqueRechazo = ruta.slice(iPaginas, ruta.indexOf('const errorUpdate = await actualizarCapturaSobreHoja', iPaginas))
+    const bloqueRechazo = ruta.slice(iPaginas, ruta.indexOf('let resultado', iPaginas))
     verificar(!bloqueRechazo.replace(/\/\/.*$/gm, '').includes('extraidoBruto') && bloqueRechazo.includes("validacionIdentidad: { estado: 'rechazada', razon: identidadPaginas.razon"), '6b. El rechazo por página guarda solo validacionIdentidad con su motivo, nunca extraidoBruto')
     verificar(!bloqueRechazo.includes('anthropic') && (ruta.match(/analizarImagenesHojaEvaluacion\(/g) || []).length === 1, '6c. Sin llamadas de IA adicionales: una sola llamada de visión en la ruta')
   }

@@ -451,6 +451,22 @@ function validarFila(f: unknown, posicionesMaximas: number): FilaHojaEvaluacion 
 // casos queda fuera de esta corrección a propósito.
 export class ErrorHojaIlegible extends Error {}
 
+// Rechazo estructural de las filas (validarResultadoExtraccionHoja) que
+// conserva lo que el modelo observó como identidad en la MISMA
+// respuesta: analizar-hoja/route.ts valida primero la identidad y solo
+// si la hoja es la correcta informa el error de estructura. Una foto de
+// otra hoja (ej. SG-TWFY con 3 alumnos frente a SG-3UAA con 2) se
+// rechaza como "no corresponde", nunca como "estructura inválida".
+export class ErrorEstructuraHoja extends Error {
+  constructor(
+    mensaje: string,
+    readonly identificadorVisibleObservado: string | null,
+    readonly paginasObservadas: unknown
+  ) {
+    super(mensaje)
+  }
+}
+
 // Punto de entrada puro y determinista de validación — exportado para
 // poder probarlo aislado, sin credenciales de Anthropic (mismo
 // criterio que validarRegistroExtraido en analisisListaOficial.ts).
@@ -560,12 +576,21 @@ export async function analizarImagenesHojaEvaluacion(
     throw new Error('No pude interpretar el análisis de la hoja. Intenta de nuevo con una foto más clara.')
   }
 
-  const extraccion = validarResultadoExtraccionHoja(parseado, cantidadFilasEsperadas)
-
   // Observación de identidad — extraída del MISMO parseado, sin
   // ninguna llamada adicional. Nunca lanza por sí sola: un valor
   // ausente/mal formado simplemente se normaliza a null (fail-closed
   // en la COMPARACIÓN posterior del llamador, nunca aquí).
+  let extraccion: ResultadoExtraccionHojaEvaluacion
+  try {
+    extraccion = validarResultadoExtraccionHoja(parseado, cantidadFilasEsperadas)
+  } catch (e) {
+    // Respuesta sin forma de objeto o hoja ilegible: no hay identidad
+    // observada que validar — se propaga tal cual.
+    if (e instanceof ErrorHojaIlegible || !(e instanceof Error) || typeof parseado !== 'object' || parseado === null) throw e
+    const bruto = parseado as Record<string, unknown>
+    throw new ErrorEstructuraHoja(e.message, normalizarIdentificadorVisibleObservado(bruto.identificadorVisible), bruto.paginas)
+  }
+
   const obj = parseado as Record<string, unknown>
   return {
     extraccion,
