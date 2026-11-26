@@ -125,6 +125,18 @@ async function main() {
       '7d. El ajuste usa una sola generación (sin clasificador), el modelo recibe solo la instrucción y la metadata se registra en el servidor')
   }
 
+  // 8. Prueba real en Preview (45ecbae): el borrador de ajuste mostraba vistas previas de Word, PDF y hoja.
+  {
+    const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
+    const iDecl = ruta.indexOf('let borradorDeAjuste = !!ajusteDelTurno')
+    const iHerencia = ruta.indexOf('if (heredado) borradorDeAjuste = true')
+    const bloques = [...ruta.matchAll(/if \(esTurnoDeBorradorPlaneacion && sesion\?\.grupo_activo_id( && !borradorDeAjuste)?\) \{/g)]
+    verificar(iDecl > 0 && iHerencia > iDecl && bloques.length === 2 && bloques.every((b) => !!b[1] && (b.index ?? 0) > iHerencia),
+      '8a. Turnos de ajuste y sus continuaciones: sin vistas previas de Word, PDF ni hoja (los dos bloques de vista previa las excluyen)')
+    verificar(ruta.includes('vista-previa-documento?tipoDocumento=planeacion&datos=') && ruta.includes('vista-previa-hoja?tipoDocumento=hoja_evaluacion&datos=') && !/borradorDeAjuste = (?!!!ajusteDelTurno|true)/.test(ruta),
+      '8b. Las planeaciones nuevas conservan sus vistas previas (la exclusión solo se activa en un ajuste)')
+  }
+
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)
   process.exit(fallos === 0 ? 0 : 1)
 }

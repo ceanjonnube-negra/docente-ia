@@ -147,7 +147,8 @@ async function main() {
     // cuentan los bloques "if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id)"
     // en la zona de adjuntos (después del streaming), deben ser 2.
     const zonaAdjuntos = rutaChat.slice(rutaChat.indexOf('marcarTelemetria(\'claude:response_finished\')'), rutaChat.indexOf('} catch (err) {\n        // Ya se había empezado'))
-    const bloques = (zonaAdjuntos.match(/if \(esTurnoDeBorradorPlaneacion && sesion\?\.grupo_activo_id\) \{/g) || []).length
+    // (Hito 2: un borrador de ajuste no lleva vistas previas — condición !borradorDeAjuste.)
+    const bloques = (zonaAdjuntos.match(/if \(esTurnoDeBorradorPlaneacion && sesion\?\.grupo_activo_id && !borradorDeAjuste\) \{/g) || []).length
     verificar(bloques === 2, '5c. Existen exactamente dos bloques independientes de adjunto (planeación y hoja) — una falla en uno no debe impedir el otro')
     verificar((zonaAdjuntos.match(/catch \(e\) \{/g) || []).length >= 2, '5d. Cada bloque de adjunto tiene su propio catch — un fallo en la vista previa nunca rompe la respuesta del borrador')
   }

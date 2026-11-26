@@ -2118,6 +2118,10 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
         // secciones no pedidas, se calcula el resumen de cambios real y se
         // registra la identidad del ajuste (metadata del servidor). Nada de
         // la planeación aprobada, su proyecto ni su evaluación cambia.
+        // Borrador de AJUSTE (o su continuación): solo texto, con su resumen
+        // de cambios y la invitación a «apruébala». Sin vistas previas de
+        // Word, PDF ni hoja: los archivos reales llegan al aprobar.
+        let borradorDeAjuste = !!ajusteDelTurno
         if (esTurnoDeBorradorPlaneacion && ajusteDelTurno) {
           try {
             const alcance = alcanceDeInstruccion(ajusteDelTurno.instruccion)
@@ -2153,6 +2157,7 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
               const heredado = new RegExp(`^${ETIQUETA_AJUSTE}:`, 'mi').test(previo) && supabaseUser
                 ? await continuarAjuste(supabaseUser, await conversacionPropia(), previo, completado.textoFinal, esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? ''))
                 : null
+              if (heredado) borradorDeAjuste = true
               const textoFinalTurno = heredado ?? completado.textoFinal
               controller.enqueue(encoder.encode(`\n\n[[TEXTO_FINAL:${Buffer.from(textoFinalTurno, 'utf-8').toString('base64')}]]`))
               textoBorradorAcumulado = completado.textoParaVistaPrevia
@@ -2182,7 +2187,7 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
         // de los dos pasa por un botón de conversión ni por el modelo:
         // ambos se generan aquí, directo desde el mismo texto completo
         // del borrador, en el mismo turno en que Claude lo redactó.
-        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && !borradorDeAjuste) {
           try {
             const textoCompleto = extraerTextoCompletoBorrador(textoBorradorAcumulado)
             console.log(`[STREAM][chat] borradorExtraido=${!!textoCompleto}`)
@@ -2276,7 +2281,7 @@ CUENTOS, FÁBULAS Y LECTURAS — cuando el maestro pida un cuento, fábula, lect
         // (Claude no incluyó el bloque de resumen porque hubo
         // conflicto de fechas), extraerResumenBorrador devuelve null y
         // no se adjunta nada.
-        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id) {
+        if (esTurnoDeBorradorPlaneacion && sesion?.grupo_activo_id && !borradorDeAjuste) {
           try {
             const resumenBorrador = extraerResumenBorrador([{ role: 'assistant', content: textoBorradorAcumulado }])
             if (resumenBorrador) {
