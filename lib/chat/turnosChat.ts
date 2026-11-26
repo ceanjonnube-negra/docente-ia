@@ -38,7 +38,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { after } from 'next/server'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { marcadorTurno as marca, textoVisibleDeRespuesta } from '../asistente/textoFinalChat'
+import { marcadorTurno as marca, mensajeDeRespuesta, textoVisibleDeRespuesta, type MarcaTurno } from '../asistente/textoFinalChat'
 import { ejecutarEnTurno, type ContextoTurno } from './contextoTurno'
 
 // Duración máxima de /api/chat (180 s) + margen: si el plazo pasó, la
@@ -126,7 +126,7 @@ export function huellaSolicitud(cuerpo: CuerpoChat & { mensaje: string; conversa
 export { textoVisibleDeRespuesta }
 // Marcador de cierre para clientes con protocolo de turnos (nunca para el
 // cliente actual): identidad del turno y del mensaje del asistente.
-export function marcadorTurno(datos: { estado: 'completado' | 'fallido'; requestId: string; turnoId?: string; mensajeAsistenteId?: string | null; codigoError?: string | null }): string {
+export function marcadorTurno(datos: MarcaTurno): string {
   return marca(datos)
 }
 
@@ -224,7 +224,7 @@ export async function conTurnoDuradero(req: Request, procesar: (req: Request) =>
       break
     case 'completado':
       // Recuperar: la respuesta guardada, sin volver a ejecutar ni llamar a la IA.
-      return textoPlano(`${turno!.texto_crudo ?? ''}${protocolo === 1 ? marcadorTurno({ estado: 'completado', requestId, turnoId: turno!.id, mensajeAsistenteId: turno!.mensaje_asistente_id }) : ''}`)
+      return textoPlano(`${turno!.texto_crudo ?? ''}${protocolo === 1 ? marcadorTurno({ estado: 'completado', requestId, turnoId: turno!.id, mensajeAsistenteId: turno!.mensaje_asistente_id, creadoEn: turno!.completado_en }) : ''}`)
     case 'ocupada':
       return protocolo === 1 ? json({ estadoTurno: 'ocupada', requestId, error: MENSAJE_CONVERSACION_OCUPADA }, 409) : textoPlano(MENSAJE_CONVERSACION_OCUPADA)
     case 'en_proceso':
@@ -262,7 +262,12 @@ export async function conTurnoDuradero(req: Request, procesar: (req: Request) =>
   }
 
   const alTerminar = async (crudo: string): Promise<string | null> => {
-    const visible = textoVisibleDeRespuesta(crudo)
+    // El mensaje tal como lo guarda el chat: texto visible y tarjetas de
+    // archivo/contenido (referencias a archivos ya generados; nada se
+    // vuelve a generar). null si depende del estado del cliente.
+    const mensaje = mensajeDeRespuesta(crudo)
+    const visible = mensaje?.texto ?? null
+    const tarjetas = mensaje && (mensaje.archivo || mensaje.contenidoDocumento) ? { ...(mensaje.archivo ? { archivo: mensaje.archivo, archivos: mensaje.archivos } : {}), ...(mensaje.contenidoDocumento ? { contenidoDocumento: mensaje.contenidoDocumento } : {}) } : null
     // Un borrador de ajuste sin mensaje no se podría aprobar: no es un resultado utilizable.
     if (protocolo === 1 && contexto.ajuste && visible === null) {
       await fallar('error_persistencia', crudo, 'borrador de ajuste sin texto final')
@@ -275,6 +280,7 @@ export async function conTurnoDuradero(req: Request, procesar: (req: Request) =>
       p_texto_final: visible,
       p_materializar: protocolo === 1 && visible !== null,
       p_ajuste: contexto.ajuste,
+      p_contenido: protocolo === 1 && visible !== null ? tarjetas : null,
     })
     const completado = r.data as ResultadoAdquisicion | null
     if (r.error || completado?.resultado !== 'completado') {
@@ -283,7 +289,7 @@ export async function conTurnoDuradero(req: Request, procesar: (req: Request) =>
       console.error(`[TURNO] no se completó: ${r.error?.message ?? completado?.resultado}`)
       return protocolo === 1 ? marcadorTurno({ estado: 'fallido', requestId, turnoId, codigoError: completado?.turno?.codigo_error ?? 'error_persistencia' }) : null
     }
-    return protocolo === 1 ? marcadorTurno({ estado: 'completado', requestId, turnoId, mensajeAsistenteId: completado.turno?.mensaje_asistente_id ?? null }) : null
+    return protocolo === 1 ? marcadorTurno({ estado: 'completado', requestId, turnoId, mensajeAsistenteId: completado.turno?.mensaje_asistente_id ?? null, creadoEn: completado.turno?.completado_en ?? null }) : null
   }
   const alFallar = (crudo: string, e: unknown) => fallar('error_generacion', crudo, e instanceof Error ? e.message : String(e))
   return new Response(puenteDuradero(respuesta.body, alTerminar, alFallar, deps.despues), { status: respuesta.status, headers: respuesta.headers })

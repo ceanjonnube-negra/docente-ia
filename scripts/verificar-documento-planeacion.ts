@@ -163,9 +163,12 @@ async function main() {
     verificar(rutaTipos.includes('archivos?: ArchivoGeneradoInfo[]'), '6a. El tipo de mensaje admite varios archivos por turno (campo nuevo y aditivo)')
     verificar(rutaTipos.includes("archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]"), '6b. El evento respuesta-final expone tanto el archivo singular (compatibilidad) como el arreglo completo')
 
-    verificar(/\[\[DOCUMENTO_ARCHIVO:\(\[\^\\\]\]\+\)\\\]\\\]\/g/.test(rutaMotor) || rutaMotor.includes('DOCUMENTO_ARCHIVO:([^\\]]+)\\]\\]/g'), '6c. motorTextoClaude.ts extrae TODOS los marcadores de archivo del mensaje (regex global), no solo el primero')
-    verificar(rutaMotor.includes('while ((match = regex.exec(respuesta)) !== null)'), '6d. La extracción de marcadores recorre el texto completo en un bucle, nunca se detiene en el primer adjunto encontrado')
-    verificar(rutaMotor.includes('return { texto, archivo: archivos[0], archivos }'), '6e. El primer archivo sigue viajando también en el campo singular `archivo`, para no romper ningún flujo existente de un solo documento')
+    // La extracción vive en el módulo compartido con el servidor (textoFinalChat.ts); el motor la usa.
+    const extraccion = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'textoFinalChat.ts'), 'utf-8')
+    verificar(rutaMotor.includes('return extraerArchivos(respuesta)'), '6c0. motorTextoClaude.ts usa la extracción compartida de archivos')
+    verificar(/\[\[DOCUMENTO_ARCHIVO:\(\[\^\\\]\]\+\)\\\]\\\]\/g/.test(extraccion) || extraccion.includes('DOCUMENTO_ARCHIVO:([^\\]]+)\\]\\]/g'), '6c. motorTextoClaude.ts extrae TODOS los marcadores de archivo del mensaje (regex global), no solo el primero')
+    verificar(extraccion.includes('while ((match = regex.exec(respuesta)) !== null)'), '6d. La extracción de marcadores recorre el texto completo en un bucle, nunca se detiene en el primer adjunto encontrado')
+    verificar(extraccion.includes('return { texto, archivo: archivos[0], archivos }'), '6e. El primer archivo sigue viajando también en el campo singular `archivo`, para no romper ningún flujo existente de un solo documento')
 
     verificar(rutaPanel.includes('m.archivos && m.archivos.length > 0 ? m.archivos : m.archivo ? [m.archivo] : []'), '6f. AsistentePanel.tsx renderiza una tarjeta por cada adjunto del turno, sin dejar de soportar el caso de un solo archivo')
     verificar(rutaPanel.includes('key={`${m.id}-archivo-${idxGrupo}`}'), '6g. Cada tarjeta de adjunto tiene una key única y estable (evita advertencias de React y renders incorrectos con 2+ adjuntos) — ahora por grupo de documento, ver "descarga real en Word y PDF"')

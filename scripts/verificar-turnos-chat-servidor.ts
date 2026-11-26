@@ -140,6 +140,32 @@ async function main() {
   }
 
   // ============================================================
+  // 3d. Respuesta con tarjeta (protocolo 1): mensaje con su archivo
+  // ============================================================
+  {
+    const e = entorno()
+    const archivo = { nombre: 'Hoja SG-TEST.pdf', tipo: 'pdf', url: '/api/planeaciones/vista-previa-hoja?id=1&token=secreto', archivoId: 'arch-1' }
+    const texto = 'Listo: guardé «Cuentos» como versión 3.'
+    const r = await conTurnoDuradero(peticion({ requestId: 'req-cliente-0009', mensajeUsuarioId: `${CONV}:msg-9`, protocoloTurno: 1 }), manejador([texto, `\n[[DOCUMENTO_ARCHIVO:${b64(JSON.stringify(archivo))}]]`]).procesar, e.deps)
+    await leerTodo(r)
+    await e.terminar()
+    const c = e.servidor.find((x) => x.nombre === 'completar_turno_chat')?.args
+    const contenido = c?.p_contenido as { archivo?: { url: string; archivoId: string }; archivos?: unknown[] } | null
+    verificar(c?.p_materializar === true && c.p_texto_final === texto && contenido?.archivo?.archivoId === 'arch-1' && contenido.archivo.url === '/api/planeaciones/vista-previa-hoja?id=1' && contenido.archivos?.length === 1,
+      '3d. Respuesta con tarjeta: se materializa con su archivo (referencia ya generada, sin token de vista previa)')
+    const sinProtocolo = entorno()
+    await leerTodo(await conTurnoDuradero(peticion({}), manejador([texto, `\n[[DOCUMENTO_ARCHIVO:${b64(JSON.stringify(archivo))}]]`]).procesar, sinProtocolo.deps))
+    await sinProtocolo.terminar()
+    const c0 = sinProtocolo.servidor.find((x) => x.nombre === 'completar_turno_chat')?.args
+    verificar(c0?.p_materializar === false && c0.p_contenido === null, '3e. Cliente anterior: sin mensaje del servidor (tampoco con tarjetas)')
+    const nav = entorno()
+    await leerTodo(await conTurnoDuradero(peticion({ requestId: 'req-cliente-0010', mensajeUsuarioId: `${CONV}:msg-10`, protocoloTurno: 1 }), manejador(['Abriendo la lista', '\n[[NAVEGACION:abc]]']).procesar, nav.deps))
+    await nav.terminar()
+    const cn = nav.servidor.find((x) => x.nombre === 'completar_turno_chat')?.args
+    verificar(cn?.p_materializar === false && cn.p_texto_final === null, '3f. Tarjeta que depende del estado del cliente (navegación): la guarda el cliente, como siempre')
+  }
+
+  // ============================================================
   // 4. Fallas
   // ============================================================
   {

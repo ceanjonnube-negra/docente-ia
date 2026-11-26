@@ -33,7 +33,7 @@ g.localStorage = (g.window as { localStorage: unknown }).localStorage
 g.document = { hidden: false, addEventListener: escuchar }
 
 type Fila = Record<string, unknown>
-type Mensaje = { id: string; rol: 'usuario' | 'asistente'; texto: string; creadoEn: number; turno?: { requestId: string; intento: number }; turnoServidor?: { requestId: string; estado: string }; requestId?: string }
+type Mensaje = { id: string; rol: 'usuario' | 'asistente'; texto: string; creadoEn: number; turno?: { requestId: string; intento: number; reintento?: string }; turnoServidor?: { requestId: string; estado: string }; requestId?: string; archivo?: { archivoId?: string }; documentoRaizId?: string }
 const DOCENTE = '11111111-1111-4111-8111-111111111111'
 const esperar = (ms = 50) => new Promise((r) => setTimeout(r, ms))
 async function hasta(condicion: () => boolean, ms = 4000) {
@@ -117,8 +117,8 @@ async function main() {
   p.establecerPropietarioLocal(DOCENTE)
 
   // ---------------- Servidor simulado ----------------
-  type Modo = 'normal' | 'corte' | 'sin_marcador' | 'colgado' | 'fallido' | 'ocupada' | 'sin_llegar'
-  type TurnoSim = { estado: 'generating' | 'completed' | 'failed'; crudo: string; mensajeId: string | null; cuerpo: Record<string, unknown> }
+  type Modo = 'normal' | 'tarjeta' | 'corte' | 'sin_marcador' | 'colgado' | 'fallido' | 'ocupada' | 'sin_llegar'
+  type TurnoSim = { estado: 'generating' | 'completed' | 'failed'; crudo: string; mensajeId: string | null; cuerpo: Record<string, unknown>; creadoEn?: string }
   const turnos = new Map<string, TurnoSim>()
   const servidor = { modo: 'normal' as Modo, completaEnMs: 0, generaciones: 0, llamadasChat: [] as Record<string, unknown>[], consultas: [] as { requestId: string; t: number }[], usuarioGuardadoAntes: [] as boolean[] }
   let secuencia = 0
@@ -127,7 +127,11 @@ async function main() {
   function materializar(t: TurnoSim): void {
     const conv = String(t.cuerpo.conversacionId)
     const id = `${conv}:turno-sim-${++secuencia}`
-    tablas.mensajes_chat.push({ id, conversacion_id: conv, docente_id: DOCENTE, rol: 'asistente', texto: t.crudo, contenido: { turnoId: `sim-${secuencia}`, requestId: t.cuerpo.requestId, mensajeUsuarioId: t.cuerpo.mensajeUsuarioId }, creado_en: new Date().toISOString() })
+    // Igual que completar_turno_chat: el mensaje (con sus tarjetas, a partir
+    // de la respuesta cruda) y la hora del servidor.
+    const m = tfc.mensajeDeRespuesta(t.crudo)!
+    t.creadoEn = new Date(Date.now() - 1_000).toISOString()
+    tablas.mensajes_chat.push({ id, conversacion_id: conv, docente_id: DOCENTE, rol: 'asistente', texto: m.texto, contenido: { ...(m.archivo ? { archivo: m.archivo, archivos: m.archivos } : {}), turnoId: `sim-${secuencia}`, requestId: t.cuerpo.requestId, mensajeUsuarioId: t.cuerpo.mensajeUsuarioId }, creado_en: t.creadoEn })
     t.mensajeId = id
     t.estado = 'completed'
   }
@@ -178,7 +182,15 @@ async function main() {
     switch (servidor.modo) {
       case 'normal':
         materializar(t)
-        return new Response(flujo([a, b, tfc.marcadorTurno({ estado: 'completado', requestId, mensajeAsistenteId: t.mensajeId })], 'cerrar'), { status: 200 })
+        return new Response(flujo([a, b, tfc.marcadorTurno({ estado: 'completado', requestId, mensajeAsistenteId: t.mensajeId, creadoEn: t.creadoEn })], 'cerrar'), { status: 200 })
+      case 'tarjeta': {
+        // Respuesta con la tarjeta de un archivo YA generado (p. ej. la hoja
+        // de evaluación de una versión aprobada).
+        const archivo = { nombre: 'Hoja SG-TEST.pdf', tipo: 'pdf', url: '/api/planeaciones/vista-previa-hoja?id=1&token=secreto', archivoId: 'arch-1' }
+        t.crudo = `${t.crudo}\n[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf8').toString('base64')}]]`
+        materializar(t)
+        return new Response(flujo([t.crudo, tfc.marcadorTurno({ estado: 'completado', requestId, mensajeAsistenteId: t.mensajeId, creadoEn: t.creadoEn })], 'cerrar'), { status: 200 })
+      }
       case 'corte':
         completarLuego(t, servidor.completaEnMs)
         return new Response(flujo([a], 'error'), { status: 200 })
@@ -200,7 +212,7 @@ async function main() {
   const motorMod = await import('../lib/asistente/motores/motorTextoClaude')
   const chat = servicio.AsistenteService as unknown as {
     conversacionActivaId: string | null; mensajes: Mensaje[]; avisoGeneracion: string | null; generando: boolean
-    nuevaConversacion(): void; abrirConversacion(id: string): void; enviarMensaje(texto: string): Promise<string>; reintentarGeneracion(): Promise<void>; guardarInmediatamente(): void
+    nuevaConversacion(): void; abrirConversacion(id: string): void; enviarMensaje(texto: string): Promise<string>; reintentarTurno(id: string): Promise<void>; guardarInmediatamente(): void
     obtenerEstado(): { recuperandoRespuesta: boolean }
   }
   const interno = chat as unknown as Record<string, unknown>
@@ -306,12 +318,19 @@ async function main() {
   {
     const x = await nueva('fallido', 'Hazme un resumen')
     const usuario = ultimoUsuario()
-    const aviso = await hasta(() => chat.avisoGeneracion === servicio.MENSAJE_TURNO_FALLIDO)
+    const ofrecido = await hasta(() => ultimoUsuario().turno?.reintento === 'fallido')
     const llamadas = servidor.llamadasChat.length
     await esperar(400)
-    verificar(aviso && servidor.llamadasChat.length === llamadas && servidor.generaciones === x.antes.gen + 1, '6a. Turno fallido: se ofrece reintentar y nunca se reintenta solo')
+    verificar(ofrecido && !chat.avisoGeneracion && servidor.llamadasChat.length === llamadas && servidor.generaciones === x.antes.gen + 1, '6a. Turno fallido: «Reintentar» queda en el mensaje del docente (sin aviso temporal) y nunca se reintenta solo')
+    // Sigue disponible tras recargar (la marca viaja en el mensaje guardado).
+    const local = chat.conversacionActivaId!
+    chat.guardarInmediatamente()
+    chat.nuevaConversacion()
+    chat.abrirConversacion(local)
+    await esperar(300)
+    verificar(ultimoUsuario().turno?.reintento === 'fallido', '6a2. Al recargar, el mensaje conserva su «Reintentar»')
     servidor.modo = 'normal'
-    await chat.reintentarGeneracion()
+    await chat.reintentarTurno(usuario.id)
     await hasta(() => asistentes().some((m) => m.id.startsWith('turno-sim-') && m.requestId === `${usuario.id}:r2`))
     const cuerpo = servidor.llamadasChat[servidor.llamadasChat.length - 1]
     const delMensaje = chat.mensajes.filter((m) => m.rol === 'usuario')
@@ -325,13 +344,13 @@ async function main() {
   // ============================================================
   {
     const x = await nueva('ocupada', 'Otra pregunta')
-    verificar(chat.avisoGeneracion === servicio.MENSAJE_TURNO_OCUPADO && servidor.generaciones === x.antes.gen && asistentes().length === 0, '7a. Conversación con otro turno activo: aviso y nada se ejecuta')
+    verificar(ultimoUsuario().turno?.reintento === 'ocupada' && servidor.generaciones === x.antes.gen && asistentes().length === 0, '7a. Conversación con otro turno activo: el mensaje queda para enviarlo con un toque y nada se ejecuta')
     const y = await nueva('sin_llegar', 'Mensaje sin red')
-    const aviso = await hasta(() => chat.avisoGeneracion === servicio.MENSAJE_TURNO_NO_ENVIADO)
-    verificar(aviso && servidor.generaciones === y.antes.gen, '7b. La petición no llegó (el turno no existe): se ofrece enviarlo')
+    const ofrecido = await hasta(() => ultimoUsuario().turno?.reintento === 'no_enviado')
+    verificar(ofrecido && servidor.generaciones === y.antes.gen, '7b. La petición no llegó (el turno no existe): se ofrece enviarlo')
     servidor.modo = 'normal'
     const usuario = ultimoUsuario()
-    await chat.reintentarGeneracion()
+    await chat.reintentarTurno(usuario.id)
     await hasta(() => asistentes().some((m) => m.id.startsWith('turno-sim-')))
     const cuerpo = servidor.llamadasChat[servidor.llamadasChat.length - 1]
     verificar(cuerpo.requestId === `${usuario.id}:r2` && cuerpo.reintentoDe === undefined && servidor.generaciones === y.antes.gen + 1, '7c. Enviarlo es un intento nuevo sin reintento_de (no había turno que repetir)')
@@ -382,6 +401,31 @@ async function main() {
     await esperar(400)
     verificar(servidor.consultas.length === consultas && servidor.generaciones === x.antes.gen + 1, '9c. Con la respuesta ya presente, volver a abrir la conversación no consulta ni genera nada')
     almacen = DISPOSITIVO_A
+  }
+
+  // ============================================================
+  // 11. Respuesta con tarjeta: el servidor la guarda y el cliente no la reescribe
+  // ============================================================
+  {
+    const x = await nueva('tarjeta', 'Apruébala.')
+    const conv = await x.conv()
+    const respuesta = asistentes()[asistentes().length - 1]
+    const fila = filasAsistente(conv)[0]
+    const contenido = fila?.contenido as { archivo?: { url: string; archivoId: string } } | undefined
+    verificar(respuesta?.id.startsWith('turno-sim-') && respuesta.archivo?.archivoId === 'arch-1' && contenido?.archivo?.archivoId === 'arch-1' && !contenido.archivo.url.includes('token') && !String(fila.texto).includes('[['),
+      '11a. Respuesta con tarjeta: el servidor guarda el mensaje con su archivo (referencia, sin token) y el cliente adopta el canónico')
+    verificar(respuesta.creadoEn === Date.parse(String(fila.creado_en)), '11b. El mensaje adoptado conserva la hora del servidor')
+    chat.guardarInmediatamente()
+    await esperar(2400)
+    verificar(filasAsistente(conv).length === 1 && !escrituras.some((e) => e.tabla === 'mensajes_chat' && e.ids.includes(String(fila.id))) && servidor.generaciones === x.antes.gen + 1,
+      '11c. Sin escrituras del cliente sobre la fila del servidor ni archivos generados de nuevo')
+    // Un metadato que solo conoce el cliente: actualiza la MISMA fila y conserva la hora del servidor.
+    const creadoServidor = String(fila.creado_en)
+    chat.mensajes = chat.mensajes.map((m) => (m.id === respuesta.id ? { ...m, documentoRaizId: respuesta.id } : m)) as Mensaje[]
+    chat.guardarInmediatamente()
+    await esperar(2400)
+    verificar(escrituras.some((e) => e.tabla === 'mensajes_chat' && e.ids.includes(String(fila.id))) && Date.parse(String(filasAsistente(conv)[0].creado_en)) === Date.parse(creadoServidor) && filasAsistente(conv).length === 1,
+      '11d. Al agregar metadatos del cliente se actualiza la misma fila y se conserva la fecha del servidor')
   }
 
   // ============================================================

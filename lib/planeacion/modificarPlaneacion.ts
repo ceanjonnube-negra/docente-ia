@@ -303,11 +303,28 @@ export function construirBorradorAjustado(entrada: { textoModelo: string; base: 
 
   const siguiente = base.numero + 1
   const aviso = entrada.avisoBase ? `${entrada.avisoBase}\n` : ''
+  // Indicadores: se muestran los que cambiaron (antes/ahora), porque solo
+  // viven en el resumen estructurado que el chat no enseña como texto.
+  const detalle = cambios.includes('Indicadores de evaluación') ? detalleIndicadores(base.estructura.proyecto?.indicadores ?? [], (leerCampo(resumen, 'Indicadores de evaluación') ?? '').split(';').map((x) => x.trim()).filter(Boolean)) : ''
   const notaFormato = entrada.formato ? ` Tomé nota de que lo quieres en ${entrada.formato === 'word' ? 'Word' : 'PDF'}: primero revisa el ajuste y apruébalo.` : ''
   const cierre = cambios.length === 0
     ? `${aviso}No encontré diferencias con la versión ${base.numero}: el ajuste no cambió nada. ¿Quieres intentarlo con otra indicación?`
-    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${verificado ? ` Verifiqué que el resto es idéntico a la versión ${base.numero}.` : ''}${notaFormato} ¿Quieres corregir algo más? Si está bien, dime «apruébala» y la guardo como versión ${siguiente}.`
+    : `${aviso}Cambios respecto a la versión ${base.numero}: ${cambios.join(', ')}.${detalle ? `\n${detalle}\n` : ' '}${verificado ? `Verifiqué que el resto es idéntico a la versión ${base.numero}. ` : ''}${notaFormato ? `${notaFormato.trim()} ` : ''}¿Quieres corregir algo más? Si está bien, dime «apruébala» y la guardo como versión ${siguiente}.`
   return { textoFinal: `${cuerpoFinal}\n\n${resumen}\n\n${cierre}`, cambios, verificado, restauradas }
+}
+
+// Indicadores que cambian entre la versión base y el borrador, compactos:
+// solo los distintos, con su número (el de la hoja de evaluación).
+export function detalleIndicadores(antes: string[], ahora: string[]): string {
+  const lineas: string[] = []
+  for (let i = 0; i < Math.max(antes.length, ahora.length); i++) {
+    const a = antes[i]
+    const b = ahora[i]
+    if (a && b && normal(a) !== normal(b)) lineas.push(`• Indicador ${i + 1}: antes «${a}»; ahora «${b}».`)
+    else if (!a && b) lineas.push(`• Indicador ${i + 1} (nuevo): «${b}».`)
+    else if (a && !b) lineas.push(`• Indicador ${i + 1} (se quitó): «${a}».`)
+  }
+  return lineas.join('\n')
 }
 
 // ------------------------------------------------------------------

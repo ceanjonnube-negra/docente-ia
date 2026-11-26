@@ -21,6 +21,7 @@
 
 import { supabase } from '@/lib/supabaseClient'
 import { esDocumentoFormal, PATRON_TITULO_DOCUMENTO_SQL } from './documentos'
+import { archivoSinTokenVistaPrevia, sinTokenVistaPrevia } from './textoFinalChat'
 import { extraerTitulo } from '../documentGen/parseContenido'
 import { propuestaListaParaGuardar, type ArchivoGeneradoInfo, type MensajeConversacion } from './tipos'
 
@@ -259,18 +260,8 @@ export function cargarConversacionPorId(id: string): { titulo: string; mensajes:
 // mensajes anteriores a esta corrección) nunca se guarda — ni en el
 // navegador ni en mensajes_chat —; la tarjeta las abre con la sesión
 // VIGENTE. Las URL firmadas de Supabase (otro origen) no se tocan.
-export function sinTokenVistaPrevia<T extends string | undefined>(url: T): T {
-  if (!url || !url.startsWith('/api/planeaciones/vista-previa-') || !url.includes('?')) return url
-  const [ruta, consulta] = [url.slice(0, url.indexOf('?')), url.slice(url.indexOf('?') + 1)]
-  const parametros = consulta.split('&').filter((par) => par !== '' && !/^token(=|$)/i.test(par))
-  return (parametros.length > 0 ? `${ruta}?${parametros.join('&')}` : ruta) as T
-}
-
-function archivoSinTokenVistaPrevia(archivo: ArchivoGeneradoInfo): ArchivoGeneradoInfo {
-  const url = sinTokenVistaPrevia(archivo.url)
-  const urlVer = sinTokenVistaPrevia(archivo.urlVer)
-  return url === archivo.url && urlVer === archivo.urlVer ? archivo : { ...archivo, url, ...(archivo.urlVer !== undefined ? { urlVer } : {}) }
-}
+// Misma fuente que el servidor (lib/asistente/textoFinalChat.ts).
+export { sinTokenVistaPrevia }
 
 export function documentoActivoSinTokenVistaPrevia(documentoActivo: DocumentoActivoGuardado | null): DocumentoActivoGuardado | null {
   if (!documentoActivo?.archivosGenerados) return documentoActivo

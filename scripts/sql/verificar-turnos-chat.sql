@@ -175,3 +175,30 @@ set role authenticated;
 select set_config('request.jwt.claim.sub', :'A', false) \gset
 insert into resultados (nombre, ok) values ('6h. Conversación eliminada: conversacion_invalida', (public.adquirir_turno_chat('req-a-0030', :'CA0', null, repeat('9', 64), 0::smallint, null, 210)->>'resultado') = 'conversacion_invalida');
 reset role;
+
+\echo == Tarjetas (20261130000000)
+\set CT 'ca000000-0000-4000-8000-000000000007'
+insert into public.conversaciones_chat (id, docente_id, grupo_id) values (:'CT', :'A', :'GA');
+insert into public.mensajes_chat (id, conversacion_id, docente_id, rol, texto) values (:'CT' || ':m1', :'CT', :'A', 'usuario', 'Apruébala.'), (:'CT' || ':m2', :'CT', :'A', 'usuario', 'Otra');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'A', false) \gset
+select public.adquirir_turno_chat('req-a-0040', :'CT', :'CT' || ':m1', repeat('e', 64), 1::smallint, null, 210) as r40 \gset
+select :'r40'::jsonb->>'ejecucion_id' as e40, :'r40'::jsonb->'turno'->>'id' as t40 \gset
+reset role;
+set role service_role;
+insert into resultados (nombre, ok) values ('8a. Clave no permitida en las tarjetas: se aborta todo',
+  public.intentar(format('select public.completar_turno_chat(%L, %L, %L, %L, true, null, %L)', :'t40', :'e40', 'crudo', 'final', '{"navegacion": {}}')) = 'P0001'
+  and public.intentar(format('select public.completar_turno_chat(%L, %L, %L, %L, false, null, %L)', :'t40', :'e40', 'crudo', 'final', '{"archivo": {}}')) = 'P0001');
+select public.completar_turno_chat(:'t40', :'e40', 'crudo [[DOCUMENTO_ARCHIVO:x]]', 'Listo: guardé la versión 3.', true, null,
+  '{"archivo": {"nombre": "Hoja.pdf", "archivoId": "arch-1"}, "archivos": [{"nombre": "Hoja.pdf", "archivoId": "arch-1"}]}') as c40 \gset
+reset role;
+insert into resultados (nombre, ok) values ('8b. El mensaje del servidor guarda sus tarjetas y su identidad, con la hora del servidor (= completado_en)',
+  (:'c40'::jsonb->>'resultado') = 'completado'
+  and (select m.contenido->'archivo'->>'archivoId' = 'arch-1' and jsonb_array_length(m.contenido->'archivos') = 1 and m.contenido->>'turnoId' = :'t40' and m.texto = 'Listo: guardé la versión 3.'
+         and m.creado_en = t.completado_en
+       from public.mensajes_chat m join public.turnos_chat t on m.id = t.mensaje_asistente_id where t.id = :'t40'));
+insert into resultados (nombre, ok) values ('8c. Permisos sin cambios: completar solo para service_role',
+  not has_function_privilege('authenticated', 'public.completar_turno_chat(uuid,uuid,text,text,boolean,jsonb,jsonb)', 'EXECUTE')
+  and has_function_privilege('service_role', 'public.completar_turno_chat(uuid,uuid,text,text,boolean,jsonb,jsonb)', 'EXECUTE')
+  and not exists (select 1 from pg_proc where proname = 'completar_turno_chat' and pronargs = 6));
+

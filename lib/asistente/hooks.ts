@@ -29,6 +29,7 @@ export function useAsistente() {
     cancelarConexionVoz: () => AsistenteService.cancelarConexionVoz(),
     actualizarMensaje: (id: string, nuevoTexto: string) => AsistenteService.actualizarMensaje(id, nuevoTexto),
     reintentarGeneracion: () => AsistenteService.reintentarGeneracion(),
+    reintentarTurno: (mensajeId: string) => AsistenteService.reintentarTurno(mensajeId),
     nuevaConversacion: () => AsistenteService.nuevaConversacion(),
     abrirConversacion: (id: string) => AsistenteService.abrirConversacion(id),
     eliminarConversacion: (id: string) => AsistenteService.eliminarConversacion(id),

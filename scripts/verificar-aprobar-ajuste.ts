@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { aprobarAjusteSiCorresponde, cicloDelAjuste } from '../lib/planeacion/aprobarAjuste'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
-import { ETIQUETA_AJUSTE, ajustesDe, construirBorradorAjustado, continuarAjuste, huellaBorrador, seccionesDe, type AjusteRegistrado, type BaseAjuste } from '../lib/planeacion/modificarPlaneacion'
+import { ETIQUETA_AJUSTE, ajustesDe, construirBorradorAjustado, continuarAjuste, detalleIndicadores, huellaBorrador, seccionesDe, type AjusteRegistrado, type BaseAjuste } from '../lib/planeacion/modificarPlaneacion'
 import type { SesionContexto } from '../lib/sesionContexto'
 import type { Planeacion } from '../lib/planeacion/tipos'
 
@@ -398,6 +398,24 @@ async function main() {
     const ajena = crearBD()
     registrar(ajena, texto)
     verificar((await cicloDelAjuste(ajena.sb, '99999999-9999-4999-8999-999999999999', ajustesDe(ajena.t.conversaciones_chat[0].planeacion_activa)[0])).estado === 'sin_planeacion', '9k. Planeación de otro docente: sin planeación')
+  }
+
+  // 10. Indicadores modificados visibles antes de aprobar (datos estructurados, sin IA).
+  {
+    const nuevo = 'Escribe un cuento con secuencia causal y trabajo en equipo'
+    const texto = borradorAjuste(`${BASE_TEXTO}\n\n${RESUMEN({ Indicadores: `Identifica partes del cuento; ${nuevo}` })}`, 'Cambia el segundo indicador de evaluación')
+    const cierre = texto.slice(texto.indexOf('Cambios respecto a la versión 3'))
+    verificar(cierre.includes('Cambios respecto a la versión 3: Indicadores de evaluación.\n• Indicador 2: antes «Escribe con secuencia»; ahora «' + nuevo + '».\nVerifiqué que el resto es idéntico a la versión 3.')
+      && !cierre.includes('Indicador 1') && cierre.endsWith('la guardo como versión 4.'),
+      '10a. El cierre muestra solo el indicador que cambió, con antes y ahora')
+    const sinIndicadores = borradorAjuste()
+    verificar(!sinIndicadores.includes('• Indicador') && sinIndicadores.includes('Cambios respecto a la versión 3: Día 2. Verifiqué que el resto es idéntico a la versión 3. ¿Quieres corregir algo más?'), '10b. Sin cambios de indicadores, el cierre queda igual que antes')
+    verificar(detalleIndicadores(['A', 'B'], ['A', 'B', 'C']) === '• Indicador 3 (nuevo): «C».' && detalleIndicadores(['A', 'B'], ['A']) === '• Indicador 2 (se quitó): «B».' && detalleIndicadores(['Uno  dos'], [' Uno dos ']) === '', '10c. Indicadores nuevos o quitados se nombran; diferencias solo de espacios no cuentan')
+    const bd = crearBD({ evaluacion: 'protegida' })
+    registrar(bd, texto)
+    const r = await aprobar(bd, texto)
+    const v4 = bd.t.planeacion_versiones.find((v) => v.numero === 4)!
+    verificar(r?.codigo === 'VERSION_PUBLICADA' && !String(v4.contenido).includes('• Indicador') && (v4.estructura as typeof ESTRUCTURA).proyecto.indicadores[1] === nuevo, '10d. El detalle no entra al texto de la versión; el indicador nuevo sí, en su estructura')
   }
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)

@@ -24,7 +24,7 @@ import type {
   TurnoSolicitud,
 } from '../tipos'
 import { esPropuestaListaParaCliente, type PropuestaListaParaCliente } from '@/lib/listaOficial/vistaPropuestaLista'
-import { extraerMarcadorTurno, extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
+import { extraerArchivos, extraerContenidoDocumento, extraerMarcadorTurno, extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
 import { camposDeHistorial } from '../documentos'
 
 type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
@@ -459,23 +459,7 @@ export class MotorTextoClaude implements MotorConversacional {
   // de un solo documento (Word/PDF/PPT/Excel, ficha_descriptiva...)
   // tenga que cambiar.
   private procesarMarcadorDeArchivo(respuesta: string): { texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[] } {
-    const regex = /\[\[DOCUMENTO_ARCHIVO:([^\]]+)\]\]/g
-    const archivos: ArchivoGeneradoInfo[] = []
-    let texto = respuesta
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(respuesta)) !== null) {
-      try {
-        const binario = atob(match[1])
-        const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-        archivos.push(JSON.parse(new TextDecoder('utf-8').decode(bytes)) as ArchivoGeneradoInfo)
-      } catch {
-        // marcador corrupto — se quita del texto igual, sin adjuntar nada por él
-      }
-      texto = texto.replace(match[0], '')
-    }
-    texto = texto.trim()
-    if (archivos.length === 0) return { texto }
-    return { texto, archivo: archivos[0], archivos }
+    return extraerArchivos(respuesta)
   }
 
   // Marcador técnico con el contenido REAL redactado por Claude cuando
@@ -485,16 +469,7 @@ export class MotorTextoClaude implements MotorConversacional {
   // documentoActivo con texto real, para que "ahora en PDF" después no
   // se quede sin fuente que reutilizar.
   private procesarMarcadorDeContenido(respuesta: string): { texto: string; contenidoOriginal?: string } {
-    const match = respuesta.match(/\[\[DOCUMENTO_CONTENIDO:([^\]]+)\]\]/)
-    if (!match) return { texto: respuesta }
-    try {
-      const binario = atob(match[1])
-      const bytes = Uint8Array.from(binario, (c) => c.charCodeAt(0))
-      const contenidoOriginal = new TextDecoder('utf-8').decode(bytes)
-      return { texto: respuesta.replace(match[0], '').trim(), contenidoOriginal }
-    } catch {
-      return { texto: respuesta.replace(match[0], '').trim() }
-    }
+    return extraerContenidoDocumento(respuesta)
   }
 
   // Marcador técnico con la acción de navegación resuelta por el

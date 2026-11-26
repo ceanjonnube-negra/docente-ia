@@ -208,7 +208,10 @@ export type MensajeConversacion = {
   // identidad persistente de su turno, guardada ANTES de enviarlo
   // (requestId del intento vigente; solo un reintento explícito la
   // cambia). edicion: se envió como edición del documento activo.
-  turno?: { requestId: string; intento: number; edicion?: true }
+  // reintento: el turno no terminó y se puede repetir con un toque (se
+  // guarda en el mensaje: sigue disponible al recargar o en otro
+  // dispositivo, sin depender de avisos temporales).
+  turno?: { requestId: string; intento: number; edicion?: true; reintento?: 'fallido' | 'no_enviado' | 'ocupada' }
   // En la respuesta del asistente: 'pendiente' mientras el servidor no
   // confirme que la guardó (el cliente nunca la escribe: su único escritor
   // es el servidor); 'guardado' cuando ya adoptó el id canónico del

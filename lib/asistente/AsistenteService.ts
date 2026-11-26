@@ -83,9 +83,8 @@ const LIMITE_PERSISTENCIA_ANTES_DE_APROBAR_MS = 5000
 export const ESPERAS_RECUPERACION_MS = [2_000, 3_000, 5_000, 8_000, 13_000, 15_000]
 export const LIMITES_RECUPERACION = { totalMs: 5 * 60_000 }
 const LIMITE_CONSULTA_TURNO_MS = 10_000
-export const MENSAJE_TURNO_FALLIDO = 'No pude terminar esta respuesta. Toca para reintentar.'
-export const MENSAJE_TURNO_NO_ENVIADO = 'Tu mensaje no llegó a procesarse. Toca para reintentar.'
-export const MENSAJE_TURNO_OCUPADO = 'Todavía estoy terminando la respuesta anterior. Toca para enviar tu mensaje.'
+// Texto compacto junto al botón «Reintentar» bajo el mensaje del docente.
+export const TEXTO_REINTENTO_TURNO = { fallido: 'No se completó la respuesta', no_enviado: 'No se envió', ocupada: 'Esperaba la respuesta anterior' } as const
 type TurnoConsultado = { estado: 'queued' | 'generating' | 'completed' | 'failed'; mensaje_asistente_id: string | null; codigo_error: string | null }
 
 class ErrorLimiteDeTiempoAccion extends Error {}
@@ -1713,6 +1712,9 @@ class AsistenteServiceImpl {
         // vinculada a la versión de la que salió y a la identidad estable
         // del documento. Solo se completa el mensaje de ESTE turno; los
         // históricos no se tocan.
+        // Respuesta adoptada del servidor, ya con sus tarjetas: queda como
+        // sincronizada antes del vínculo de versión (metadato del cliente).
+        this.registrarAdopcion()
         if (origenVersion && this.turnoAbierto) this.vincularVersion(this.turnoAbierto, origenVersion)
         // Modo voz: le pide a la MISMA sesión de Realtime que lea en voz
         // alta la respuesta real que acaba de llegar (ver
@@ -2951,7 +2953,6 @@ class AsistenteServiceImpl {
   // que el maestro tenga que volver a escribir el mensaje — el documento
   // activo y el resto de la conversación se conservan tal cual.
   async reintentarGeneracion() {
-    if (this.turnoFallido && !this.avisoInformativo) return this.reintentarTurno()
     if (this.avisoInformativo) {
       if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
       this.avisoGeneracion = null
@@ -2991,7 +2992,10 @@ class AsistenteServiceImpl {
   // vez—; un turno fallido solo se repite con un reintento explícito.
   // ===================================================================
   private recuperaciones = new Map<string, { conversacion: string; intento: number; desde: number; timer: ReturnType<typeof setTimeout> | null }>()
-  private turnoFallido: { requestId: string; mensajeUsuarioId: string; sinTurno: boolean } | null = null
+  // Respuesta adoptada en este turno: se registra como ya sincronizada
+  // cuando el mensaje tiene sus tarjetas (antes de los metadatos que solo
+  // conoce el cliente, como el vínculo de versión).
+  private adopcionPendiente: { conversacionRemota: string; id: string } | null = null
 
   private recuperandoRespuestaActiva(): boolean {
     const activa = this.conversacionActivaId
@@ -3052,6 +3056,8 @@ class AsistenteServiceImpl {
       const adoptada: MensajeConversacion = {
         ...respuesta,
         id: idCanonico,
+        // Hora del servidor del mensaje canónico: se conserva al agregar metadatos.
+        ...(turno.creadoEn && !Number.isNaN(Date.parse(turno.creadoEn)) ? { creadoEn: Date.parse(turno.creadoEn) } : {}),
         turnoServidor: { requestId: turno.requestId, estado: 'guardado' },
         requestId: turno.requestId,
         ...(turno.turnoId ? { turnoId: turno.turnoId } : {}),
@@ -3059,15 +3065,35 @@ class AsistenteServiceImpl {
       }
       this.mensajes = [...this.mensajes.slice(0, indice), adoptada, ...this.mensajes.slice(indice + 1)]
       this.turnoAbierto = idCanonico
-      void supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session?.user?.id) registrarMensajeDelServidor(session.user.id, conversacionRemota, adoptada)
-      })
+      this.adopcionPendiente = { conversacionRemota, id: idCanonico }
+      if (docente?.turno?.reintento) this.marcarReintento(docente.id, undefined)
       return
     }
     // Sin confirmación de guardado (o el servidor no pudo guardarla): la
     // respuesta se ve, pero queda pendiente y se consulta el turno.
     if (respuesta) this.mensajes = [...this.mensajes.slice(0, indice), { ...respuesta, turnoServidor: { requestId: turno.requestId, estado: 'pendiente' } }, ...this.mensajes.slice(indice + 1)]
     this.programarRecuperacion(turno.requestId)
+  }
+
+  // La respuesta adoptada, ya con sus tarjetas, queda registrada como
+  // sincronizada: el cliente no reescribe la fila que creó el servidor.
+  private registrarAdopcion() {
+    const pendiente = this.adopcionPendiente
+    this.adopcionPendiente = null
+    const mensaje = pendiente ? this.mensajes.find((m) => m.id === pendiente.id) : undefined
+    if (!pendiente || !mensaje) return
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.id) registrarMensajeDelServidor(session.user.id, pendiente.conversacionRemota, mensaje)
+    })
+  }
+
+  private marcarReintento(mensajeId: string, reintento: 'fallido' | 'no_enviado' | 'ocupada' | undefined) {
+    this.mensajes = this.mensajes.map((m) => {
+      if (m.id !== mensajeId || !m.turno) return m
+      const turno = { ...m.turno }
+      delete turno.reintento
+      return { ...m, turno: reintento ? { ...turno, reintento } : turno }
+    })
   }
 
   // Estado del turno que no trajo respuesta por el stream.
@@ -3083,9 +3109,9 @@ class AsistenteServiceImpl {
     else if (estado === 'ocupada') {
       // Este mensaje no se ejecutó: queda para enviarlo con un toque; la
       // respuesta anterior se sigue recuperando.
-      this.ofrecerReintento(requestId, true, MENSAJE_TURNO_OCUPADO)
+      this.ofrecerReintento(requestId, 'ocupada')
       this.recuperarTurnosPendientes(requestId)
-    } else this.ofrecerReintento(requestId, estado === 'invalido' || estado === 'conflicto')
+    } else this.ofrecerReintento(requestId, estado === 'invalido' || estado === 'conflicto' ? 'no_enviado' : 'fallido')
     this.notificar()
   }
 
@@ -3135,7 +3161,7 @@ class AsistenteServiceImpl {
     if (turno === 'no_encontrado') {
       // El servidor nunca recibió este envío: se ofrece enviarlo.
       this.terminarRecuperacion(requestId)
-      this.ofrecerReintento(requestId, true, MENSAJE_TURNO_NO_ENVIADO)
+      this.ofrecerReintento(requestId, 'no_enviado')
       return
     }
     if (!turno || turno.estado === 'queued' || turno.estado === 'generating') {
@@ -3146,9 +3172,11 @@ class AsistenteServiceImpl {
     }
     if (turno.estado === 'failed') {
       this.terminarRecuperacion(requestId)
-      this.ofrecerReintento(requestId, false)
+      this.ofrecerReintento(requestId, 'fallido')
       return
     }
+    const docente = this.mensajes.find((m) => m.rol === 'usuario' && m.turno?.requestId === requestId)
+    if (docente?.turno?.reintento) this.marcarReintento(docente.id, undefined)
     // Terminado: su mensaje canónico (sin IA); reemplaza la respuesta
     // pendiente de este turno al incorporarse.
     if (turno.mensaje_asistente_id) await this.traerMensajeCanonico(r.conversacion, turno.mensaje_asistente_id)
@@ -3189,48 +3217,53 @@ class AsistenteServiceImpl {
     }
   }
 
-  private ofrecerReintento(requestId: string, sinTurno: boolean, texto = MENSAJE_TURNO_FALLIDO) {
+  // El turno no terminó: el mensaje del docente muestra «Reintentar» (sin
+  // avisos que desaparecen; se conserva al recargar).
+  private ofrecerReintento(requestId: string, motivo: 'fallido' | 'no_enviado' | 'ocupada') {
     const docente = this.mensajes.find((m) => m.rol === 'usuario' && m.turno?.requestId === requestId)
-    if (!docente) return
-    this.turnoFallido = { requestId, mensajeUsuarioId: docente.id, sinTurno }
-    this.mostrarAvisoGeneracion(texto)
+    if (!docente || docente.turno?.reintento === motivo) return
+    this.marcarReintento(docente.id, motivo)
+    this.notificar()
   }
 
-  // Reintento EXPLÍCITO (el docente tocó el aviso): un intento nuevo del
-  // mismo mensaje, ligado al turno fallido (reintento_de). Sin respuesta
-  // nueva en pantalla hasta que llegue la del servidor.
-  private async reintentarTurno() {
-    const fallido = this.turnoFallido
-    this.turnoFallido = null
-    if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
-    this.avisoGeneracion = null
-    if (!fallido || this.generando) return this.notificar()
-    const indice = this.mensajes.findIndex((m) => m.id === fallido.mensajeUsuarioId)
+  // Reintento EXPLÍCITO (el docente tocó «Reintentar» en su mensaje): un
+  // intento nuevo del mismo mensaje, ligado al turno fallido (reintento_de)
+  // si ese turno existe. Nunca automático.
+  async reintentarTurno(mensajeId: string) {
+    if (this.generando || this.reservaEnvio) return
+    const indice = this.mensajes.findIndex((m) => m.id === mensajeId)
     const docente = this.mensajes[indice]
-    if (!docente?.turno) return this.notificar()
+    if (!docente?.turno?.reintento) return
+    this.reservaEnvio = true
+    const anterior = docente.turno.requestId
+    const ligado = docente.turno.reintento === 'fallido'
     const intento = docente.turno.intento + 1
-    const actualizado: MensajeConversacion = { ...docente, turno: { ...docente.turno, requestId: `${docente.id}:r${intento}`, intento } }
-    this.mensajes = [...this.mensajes.slice(0, indice), actualizado, ...this.mensajes.slice(indice + 1)].filter((m) => m.turnoServidor?.requestId !== fallido.requestId)
+    const sinMarca = { ...docente.turno }
+    delete sinMarca.reintento
+    const actualizado: MensajeConversacion = { ...docente, turno: { ...sinMarca, requestId: `${docente.id}:r${intento}`, intento } }
+    this.mensajes = [...this.mensajes.slice(0, indice), actualizado, ...this.mensajes.slice(indice + 1)].filter((m) => m.turnoServidor?.requestId !== anterior)
     this.turnoAbierto = null
-    const turno: TurnoSolicitud = { requestId: actualizado.turno!.requestId, mensajeUsuarioLocalId: docente.id, ...(fallido.sinTurno ? {} : { reintentoDe: fallido.requestId }) }
-    await this.asegurarMotor()
-    // El modelo ve la conversación de ANTES de ese mensaje (igual que al enviarlo).
-    this.motorTexto?.establecerHistorial(this.mensajes.slice(Math.max(0, indice - 20), indice))
-    this.motorTexto?.establecerConversacion(this.conversacionActivaId)
-    await this.persistirIdentidadDelTurno(actualizado)
-    if (docente.turno.edicion && this.documentoActivo) {
-      const ultimo = this.ultimoIntentoEdicion
-      const textoParaModelo = ultimo?.idDocumento === this.documentoActivo.id ? ultimo.textoParaModelo : construirPromptEdicion(this.documentoActivo.texto, docente.texto)
-      this.editandoDocumentoId = this.documentoActivo.id
-      this.ultimoIntentoEdicion = { idDocumento: this.documentoActivo.id, textoParaModelo }
-      await this.ejecutarEdicion(textoParaModelo, undefined, undefined, turno)
-      return
-    }
+    const turno: TurnoSolicitud = { requestId: actualizado.turno!.requestId, mensajeUsuarioLocalId: docente.id, ...(ligado ? { reintentoDe: anterior } : {}) }
     try {
+      await this.asegurarMotor()
+      // El modelo ve la conversación de ANTES de ese mensaje (igual que al enviarlo).
+      this.motorTexto?.establecerHistorial(this.mensajes.slice(Math.max(0, indice - 20), indice))
+      this.motorTexto?.establecerConversacion(this.conversacionActivaId)
+      await this.persistirIdentidadDelTurno(actualizado)
+      if (docente.turno.edicion && this.documentoActivo) {
+        const ultimo = this.ultimoIntentoEdicion
+        const textoParaModelo = ultimo?.idDocumento === this.documentoActivo.id ? ultimo.textoParaModelo : construirPromptEdicion(this.documentoActivo.texto, docente.texto)
+        this.editandoDocumentoId = this.documentoActivo.id
+        this.ultimoIntentoEdicion = { idDocumento: this.documentoActivo.id, textoParaModelo }
+        await this.ejecutarEdicion(textoParaModelo, undefined, undefined, turno)
+        return
+      }
       this.marcarSolicitud()
       await (await this.motorDeContenido())?.enviarTexto(docente.texto, undefined, undefined, undefined, undefined, 'texto', undefined, undefined, undefined, turno)
     } catch {
       this.manejarEventoMotor({ tipo: 'error', mensaje: 'No se pudo conectar con el asistente. Intenta de nuevo.' })
+    } finally {
+      this.reservaEnvio = false
     }
   }
 

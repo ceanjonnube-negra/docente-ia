@@ -21,7 +21,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAsistente } from '@/lib/asistente/hooks'
 import { enviarFormularioPost, modosRecuperacion, recuperarArchivo, tokenSesionVigente, type ModoRecuperacion } from '@/lib/asistente/recuperacionArchivo'
-import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE } from '@/lib/asistente/AsistenteService'
+import { AsistenteService, ELIMINAR_CONVERSACION_DISPONIBLE, TEXTO_REINTENTO_TURNO } from '@/lib/asistente/AsistenteService'
 import { esAvisoTecnicoDeArchivo, esDocumentoFormal } from '@/lib/asistente/documentos'
 import { copiarAlPortapapeles, textoParaCopiar } from '@/lib/asistente/copiarRespuesta'
 import { analizarContenido, extraerTitulo } from '@/lib/documentGen/parseContenido'
@@ -1187,6 +1187,13 @@ export default function AsistentePanel() {
                       </div>
                     ) : m.texto}
                   </div>
+                  {/* Turno que no terminó (turnos duraderos): reintento
+                      explícito, compacto y persistente bajo el mensaje. */}
+                  {m.rol === 'usuario' && m.turno?.reintento && (
+                    <button type="button" onClick={() => asistente.reintentarTurno(m.id)} disabled={asistente.generando} className="mt-1 text-xs text-gray-500 hover:text-purple-700 transition disabled:opacity-40">
+                      {TEXTO_REINTENTO_TURNO[m.turno.reintento]} · <span className="font-semibold text-purple-700">Reintentar</span>
+                    </button>
+                  )}
                   {/* Botones de confirmación (ver AccionMensaje) — se
                       esconden en cuanto el docente elige uno
                       (accionElegida ya viene marcado, ver
