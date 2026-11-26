@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ETIQUETA_AJUSTE, ETIQUETA_INICIO_BLOQUE, extraerResumenBorrador, type ResumenBorrador } from './extraerBorrador'
 import type { Planeacion } from './tipos'
+import { diferirAjusteAlTurno } from '../chat/contextoTurno'
 
 // ------------------------------------------------------------------
 // Base canónica
@@ -353,7 +354,9 @@ export type FormatoAjuste = 'word' | 'pdf'
 // borrador publicado conserva su identidad (para recuperar la aprobación
 // sin duplicados), pero ya no es un ajuste pendiente: no se continúa ni se
 // vuelve a publicar.
-export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string; formatoSolicitado?: FormatoAjuste | null; publicadoComo?: number | null }
+// turnoId/mensajeId: el turno del chat que generó el borrador y su mensaje
+// (los escribe completar_turno_chat, en la misma transacción).
+export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string; formatoSolicitado?: FormatoAjuste | null; publicadoComo?: number | null; turnoId?: string; mensajeId?: string | null }
 export const MAXIMO_AJUSTES_REGISTRADOS = 20
 
 // Huella del DOCUMENTO del borrador: hasta su línea de ajuste (el mensaje
@@ -372,10 +375,14 @@ export function ajustesDe(referencia: unknown): AjusteRegistrado[] {
 }
 
 // Registra el borrador ajustado en la referencia de la conversación
-// (conserva el resto del objeto). Mejor esfuerzo: la línea del resumen
-// sigue protegiendo el borrador si esto falla.
-export async function registrarAjuste(sb: SupabaseClient, conversacionId: string | null, ajuste: Omit<AjusteRegistrado, 'creadoEn' | 'publicadoComo'>): Promise<void> {
+// (conserva el resto del objeto). Dentro de un turno duradero del chat se
+// difiere: completar_turno_chat lo escribe junto con el turno y su mensaje
+// (atómico; si el turno no se completa, el borrador no queda aprobable).
+// Fuera de un turno, mejor esfuerzo: la línea del resumen sigue
+// protegiendo el borrador si esto falla.
+export async function registrarAjuste(sb: SupabaseClient, conversacionId: string | null, ajuste: Omit<AjusteRegistrado, 'creadoEn' | 'publicadoComo' | 'turnoId' | 'mensajeId'>): Promise<void> {
   if (!conversacionId) return
+  if (diferirAjusteAlTurno(conversacionId, { planeacionId: ajuste.planeacionId, versionBase: ajuste.versionBase, grupoId: ajuste.grupoId, huella: ajuste.huella, formatoSolicitado: ajuste.formatoSolicitado ?? null })) return
   const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
   const actual = ((data as { planeacion_activa?: Record<string, unknown> | null } | null)?.planeacion_activa ?? {}) as Record<string, unknown>
   const ajustes = [...ajustesDe(actual).filter((a) => a.huella !== ajuste.huella), { ...ajuste, creadoEn: new Date().toISOString() }].slice(-MAXIMO_AJUSTES_REGISTRADOS)

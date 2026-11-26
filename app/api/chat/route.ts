@@ -11,6 +11,7 @@ import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorrado
 import { contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
 import { MARCADOR_DOCUMENTO_RECUPERADO, documentoDeEdicion, esConsultaDocumentoActual } from '@/lib/asistente/documentos'
 import { resolverConsultaContextual } from '@/lib/planeacion/consultaContextual'
+import { conTurnoDuradero } from '@/lib/chat/turnosChat'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -313,7 +314,15 @@ function avisoHojaReemplazada(hoja: HojaAprobacion | null | undefined): string {
   return hoja?.reemplazada ? ` La hoja de evaluación ${hoja.identificadorVisible} de esta versión ya fue reemplazada; captura solo sobre la vigente.` : ''
 }
 
+// Turnos duraderos (lib/chat/turnosChat.ts): cada envío de texto es un turno
+// con identidad persistente; su respuesta queda guardada en el servidor
+// aunque el dispositivo se desconecte, y un turno terminado se recupera sin
+// volver a llamar a la IA. El manejador de abajo no cambia.
 export async function POST(req: NextRequest) {
+  return conTurnoDuradero(req, (r) => atenderChat(r as NextRequest))
+}
+
+async function atenderChat(req: NextRequest) {
   // Telemetría segura del ciclo de vida de la petición ("Error al
   // conectar con la IA" después de mostrar parte de la planeación) —
   // solo indicadores booleanos/duraciones/nombres de error, nunca
