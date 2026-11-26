@@ -1238,7 +1238,7 @@ export default function AsistentePanel() {
             </div>
           )
         })}
-        {asistente.generando && (asistente.mensajes.length === 0 || asistente.mensajes[asistente.mensajes.length - 1]?.rol !== 'asistente') && (
+        {(asistente.generando || asistente.recuperandoRespuesta) && (asistente.mensajes.length === 0 || asistente.mensajes[asistente.mensajes.length - 1]?.rol !== 'asistente' || asistente.mensajes[asistente.mensajes.length - 1]?.turnoServidor?.estado === 'pendiente') && (
           <div className="flex justify-start">
             <div className="bg-white shadow-sm rounded-2xl rounded-bl-sm px-4 py-3">
               <p className="text-xs text-purple-600 font-medium animate-pulse">Generando...</p>

@@ -38,8 +38,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { after } from 'next/server'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { extraerMarcadorRecuperado } from '../asistente/documentos'
-import { extraerTextoFinal } from '../asistente/textoFinalChat'
+import { marcadorTurno as marca, textoVisibleDeRespuesta } from '../asistente/textoFinalChat'
 import { ejecutarEnTurno, type ContextoTurno } from './contextoTurno'
 
 // Duración máxima de /api/chat (180 s) + margen: si el plazo pasó, la
@@ -122,22 +121,13 @@ export function huellaSolicitud(cuerpo: CuerpoChat & { mensaje: string; conversa
   return createHash('sha256').update(JSON.stringify([cuerpo.conversacionId, cuerpo.mensaje, cuerpo.esEdicionDocumento === true, typeof cuerpo.mensajeUsuarioId === 'string' ? cuerpo.mensajeUsuarioId : null]), 'utf8').digest('hex')
 }
 
-// Texto visible de la respuesta, tal como lo guarda el chat: el texto final
-// normalizado del servidor si lo hay ([[TEXTO_FINAL:…]]), o el texto sin
-// marcadores. null si quedan marcadores que solo el cliente sabe procesar
-// (archivos, navegación…): esa respuesta no se materializa en el servidor.
-export function textoVisibleDeRespuesta(crudo: string): string | null {
-  const { texto: sinRecuperado } = extraerMarcadorRecuperado(crudo)
-  const { texto, textoFinal } = extraerTextoFinal(sinRecuperado)
-  const visible = (textoFinal ?? texto).trim()
-  if (!visible || /\[\[[A-Z_]+(?::|\]\])/.test(visible)) return null
-  return visible
-}
-
+// Texto visible y marcador de cierre: compartidos con el cliente
+// (lib/asistente/textoFinalChat.ts), que adopta exactamente el mismo texto.
+export { textoVisibleDeRespuesta }
 // Marcador de cierre para clientes con protocolo de turnos (nunca para el
 // cliente actual): identidad del turno y del mensaje del asistente.
-export function marcadorTurno(datos: { estado: string; requestId: string; turnoId?: string; mensajeAsistenteId?: string | null; codigoError?: string | null }): string {
-  return `\n[[TURNO:${Buffer.from(JSON.stringify(datos), 'utf8').toString('base64')}]]`
+export function marcadorTurno(datos: { estado: 'completado' | 'fallido'; requestId: string; turnoId?: string; mensajeAsistenteId?: string | null; codigoError?: string | null }): string {
+  return marca(datos)
 }
 
 function textoPlano(texto: string, status = 200): Response {

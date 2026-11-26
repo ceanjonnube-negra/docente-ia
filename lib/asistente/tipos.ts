@@ -10,6 +10,7 @@
 
 import type { PropuestaListaParaCliente, VistaOperacionPropuestaLista } from '../listaOficial/vistaPropuestaLista'
 import type { FormatoEntrega } from './documentos'
+import type { MarcaTurno } from './textoFinalChat'
 
 export type RolMensaje = 'usuario' | 'asistente' | 'herramienta'
 
@@ -203,7 +204,25 @@ export type MensajeConversacion = {
   // Propuesta de actualización de lista oficial con su tarjeta de
   // confirmación (ver PropuestaListaEnMensaje).
   datosPropuestaLista?: PropuestaListaEnMensaje
+  // Turnos duraderos (lib/chat/turnosChat.ts). En el mensaje del DOCENTE:
+  // identidad persistente de su turno, guardada ANTES de enviarlo
+  // (requestId del intento vigente; solo un reintento explícito la
+  // cambia). edicion: se envió como edición del documento activo.
+  turno?: { requestId: string; intento: number; edicion?: true }
+  // En la respuesta del asistente: 'pendiente' mientras el servidor no
+  // confirme que la guardó (el cliente nunca la escribe: su único escritor
+  // es el servidor); 'guardado' cuando ya adoptó el id canónico del
+  // servidor ("turno-<id>").
+  turnoServidor?: { requestId: string; estado: 'pendiente' | 'guardado' }
+  // Identidad que el servidor escribe en el mensaje canónico del asistente
+  // (mensajes_chat.contenido).
+  turnoId?: string
+  requestId?: string
+  mensajeUsuarioId?: string
 }
+
+// Identidad del turno que viaja con un envío (ver MensajeConversacion.turno).
+export type TurnoSolicitud = { requestId: string; mensajeUsuarioLocalId: string; reintentoDe?: string }
 
 // LISTA-P5 (2b) — estado de la tarjeta de una propuesta de lista oficial.
 // La fuente de verdad es el registro en la base (registrar/aplicar
@@ -310,7 +329,12 @@ export type EventoMotor =
   // app/api/chat/route.ts) — AsistenteService lo usa como señal para
   // recargar EstadoAsistente.perfil, la única fuente que consumen el
   // menú lateral, /dashboard/inicio y el resto de la interfaz.
-  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean; propuestaLista?: PropuestaListaParaCliente }
+  | { tipo: 'respuesta-final'; texto: string; archivo?: ArchivoGeneradoInfo; archivos?: ArchivoGeneradoInfo[]; contenidoOriginal?: string; acciones?: AccionMensaje[]; datosAccionCalendario?: DiferenciaCalendario[]; accionNavegacion?: AccionNavegacion; perfilActualizado?: boolean; propuestaLista?: PropuestaListaParaCliente; turno?: MarcaTurno | { estado: 'sin_confirmar'; requestId: string } }
+  // Turno duradero cuya respuesta no llegó completa por este stream: se
+  // recupera consultando el servidor (nunca generando otra vez).
+  // 'pendiente': se cortó la conexión o se agotó la inactividad del stream.
+  // El resto son estados que informó el servidor al adquirir el turno.
+  | { tipo: 'turno'; estado: 'pendiente' | 'en_proceso' | 'mensaje_en_curso' | 'ocupada' | 'fallido' | 'reintento_requerido' | 'conflicto' | 'invalido'; requestId: string; mensaje?: string }
   | { tipo: 'llamada-herramienta'; nombre: string; argumentos: Record<string, unknown> }
   | { tipo: 'error'; mensaje: string }
   // Solo lo emite MotorOpenAIRealtime, un paso a la vez, para el panel de
@@ -388,7 +412,7 @@ export interface MotorConversacional {
   // logs de telemetría temporal del servidor con los del cliente
   // (?voiceDebug=1). turnId nunca contiene datos del docente ni del
   // alumno, es un identificador corto generado localmente.
-  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega): Promise<void>
+  enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega, turno?: TurnoSolicitud): Promise<void>
   // Opcional: solo los motores con entrada de audio (voz en tiempo real)
   // lo implementan. Un motor de solo texto puede omitirlo.
   enviarAudio?(fragmento: ArrayBuffer): void

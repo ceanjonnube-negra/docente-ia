@@ -21,9 +21,10 @@ import type {
   FinalizarArchivoInfo,
   Herramienta,
   MotorConversacional,
+  TurnoSolicitud,
 } from '../tipos'
 import { esPropuestaListaParaCliente, type PropuestaListaParaCliente } from '@/lib/listaOficial/vistaPropuestaLista'
-import { extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
+import { extraerMarcadorTurno, extraerTextoFinal, sinTextoFinalParcial } from '../textoFinalChat'
 import { camposDeHistorial } from '../documentos'
 
 type TurnoHistorial = { role: 'user' | 'assistant'; content: string }
@@ -51,6 +52,12 @@ const TIMEOUT_FETCH_MS = 35_000
 // tolerante a tiempos largos"). 130s deja margen real de sobra incluso
 // con un reintento interno del servidor de por medio.
 const TIMEOUT_FETCH_DOCUMENTO_MS = 130_000
+// Turnos duraderos: si el stream de un turno deja de traer datos este
+// tiempo, se deja de esperarlo y se CONSULTA el turno en el servidor (que
+// sigue generando y guarda la respuesta aunque el dispositivo se
+// desconecte). Nunca dispara una generación nueva.
+// (Objeto para que las pruebas puedan acortarlo.)
+export const LIMITES_TURNO = { inactividadStreamMs: 45_000 }
 
 class ErrorLimiteDeTiempo extends Error {}
 
@@ -132,7 +139,7 @@ export class MotorTextoClaude implements MotorConversacional {
     this.listeners.forEach(l => l(evento))
   }
 
-  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega) {
+  async enviarTexto(texto: string, adjunto?: AdjuntoImagen, finalizarArchivo?: FinalizarArchivoInfo, esEdicionDocumento?: boolean, adjuntos?: AdjuntoImagen[], canal?: 'texto' | 'voz', turnId?: string, voiceDebug?: boolean, formatoEntrega?: FormatoEntrega, turno?: TurnoSolicitud) {
     // Controlador y número propios de ESTA solicitud: el límite de tiempo
     // de una anterior nunca aborta esta, y una anterior que siga viva ya
     // no emite nada.
@@ -157,6 +164,12 @@ export class MotorTextoClaude implements MotorConversacional {
     // éxito o con un error real y accionable— y con el timeout del
     // fetch de abajo, lo mismo aplica a la llamada a /api/chat en sí.
     let temporizadorFetch: ReturnType<typeof setTimeout> | null = null
+    // Turno duradero (con conversación remota): cualquier corte —límite de
+    // tiempo, red, inactividad del stream— pasa a recuperación, nunca a
+    // una generación nueva ni a un error definitivo.
+    let turnoDuradero: TurnoSolicitud | null = null
+    let porInactividad = false
+    const recuperar = () => emitir({ tipo: 'turno', estado: 'pendiente', requestId: turnoDuradero!.requestId })
     try {
       const { user, session, perfil } = await conLimiteDeTiempo(
         obtenerPerfilYSesion(),
@@ -174,6 +187,7 @@ export class MotorTextoClaude implements MotorConversacional {
       // documento: el servidor procesa varios MB y Claude analiza
       // varias fotos a la vez, más lento que un turno de solo texto.
       const esVariasImagenes = !!adjuntos && adjuntos.length > 1
+      turnoDuradero = turno && conversacionId && !adjunto && !esVariasImagenes && !finalizarArchivo && !formatoEntrega && canal !== 'voz' ? turno : null
       temporizadorFetch = setTimeout(() => controlador.abort(), finalizarArchivo || formatoEntrega || esVariasImagenes ? TIMEOUT_FETCH_DOCUMENTO_MS : TIMEOUT_FETCH_MS)
 
       const res = await fetch('/api/chat', {
@@ -208,6 +222,14 @@ export class MotorTextoClaude implements MotorConversacional {
           // en el servidor; ambos undefined en el chat escrito.
           turnId: turnId || undefined,
           voiceDebug: voiceDebug === true ? true : undefined,
+          // Turno duradero (ver lib/chat/turnosChat.ts): identidad del envío
+          // y del mensaje del docente (ya guardado), y reintento explícito.
+          ...(turnoDuradero ? {
+            requestId: turnoDuradero.requestId,
+            mensajeUsuarioId: `${conversacionId}:${turnoDuradero.mensajeUsuarioLocalId}`,
+            protocoloTurno: 1,
+            ...(turnoDuradero.reintentoDe ? { reintentoDe: turnoDuradero.reintentoDe } : {}),
+          } : {}),
         }),
         signal: controlador.signal,
       })
@@ -229,6 +251,19 @@ export class MotorTextoClaude implements MotorConversacional {
       // error real.
       if (!res.ok) {
         const detalle = await res.text().catch(() => '')
+        // Estado del turno informado por el servidor al adquirirlo (en
+        // proceso, fallido, ocupada…): no es un error de generación; el
+        // servicio decide (consultar, ofrecer reintento) sin generar.
+        if (turnoDuradero && (res.status === 409 || res.status === 400)) {
+          let estadoTurno: unknown = null
+          try { estadoTurno = JSON.parse(detalle)?.estadoTurno } catch { /* no era un estado de turno */ }
+          const conocidos = ['en_proceso', 'mensaje_en_curso', 'ocupada', 'fallido', 'reintento_requerido', 'conflicto'] as const
+          if (typeof estadoTurno === 'string') {
+            const estado = (conocidos as readonly string[]).includes(estadoTurno) ? (estadoTurno as (typeof conocidos)[number]) : 'invalido'
+            emitir({ tipo: 'turno', estado, requestId: turnoDuradero.requestId })
+            return
+          }
+        }
         console.error('[CHAT] /api/chat respondió con error:', res.status, detalle)
         // El servidor manda un mensaje específico y accionable (ej. "Error
         // detectado en el módulo DOCX") en vez del genérico de abajo —
@@ -253,18 +288,38 @@ export class MotorTextoClaude implements MotorConversacional {
       const decoder = new TextDecoder()
       let respuesta = ''
 
+      // Límite de inactividad del stream de un turno: sin datos durante
+      // LIMITES_TURNO.inactividadStreamMs, se suelta la lectura y se recupera.
+      let temporizadorInactividad: ReturnType<typeof setTimeout> | null = null
+      const vigilar = () => {
+        if (!turnoDuradero) return
+        if (temporizadorInactividad) clearTimeout(temporizadorInactividad)
+        temporizadorInactividad = setTimeout(() => { porInactividad = true; controlador.abort() }, LIMITES_TURNO.inactividadStreamMs)
+      }
       if (reader) {
+        vigilar()
         while (true) {
-          const { done, value } = await reader.read()
+          let lectura: ReadableStreamReadResult<Uint8Array>
+          try {
+            lectura = await reader.read()
+          } finally {
+            if (temporizadorInactividad) clearTimeout(temporizadorInactividad)
+          }
+          const { done, value } = lectura
           if (done) break
+          vigilar()
           respuesta += decoder.decode(value, { stream: true })
           // El marcador de propuesta (largo, en base64) nunca se pinta.
           emitir({ tipo: 'respuesta-parcial', texto: sinTextoFinalParcial(extraerMarcadorRecuperado(respuesta.replace(/\[\[PROPUESTA_LISTA:[^\]]*(\]\])?/, '')).texto).trim() })
         }
       }
 
+      // Confirmación de guardado del turno: solo el marcador del servidor
+      // (emitido DESPUÉS de guardar) la da; sin él, el turno queda por
+      // confirmar y el servicio lo consulta.
+      const { texto: respuestaSinTurno, turno: marcaTurno } = extraerMarcadorTurno(respuesta)
       // Texto final normalizado por el servidor (ver textoFinalChat.ts).
-      const { texto: respuestaSinRecuperado, recuperado } = extraerMarcadorRecuperado(respuesta)
+      const { texto: respuestaSinRecuperado, recuperado } = extraerMarcadorRecuperado(respuestaSinTurno)
       const { texto: respuestaSinFinal, textoFinal } = extraerTextoFinal(respuestaSinRecuperado)
       const respuestaSinProceso = await this.procesarMarcadorDeProceso(respuestaSinFinal, texto, user?.id)
       const { texto: sinArchivo, archivo, archivos } = this.procesarMarcadorDeArchivo(respuestaSinProceso)
@@ -274,7 +329,7 @@ export class MotorTextoClaude implements MotorConversacional {
       const { texto: sinPropuesta, propuestaLista } = this.procesarMarcadorDePropuestaLista(sinPerfil)
       const respuestaLimpia = textoFinal ?? sinPropuesta
       emitir({ tipo: 'respuesta-parcial', texto: respuestaLimpia })
-      emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista })
+      emitir({ tipo: 'respuesta-final', texto: respuestaLimpia, archivo, archivos, contenidoOriginal, accionNavegacion, perfilActualizado, propuestaLista, ...(turnoDuradero ? { turno: marcaTurno ?? { estado: 'sin_confirmar' as const, requestId: turnoDuradero.requestId } } : {}) })
 
       // Solo los documentos van al historial de documentos (primero por los
       // metadatos de entrega del servidor); las respuestas conversacionales
@@ -284,6 +339,13 @@ export class MotorTextoClaude implements MotorConversacional {
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.interrumpidoManualmente) return // interrupción intencional real, en silencio
+        // Turno duradero: el servidor sigue y guarda la respuesta; se
+        // consulta en vez de mostrar un error o generar de nuevo.
+        if (turnoDuradero) {
+          console.error(`[CHAT] turno sin respuesta completa por el stream (${porInactividad ? 'inactividad' : 'límite de tiempo'}) — se recupera`)
+          recuperar()
+          return
+        }
         console.error('[CHAT] /api/chat no respondió dentro del tiempo límite — abortado automáticamente')
         emitir({ tipo: 'error', mensaje: 'Tardó demasiado en responder. Toca para reintentar.' })
         return
@@ -302,6 +364,13 @@ export class MotorTextoClaude implements MotorConversacional {
       // real). El docente ya tiene el texto parcial en pantalla — el
       // mensaje debe decir con honestidad que se cortó, no sugerir un
       // problema de conexión que no existió.
+      // Turno duradero cortado por la red: también se recupera (si el
+      // servidor lo marcó fallido, el servicio ofrece el reintento).
+      if (turnoDuradero && !(err instanceof ErrorLimiteDeTiempo)) {
+        console.error('[CHAT] turno cortado durante la transmisión — se recupera')
+        recuperar()
+        return
+      }
       if (err instanceof Error && err.message === 'RESPUESTA_INTERRUMPIDA') {
         console.error('[CHAT] La respuesta se interrumpió a mitad de la transmisión')
         emitir({ tipo: 'error', mensaje: 'La respuesta se interrumpió antes de terminar. Vuelve a pedir la planeación.' })

@@ -538,6 +538,9 @@ export async function guardarMensajesRemotos(localId: string, docenteId: string,
   const nuevos: MensajePendiente[] = []
   for (const mensaje of mensajes) {
     if (mensaje.creadoEn < estado.desde) continue
+    // Respuesta de un turno duradero que el servidor todavía no confirmó:
+    // su único escritor es el servidor (nunca una segunda fila).
+    if (mensaje.turnoServidor?.estado === 'pendiente') continue
     const fila = mensajeAFilaRemota(conversacionRemotaId, docenteId, mensaje)
     const huella = huellaDe(fila)
     if (estado.huellas[fila.id] === huella) continue
@@ -550,6 +553,42 @@ export async function guardarMensajesRemotos(localId: string, docenteId: string,
     escribirEstadoSincronizacion(docenteId, estado)
   }
   await reintentarMensajesRemotosPendientes(docenteId)
+}
+
+// Turnos duraderos: el servidor ya creó la fila de esta respuesta (id
+// canónico). Se registra como sincronizada con el contenido que el cliente
+// adopta, para no volver a escribirla; solo un cambio posterior que
+// únicamente conoce el cliente (p. ej. el vínculo de versión de un
+// documento) actualiza esa MISMA fila.
+export function registrarMensajeDelServidor(docenteId: string, conversacionRemotaId: string, mensaje: MensajeConversacion): void {
+  const estado = leerEstadoSincronizacion(docenteId)
+  const fila = mensajeAFilaRemota(conversacionRemotaId, docenteId, mensaje)
+  estado.huellas[fila.id] = huellaDe(fila)
+  estado.pendientes = estado.pendientes.filter((p) => p.fila.id !== fila.id)
+  escribirEstadoSincronizacion(docenteId, estado)
+}
+
+// Turnos que hay que consultar en el servidor (lógica pura): respuestas
+// pendientes de confirmar y, si el último mensaje es del docente con un
+// turno, ese turno (incluso si se perdió el estado local: el turno viaja
+// en el mensaje guardado). Un turno ya resuelto por un mensaje canónico
+// del servidor no se consulta.
+export function turnosPorRecuperar(mensajes: MensajeConversacion[]): string[] {
+  const resueltos = new Set(mensajes.filter((m) => m.rol === 'asistente' && (m.requestId || m.turnoServidor?.estado === 'guardado')).map((m) => m.requestId ?? m.turnoServidor!.requestId))
+  const ids = mensajes.filter((m) => m.rol === 'asistente' && m.turnoServidor?.estado === 'pendiente').map((m) => m.turnoServidor!.requestId)
+  const ultimo = mensajes[mensajes.length - 1]
+  if (ultimo?.rol === 'usuario' && ultimo.turno) ids.push(ultimo.turno.requestId)
+  return [...new Set(ids)].filter((id) => !resueltos.has(id))
+}
+
+// Una respuesta pendiente cuyo mensaje canónico del servidor ya está en la
+// conversación (mismo requestId) se reemplaza por él: nunca dos respuestas
+// del mismo turno.
+export function sinRespuestasPendientesResueltas(mensajes: MensajeConversacion[]): MensajeConversacion[] {
+  const canonicos = new Set(mensajes.filter((m) => m.rol === 'asistente' && m.requestId).map((m) => m.requestId))
+  if (canonicos.size === 0) return mensajes
+  const filtrados = mensajes.filter((m) => !(m.turnoServidor?.estado === 'pendiente' && canonicos.has(m.turnoServidor.requestId)))
+  return filtrados.length === mensajes.length ? mensajes : filtrados
 }
 
 const envioEnCurso = new Map<string, Promise<void>>()
