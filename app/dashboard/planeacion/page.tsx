@@ -54,6 +54,18 @@ function Aviso({ titulo, texto, accion }: { titulo: string; texto: string; accio
   )
 }
 
+// Aviso de «Continuar en el Chat IA» (null: el Chat quedó abierto).
+function avisoContinuar(r: 'listo' | 'ocupado' | 'otro_grupo' | 'no_disponible' | 'sesion' | 'error'): string | null {
+  switch (r) {
+    case 'listo': return null
+    case 'ocupado': return 'El Chat IA está terminando una respuesta. Inténtalo en un momento.'
+    case 'otro_grupo': return 'Esta planeación es de otro grupo. Cambia al grupo correspondiente para continuarla en el Chat IA.'
+    case 'no_disponible': return 'Esta planeación ya no está disponible.'
+    case 'sesion': return 'Tu sesión venció. Vuelve a iniciar sesión.'
+    default: return 'No se pudo abrir el Chat IA. Inténtalo de nuevo.'
+  }
+}
+
 function mensajeDe(e: unknown): string {
   return e instanceof ErrorVistaPlaneacion ? e.message : 'No se pudo cargar la información. Revisa tu conexión e inténtalo de nuevo.'
 }
@@ -159,6 +171,7 @@ function VistaLista({ sesion, onAbrir, onAbrirChat }: { sesion: Sesion; onAbrir:
 }
 
 function VistaDetalle({ sesion, planeacionId, onVolver }: { sesion: Sesion; planeacionId: string; onVolver: () => void }) {
+  const asistente = useAsistente()
   const [detalle, setDetalle] = useState<Detalle | null | undefined>(undefined)
   const [numero, setNumero] = useState<number | null>(null)
   const [estados, setEstados] = useState<Record<string, EstadoCapturaHoja>>({})
@@ -207,6 +220,7 @@ function VistaDetalle({ sesion, planeacionId, onVolver }: { sesion: Sesion; plan
         onSeleccionarVersion={(n) => { setNumero(n); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
         estadosHoja={estados}
         evaluacionDistinta={distintas[version.id] ?? null}
+        onContinuarEnChat={async (versionId) => avisoContinuar(await asistente.continuarPlaneacion(versionId))}
         onArchivoGenerado={(versionId, formato) => setDetalle((d) => d && {
           ...d,
           versiones: d.versiones.map((v) => (v.id === versionId ? { ...v, ...(formato === 'word' ? { tieneWord: true } : { tienePdf: true }) } : v)),

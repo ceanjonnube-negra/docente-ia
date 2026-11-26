@@ -11,7 +11,8 @@ import { ORIGEN_VERSION, campoFormativoDe, rangoFechas, sesionesDe, textoSesione
 import ContenidoVersion from './ContenidoVersion'
 import DocumentoVersion from './DocumentoVersion'
 import { EstadoEvaluacion, InsigniaVersion } from './TarjetaPlaneacion'
-import { IconoCalendario, IconoCampo, IconoDocumento, IconoHistorial, IconoHoja, IconoSesiones, IconoSiguiente } from './Iconos'
+import { useState } from 'react'
+import { IconoCalendario, IconoCampo, IconoChat, IconoDocumento, IconoHistorial, IconoHoja, IconoSesiones, IconoSiguiente } from './Iconos'
 
 function Seccion({ titulo, icono, children }: { titulo: string; icono: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -31,6 +32,7 @@ export default function DetallePlaneacion({
   estadosHoja,
   evaluacionDistinta,
   onArchivoGenerado,
+  onContinuarEnChat,
 }: {
   detalle: Detalle
   version: VersionDetalle
@@ -40,7 +42,20 @@ export default function DetallePlaneacion({
   evaluacionDistinta: string | null
   // Un Word/PDF recién generado para esta versión (la vista lo marca disponible).
   onArchivoGenerado: (versionId: string, formato: 'word' | 'pdf') => void
+  // Abre el único Chat IA con esta planeación y versión (5c). Devuelve un
+  // aviso si no se pudo; null si quedó abierto.
+  onContinuarEnChat: (versionId: string) => Promise<string | null>
 }) {
+  const [continuando, setContinuando] = useState(false)
+  const [avisoChat, setAvisoChat] = useState<{ versionId: string; texto: string } | null>(null)
+  const continuar = async () => {
+    if (continuando) return
+    setContinuando(true)
+    setAvisoChat(null)
+    const aviso = await onContinuarEnChat(version.id)
+    setContinuando(false)
+    if (aviso) setAvisoChat({ versionId: version.id, texto: aviso })
+  }
   const vigente = version.numero === detalle.versionVigente
   const fechas = rangoFechas(detalle.fechaInicio, detalle.fechaFin)
   const campo = campoFormativoDe(version.estructura)
@@ -72,6 +87,18 @@ export default function DetallePlaneacion({
           </span>
           {!vigente && <span className="text-amber-700">Versión histórica · solo consulta. La vigente es la {detalle.versionVigente}.</span>}
         </label>
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={continuar}
+            disabled={continuando}
+            className="inline-flex items-center gap-2 rounded-full border border-green-200 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-green-800 hover:bg-green-50 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-300"
+          >
+            <IconoChat className="w-4 h-4" />
+            {continuando ? 'Abriendo el Chat…' : 'Continuar en el Chat IA'}
+          </button>
+          {avisoChat?.versionId === version.id && <p role="status" className="mt-1.5 text-xs text-amber-700">{avisoChat.texto}</p>}
+        </div>
       </div>
 
       <Seccion titulo="Documentos" icono={<IconoDocumento className="w-4 h-4" />}>

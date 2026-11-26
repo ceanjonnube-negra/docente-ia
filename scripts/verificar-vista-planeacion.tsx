@@ -198,7 +198,7 @@ async function main() {
     const bd = base()
     const { sb } = cliente(bd, A)
     const d = (await cargarDetallePlaneacion(sb, G1, 'p1'))!
-    const historica = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[1]} onSeleccionarVersion={() => {}} estadosHoja={{ pr1: 'confirmado' }} evaluacionDistinta="SG-3UAA" onArchivoGenerado={() => {}} />)
+    const historica = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[1]} onSeleccionarVersion={() => {}} estadosHoja={{ pr1: 'confirmado' }} evaluacionDistinta="SG-3UAA" onArchivoGenerado={() => {}} onContinuarEnChat={async () => null} />)
     verificar(historica.includes('Versión histórica · solo consulta. La vigente es la 4.') && historica.includes('Indicador v2') && !historica.includes('Indicador canónico v4'), '3d. Versión histórica: se consulta su propio contenido, marcada como histórica')
     verificar(historica.includes('href="/dashboard/evaluacion?proyecto=pr1"') && historica.includes('Resultados registrados') && historica.includes('SG-3UAA conserva sus criterios originales'),
       '3e. Hoja asociada con estado real, enlace al proyecto exacto y aviso de criterios originales')
@@ -206,7 +206,7 @@ async function main() {
     const etiquetas = [...historica.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]).filter((t) => !/^(Ver|Descargar|Generar (Word|PDF))$/.test(t))
     verificar(!/Aprobar|Guardar|Eliminar|Hacer vigente|Restaurar|Editar/i.test(historica) && [...historica.matchAll(/aria-current|<li><button/g)].length >= d.versiones.length && etiquetas.every((t) => t === ''),
       '3f. Consulta: elegir versión y acciones de documentos; nada se vuelve vigente ni se sobrescribe')
-    const vigente = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[0]} onSeleccionarVersion={() => {}} estadosHoja={{}} evaluacionDistinta={null} onArchivoGenerado={() => {}} />)
+    const vigente = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[0]} onSeleccionarVersion={() => {}} estadosHoja={{}} evaluacionDistinta={null} onArchivoGenerado={() => {}} onContinuarEnChat={async () => null} />)
     verificar(vigente.includes('Versión 4 · vigente') && !vigente.includes('Versión histórica') && vigente.includes('Original guardado') && vigente.includes('Aún no generado') && vigente.includes('Lenguajes +1') && vigente.includes('6 sesiones'), '3g. Versión vigente: Word/PDF con disponibilidad real y datos de su estructura')
     const lista = renderToStaticMarkup(<ListaPlaneaciones planeaciones={await cargarResumenPlaneaciones(sb, G1)} estados={{ pr1: 'confirmado' }} onAbrir={() => {}} />)
     verificar(lista.indexOf('Diciembre 2026') < lista.indexOf('Noviembre 2026') && lista.includes('Versión 4') && lista.includes('SG-3UAA') && lista.includes('2 planeaciones'), '3h. Lista por mes con versión vigente y evaluación')

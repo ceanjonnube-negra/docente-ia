@@ -39,3 +39,6 @@ export function IconoSiguiente({ className }: Props) {
 export function IconoBiblioteca({ className }: Props) {
   return <svg {...base(className)}><path d="M5 4h3v16H5zM10 4h3v16h-3z" /><path d="m15.5 5 2.9-.8 3.1 15.3-2.9.8z" /></svg>
 }
+export function IconoChat({ className }: Props) {
+  return <svg {...base(className)}><path d="M5.5 18.5 4 21l3.6-1.4A8.5 8.5 0 1 0 5.5 18.5Z" /><path d="M8.5 11h7M8.5 14h4.5" /></svg>
+}

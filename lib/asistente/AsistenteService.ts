@@ -20,6 +20,7 @@ import { esBorradorPlaneacion } from '@/lib/planeacion/extraerBorrador'
 import type { MarcaTurno } from './textoFinalChat'
 import { consultaPlaneacionEnServidor } from '@/lib/planeacion/detectarConsultaPlaneacion'
 import {
+  asegurarConversacionRemota,
   cargarConversacionPorId,
   combinarConversaciones,
   combinarMensajes,
@@ -1172,6 +1173,53 @@ class AsistenteServiceImpl {
   }
 
   // --- Panel (mostrar/ocultar la burbuja de conversación) ---
+
+  // «Continuar en el Chat IA» desde la pestaña Planeación (Hito 2, 5c): la
+  // planeación y versión elegidas pasan al único Chat con el mismo
+  // mecanismo de una consulta guardada (referencia de la conversación y
+  // vista determinista de la versión como documento activo). Sin mensaje
+  // del docente y sin IA. Se reutiliza la conversación actual solo si el
+  // servidor confirma que ya es exactamente esa planeación, versión y
+  // grupo sin ajustes pendientes; si no, se abre una conversación nueva
+  // (nunca se toca otra conversación ni un borrador pendiente).
+  async continuarPlaneacion(versionId: string): Promise<'listo' | 'ocupado' | 'otro_grupo' | 'no_disponible' | 'sesion' | 'error'> {
+    if (this.generando || this.reservaEnvio) return 'ocupado'
+    const { data: { session } } = await supabase.auth.getSession()
+    const docenteId = session?.user?.id
+    if (!session || !docenteId) return 'sesion'
+    const pedir = async (conversacionId: string, modo: 'evaluar' | 'abrir'): Promise<{ estado: string; mensajeId?: string }> => {
+      try {
+        const res = await fetch(`/api/planeaciones/versiones/${encodeURIComponent(versionId)}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ conversacionId, modo, zonaHoraria: obtenerZonaHorariaDispositivo() }),
+        })
+        return (await res.json()) as { estado: string; mensajeId?: string }
+      } catch {
+        return { estado: 'error' }
+      }
+    }
+    const final = (estado: string) => (['otro_grupo', 'no_disponible', 'sesion'].includes(estado) ? estado : 'error') as 'otro_grupo' | 'no_disponible' | 'sesion' | 'error'
+
+    if (this.mensajes.length > 0 && this.conversacionActivaId) {
+      const actual = await asegurarConversacionRemota(this.conversacionActivaId, docenteId)
+      const evaluacion = actual ? await pedir(actual, 'evaluar') : { estado: 'requiere_nueva' }
+      if (evaluacion.estado === 'reutilizar') { this.abrirPanel(); return 'listo' }
+      if (evaluacion.estado !== 'requiere_nueva') return final(evaluacion.estado)
+    }
+    if (this.generando || this.reservaEnvio) return 'ocupado'
+    // Conversación vacía actual o, si tenía mensajes, una nueva.
+    if (this.mensajes.length > 0 || !this.conversacionActivaId) this.nuevaConversacion()
+    const local = this.conversacionActivaId
+    if (!local) return 'error'
+    const remota = await asegurarConversacionRemota(local, docenteId)
+    if (!remota) return 'error'
+    const apertura = await pedir(remota, 'abrir')
+    if (apertura.estado !== 'listo' || !apertura.mensajeId) return final(apertura.estado)
+    await this.traerMensajeCanonico(local, apertura.mensajeId)
+    this.abrirPanel()
+    return 'listo'
+  }
 
   abrirPanel() {
     this.panelAbierto = true

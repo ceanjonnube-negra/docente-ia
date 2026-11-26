@@ -31,6 +31,7 @@ export function useAsistente() {
     reintentarGeneracion: () => AsistenteService.reintentarGeneracion(),
     reintentarTurno: (mensajeId: string) => AsistenteService.reintentarTurno(mensajeId),
     nuevaConversacion: () => AsistenteService.nuevaConversacion(),
+    continuarPlaneacion: (versionId: string) => AsistenteService.continuarPlaneacion(versionId),
     abrirConversacion: (id: string) => AsistenteService.abrirConversacion(id),
     eliminarConversacion: (id: string) => AsistenteService.eliminarConversacion(id),
     confirmarAccionCalendario: (mensajeId: string, accionId: string) => AsistenteService.confirmarAccionCalendario(mensajeId, accionId),
