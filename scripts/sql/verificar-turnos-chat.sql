@@ -202,3 +202,10 @@ insert into resultados (nombre, ok) values ('8c. Permisos sin cambios: completar
   and has_function_privilege('service_role', 'public.completar_turno_chat(uuid,uuid,text,text,boolean,jsonb,jsonb)', 'EXECUTE')
   and not exists (select 1 from pg_proc where proname = 'completar_turno_chat' and pronargs = 6));
 
+\echo == Realtime (20261201000000)
+insert into resultados (nombre, ok) values ('9a. turnos_chat está en la publicación de Realtime (una sola vez, aunque la migración se aplique dos veces) y solo ella',
+  (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'turnos_chat') = 1
+  and (select count(*) from pg_publication_tables where pubname = 'supabase_realtime') = 1);
+insert into resultados (nombre, ok) values ('9b. Sin cambios en la RLS: el docente sigue leyendo solo sus turnos (lo que filtra Realtime)',
+  (select string_agg(policyname || ':' || cmd, ',') from pg_policies where tablename = 'turnos_chat') = 'turnos_chat_select:SELECT');
+

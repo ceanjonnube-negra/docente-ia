@@ -20,6 +20,9 @@ trap 'psql -X -q "$SERVIDOR/postgres" -c "drop database if exists $BASE with (fo
 psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/scripts/sql/base-supabase-turnos.sql" >/dev/null
 psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/supabase/migrations/20261129000000_turnos_chat_duraderos.sql" >/dev/null
 psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/supabase/migrations/20261130000000_turnos_chat_tarjetas.sql" >/dev/null
+psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/supabase/migrations/20261201000000_turnos_chat_realtime.sql" >/dev/null
+# Idempotente: aplicarla otra vez no falla ni duplica.
+psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/supabase/migrations/20261201000000_turnos_chat_realtime.sql" >/dev/null
 psql -X -q -v ON_ERROR_STOP=1 "$URL" -f "$RAIZ/scripts/sql/verificar-turnos-chat.sql" >/dev/null
 
 # Concurrencia real: la primera sesión adquiere y mantiene su transacción

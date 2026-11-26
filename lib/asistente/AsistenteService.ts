@@ -81,7 +81,7 @@ const LIMITE_PERSISTENCIA_ANTES_DE_APROBAR_MS = 5000
 // turno del servidor ya habrá vencido como interrumpido).
 // (Exportadas para que las pruebas puedan acortarlas.)
 export const ESPERAS_RECUPERACION_MS = [2_000, 3_000, 5_000, 8_000, 13_000, 15_000]
-export const LIMITES_RECUPERACION = { totalMs: 5 * 60_000 }
+export const LIMITES_RECUPERACION = { totalMs: 5 * 60_000, respaldoConAvisosMs: 15_000 }
 const LIMITE_CONSULTA_TURNO_MS = 10_000
 // Texto compacto junto al botón «Reintentar» bajo el mensaje del docente.
 export const TEXTO_REINTENTO_TURNO = { fallido: 'No se completó la respuesta', no_enviado: 'No se envió', ocupada: 'Esperaba la respuesta anterior' } as const
@@ -768,6 +768,7 @@ class AsistenteServiceImpl {
   private limpiarEstadoTransitorio() {
     // Vista nueva: cualquier respuesta pendiente de la anterior ya no es de aquí.
     this.vista++
+    this.cancelarRecuperacionesAjenas()
     if (this.avisoGeneracionTimer) { clearTimeout(this.avisoGeneracionTimer); this.avisoGeneracionTimer = null }
     if (this.avisoVozTimer) { clearTimeout(this.avisoVozTimer); this.avisoVozTimer = null }
     if (this.archivoReutilizadoTimer) { clearTimeout(this.archivoReutilizadoTimer); this.archivoReutilizadoTimer = null }
@@ -2991,7 +2992,14 @@ class AsistenteServiceImpl {
   // plano, otro dispositivo) se CONSULTA el turno —nunca se genera otra
   // vez—; un turno fallido solo se repite con un reintento explícito.
   // ===================================================================
-  private recuperaciones = new Map<string, { conversacion: string; intento: number; desde: number; timer: ReturnType<typeof setTimeout> | null }>()
+  // consultando: hay una consulta en vuelo; ningún otro disparador lanza
+  // otra (todos pasan por programarRecuperacion).
+  private recuperaciones = new Map<string, { conversacion: string; intento: number; desde: number; timer: ReturnType<typeof setTimeout> | null; consultando: boolean }>()
+  // Avisos en tiempo real (Supabase Realtime) de los turnos de la
+  // conversación activa: un solo canal, abierto solo mientras hay una
+  // recuperación en curso. Con el canal suscrito, las consultas espaciadas
+  // quedan como respaldo lento; si falla, siguen como siempre.
+  private canalTurnos: { conversacion: string; canal: ReturnType<typeof supabase.channel> | null; suscrito: boolean } | null = null
   // Respuesta adoptada en este turno: se registra como ya sincronizada
   // cuando el mensaje tiene sus tarjetas (antes de los metadatos que solo
   // conoce el cliente, como el vínculo de versión).
@@ -3136,10 +3144,20 @@ class AsistenteServiceImpl {
       this.recuperaciones.delete(requestId)
       actual = undefined
     }
-    if (actual?.timer) return
-    const estado = actual ?? { conversacion, intento: 0, desde: Date.now(), timer: null }
+    // Punto único de todos los disparadores (corte del stream, volver a la
+    // app, abrir la conversación, conexión recuperada, aviso en tiempo
+    // real): con una consulta en vuelo no se lanza otra; una inmediata
+    // adelanta la que estaba en espera, nunca la duplica.
+    if (actual?.consultando) return
+    if (actual?.timer) {
+      if (demoraMs > 0) return
+      clearTimeout(actual.timer)
+      actual.timer = null
+    }
+    const estado = actual ?? { conversacion, intento: 0, desde: Date.now(), timer: null, consultando: false }
     estado.timer = setTimeout(() => void this.consultarTurnoPendiente(requestId), demoraMs)
     this.recuperaciones.set(requestId, estado)
+    void this.actualizarCanalTurnos()
     this.notificar()
   }
 
@@ -3147,15 +3165,68 @@ class AsistenteServiceImpl {
     const r = this.recuperaciones.get(requestId)
     if (r?.timer) clearTimeout(r.timer)
     this.recuperaciones.delete(requestId)
+    void this.actualizarCanalTurnos()
     this.notificar()
+  }
+
+  // Cambio de conversación: sus recuperaciones y su canal se cierran (al
+  // volver a abrirla, la sincronización las retoma).
+  private cancelarRecuperacionesAjenas() {
+    for (const [requestId, r] of this.recuperaciones) {
+      if (r.conversacion === this.conversacionActivaId) continue
+      if (r.timer) clearTimeout(r.timer)
+      this.recuperaciones.delete(requestId)
+    }
+    void this.actualizarCanalTurnos()
+  }
+
+  // Abre el canal de la conversación activa si tiene recuperaciones; si no,
+  // lo cierra. Aislamiento: Realtime aplica la RLS de turnos_chat (solo los
+  // turnos del docente) y además se filtra por conversación y docente.
+  private async actualizarCanalTurnos() {
+    const conversacion = this.conversacionActivaId
+    const necesario = !!conversacion && [...this.recuperaciones.values()].some((r) => r.conversacion === conversacion)
+    if (this.canalTurnos && (!necesario || this.canalTurnos.conversacion !== conversacion)) {
+      const { canal } = this.canalTurnos
+      this.canalTurnos = null
+      if (canal) void supabase.removeChannel(canal)
+    }
+    if (!necesario || this.canalTurnos) return
+    const entrada: NonNullable<AsistenteServiceImpl['canalTurnos']> = { conversacion: conversacion!, canal: null, suscrito: false }
+    this.canalTurnos = entrada
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const docenteId = session?.user?.id
+      if (!docenteId || this.canalTurnos !== entrada) return
+      const remoto = await idRemotoDe(docenteId, entrada.conversacion)
+      if (this.canalTurnos !== entrada) return
+      entrada.canal = supabase
+        .channel(`turnos:${remoto}`)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'turnos_chat', filter: `conversacion_id=eq.${remoto}` }, (cambio: { new?: Record<string, unknown> }) => {
+          const fila = cambio.new
+          if (this.canalTurnos !== entrada || !fila || fila.docente_id !== docenteId) return
+          if ((fila.estado === 'completed' || fila.estado === 'failed') && typeof fila.request_id === 'string' && this.recuperaciones.has(fila.request_id)) {
+            this.programarRecuperacion(fila.request_id, 0)
+          }
+        })
+        .subscribe((estadoCanal: string) => { entrada.suscrito = estadoCanal === 'SUBSCRIBED' })
+    } catch {
+      // Sin canal: las consultas espaciadas siguen como siempre.
+    }
   }
 
   private async consultarTurnoPendiente(requestId: string) {
     const r = this.recuperaciones.get(requestId)
-    if (!r) return
+    if (!r || r.consultando) return
     r.timer = null
     if (r.conversacion !== this.conversacionActivaId) return this.terminarRecuperacion(requestId)
-    const turno = await this.consultarTurno(requestId)
+    r.consultando = true
+    let turno: Awaited<ReturnType<AsistenteServiceImpl['consultarTurno']>>
+    try {
+      turno = await this.consultarTurno(requestId)
+    } finally {
+      r.consultando = false
+    }
     if (this.recuperaciones.get(requestId) !== r) return
     if (r.conversacion !== this.conversacionActivaId) return this.terminarRecuperacion(requestId)
     if (turno === 'no_encontrado') {
@@ -3167,7 +3238,11 @@ class AsistenteServiceImpl {
     if (!turno || turno.estado === 'queued' || turno.estado === 'generating') {
       r.intento += 1
       if (Date.now() - r.desde > LIMITES_RECUPERACION.totalMs) return this.terminarRecuperacion(requestId)
-      this.programarRecuperacion(requestId, ESPERAS_RECUPERACION_MS[Math.min(r.intento - 1, ESPERAS_RECUPERACION_MS.length - 1)])
+      // Con avisos en tiempo real, la consulta es solo un respaldo lento.
+      const espera = this.canalTurnos?.conversacion === r.conversacion && this.canalTurnos.suscrito
+        ? LIMITES_RECUPERACION.respaldoConAvisosMs
+        : ESPERAS_RECUPERACION_MS[Math.min(r.intento - 1, ESPERAS_RECUPERACION_MS.length - 1)]
+      this.programarRecuperacion(requestId, espera)
       return
     }
     if (turno.estado === 'failed') {

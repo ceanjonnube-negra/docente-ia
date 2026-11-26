@@ -114,13 +114,30 @@ async function main() {
   auth.getUser = async () => ({ data: { user: { id: DOCENTE } }, error: null })
   s.rpc = async () => ({ data: null, error: null })
   s.from = (tabla: string) => new Consulta(tabla)
+  // Realtime simulado: por omisión el canal NO se suscribe (las pruebas de
+  // respaldo por consultas siguen igual); la sección 12 lo activa.
+  type Canal = { nombre: string; filtro: { filter?: string } | null; cb: ((p: { new: Record<string, unknown> }) => void) | null; eliminado: boolean }
+  const canales: Canal[] = []
+  const realtime = { estado: 'CHANNEL_ERROR' }
+  s.channel = (nombre: string) => {
+    const c = { nombre, filtro: null, cb: null, eliminado: false } as Canal & { on: unknown; subscribe: unknown }
+    c.on = (_tipo: string, filtro: { filter?: string }, cb: Canal['cb']) => { c.filtro = filtro; c.cb = cb; return c }
+    c.subscribe = (cb: (estado: string) => void) => { const estado = realtime.estado; setTimeout(() => cb(estado), 0); return c }
+    canales.push(c)
+    return c
+  }
+  s.removeChannel = async (c: Canal) => { c.eliminado = true; return 'ok' }
+  const avisar = (fila: Record<string, unknown>) => {
+    if (realtime.estado !== 'SUBSCRIBED') return
+    for (const c of canales) if (!c.eliminado && c.cb && c.filtro?.filter === `conversacion_id=eq.${fila.conversacion_id}`) setTimeout(() => c.cb!({ new: fila }), 10)
+  }
   p.establecerPropietarioLocal(DOCENTE)
 
   // ---------------- Servidor simulado ----------------
   type Modo = 'normal' | 'tarjeta' | 'corte' | 'sin_marcador' | 'colgado' | 'fallido' | 'ocupada' | 'sin_llegar'
   type TurnoSim = { estado: 'generating' | 'completed' | 'failed'; crudo: string; mensajeId: string | null; cuerpo: Record<string, unknown>; creadoEn?: string }
   const turnos = new Map<string, TurnoSim>()
-  const servidor = { modo: 'normal' as Modo, completaEnMs: 0, generaciones: 0, llamadasChat: [] as Record<string, unknown>[], consultas: [] as { requestId: string; t: number }[], usuarioGuardadoAntes: [] as boolean[] }
+  const servidor = { retrasoConsultaMs: 0, modo: 'normal' as Modo, completaEnMs: 0, generaciones: 0, llamadasChat: [] as Record<string, unknown>[], consultas: [] as { requestId: string; t: number }[], usuarioGuardadoAntes: [] as boolean[] }
   let secuencia = 0
   const encoder = new TextEncoder()
   const RESPUESTA = (n: number) => `Respuesta número ${n} del asistente.`
@@ -134,6 +151,7 @@ async function main() {
     tablas.mensajes_chat.push({ id, conversacion_id: conv, docente_id: DOCENTE, rol: 'asistente', texto: m.texto, contenido: { ...(m.archivo ? { archivo: m.archivo, archivos: m.archivos } : {}), turnoId: `sim-${secuencia}`, requestId: t.cuerpo.requestId, mensajeUsuarioId: t.cuerpo.mensajeUsuarioId }, creado_en: t.creadoEn })
     t.mensajeId = id
     t.estado = 'completed'
+    avisar({ docente_id: DOCENTE, conversacion_id: conv, request_id: t.cuerpo.requestId, estado: 'completed', texto_crudo: t.crudo })
   }
   function completarLuego(t: TurnoSim, ms: number) {
     if (ms <= 0) materializar(t)
@@ -159,6 +177,7 @@ async function main() {
     if (url === '/api/chat/turno') {
       const requestId = String(cuerpo.requestId)
       servidor.consultas.push({ requestId, t: Date.now() })
+      if (servidor.retrasoConsultaMs) await esperar(servidor.retrasoConsultaMs)
       const t = turnos.get(requestId)
       if (!t) return json({ turno: null }, 404)
       return json({ turno: { estado: t.estado, mensaje_asistente_id: t.mensajeId, codigo_error: t.estado === 'failed' ? 'error_generacion' : null } }, 200)
@@ -426,6 +445,67 @@ async function main() {
     await esperar(2400)
     verificar(escrituras.some((e) => e.tabla === 'mensajes_chat' && e.ids.includes(String(fila.id))) && Date.parse(String(filasAsistente(conv)[0].creado_en)) === Date.parse(creadoServidor) && filasAsistente(conv).length === 1,
       '11d. Al agregar metadatos del cliente se actualiza la misma fila y se conserva la fecha del servidor')
+  }
+
+  // ============================================================
+  // 12. Avisos en tiempo real y disparadores unificados
+  // ============================================================
+  {
+    realtime.estado = 'SUBSCRIBED'
+    servicio.LIMITES_RECUPERACION.respaldoConAvisosMs = 5000
+    servicio.ESPERAS_RECUPERACION_MS.splice(0, servicio.ESPERAS_RECUPERACION_MS.length, 150, 200, 250)
+    const x = await nueva('colgado', 'Pregunta con avisos en tiempo real', 1500)
+    const remoto = await x.conv()
+    const canalAbierto = await hasta(() => canales.some((c) => !c.eliminado && c.filtro?.filter === `conversacion_id=eq.${remoto}`))
+    verificar(canalAbierto && canales.filter((c) => !c.eliminado).length === 1, '12a. Durante la recuperación: un solo canal, filtrado por la conversación')
+    const inicio = Date.now()
+    const ok = await hasta(() => asistentes().some((m) => m.id.startsWith('turno-sim-') && m.requestId === ultimoUsuario().turno?.requestId), 5000)
+    const tardanza = Date.now() - inicio
+    const turnoSim = turnos.get(ultimoUsuario().turno!.requestId)!
+    const fin = Date.parse(String(tablas.mensajes_chat.find((f) => f.id === turnoSim.mensajeId)?.creado_en)) + 1000
+    verificar(ok && Date.now() - fin < 1500 && tardanza < 4000 && servidor.generaciones === x.antes.gen + 1, '12b. Al guardarse en el servidor, el aviso trae la respuesta de inmediato (sin esperar el respaldo de 5 s) y sin generar otra vez')
+    const consultas = servidor.consultas.slice(x.antes.consultas).length
+    verificar(consultas <= 3, `12c. Con avisos, las consultas se reducen al mínimo (${consultas})`)
+    await esperar(100)
+    verificar(canales.every((c) => c.eliminado) && !estado().recuperandoRespuesta, '12d. Al terminar la recuperación, el canal se cierra')
+  }
+  {
+    // Aviso de otro docente (o de otro turno): se ignora.
+    servidor.retrasoConsultaMs = 0
+    const x = await nueva('colgado', 'Aviso ajeno', 60_000)
+    const remoto = await x.conv()
+    await hasta(() => canales.some((c) => !c.eliminado) && servidor.consultas.length > x.antes.consultas)
+    await esperar(200) // la primera consulta de la recuperación ya salió; la siguiente es el respaldo de 5 s
+    const antes = servidor.consultas.length
+    for (const c of canales) if (!c.eliminado) c.cb?.({ new: { docente_id: '99999999-9999-4999-8999-999999999999', conversacion_id: remoto, request_id: ultimoUsuario().turno!.requestId, estado: 'completed' } })
+    await esperar(150)
+    verificar(servidor.consultas.length === antes, '12e. Un aviso con otro docente no dispara nada')
+    // Disparadores simultáneos: corte del stream, volver a la app, abrir la conversación…
+    servidor.retrasoConsultaMs = 300
+    const requestId = ultimoUsuario().turno!.requestId
+    const recuperar = interno.programarRecuperacion as (id: string, ms?: number) => void
+    const antes2 = servidor.consultas.length
+    recuperar.call(chat, requestId, 0)
+    await esperar(20)
+    recuperar.call(chat, requestId, 0)
+    ;(interno.recuperarTurnosPendientes as () => void).call(chat)
+    ;(chat as unknown as { alRecuperarConexion(): void }).alRecuperarConexion()
+    await esperar(250)
+    verificar(servidor.consultas.length === antes2 + 1, '12f. Varios disparadores a la vez: una sola consulta en vuelo')
+    // Cambiar de conversación: se cancela la recuperación y se cierra el canal.
+    chat.nuevaConversacion()
+    await esperar(400)
+    const tras = servidor.consultas.length
+    await esperar(600)
+    verificar(canales.every((c) => c.eliminado) && !estado().recuperandoRespuesta && servidor.consultas.length === tras, '12g. Al cambiar de conversación: sin canal ni consultas pendientes')
+    servidor.retrasoConsultaMs = 0
+  }
+  {
+    // Sin Realtime (la suscripción falla): las consultas espaciadas siguen como respaldo.
+    realtime.estado = 'CHANNEL_ERROR'
+    const x = await nueva('colgado', 'Sin avisos', 600)
+    const ok = await hasta(() => asistentes().some((m) => m.id.startsWith('turno-sim-') && m.requestId === ultimoUsuario().turno?.requestId) && !estado().recuperandoRespuesta, 5000)
+    verificar(ok && servidor.consultas.slice(x.antes.consultas).length >= 2 && servidor.generaciones === x.antes.gen + 1, '12h. Si la suscripción falla, la recuperación sigue con las consultas espaciadas')
   }
 
   // ============================================================
