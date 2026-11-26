@@ -90,7 +90,11 @@ verificar(seleccionarBorradorVigente([a('📝 EXAMEN DE CIENCIAS\n\n1. …')]).e
 // 8. Atajo determinista del servidor.
 {
   const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-  verificar(/const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion\(/.test(ruta), '8a. El servidor usa el mismo detector que el cliente (nunca para un prompt de edición)')
+  // Hito 2 (ciclo de vida): desde un prompt de edición, el detector se aplica
+  // solo a la instrucción del docente (ordenAprobarDesdeEdicion), nunca al
+  // texto del documento.
+  verificar(/const ordenAprobarPlaneacion = esEdicionDocumento \? ordenAprobarEnEdicion : detectarAprobarPlaneacion\(/.test(ruta) && ruta.includes('const ordenAprobarEnEdicion = !!esEdicionDocumento && ordenAprobarDesdeEdicion('),
+    '8a. El servidor usa el mismo detector que el cliente (en un prompt de edición, solo sobre la instrucción del docente)')
   verificar(ruta.includes('? clasificacionAprobarPlaneacion()') && ruta.includes(': await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))'), '8b. Con orden detectada no se llama al clasificador; sin ella, igual que antes')
   verificar(ruta.includes("aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion)"), '8c. La aprobación recibe el historial de esta conversación, el mensaje del docente y la conversación validada')
 }

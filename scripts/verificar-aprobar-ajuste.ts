@@ -7,9 +7,9 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { aprobarAjusteSiCorresponde } from '../lib/planeacion/aprobarAjuste'
+import { aprobarAjusteSiCorresponde, cicloDelAjuste } from '../lib/planeacion/aprobarAjuste'
 import { aprobarBorradorPlaneacion } from '../lib/planeacion/aprobarBorrador'
-import { ETIQUETA_AJUSTE, construirBorradorAjustado, continuarAjuste, huellaBorrador, seccionesDe, type BaseAjuste } from '../lib/planeacion/modificarPlaneacion'
+import { ETIQUETA_AJUSTE, ajustesDe, construirBorradorAjustado, continuarAjuste, huellaBorrador, seccionesDe, type AjusteRegistrado, type BaseAjuste } from '../lib/planeacion/modificarPlaneacion'
 import type { SesionContexto } from '../lib/sesionContexto'
 import type { Planeacion } from '../lib/planeacion/tipos'
 
@@ -340,6 +340,64 @@ async function main() {
     const modulo = readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'aprobarAjuste.ts'), 'utf-8')
     verificar(ruta.indexOf('await aprobarAjusteSiCorresponde(') > 0 && ruta.indexOf('await aprobarAjusteSiCorresponde(') < ruta.indexOf('await aprobarBorradorPlaneacion('), '7a. La ruta resuelve el ajuste antes de la primera aprobación')
     verificar(!/anthropic|clasificarNivel0|ejecutarHerramientaDocumento|generarDocumento|documentGen\/herramientas/.test(modulo) && modulo.includes('publicarVersionPlaneacion('), '7b. Aprobación N+1: reutiliza publicarVersionPlaneacion; sin IA ni Word/PDF de la planeación')
+  }
+
+  // 9. Ciclo de vida: pendiente → publicado (conserva identidad) / obsoleto.
+  {
+    const bd = crearBD()
+    const texto = borradorAjuste()
+    registrar(bd, texto)
+    const ajuste = () => ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa)[0]
+    verificar((await cicloDelAjuste(bd.sb, DOCENTE, ajuste())).estado === 'pendiente' && !ajuste().publicadoComo, '9a. Antes de aprobar: ajuste pendiente sobre la versión vigente (3)')
+    const r = await aprobar(bd, texto)
+    verificar(r?.codigo === 'VERSION_PUBLICADA' && ajuste().publicadoComo === 4 && ajuste().huella === huellaBorrador(texto) && ajuste().versionBase === 3,
+      '9b. Al publicar, el borrador queda marcado publicadoComo=4 y conserva su identidad (huella y base)')
+    const ciclo = await cicloDelAjuste(bd.sb, DOCENTE, ajuste())
+    verificar(ciclo.estado === 'publicado' && ciclo.numero === 4 && ciclo.vigente === 4, '9c. Después: publicado como versión 4 (ya no es un ajuste pendiente)')
+    const rpcAntes = bd.llamadasRpc.length
+    const r2 = await aprobar(bd, texto)
+    verificar(r2?.codigo === 'VERSION_YA_PUBLICADA' && r2.numero === 4 && bd.llamadasRpc.length === rpcAntes && bd.t.planeacion_versiones.length === 4,
+      '9d. «Apruébala» repetido: recupera la versión 4 por su identidad, sin publicar otra')
+    const continuado = await continuarAjuste(bd.sb, CONV, texto, `${BASE_TEXTO.replace('Lluvia de ideas.', 'Lluvia de ideas con tarjetas y dibujos.')}\n\n${RESUMEN()}`, 'Agrega dibujos')
+    verificar(ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa).length === 1 && !!continuado && continuado.includes(ETIQUETA_AJUSTE),
+      '9e. Un borrador ya publicado no hereda una identidad publicable al seguir corrigiéndolo')
+  }
+  {
+    // 9f. Caso real de E2E: borrador publicado ANTES de existir la marca
+    // (sin publicadoComo); se reconoce por la clave de la versión siguiente.
+    const bd = crearBD()
+    const texto = borradorAjuste()
+    registrar(bd, texto, { id: 'm9' })
+    bd.t.planeaciones[0].version = 4
+    bd.t.planeacion_versiones.push({ id: 'v4', planeacion_id: PL, docente_id: DOCENTE, numero: 4, borrador_clave: `msg:${CONV}:m9`, contenido: 'v4' })
+    const ajuste = ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa)[0] as AjusteRegistrado
+    const ciclo = await cicloDelAjuste(bd.sb, DOCENTE, ajuste)
+    verificar(ciclo.estado === 'publicado' && ciclo.numero === 4 && ciclo.vigente === 4, '9f. Publicado sin marca (anterior a este cambio): se reconoce por la clave de la versión 4 y su huella')
+    const r = await aprobar(bd, texto)
+    verificar(r?.codigo === 'VERSION_YA_PUBLICADA' && ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa)[0].publicadoComo === 4 && bd.llamadasRpc.length === 0,
+      '9g. Recuperar su aprobación lo marca como publicado (sin publicar otra versión)')
+  }
+  {
+    // 9h. Pendiente con base obsoleta: otra modificación publicó la versión 4.
+    const bd = crearBD()
+    const texto = borradorAjuste()
+    registrar(bd, texto)
+    bd.t.planeaciones[0].version = 4
+    bd.t.mensajes_chat.push({ id: `${CONV}:m-otro`, conversacion_id: CONV, rol: 'asistente', texto: 'otro ajuste distinto' })
+    bd.t.planeacion_versiones.push({ id: 'v4', planeacion_id: PL, docente_id: DOCENTE, numero: 4, borrador_clave: `msg:${CONV}:m-otro`, contenido: 'v4 de otro ajuste' })
+    const ajuste = ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa)[0]
+    const ciclo = await cicloDelAjuste(bd.sb, DOCENTE, ajuste)
+    verificar(ciclo.estado === 'obsoleto' && ciclo.vigente === 4, '9h. Pendiente cuya base (3) quedó atrás por otra versión (4): obsoleto, nunca publicado')
+    const r = await aprobar(bd, texto)
+    verificar(r?.codigo === 'CONFLICTO_VERSION' && bd.llamadasRpc.length === 0 && !ajustesDe(bd.t.conversaciones_chat[0].planeacion_activa)[0].publicadoComo, '9i. Aprobarlo sigue siendo conflicto: no se publica ni se marca')
+    const sinClave = crearBD()
+    registrar(sinClave, texto)
+    sinClave.t.planeaciones[0].version = 4
+    sinClave.t.planeacion_versiones.push({ id: 'v4', planeacion_id: PL, docente_id: DOCENTE, numero: 4, borrador_clave: null, contenido: 'v4' })
+    verificar((await cicloDelAjuste(sinClave.sb, DOCENTE, ajustesDe(sinClave.t.conversaciones_chat[0].planeacion_activa)[0])).estado === 'obsoleto', '9j. Versión siguiente sin clave de mensaje: obsoleto (nunca se asume publicado)')
+    const ajena = crearBD()
+    registrar(ajena, texto)
+    verificar((await cicloDelAjuste(ajena.sb, '99999999-9999-4999-8999-999999999999', ajustesDe(ajena.t.conversaciones_chat[0].planeacion_activa)[0])).estado === 'sin_planeacion', '9k. Planeación de otro docente: sin planeación')
   }
 
   console.log(fallos === 0 ? '\nTodas las pruebas pasaron.' : `\n${fallos} prueba(s) fallaron.`)

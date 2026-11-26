@@ -19,11 +19,13 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { SesionContexto } from '../sesionContexto'
-import { seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { esBorradorPlaneacion, esConfirmacionDePlaneacionGuardada, PREFIJO_VERSION_PUBLICADA, PREFIJO_VERSION_YA_PUBLICADA, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { detectarAprobarPlaneacion } from './detectarAprobarPlaneacion'
+import { documentoDeEdicion, instruccionDeEdicion } from '../asistente/documentos'
 import { CAMPOS_FORMATIVOS_VALIDOS, MENSAJE_NO_PERSISTIDO, construirProyecto, estructuraDeVersion, hojaEntregable, leerHoja, resolverIdentidadBorrador, type HojaAprobacion } from './aprobarBorrador'
 import { resolverCurricularAprobacion, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
-import { ETIQUETA_AJUSTE, ajustePublicable, baseDeVersion, separarResumen, type BaseAjuste } from './modificarPlaneacion'
+import { ETIQUETA_AJUSTE, ajustePublicable, baseDeVersion, huellaBorrador, marcarAjustePublicado, separarResumen, type AjusteRegistrado, type BaseAjuste } from './modificarPlaneacion'
 import { avisoEvaluacionDeVersion, completarHojaConGenerador, publicarVersionPlaneacion, type CompletarHoja } from './publicarVersion'
 import { guardarReferenciaPlaneacion } from './consultaPlaneaciones'
 import { perfilConGrupoAcademico } from '../documentGen/encabezadoDocumento'
@@ -39,7 +41,69 @@ const MENSAJE_ERROR = 'No pude guardar la nueva versión en este momento; la pla
 
 const mensajeConflicto = (nombre: string, vigente: number, base: number) =>
   `«${nombre}» cambió desde que preparé este ajuste: ahora su versión vigente es la ${vigente} y el ajuste partía de la ${base}. No sobrescribo esos cambios; pídeme que aplique de nuevo tu ajuste sobre la versión ${vigente}.`
-const mensajeYaPublicada = (nombre: string, numero: number) => `Este ajuste ya está guardado como la versión ${numero} de «${nombre}».`
+const mensajeYaPublicada = (nombre: string, numero: number) => `${PREFIJO_VERSION_YA_PUBLICADA}${numero} de «${nombre}».`
+
+// ------------------------------------------------------------------
+// Ciclo de vida de un borrador de ajuste, contra la versión CANÓNICA
+// ------------------------------------------------------------------
+// - pendiente: su base sigue siendo la versión vigente; se puede seguir
+//   corrigiendo y aprobar.
+// - publicado: ya se guardó como la versión `numero` (marca publicadoComo
+//   o, para borradores publicados antes de esa marca, la clave de la
+//   versión siguiente a su base apunta a un mensaje con su misma huella).
+//   Conserva su identidad, pero no es un ajuste pendiente.
+// - obsoleto: sin publicarse, la planeación avanzó a otra versión (otra
+//   modificación). Sus cambios no se descartan ni se combinan en silencio.
+// - sin_planeacion: la planeación no es del docente o ya no existe.
+// Sin IA: solo planeaciones, planeacion_versiones y mensajes_chat (RLS).
+export type CicloAjuste =
+  | { estado: 'pendiente'; ajuste: AjusteRegistrado; nombre: string; vigente: number }
+  | { estado: 'publicado'; ajuste: AjusteRegistrado; nombre: string; vigente: number; numero: number }
+  | { estado: 'obsoleto'; ajuste: AjusteRegistrado; nombre: string; vigente: number }
+  | { estado: 'sin_planeacion'; ajuste: AjusteRegistrado }
+
+export async function cicloDelAjuste(sb: SupabaseClient, docenteId: string, ajuste: AjusteRegistrado): Promise<CicloAjuste> {
+  const { data: fila } = await sb.from('planeaciones').select('nombre, version').eq('id', ajuste.planeacionId).eq('docente_id', docenteId).maybeSingle()
+  const planeacion = fila as { nombre: string; version: number } | null
+  if (!planeacion || planeacion.version < 1) return { estado: 'sin_planeacion', ajuste }
+  const { nombre, version: vigente } = planeacion
+  if (ajuste.publicadoComo) return { estado: 'publicado', ajuste, nombre, vigente, numero: ajuste.publicadoComo }
+  if (vigente === ajuste.versionBase) return { estado: 'pendiente', ajuste, nombre, vigente }
+  if (vigente > ajuste.versionBase) {
+    const numero = ajuste.versionBase + 1
+    const { data: siguiente } = await sb.from('planeacion_versiones').select('borrador_clave').eq('planeacion_id', ajuste.planeacionId).eq('docente_id', docenteId).eq('numero', numero).maybeSingle()
+    const clave = (siguiente as { borrador_clave?: string | null } | null)?.borrador_clave
+    if (clave?.startsWith('msg:')) {
+      const { data: mensaje } = await sb.from('mensajes_chat').select('texto').eq('id', clave.slice('msg:'.length)).maybeSingle()
+      const texto = (mensaje as { texto?: string | null } | null)?.texto
+      if (texto && huellaBorrador(texto) === ajuste.huella) return { estado: 'publicado', ajuste, nombre, vigente, numero }
+    }
+  }
+  return { estado: 'obsoleto', ajuste, nombre, vigente }
+}
+
+// Orden inequívoca de aprobar que el cliente envió como EDICIÓN de su
+// documento activo (p. ej. con la confirmación o la tarjeta de la hoja como
+// documento activo): es la orden, no una edición. Mismo detector estricto,
+// sobre la instrucción del docente (nunca sobre el texto del documento);
+// exige un borrador de planeación en la conversación, y el pronombre
+// («apruébala») solo vale con la planeación en curso: el documento activo
+// es su borrador, o la última respuesta fue su borrador o la confirmación
+// de guardarla. Sin clasificador ni IA.
+export function ordenAprobarDesdeEdicion(promptEdicion: string, historial: { role: string; content: string }[]): boolean {
+  if (!historial.some((h) => h.role === 'assistant' && esBorradorPlaneacion(h.content))) return false
+  const ultimaRespuesta = [...historial].reverse().find((h) => h.role === 'assistant')?.content ?? ''
+  return detectarAprobarPlaneacion(instruccionDeEdicion(promptEdicion) ?? '', {
+    hayBorradorPlaneacion: esBorradorPlaneacion(documentoDeEdicion(promptEdicion) ?? '') || esBorradorPlaneacion(ultimaRespuesta) || esConfirmacionDePlaneacionGuardada(ultimaRespuesta),
+  })
+}
+
+export const mensajeAjusteObsoleto = (nombre: string, base: number, vigente: number) =>
+  `Este borrador de ajuste partía de la versión ${base} de «${nombre}», pero la versión vigente ahora es la ${vigente}. No combiné ni descarté sus cambios: si quieres conservarlos, pídeme que los aplique sobre la versión ${vigente}; si no, dime qué cambiar y lo preparo sobre la versión ${vigente}.`
+export const avisoAjustePublicado = (numero: number, vigente: number) =>
+  numero === vigente
+    ? `Ese borrador ya está guardado como la versión ${numero}; este ajuste parte de ella.`
+    : `Ese borrador ya está guardado como la versión ${numero}; este ajuste parte de la versión vigente (${vigente}).`
 
 // Hoja de evaluación de la versión EXACTA publicada (planeacion_versiones.
 // hoja_id). Si es la vigente y su PDF quedó pendiente, se completa con el
@@ -109,6 +173,7 @@ export async function aprobarAjusteSiCorresponde(
     return completarHojaConGenerador(sb, sesion.docente_id, perfil, zonaHoraria)(ps)
   })
   const yaPublicada = async (numero: number): Promise<ResultadoAprobacionAjuste> => {
+    await marcarAjustePublicado(sb, conversacionId, ajuste.huella, numero)
     const h = await hojaDeVersion(sb, sesion.docente_id, planeacion.id, numero, completar, true)
     return { codigo: 'VERSION_YA_PUBLICADA', mensaje: `${mensajeYaPublicada(planeacion.nombre, numero)}${h.aviso}`, numero, hoja: h.hoja }
   }
@@ -157,8 +222,11 @@ export async function aprobarAjusteSiCorresponde(
     console.error(`[PLANEACION_VERSION] publicación no completada: ${r.estado}`)
     return { codigo: 'ERROR_GUARDADO', mensaje: MENSAJE_ERROR }
   }
-  // La conversación queda referida a la versión recién publicada (los ajustes registrados se conservan).
+  // La conversación queda referida a la versión recién publicada; el
+  // borrador conserva su identidad marcado como publicado (ya no es un
+  // ajuste pendiente).
   await guardarReferenciaPlaneacion(sb, conversacionId, { planeacionId: planeacion.id, numero: r.numero, opciones: [] })
+  await marcarAjustePublicado(sb, conversacionId, ajuste.huella, r.numero)
   let codigoHoja: string | null = null
   if (r.hoja?.estado === 'reemplazada' && r.hoja.id) {
     const { data: hoja } = await sb.from('hojas_evaluacion').select('identificador_visible').eq('id', r.hoja.id).maybeSingle()
@@ -171,7 +239,7 @@ export async function aprobarAjusteSiCorresponde(
   return {
     codigo: 'VERSION_PUBLICADA',
     numero: r.numero,
-    mensaje: `Listo: guardé «${planeacion.nombre}» como versión ${r.numero}. La versión ${ajuste.versionBase} y las anteriores se conservan para consulta.${aviso ? ` ${aviso}` : ''}${r.pdfHoja === 'pendiente' ? '' : h.aviso}`,
+    mensaje: `${PREFIJO_VERSION_PUBLICADA}${planeacion.nombre}» como versión ${r.numero}. La versión ${ajuste.versionBase} y las anteriores se conservan para consulta.${aviso ? ` ${aviso}` : ''}${r.pdfHoja === 'pendiente' ? '' : h.aviso}`,
     hoja: h.hoja,
   }
 }

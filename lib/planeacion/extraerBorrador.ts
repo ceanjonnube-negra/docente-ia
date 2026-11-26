@@ -155,6 +155,33 @@ export function tieneBloqueResumen(historial: { role: string; content: string }[
 // seleccionarBorradorVigente reconozca "esta planeación ya se guardó".
 export const PREFIJO_CONFIRMACION_APROBACION = 'Listo, guardé la planeación de '
 
+// Hito 2 — ciclo de vida de un borrador de AJUSTE de una planeación
+// guardada (módulo puro: lo usan el servidor y el cliente). La línea del
+// resumen marca el borrador como ajuste; las confirmaciones dicen que ya
+// se publicó (primera vez o al recuperar la aprobación).
+export const ETIQUETA_AJUSTE = 'Ajuste de planeación guardada'
+export const PREFIJO_VERSION_PUBLICADA = 'Listo: guardé «'
+export const PREFIJO_VERSION_YA_PUBLICADA = 'Este ajuste ya está guardado como la versión '
+export const PREFIJO_PLANEACION_YA_GUARDADA = 'Esta planeación ya está guardada.'
+
+export function esBorradorDeAjuste(texto: string): boolean {
+  return new RegExp(`^${ETIQUETA_AJUSTE}:`, 'mi').test(texto)
+}
+
+// Versión GUARDADA mostrada por el servidor (consulta de planeaciones): su
+// pie "_Versión N[ de M][ (vigente)] · guardada el …_". Puede no ser la
+// vigente actual: se vuelve a pedir al servidor.
+const PIE_VERSION_GUARDADA = /^_Versión \d+(?: de \d+)?(?: \(vigente\))? · guardada el /m
+export function esVersionGuardadaMostrada(texto: string): boolean {
+  return PIE_VERSION_GUARDADA.test(texto)
+}
+
+// Respuesta que confirma que una planeación (o un ajuste) ya quedó guardada.
+export function esConfirmacionDePlaneacionGuardada(texto: string): boolean {
+  const t = texto.trimStart()
+  return [PREFIJO_CONFIRMACION_APROBACION, PREFIJO_VERSION_PUBLICADA, PREFIJO_VERSION_YA_PUBLICADA, PREFIJO_PLANEACION_YA_GUARDADA].some((p) => t.startsWith(p))
+}
+
 export type SeleccionBorrador =
   | { estado: 'listo'; resumen: ResumenBorrador; contenido: string }
   | { estado: 'sin_borrador' }

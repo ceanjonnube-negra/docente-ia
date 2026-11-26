@@ -13,10 +13,11 @@ import { MotorTextoClaude } from './motores/motorTextoClaude'
 import { ConexionCanceladaError, MotorOpenAIRealtime } from './motores/motorOpenAIRealtime'
 import { AVISO_ARCHIVO_LISTO, detectarFormatoExplicito, detectarHerramientaDocumento, detectarSolicitudVersion, destinoNombrado, esConsultaDocumentoActual, esDocumentoFormal, pideOperacionDocumento, respuestaAclaracionDocumento, respuestaAclaracionVersion, tituloNombraTipo, type SolicitudVersion, MENSAJE_ARCHIVO_SIN_SESION, esPedidoDocumentoNuevo, construirPromptEdicion, esEdicionConFormato, referenciaCompatibleConDocumento, identificadorDeDocumento, documentoTieneIdentificador, nombraOtroDocumento, refiereColeccionDeDocumentos, type FormatoEntrega, type TipoHerramienta } from './documentos'
 import { obtenerPerfilYSesion, type PerfilDocente } from './perfilDocente'
-import { obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { fechaISOHoy, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { esVerificacionCalendarioConImagen } from '@/lib/calendario/analisisCalendario'
 import { detectarAprobarPlaneacion } from '@/lib/planeacion/detectarAprobarPlaneacion'
 import { esBorradorPlaneacion } from '@/lib/planeacion/extraerBorrador'
+import { consultaPlaneacionEnServidor } from '@/lib/planeacion/detectarConsultaPlaneacion'
 import {
   cargarConversacionPorId,
   combinarConversaciones,
@@ -1850,6 +1851,10 @@ class AsistenteServiceImpl {
     // de forma segura (P2a), así que se responde sin llamar a la IA, sin
     // generar archivos y sin tocar el documento activo.
     const solicitudVersion = detectarSolicitudVersion(limpio)
+    // Consulta de una planeación GUARDADA: la resuelve el servidor con su
+    // versión vigente (ver esConsultaPlaneacionGuardada); ningún camino
+    // local de documentos o versiones la atiende.
+    const consultaGuardada = this.esConsultaPlaneacionGuardada(limpio)
     // Respuesta a una aclaración sobre versiones que sigue vigente (P2c):
     // completa la acción original sin repetir la solicitud.
     const aclarada = await this.responderAclaracion(limpio, adjunto)
@@ -1862,10 +1867,10 @@ class AsistenteServiceImpl {
     // disponible, por vínculos explícitos (seleccionarVersion). Convertir o
     // editar una versión anterior, lo ambiguo y lo que no tiene documento
     // activo siguen con la respuesta segura de P2a.
-    if ((solicitudVersion?.accion === 'restaurar' || solicitudVersion?.accion === 'consultar') && this.documentoActivo && !this.documentoActivo.noRecuperado) {
+    if (!consultaGuardada && (solicitudVersion?.accion === 'restaurar' || solicitudVersion?.accion === 'consultar') && this.documentoActivo && !this.documentoActivo.noRecuperado) {
       return (await this.atenderSolicitudVersion(limpio, solicitudVersion, adjunto)) ? 'enviado' : 'otra_conversacion'
     }
-    if (solicitudVersion) {
+    if (solicitudVersion && !consultaGuardada) {
       this.transcripcionParcial = ''
       this.mensajes = [
         ...this.mensajes,
@@ -1891,7 +1896,7 @@ class AsistenteServiceImpl {
     // examen activo trabaja sobre el citatorio, nunca sobre el examen.
     // Sin un tipo nombrado como destino, o si es el activo, todo sigue
     // igual.
-    if (!(adjuntos && adjuntos.length > 1) && !esVerificacionCalendarioConImagen(limpio, adjunto)) {
+    if (!consultaGuardada && !(adjuntos && adjuntos.length > 1) && !esVerificacionCalendarioConImagen(limpio, adjunto)) {
       const referido = await this.atenderDocumentoNombrado(limpio, adjunto, contextoSinVerificar)
       if (referido !== null) return referido
     }
@@ -1899,7 +1904,7 @@ class AsistenteServiceImpl {
     // Ver el documento actual ("Muéstrame el documento actual"): se muestra
     // la versión vigente (también una restaurada), igual que una consulta
     // de versiones, sin generar archivos ni llamar a la IA.
-    if (this.documentoActivo && !this.documentoActivo.noRecuperado && !adjunto && esConsultaDocumentoActual(limpio, this.documentoActivo.texto)) {
+    if (!consultaGuardada && this.documentoActivo && !this.documentoActivo.noRecuperado && !adjunto && esConsultaDocumentoActual(limpio, this.documentoActivo.texto)) {
       return (await this.mostrarDocumentoActual(limpio)) ? 'enviado' : 'otra_conversacion'
     }
 
@@ -2426,7 +2431,19 @@ class AsistenteServiceImpl {
     return documentoTieneIdentificador((mensaje ? contenidoDocumentoDe(mensaje) : null) ?? d.titulo ?? '', identificador)
   }
 
+  // Consulta de una planeación GUARDADA ("Muéstrame la planeación de
+  // cuentos propios", "¿qué planeaciones trabajé en noviembre?"): va como
+  // mensaje normal y el servidor la resuelve con la versión VIGENTE, sin
+  // IA ni el documento local (ver consultaPlaneacionEnServidor).
+  private esConsultaPlaneacionGuardada(limpio: string): boolean {
+    const activo = this.documentoActivo
+    const i = activo ? this.mensajes.findIndex((m) => m.id === activo.id) : -1
+    const posteriores = i === -1 ? [] : this.mensajes.slice(i + 1).filter((m) => m.rol === 'asistente').map((m) => m.texto)
+    return consultaPlaneacionEnServidor(limpio, fechaISOHoy(obtenerZonaHorariaDispositivo()), activo?.texto ?? null, posteriores)
+  }
+
   private trabajaSobreDocumentoActivo(limpio: string): boolean {
+    if (this.esConsultaPlaneacionGuardada(limpio)) return false
     const documento = this.documentoActivo
     // Un documento identificado por su nombre que no es el activo ("la
     // planeación de las leyendas" con otra abierta), o una pregunta sobre

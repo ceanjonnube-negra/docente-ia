@@ -23,7 +23,7 @@
 
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ETIQUETA_INICIO_BLOQUE, extraerResumenBorrador, type ResumenBorrador } from './extraerBorrador'
+import { ETIQUETA_AJUSTE, ETIQUETA_INICIO_BLOQUE, extraerResumenBorrador, type ResumenBorrador } from './extraerBorrador'
 import type { Planeacion } from './tipos'
 
 // ------------------------------------------------------------------
@@ -190,7 +190,7 @@ function fijarCampo(bloque: string, etiqueta: string, valor: string): string {
 // ------------------------------------------------------------------
 // Borrador ajustado
 // ------------------------------------------------------------------
-export const ETIQUETA_AJUSTE = 'Ajuste de planeación guardada'
+export { ETIQUETA_AJUSTE }
 
 export type AjusteCalculado = {
   textoFinal: string
@@ -349,7 +349,11 @@ ${resumenBase}`
 // ("…y dámela en Word"); se conserva para entregarlo sobre la versión
 // aprobada sin que tenga que repetirlo.
 export type FormatoAjuste = 'word' | 'pdf'
-export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string; formatoSolicitado?: FormatoAjuste | null }
+// publicadoComo: número de la versión con que se publicó este borrador. Un
+// borrador publicado conserva su identidad (para recuperar la aprobación
+// sin duplicados), pero ya no es un ajuste pendiente: no se continúa ni se
+// vuelve a publicar.
+export type AjusteRegistrado = { planeacionId: string; versionBase: number; grupoId: string; huella: string; creadoEn: string; formatoSolicitado?: FormatoAjuste | null; publicadoComo?: number | null }
 export const MAXIMO_AJUSTES_REGISTRADOS = 20
 
 // Huella del DOCUMENTO del borrador: hasta su línea de ajuste (el mensaje
@@ -370,13 +374,26 @@ export function ajustesDe(referencia: unknown): AjusteRegistrado[] {
 // Registra el borrador ajustado en la referencia de la conversación
 // (conserva el resto del objeto). Mejor esfuerzo: la línea del resumen
 // sigue protegiendo el borrador si esto falla.
-export async function registrarAjuste(sb: SupabaseClient, conversacionId: string | null, ajuste: Omit<AjusteRegistrado, 'creadoEn'>): Promise<void> {
+export async function registrarAjuste(sb: SupabaseClient, conversacionId: string | null, ajuste: Omit<AjusteRegistrado, 'creadoEn' | 'publicadoComo'>): Promise<void> {
   if (!conversacionId) return
   const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
   const actual = ((data as { planeacion_activa?: Record<string, unknown> | null } | null)?.planeacion_activa ?? {}) as Record<string, unknown>
   const ajustes = [...ajustesDe(actual).filter((a) => a.huella !== ajuste.huella), { ...ajuste, creadoEn: new Date().toISOString() }].slice(-MAXIMO_AJUSTES_REGISTRADOS)
   const { error } = await sb.from('conversaciones_chat').update({ planeacion_activa: { ...actual, ajustes } }).eq('id', conversacionId)
   if (error) console.error('[PLANEACION_AJUSTE] no se pudo registrar el ajuste en la conversación:', error.message)
+}
+
+// Marca el borrador como publicado (versión numero): deja de ser un ajuste
+// pendiente y conserva su identidad. Mejor esfuerzo: si falla, el ciclo de
+// vida lo sigue reconociendo por la clave de la versión publicada.
+export async function marcarAjustePublicado(sb: SupabaseClient, conversacionId: string | null, huella: string, numero: number): Promise<void> {
+  if (!conversacionId) return
+  const { data } = await sb.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacionId).maybeSingle()
+  const actual = ((data as { planeacion_activa?: Record<string, unknown> | null } | null)?.planeacion_activa ?? {}) as Record<string, unknown>
+  const ajustes = ajustesDe(actual)
+  if (!ajustes.some((a) => a.huella === huella && a.publicadoComo !== numero)) return
+  const { error } = await sb.from('conversaciones_chat').update({ planeacion_activa: { ...actual, ajustes: ajustes.map((a) => (a.huella === huella ? { ...a, publicadoComo: numero } : a)) } }).eq('id', conversacionId)
+  if (error) console.error('[PLANEACION_AJUSTE] no se pudo marcar el ajuste como publicado:', error.message)
 }
 
 // ¿Este borrador es un ajuste de una planeación guardada? Por la metadata
@@ -417,6 +434,14 @@ export async function continuarAjuste(sb: SupabaseClient, conversacionId: string
     console.warn('[PLANEACION_AJUSTE] borrador de ajuste sin metadata registrada: no será publicable')
     return soloLinea
   }
+  // Solo un ajuste PENDIENTE sobre la versión vigente se sigue corrigiendo:
+  // uno ya publicado o con la base obsoleta nunca hereda una identidad
+  // publicable (/api/chat los atiende antes, con la versión canónica).
+  const { data: vigente } = await sb.from('planeaciones').select('version').eq('id', origen.planeacionId).maybeSingle()
+  if (origen.publicadoComo || (vigente as { version?: number } | null)?.version !== origen.versionBase) {
+    console.warn('[PLANEACION_AJUSTE] el borrador previo ya no es un ajuste pendiente de la versión vigente: no será publicable')
+    return soloLinea
+  }
   const base = await baseDeVersion(sb, origen.planeacionId, origen.grupoId, origen.versionBase)
   const resumenPrevio = extraerResumenBorrador([{ role: 'assistant', content: textoPrevio }])
   const ajustado = base && resumenPrevio
@@ -455,9 +480,11 @@ export async function anotarFormatoDelAjuste(sb: SupabaseClient, conversacionId:
   if (error) console.error('[PLANEACION_AJUSTE] no se pudo anotar el formato pedido:', error.message)
 }
 
-// Identidad CONFIABLE para publicar (etapa 3b): solo la metadata del
+// Identidad CONFIABLE del borrador (etapa 3b): solo la metadata del
 // servidor (huella registrada). La línea del resumen nunca basta: sin
-// metadata, no se publica (falla de forma segura).
+// metadata, no se publica (falla de forma segura). Devuelve también un
+// borrador ya publicado (publicadoComo): su estado lo decide
+// cicloDelAjuste (aprobarAjuste.ts) contra la versión canónica.
 export function ajustePublicable(contenido: string, referencia: unknown): AjusteRegistrado | null {
   const huella = huellaBorrador(contenido)
   return ajustesDe(referencia).find((a) => a.huella === huella) ?? null

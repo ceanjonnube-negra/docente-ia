@@ -247,10 +247,15 @@ async function main() {
       '7b. Paso 2: otra planeación por su nombre tiene prioridad sobre el documento activo — va al servidor como mensaje normal (ni consulta local, ni edición, ni archivo)')
     // Las demás intenciones sobre el documento activo no cambian.
     chat.documentoActivo = { id: consulta.m.id, texto: CUENTOS }
-    const actual = await pedir('Muéstrame la planeación de cuentos propios')
+    // Hito 2 (ciclo de vida): una planeación GUARDADA nombrada se consulta
+    // siempre en el servidor (versión vigente, sin IA), aunque sea el
+    // documento activo: la copia local pudo quedar desactualizada.
+    const actual = await pedir('Muéstrame la planeación de cuentos propios', { texto: CUENTOS })
+    verificar(actual.resultado === 'enviado' && llamadas.length === 1 && !llamadas[0].edicion && !llamadas[0].finalizar && llamadas[0].texto === 'Muéstrame la planeación de cuentos propios' && actual.m.texto === CUENTOS,
+      '7c. Una planeación guardada por su nombre, aunque sea el documento activo: la consulta va al servidor como mensaje normal (versión vigente)')
     const actualSinNombre = await pedir('Muéstrame la planeación')
-    verificar(llamadas.length === 0 && actual.m.texto === 'Este es el documento actual; lo resalté más arriba.' && actualSinNombre.m.texto === 'Este es el documento actual; lo resalté más arriba.',
-      '7c. Mostrar el documento actual (por su propio nombre o solo por su tipo): local, sin IA')
+    verificar(llamadas.length === 0 && actualSinNombre.m.texto === 'Este es el documento actual; lo resalté más arriba.',
+      '7c2. Mostrar el documento actual solo por su tipo: local, sin IA')
     interno.documentoFinalizandoId = null
     await pedir('Dame el Word')
     verificar(llamadas.length === 1 && llamadas[0].finalizar?.tipo === 'word' && llamadas[0].finalizar.documentoTexto === CUENTOS, '7d. Recuperar un archivo del documento actual: sigue siendo del documento activo (el servidor entrega su original)')

@@ -35,7 +35,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { mensajeGrupoNoDisponible, type SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
-import { extraerResumenBorrador, seleccionarBorradorVigente, type ResumenBorrador } from './extraerBorrador'
+import { extraerResumenBorrador, seleccionarBorradorVigente, PREFIJO_PLANEACION_YA_GUARDADA, type ResumenBorrador } from './extraerBorrador'
 import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, resolverPeriodoPorFechaInicio, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
@@ -235,7 +235,7 @@ export function construirIndicadoresSeguimiento(resumen: ResumenBorrador): Indic
 // ------------------------------------------------------------------
 const DURACION_CONCESION_MS = 2 * 60 * 1000
 const MENSAJE_EN_PROCESO = 'Ya estoy guardando esta planeación. En unos segundos aparecerá en Planeación; si no, vuelve a pedírmelo.'
-const MENSAJE_YA_GUARDADA = 'Esta planeación ya está guardada. La encuentras en Planeación, Evaluación e Historial.'
+const MENSAJE_YA_GUARDADA = `${PREFIJO_PLANEACION_YA_GUARDADA} La encuentras en Planeación, Evaluación e Historial.`
 export const MENSAJE_NO_PERSISTIDO = 'Todavía estoy guardando esta conversación. Vuelve a pedirme que la apruebe en unos segundos.'
 const COLUMNAS_PLANEACION_APROBADA = 'id, docente_id, grupo_id, ciclo_escolar_id, periodo_evaluacion_id, nombre, proposito, fecha_inicio, fecha_fin, estado, version, creado_en, actualizado_en'
 

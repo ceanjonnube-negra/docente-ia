@@ -3,13 +3,14 @@ import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
-import { aprobarAjusteSiCorresponde } from '@/lib/planeacion/aprobarAjuste'
+import { aprobarAjusteSiCorresponde, avisoAjustePublicado, cicloDelAjuste, mensajeAjusteObsoleto, ordenAprobarDesdeEdicion } from '@/lib/planeacion/aprobarAjuste'
 import { ajusteDesdeConsultada, anotarFormatoPendiente, decidirEdicionGuardada, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
 import { ajustePublicable, anotarFormatoDelAjuste, baseDeVersion, estructuraDesdeResumen, sinPeticionDeFormato, soloPideFormato, type AjusteRegistrado, type FormatoAjuste, type ReferenciaAjuste } from '@/lib/planeacion/modificarPlaneacion'
 import { MENSAJE_AJUSTE_SIN_IDENTIDAD } from '@/lib/planeacion/aprobarAjuste'
 import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorradorAjustado, contextoParaAjuste, continuarAjuste, huellaBorrador, registrarAjuste, ETIQUETA_AJUSTE, type BaseAjuste } from '@/lib/planeacion/modificarPlaneacion'
 import { contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
-import { MARCADOR_DOCUMENTO_RECUPERADO, documentoDeEdicion } from '@/lib/asistente/documentos'
+import { MARCADOR_DOCUMENTO_RECUPERADO, documentoDeEdicion, esConsultaDocumentoActual } from '@/lib/asistente/documentos'
+import { resolverConsultaContextual } from '@/lib/planeacion/consultaContextual'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -601,7 +602,13 @@ export async function POST(req: NextRequest) {
   // formato, el del historial): ajuste determinista con el último borrador
   // confiable como referencia (identidad por metadata del servidor).
   let continuacionAjuste: { previo: string; origen: AjusteRegistrado; instruccion: string } | null = null
-  if (supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
+  // Aviso del ciclo de vida para el borrador de este turno (p. ej. el
+  // documento activo era un borrador ya publicado): va en avisoBase.
+  let avisoCicloAjuste: string | null = null
+  // Orden inequívoca de aprobar enviada como edición del documento activo:
+  // es la orden, no una edición (ver ordenAprobarDesdeEdicion). Sin IA.
+  const ordenAprobarEnEdicion = !!esEdicionDocumento && ordenAprobarDesdeEdicion(String(mensaje ?? ''), historialMensajes)
+  if (!ordenAprobarEnEdicion && supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
     const instruccionCompuesta = esEdicionDocumento ? instruccionDeEdicion(String(mensaje ?? '')) ?? '' : String(mensaje ?? '')
     const previoAjuste = esEdicionDocumento
       ? documentoDeEdicion(String(mensaje ?? ''))
@@ -613,16 +620,33 @@ export async function POST(req: NextRequest) {
       const { data: conv } = conversacion ? await supabaseUser.from('conversaciones_chat').select('planeacion_activa').eq('id', conversacion).maybeSingle() : { data: null }
       const origen = ajustePublicable(previoAjuste, (conv as { planeacion_activa?: unknown } | null)?.planeacion_activa ?? null)
       if (!origen) return respuestaTexto(MENSAJE_AJUSTE_SIN_IDENTIDAD)
-      if (!pideCambio) {
+      // La versión canónica prevalece sobre el borrador local: uno ya
+      // publicado no se continúa (el cambio parte de la versión vigente) y
+      // uno pendiente con la base obsoleta se informa, sin combinar ni
+      // descartar sus cambios.
+      const ciclo = await cicloDelAjuste(supabaseUser, userId, origen)
+      console.log(`[PLANEACION_AJUSTE] borrador previo: ${ciclo.estado}${ciclo.estado === 'sin_planeacion' ? '' : ` (base ${origen.versionBase}, vigente ${ciclo.vigente})`}`)
+      if (ciclo.estado === 'sin_planeacion') return respuestaTexto(MENSAJE_AJUSTE_SIN_IDENTIDAD)
+      if (ciclo.estado === 'obsoleto') return respuestaTexto(mensajeAjusteObsoleto(ciclo.nombre, origen.versionBase, ciclo.vigente))
+      if (ciclo.estado === 'publicado') {
+        // Pedir un cambio: ajuste nuevo sobre la versión vigente. Pedir solo
+        // el archivo: lo atiende la planeación consultada (su original).
+        if (pideCambio) {
+          ajusteDesdeEdicion = { planeacionId: origen.planeacionId, instruccion: sinPeticionDeFormato(instruccionCompuesta) || instruccionCompuesta }
+          formatoDelAjuste = formatoOriginal
+          avisoCicloAjuste = avisoAjustePublicado(ciclo.numero, ciclo.vigente)
+        }
+      } else if (!pideCambio) {
         // Solo pidió el archivo de un ajuste aún no aprobado: se anota el formato.
         if (formatoOriginal) await anotarFormatoDelAjuste(supabaseUser, conversacion, origen.huella, formatoOriginal)
         return respuestaTexto(`Este ajuste todavía no está guardado. Revísalo y, si está bien, dime «apruébala» para guardarlo como versión ${origen.versionBase + 1}${formatoOriginal ? `; tomé nota de que lo quieres en ${formatoOriginal === 'word' ? 'Word' : 'PDF'}` : ''}.`)
+      } else {
+        continuacionAjuste = { previo: previoAjuste, origen, instruccion: sinPeticionDeFormato(instruccionCompuesta) || instruccionCompuesta }
+        formatoDelAjuste = formatoOriginal
       }
-      continuacionAjuste = { previo: previoAjuste, origen, instruccion: sinPeticionDeFormato(instruccionCompuesta) || instruccionCompuesta }
-      formatoDelAjuste = formatoOriginal
     }
   }
-  if (!continuacionAjuste && supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
+  if (!ordenAprobarEnEdicion && !continuacionAjuste && !ajusteDesdeEdicion && supabaseUser && userId && (esEdicionDocumento || formatoOriginal)) {
     const textoDocumento = typeof finalizarArchivo?.documentoTexto === 'string' ? `${String(mensaje ?? '')}\n${finalizarArchivo.documentoTexto}` : String(mensaje ?? '')
     const consultada = await versionConsultada(supabaseUser, await conversacionPropia())
     if (consultada && contieneContenidoConsultado(textoDocumento, consultada)) {
@@ -965,9 +989,11 @@ export async function POST(req: NextRequest) {
       // conversación: mismo detector que el cliente (ver
       // detectarAprobarPlaneacion) y sin pasar por el modelo — ver
       // clasificacionAprobarPlaneacion.
-      const ordenAprobarPlaneacion = !esEdicionDocumento && detectarAprobarPlaneacion(String(mensaje ?? ''), {
+      // Desde el documento activo, la orden ya se decidió arriba (ordenAprobarEnEdicion).
+      const ordenAprobarPlaneacion = esEdicionDocumento ? ordenAprobarEnEdicion : detectarAprobarPlaneacion(String(mensaje ?? ''), {
         hayBorradorPlaneacion: historialMensajes.some((h) => h.role === 'assistant' && esBorradorPlaneacion(h.content)),
       })
+      if (ordenAprobarEnEdicion) console.log('[PLANEACION_APROBAR] orden de aprobación desde el documento activo — sin clasificador')
       // Ajuste de una planeación GUARDADA (Hito 2, etapa 3a): el referente
       // se resuelve aquí, sin clasificador — instrucción pendiente de una
       // aclaración ("la 2", "sí"), edición de la planeación consultada o
@@ -996,7 +1022,7 @@ export async function POST(req: NextRequest) {
         if (resolucion?.tipo === 'ajuste') {
           const base = await baseVigente(supabaseUser, resolucion.planeacion)
           if (!base) return respuestaTexto(`«${resolucion.planeacion.nombre}» es una planeación anterior y no tengo su texto completo guardado, así que no puedo ajustarla con seguridad.`)
-          const avisoBase = resolucion.numeroConsultado !== null && resolucion.numeroConsultado !== base.numero ? `Estabas viendo la versión ${resolucion.numeroConsultado}; el ajuste parte de la versión vigente (${base.numero}).` : null
+          const avisoBase = avisoCicloAjuste ?? (resolucion.numeroConsultado !== null && resolucion.numeroConsultado !== base.numero ? `Estabas viendo la versión ${resolucion.numeroConsultado}; el ajuste parte de la versión vigente (${base.numero}).` : null)
           ajusteDelTurno = { base, instruccion: resolucion.instruccion, avisoBase, conversacionId: conversacionAjuste, formato: formatoDelAjuste ?? resolucion.formato ?? null }
           await guardarReferenciaPlaneacion(supabaseUser, conversacionAjuste, { planeacionId: base.planeacion.id, numero: base.numero, opciones: [] })
           // El modelo recibe SOLO la instrucción; la base va en el contexto (nunca el texto del cliente).
@@ -1022,6 +1048,14 @@ export async function POST(req: NextRequest) {
         const referencia = await leerReferenciaPlaneacion(supabaseUser, await conversacionPropia())
         const aplica = consultaPlaneacion.tipo === 'seleccion' ? (referencia?.opciones.length ?? 0) > 0 : !!referencia?.planeacionId
         if (!aplica) consultaPlaneacion = null
+      }
+      // Sin nombrarla ("Muéstrame la planeación", "Enséñamela"): la planeación
+      // guardada de esta conversación (planeacion_activa), en su versión
+      // vigente; con un ajuste realmente pendiente, se aclara. Sin IA.
+      if (!consultaPlaneacion && textoConsulta !== null && !ordenAprobarPlaneacion && !ajusteDelTurno && esConsultaDocumentoActual(textoConsulta)) {
+        const contextual = await resolverConsultaContextual(supabaseUser, userId, await conversacionPropia(), historialMensajes)
+        if (contextual?.tipo === 'aclaracion') return respuestaTexto(contextual.texto)
+        if (contextual?.tipo === 'vigente') consultaPlaneacion = { tipo: 'version', version: 'vigente' }
       }
       const clasificacion = ajusteDelTurno
         ? clasificacionAjustePlaneacion()
