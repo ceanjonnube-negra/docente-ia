@@ -121,3 +121,72 @@ export function recuperarArchivo(referencia: ReferenciaArchivoOriginal, modo: Mo
     enviarRecuperacion(referencia, modo, token)
   })
 }
+
+// ------------------------------------------------------------------
+// Word/PDF de una versión de planeación (pestaña Planeación, Hito 2 5b).
+// La ruta resuelve el archivo EXACTO de la versión (o lo genera una sola
+// vez si se pidió generar) y el original se entrega por la misma
+// recuperación autenticada de arriba. Sin IA.
+// ------------------------------------------------------------------
+export type FormatoVersionArchivo = 'word' | 'pdf'
+export type ResultadoArchivoVersionCliente =
+  | { estado: 'archivo'; archivoId: string; generado: boolean }
+  | { estado: 'en_proceso' | 'inexistente' | 'sin_archivo' | 'error' | 'sesion' | 'no_disponible' }
+
+const ESTADOS_CLIENTE = new Set(['en_proceso', 'inexistente', 'sin_archivo', 'error', 'sesion', 'no_disponible'])
+
+// Si otra solicitud (otro dispositivo o un toque repetido) ya lo está
+// preparando, espera y vuelve a preguntar: nunca genera en paralelo.
+export async function pedirArchivoDeVersion(
+  versionId: string,
+  formato: FormatoVersionArchivo,
+  opciones: { token: string; soloExistente: boolean; solicitar?: typeof fetch; esperar?: (ms: number) => Promise<void>; intentos?: number }
+): Promise<ResultadoArchivoVersionCliente> {
+  const solicitar = opciones.solicitar ?? fetch
+  const esperar = opciones.esperar ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  const intentos = opciones.intentos ?? 8
+  let zonaHoraria: string | undefined
+  try { zonaHoraria = Intl.DateTimeFormat().resolvedOptions().timeZone } catch { zonaHoraria = undefined }
+  for (let i = 0; i < intentos; i++) {
+    let json: { estado?: string; archivoId?: string; generado?: boolean }
+    try {
+      const res = await solicitar(`/api/planeaciones/versiones/${encodeURIComponent(versionId)}/archivo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opciones.token}` },
+        body: JSON.stringify({ formato, soloExistente: opciones.soloExistente, zonaHoraria }),
+      })
+      json = await res.json()
+    } catch {
+      return { estado: 'error' }
+    }
+    if (json.estado === 'archivo' && json.archivoId) return { estado: 'archivo', archivoId: json.archivoId, generado: json.generado === true }
+    if (json.estado === 'en_proceso' && i < intentos - 1) { await esperar(2500); continue }
+    return { estado: ESTADOS_CLIENTE.has(json.estado ?? '') ? (json.estado as Exclude<ResultadoArchivoVersionCliente['estado'], 'archivo'>) : 'error' }
+  }
+  return { estado: 'en_proceso' }
+}
+
+// Ver o Descargar el original de la versión (nunca genera). La ventana de
+// "Ver" se abre en el mismo toque (Safari en iPhone bloquea window.open
+// después de un await) y se cierra si no hay archivo que mostrar.
+export function recuperarArchivoDeVersion(versionId: string, formato: FormatoVersionArchivo, modo: ModoRecuperacion, alTerminar: (r: ResultadoArchivoVersionCliente) => void) {
+  const nombreVentana = modo === 'ver' ? `archivo-${Date.now()}` : undefined
+  const ventana = nombreVentana ? window.open('', nombreVentana) : null
+  if (nombreVentana && !ventana) { alTerminar({ estado: 'error' }); return }
+  void (async () => {
+    const token = await tokenSesionVigente()
+    if (!token) { ventana?.close(); alTerminar({ estado: 'sesion' }); return }
+    const r = await pedirArchivoDeVersion(versionId, formato, { token, soloExistente: true })
+    if (r.estado !== 'archivo') { ventana?.close(); alTerminar(r); return }
+    enviarRecuperacion({ archivoId: r.archivoId }, modo, token, nombreVentana)
+    alTerminar(r)
+  })()
+}
+
+// Generar el Word/PDF que le falta a la versión (una sola vez, desde su
+// snapshot canónico, con la infraestructura de la etapa 4).
+export async function generarArchivoDeVersion(versionId: string, formato: FormatoVersionArchivo): Promise<ResultadoArchivoVersionCliente> {
+  const token = await tokenSesionVigente()
+  if (!token) return { estado: 'sesion' }
+  return pedirArchivoDeVersion(versionId, formato, { token, soloExistente: false })
+}

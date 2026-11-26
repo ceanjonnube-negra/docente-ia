@@ -41,6 +41,12 @@ export function clasificarArchivo(registro?: RegistroArchivoSolicitado): { clase
 
 let clienteRegistro: SupabaseClient | null = null
 
+// Cliente del servidor (service role) del registro de archivos: el mismo
+// que reserva y liga los Word/PDF de una versión (archivosVersion.ts).
+export function clienteServidorArchivos(): SupabaseClient {
+  return cliente()
+}
+
 function cliente(): SupabaseClient {
   if (!clienteRegistro) {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL

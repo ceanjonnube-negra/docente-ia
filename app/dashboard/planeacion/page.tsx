@@ -207,6 +207,10 @@ function VistaDetalle({ sesion, planeacionId, onVolver }: { sesion: Sesion; plan
         onSeleccionarVersion={(n) => { setNumero(n); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
         estadosHoja={estados}
         evaluacionDistinta={distintas[version.id] ?? null}
+        onArchivoGenerado={(versionId, formato) => setDetalle((d) => d && {
+          ...d,
+          versiones: d.versiones.map((v) => (v.id === versionId ? { ...v, ...(formato === 'word' ? { tieneWord: true } : { tienePdf: true }) } : v)),
+        })}
       />
     </div>
   )

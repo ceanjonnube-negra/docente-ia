@@ -9,6 +9,7 @@ import type { EstadoCapturaHoja } from '@/lib/seguimiento/estadoCapturaHoja'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import { ORIGEN_VERSION, campoFormativoDe, rangoFechas, sesionesDe, textoSesiones, type DetallePlaneacion as Detalle, type VersionDetalle } from '@/lib/planeacion/vistaPlaneacion'
 import ContenidoVersion from './ContenidoVersion'
+import DocumentoVersion from './DocumentoVersion'
 import { EstadoEvaluacion, InsigniaVersion } from './TarjetaPlaneacion'
 import { IconoCalendario, IconoCampo, IconoDocumento, IconoHistorial, IconoHoja, IconoSesiones, IconoSiguiente } from './Iconos'
 
@@ -23,24 +24,13 @@ function Seccion({ titulo, icono, children }: { titulo: string; icono: React.Rea
   )
 }
 
-function Archivo({ formato, disponible }: { formato: 'Word' | 'PDF'; disponible: boolean }) {
-  return (
-    <div className="flex-1 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5 flex items-center gap-2.5">
-      <IconoDocumento className={`w-5 h-5 flex-shrink-0 ${disponible ? 'text-green-700' : 'text-gray-400'}`} />
-      <div className="min-w-0">
-        <p className="text-sm font-semibold text-gray-900">{formato}</p>
-        <p className={`text-[11px] ${disponible ? 'text-green-700' : 'text-gray-500'}`}>{disponible ? 'Original guardado' : 'Aún no generado'}</p>
-      </div>
-    </div>
-  )
-}
-
 export default function DetallePlaneacion({
   detalle,
   version,
   onSeleccionarVersion,
   estadosHoja,
   evaluacionDistinta,
+  onArchivoGenerado,
 }: {
   detalle: Detalle
   version: VersionDetalle
@@ -48,6 +38,8 @@ export default function DetallePlaneacion({
   estadosHoja: Record<string, EstadoCapturaHoja>
   // Hoja con capturas o resultados cuyos criterios difieren de los de esta versión.
   evaluacionDistinta: string | null
+  // Un Word/PDF recién generado para esta versión (la vista lo marca disponible).
+  onArchivoGenerado: (versionId: string, formato: 'word' | 'pdf') => void
 }) {
   const vigente = version.numero === detalle.versionVigente
   const fechas = rangoFechas(detalle.fechaInicio, detalle.fechaFin)
@@ -84,8 +76,8 @@ export default function DetallePlaneacion({
 
       <Seccion titulo="Documentos" icono={<IconoDocumento className="w-4 h-4" />}>
         <div className="flex gap-2">
-          <Archivo formato="Word" disponible={version.tieneWord} />
-          <Archivo formato="PDF" disponible={version.tienePdf} />
+          <DocumentoVersion key={`${version.id}-word`} versionId={version.id} formato="word" disponible={version.tieneWord} onGenerado={() => onArchivoGenerado(version.id, 'word')} />
+          <DocumentoVersion key={`${version.id}-pdf`} versionId={version.id} formato="pdf" disponible={version.tienePdf} onGenerado={() => onArchivoGenerado(version.id, 'pdf')} />
         </div>
       </Seccion>
 

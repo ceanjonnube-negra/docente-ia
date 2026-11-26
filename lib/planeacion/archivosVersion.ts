@@ -64,6 +64,8 @@ export type ResultadoArchivoVersion =
   | { tipo: 'archivo'; formato: FormatoVersion; numero: number; archivo: ArchivoDeVersion; generado: boolean }
   | { tipo: 'en_proceso'; formato: FormatoVersion; numero: number }
   | { tipo: 'inexistente'; formato: FormatoVersion; numero: number }
+  // Solo con soloExistente: la versión aún no tiene ese archivo (no se genera).
+  | { tipo: 'sin_archivo'; formato: FormatoVersion; numero: number }
   | { tipo: 'error'; formato: FormatoVersion; numero: number | null }
 
 export type DependenciasArchivoVersion = {
@@ -84,7 +86,9 @@ type Rpc = { resultado: string; archivo_id?: string; ejecucion_id?: string }
 
 export async function obtenerArchivoDeVersion(
   deps: DependenciasArchivoVersion,
-  entrada: { sb: SupabaseClient; docenteId: string; versionId: string; formato: FormatoVersion; zonaHoraria: string | null }
+  // soloExistente: recuperar el original si existe, sin generar nunca
+  // (Ver/Descargar de la pestaña Planeación).
+  entrada: { sb: SupabaseClient; docenteId: string; versionId: string; formato: FormatoVersion; zonaHoraria: string | null; soloExistente?: boolean }
 ): Promise<ResultadoArchivoVersion> {
   const { sb, docenteId, versionId, formato } = entrada
   const version = await leerVersion(sb, versionId)
@@ -97,6 +101,7 @@ export async function obtenerArchivoDeVersion(
   }
   const ligado = formato === 'word' ? version.documento_word_archivo_id : version.documento_pdf_archivo_id
   if (ligado) return original(ligado)
+  if (entrada.soloExistente) return { tipo: 'sin_archivo', formato, numero }
   if (!version.contenido?.trim()) return { tipo: 'error', formato, numero }
 
   const reserva = (await deps.servidor.rpc('reservar_archivo_version', { p_docente_id: docenteId, p_version_id: versionId, p_formato: formato })).data as Rpc | null

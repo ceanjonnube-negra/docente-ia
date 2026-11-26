@@ -22,7 +22,6 @@ import * as documentoVersion from '../lib/planeacion/documentoVersion'
 import * as archivosVersion from '../lib/planeacion/archivosVersion'
 import { COLOR_ESTADO_HOJA, ETIQUETA_ESTADO_HOJA } from '../lib/seguimiento/etiquetasEstadoHoja'
 import ContenidoVersion from '../components/Planeacion/ContenidoVersion'
-import DetallePlaneacion from '../components/Planeacion/DetallePlaneacion'
 import ListaPlaneaciones from '../components/Planeacion/ListaPlaneaciones'
 import { analizarContenido } from '../lib/documentGen/parseContenido'
 
@@ -101,6 +100,11 @@ function cliente(bd: Bd, docente: string) {
 }
 
 async function main() {
+  // El detalle incluye las acciones de documentos (5b), que cargan el cliente
+  // de Supabase del navegador: variables ficticias, nunca un backend real.
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||= 'http://127.0.0.1:9'
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||= 'sin-clave-pruebas'
+  const { default: DetallePlaneacion } = await import('../components/Planeacion/DetallePlaneacion')
   console.log('== 1. Presentación')
   verificar(rangoFechas('2026-11-24', '2026-11-30') === '24 – 30 nov' && rangoFechas('2026-11-24', '2026-12-07') === '24 nov – 7 dic'
     && rangoFechas('2026-12-28', '2027-01-09') === '28 dic 2026 – 9 ene 2027' && rangoFechas('2026-11-24', null) === '24 nov' && rangoFechas(null, null) === null,
@@ -194,13 +198,15 @@ async function main() {
     const bd = base()
     const { sb } = cliente(bd, A)
     const d = (await cargarDetallePlaneacion(sb, G1, 'p1'))!
-    const historica = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[1]} onSeleccionarVersion={() => {}} estadosHoja={{ pr1: 'confirmado' }} evaluacionDistinta="SG-3UAA" />)
+    const historica = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[1]} onSeleccionarVersion={() => {}} estadosHoja={{ pr1: 'confirmado' }} evaluacionDistinta="SG-3UAA" onArchivoGenerado={() => {}} />)
     verificar(historica.includes('Versión histórica · solo consulta. La vigente es la 4.') && historica.includes('Indicador v2') && !historica.includes('Indicador canónico v4'), '3d. Versión histórica: se consulta su propio contenido, marcada como histórica')
     verificar(historica.includes('href="/dashboard/evaluacion?proyecto=pr1"') && historica.includes('Resultados registrados') && historica.includes('SG-3UAA conserva sus criterios originales'),
       '3e. Hoja asociada con estado real, enlace al proyecto exacto y aviso de criterios originales')
-    const botones = [...historica.matchAll(/<button[^>]*>/g)].length
-    verificar(!/Aprobar|Guardar|Eliminar|Hacer vigente|Restaurar|Editar/i.test(historica) && botones === d.versiones.length, '3f. Solo consulta: los únicos botones eligen versión (nada se vuelve vigente ni se sobrescribe)')
-    const vigente = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[0]} onSeleccionarVersion={() => {}} estadosHoja={{}} evaluacionDistinta={null} />)
+    // 5b: además de elegir versión, solo hay acciones de documentos (Ver, Descargar, Generar).
+    const etiquetas = [...historica.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]).filter((t) => !/^(Ver|Descargar|Generar (Word|PDF))$/.test(t))
+    verificar(!/Aprobar|Guardar|Eliminar|Hacer vigente|Restaurar|Editar/i.test(historica) && [...historica.matchAll(/aria-current|<li><button/g)].length >= d.versiones.length && etiquetas.every((t) => t === ''),
+      '3f. Consulta: elegir versión y acciones de documentos; nada se vuelve vigente ni se sobrescribe')
+    const vigente = renderToStaticMarkup(<DetallePlaneacion detalle={d} version={d.versiones[0]} onSeleccionarVersion={() => {}} estadosHoja={{}} evaluacionDistinta={null} onArchivoGenerado={() => {}} />)
     verificar(vigente.includes('Versión 4 · vigente') && !vigente.includes('Versión histórica') && vigente.includes('Original guardado') && vigente.includes('Aún no generado') && vigente.includes('Lenguajes +1') && vigente.includes('6 sesiones'), '3g. Versión vigente: Word/PDF con disponibilidad real y datos de su estructura')
     const lista = renderToStaticMarkup(<ListaPlaneaciones planeaciones={await cargarResumenPlaneaciones(sb, G1)} estados={{ pr1: 'confirmado' }} onAbrir={() => {}} />)
     verificar(lista.indexOf('Diciembre 2026') < lista.indexOf('Noviembre 2026') && lista.includes('Versión 4') && lista.includes('SG-3UAA') && lista.includes('2 planeaciones'), '3h. Lista por mes con versión vigente y evaluación')
