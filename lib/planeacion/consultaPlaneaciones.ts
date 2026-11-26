@@ -181,6 +181,31 @@ async function planeacionesDelGrupo(sb: SupabaseClient, grupoId: string): Promis
   return r.datos
 }
 
+// Versión de una planeación guardada pedida por su nombre (en el grupo de la
+// conversación) o, sin nombre, la de la conversación (planeacion_activa):
+// la vigente por omisión o la que se pidió. Sin IA. null: no hay referente
+// (sigue el camino de siempre).
+export async function resolverVersionPedida(sb: SupabaseClient, entrada: { grupoId: string | null; conversacionId: string | null; nombre: string; version: VersionSolicitada | null }): Promise<{ tipo: 'version'; version: VersionPlaneacion; nombre: string } | { tipo: 'texto'; texto: string } | null> {
+  const referencia = await leerReferenciaPlaneacion(sb, entrada.conversacionId)
+  let planeacion: Planeacion | null = null
+  if (palabras(entrada.nombre).length > 0) {
+    if (!entrada.grupoId) return { tipo: 'texto', texto: 'Para buscar esa planeación necesito saber de qué grupo es. Ábrela desde Planeación o dime su nombre en una conversación del grupo.' }
+    const coincidencias = coincidenciasPorNombre(await planeacionesDelGrupo(sb, entrada.grupoId), entrada.nombre)
+    if (coincidencias.length === 0) return { tipo: 'texto', texto: `No encontré una planeación guardada llamada «${entrada.nombre}» en este grupo.` }
+    if (coincidencias.length > 1) return { tipo: 'texto', texto: `Encontré varias planeaciones con ese nombre: ${coincidencias.map((p) => `«${p.nombre}»`).join(', ')}. Dime cuál, con su nombre completo.` }
+    planeacion = coincidencias[0]
+  } else if (referencia?.planeacionId) {
+    const { data } = await sb.from('planeaciones').select('*').eq('id', referencia.planeacionId).maybeSingle()
+    planeacion = (data as Planeacion | null) ?? null
+  }
+  if (!planeacion) return null
+  const versiones = await versionesDePlaneacion(sb, planeacion.id)
+  const mostrada = referencia?.planeacionId === planeacion.id ? referencia.numero : null
+  const version = elegirVersion(versiones, planeacion.version, entrada.version, mostrada)
+  if (!version) return { tipo: 'texto', texto: `«${planeacion.nombre}» no tiene esa versión guardada.` }
+  return { tipo: 'version', version, nombre: planeacion.nombre ?? '' }
+}
+
 // Ajuste sobre una planeación ya identificada. Si el docente nombró una
 // versión que no es la vigente, se aclara (los ajustes parten siempre de la
 // vigente) antes de generar nada.
@@ -360,7 +385,7 @@ export function rangoLegible(p: { fecha_inicio: string | null; fecha_fin: string
   return `${f(p.fecha_inicio)} – ${f(p.fecha_fin)} ${anio}`
 }
 
-function marcador(archivo: Record<string, unknown>): string {
+export function marcador(archivo: Record<string, unknown>): string {
   return `[[DOCUMENTO_ARCHIVO:${Buffer.from(JSON.stringify(archivo), 'utf-8').toString('base64')}]]`
 }
 

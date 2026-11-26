@@ -18,6 +18,10 @@ import { TAMANO_MAXIMO_DESCARGA_PDF } from './descargaPdf'
 export type ClaseArchivo = 'conservar' | 'efimero'
 // Señal estructurada que un llamador puede pasar a ejecutarHerramientaDocumento.
 export type RegistroArchivoSolicitado = { clase: ClaseArchivo; conversacionId?: string | null }
+// Identidad de la ejecución que produce el Word/PDF de una versión de
+// planeación (reserva de planeacion_version_archivos). Se escribe en el
+// registro inicial y la base la valida al ligar el archivo a la versión.
+export type OrigenVersion = { versionId: string; formato: 'word' | 'pdf'; ejecucionId: string }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -81,7 +85,12 @@ export async function registrarArchivo(datos: {
   tamanoBytes: number
   clase: ClaseArchivo
   conversacionId: string | null
+  origenVersion?: OrigenVersion
 }): Promise<{ id: string; clase: ClaseArchivo }> {
+  const origen = datos.origenVersion
+  if (origen && (!UUID.test(origen.versionId) || !UUID.test(origen.ejecucionId) || (origen.formato !== 'word' && origen.formato !== 'pdf'))) {
+    throw new Error('Origen de versión inválido')
+  }
   // Id generado aquí: si una respuesta se pierde y se reintenta, el
   // mismo id choca (23505) y se reconoce el registro ya hecho.
   const id = crypto.randomUUID()
@@ -97,6 +106,8 @@ export async function registrarArchivo(datos: {
       tamano_bytes: datos.tamanoBytes,
       clase,
       conversacion_id: conversacionId,
+      // Solo los archivos de una versión llevan origen; los demás, sin cambio.
+      ...(origen ? { version_id: origen.versionId, version_formato: origen.formato, version_ejecucion_id: origen.ejecucionId } : {}),
     }
     const { error } = (await cliente().from('archivos_generados').insert(fila)) as { error: ErrorBD }
     if (!error) return { id, clase }
@@ -230,22 +241,45 @@ export async function recuperarArchivoPropio(docenteId: string, referencia: Refe
 // recuperarArchivoPropio — registro del docente, 'activo', en el bucket y
 // la carpeta del docente — sin descargarlo ni regenerarlo. null si no se
 // puede entregar.
-export async function enlacesArchivoPropio(docenteId: string, archivoId: string): Promise<{ nombre: string; url: string; urlVer: string } | null> {
-  if (!UUID.test(docenteId) || !UUID.test(archivoId)) return null
+// Enlaces NUEVOS (firmados en el momento: un enlace vencido nunca se
+// entrega) del original de un archivo propio, distinguiendo:
+// - 'inexistente': sin registro propio activo o sin el objeto en Storage
+//   (el archivo realmente ya no está; nunca se sustituye en silencio);
+// - 'error': falla pasajera al consultar o firmar (se puede reintentar).
+export type EnlacesArchivo =
+  | { estado: 'ok'; nombre: string; url: string; urlVer: string }
+  | { estado: 'inexistente' }
+  | { estado: 'error' }
+export async function estadoEnlacesArchivo(docenteId: string, archivoId: string): Promise<EnlacesArchivo> {
+  if (!UUID.test(docenteId) || !UUID.test(archivoId)) return { estado: 'inexistente' }
+  let fila: { docente_id: string; bucket: string; ruta: string; nombre: string; estado: string } | null
   try {
     const { data, error } = (await cliente()
       .from('archivos_generados')
       .select('docente_id, bucket, ruta, nombre, estado')
       .eq('id', archivoId)
       .eq('docente_id', docenteId)
-      .maybeSingle()) as { data: { docente_id: string; bucket: string; ruta: string; nombre: string; estado: string } | null; error: ErrorBD }
-    if (error || !data || data.docente_id !== docenteId || data.estado !== 'activo' || data.bucket !== BUCKET_DOCUMENTOS_GENERADOS) return null
-    if (!data.ruta.startsWith(`${docenteId}/`) || data.ruta.split('/').some((s) => s === '' || s === '.' || s === '..')) return null
-    const url = await crearUrlFirmada(cliente(), data.ruta, data.nombre, data.bucket)
-    const urlVer = await crearUrlFirmada(cliente(), data.ruta, undefined, data.bucket)
-    return { nombre: data.nombre, url, urlVer }
-  } catch (e) {
-    console.error('[REGISTRO_ARCHIVOS] no se pudieron firmar los enlaces del original:', mensajeDe(e))
-    return null
+      .maybeSingle()) as { data: typeof fila; error: ErrorBD }
+    if (error) return { estado: 'error' }
+    fila = data
+  } catch {
+    return { estado: 'error' }
   }
+  if (!fila || fila.docente_id !== docenteId || fila.estado !== 'activo' || fila.bucket !== BUCKET_DOCUMENTOS_GENERADOS) return { estado: 'inexistente' }
+  if (!fila.ruta.startsWith(`${docenteId}/`) || fila.ruta.split('/').some((s) => s === '' || s === '.' || s === '..')) return { estado: 'inexistente' }
+  try {
+    const url = await crearUrlFirmada(cliente(), fila.ruta, fila.nombre, fila.bucket)
+    const urlVer = await crearUrlFirmada(cliente(), fila.ruta, undefined, fila.bucket)
+    return { estado: 'ok', nombre: fila.nombre, url, urlVer }
+  } catch (e) {
+    // Storage responde "not found" cuando el objeto ya no existe.
+    if (/not[ _]?found|does not exist|no existe/i.test(mensajeDe(e))) return { estado: 'inexistente' }
+    console.error('[REGISTRO_ARCHIVOS] no se pudieron firmar los enlaces del original:', mensajeDe(e))
+    return { estado: 'error' }
+  }
+}
+
+export async function enlacesArchivoPropio(docenteId: string, archivoId: string): Promise<{ nombre: string; url: string; urlVer: string } | null> {
+  const r = await estadoEnlacesArchivo(docenteId, archivoId)
+  return r.estado === 'ok' ? { nombre: r.nombre, url: r.url, urlVer: r.urlVer } : null
 }

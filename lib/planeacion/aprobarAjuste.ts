@@ -34,7 +34,9 @@ export type CodigoAprobacionAjuste = 'VERSION_PUBLICADA' | 'VERSION_YA_PUBLICADA
 // hoja: tarjeta de la hoja de evaluación de la versión publicada (la misma
 // si se conservó, la nueva si se reemplazó; reemplazada después → solo
 // consulta). Sin hoja o con su PDF pendiente, no hay tarjeta.
-export type ResultadoAprobacionAjuste = { codigo: CodigoAprobacionAjuste; mensaje: string; numero?: number; hoja?: HojaAprobacion | null }
+// versionId/formatoSolicitado: la versión publicada (o recuperada) y el
+// archivo que el docente pidió junto con el ajuste (se entrega al aprobar).
+export type ResultadoAprobacionAjuste = { codigo: CodigoAprobacionAjuste; mensaje: string; numero?: number; hoja?: HojaAprobacion | null; versionId?: string; formatoSolicitado?: 'word' | 'pdf' | null }
 
 export const MENSAJE_AJUSTE_SIN_IDENTIDAD = 'No puedo confirmar de qué versión guardada viene este ajuste, así que no lo guardo. Pídeme de nuevo el cambio sobre la planeación y lo preparo otra vez.'
 const MENSAJE_ERROR = 'No pude guardar la nueva versión en este momento; la planeación sigue como estaba. Intenta de nuevo en unos segundos.'
@@ -175,7 +177,8 @@ export async function aprobarAjusteSiCorresponde(
   const yaPublicada = async (numero: number): Promise<ResultadoAprobacionAjuste> => {
     await marcarAjustePublicado(sb, conversacionId, ajuste.huella, numero)
     const h = await hojaDeVersion(sb, sesion.docente_id, planeacion.id, numero, completar, true)
-    return { codigo: 'VERSION_YA_PUBLICADA', mensaje: `${mensajeYaPublicada(planeacion.nombre, numero)}${h.aviso}`, numero, hoja: h.hoja }
+    const { data: v } = await sb.from('planeacion_versiones').select('id').eq('planeacion_id', planeacion.id).eq('numero', numero).maybeSingle()
+    return { codigo: 'VERSION_YA_PUBLICADA', mensaje: `${mensajeYaPublicada(planeacion.nombre, numero)}${h.aviso}`, numero, hoja: h.hoja, versionId: (v as { id?: string } | null)?.id, formatoSolicitado: ajuste.formatoSolicitado ?? null }
   }
 
   const clave = await resolverIdentidadBorrador(sb, conversacionId, contenido)
@@ -239,6 +242,8 @@ export async function aprobarAjusteSiCorresponde(
   return {
     codigo: 'VERSION_PUBLICADA',
     numero: r.numero,
+    versionId: r.versionId,
+    formatoSolicitado: ajuste.formatoSolicitado ?? null,
     mensaje: `${PREFIJO_VERSION_PUBLICADA}${planeacion.nombre}» como versión ${r.numero}. La versión ${ajuste.versionBase} y las anteriores se conservan para consulta.${aviso ? ` ${aviso}` : ''}${r.pdfHoja === 'pendiente' ? '' : h.aviso}`,
     hoja: h.hoja,
   }

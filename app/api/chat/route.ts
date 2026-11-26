@@ -4,14 +4,16 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { aprobarAjusteSiCorresponde, avisoAjustePublicado, cicloDelAjuste, mensajeAjusteObsoleto, ordenAprobarDesdeEdicion } from '@/lib/planeacion/aprobarAjuste'
-import { ajusteDesdeConsultada, anotarFormatoPendiente, decidirEdicionGuardada, guardarReferenciaPlaneacion, resolverAjustePendiente, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
+import { ajusteDesdeConsultada, anotarFormatoPendiente, decidirEdicionGuardada, guardarReferenciaPlaneacion, resolverAjustePendiente, resolverVersionPedida, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
 import { ajustePublicable, anotarFormatoDelAjuste, baseDeVersion, estructuraDesdeResumen, sinPeticionDeFormato, soloPideFormato, type AjusteRegistrado, type FormatoAjuste, type ReferenciaAjuste } from '@/lib/planeacion/modificarPlaneacion'
 import { MENSAJE_AJUSTE_SIN_IDENTIDAD } from '@/lib/planeacion/aprobarAjuste'
 import { alcanceDeInstruccion, mencionaCurricular, baseVigente, construirBorradorAjustado, contextoParaAjuste, continuarAjuste, huellaBorrador, registrarAjuste, ETIQUETA_AJUSTE, type BaseAjuste } from '@/lib/planeacion/modificarPlaneacion'
-import { contieneContenidoConsultado, detectarConsultaPlaneacion, firmarOriginalPropio, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, respuestaArchivoOriginal, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
+import { contieneContenidoConsultado, detectarConsultaPlaneacion, leerReferenciaPlaneacion, pideModificar, resolverModificacionGuardada, ultimaRespuestaEsPregunta, versionConsultada } from '@/lib/planeacion/consultaPlaneaciones'
 import { MARCADOR_DOCUMENTO_RECUPERADO, documentoDeEdicion, esConsultaDocumentoActual } from '@/lib/asistente/documentos'
 import { resolverConsultaContextual } from '@/lib/planeacion/consultaContextual'
 import { conTurnoDuradero } from '@/lib/chat/turnosChat'
+import { archivoPedidoConAjuste, dependenciasArchivoVersion, obtenerArchivoDeVersion, respuestaArchivoVersion } from '@/lib/planeacion/archivosVersion'
+import { pedidoArchivoPlaneacion } from '@/lib/planeacion/detectarConsultaPlaneacion'
 import { mensajeGrupoNoDisponible, obtenerSesionContexto, textoGrupoAcademico } from '@/lib/sesionContexto'
 import { leerVinculoConversacion, MENSAJE_CONVERSACION_ELIMINADA, type VinculoConversacion } from '@/lib/vinculoConversacion'
 import { autenticarRequestApi } from '@/lib/server/authApi'
@@ -675,8 +677,11 @@ async function atenderChat(req: NextRequest) {
       else if (decision === 'nuevo') return respuestaTexto('Tienes abierta una planeación guardada. Si quieres un documento nuevo, pídemelo como algo nuevo (por ejemplo: «Haz una planeación nueva de…»); si es un cambio para esta planeación, dime qué cambiar.')
       else if (decision === 'otro_tema' || (decision === 'archivo' && !formatoOriginal)) return respuestaTexto('No me queda claro si es un cambio para la planeación que tienes abierta. Si quieres modificarla, dime qué cambiar (por ejemplo: «Haz más dinámica la sesión 2»).')
       if (formatoOriginal && !ajusteDesdeEdicion) {
-        console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} original de la versión ${consultada.numero} — sin regenerar`)
-        return respuestaTexto(`${await respuestaArchivoOriginal(consultada, formatoOriginal, firmarOriginalPropio(userId))}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
+        // Word/PDF de ESTA versión (etapa 4): su original si existe; si no,
+        // se genera una sola vez desde su snapshot canónico. Sin IA.
+        const archivo = await obtenerArchivoDeVersion(dependenciasArchivoVersion(supabaseRAG), { sb: supabaseUser, docenteId: userId, versionId: consultada.id, formato: formatoOriginal, zonaHoraria: zonaHoraria ?? null })
+        console.log(`[PLANEACION_CONSULTA] ${formatoOriginal} de la versión ${consultada.numero}: ${archivo.tipo}${archivo.tipo === 'archivo' ? (archivo.generado ? ' (generado)' : ' (original)') : ''} — sin IA`)
+        return respuestaTexto(`${respuestaArchivoVersion(archivo)}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
       }
     }
   }
@@ -699,6 +704,25 @@ async function atenderChat(req: NextRequest) {
   if (archivoSinSesion(tipoHerramientaSolicitado, userId)) {
     console.log(`[PIPELINE ${ETIQUETA_MODULO[tipoHerramientaSolicitado!]}:deteccion] archivo solicitado sin sesión — no se llama al modelo`)
     return respuestaTexto(MENSAJE_ARCHIVO_SIN_SESION)
+  }
+
+  // Word/PDF de una planeación GUARDADA pedido directamente ("Dame en PDF la
+  // planeación de cuentos propios", "…la versión 2"): la versión vigente o
+  // la pedida, desde su snapshot canónico, antes del camino de archivos
+  // (que redactaría o convertiría otro texto). Sin IA.
+  if (supabaseUser && userId && formatoOriginal && !esEdicionDocumento && !formatoDelAjuste && !continuacionAjuste && !ajusteDesdeEdicion && !ordenAprobarEnEdicion) {
+    const pedido = pedidoArchivoPlaneacion(String(mensaje ?? ''))
+    if (pedido) {
+      const vinculo = await vinculoConversacionPromise
+      const conversacion = vinculo.estado === 'con_grupo' || vinculo.estado === 'sin_grupo' || vinculo.estado === 'antigua' ? vinculo.id : null
+      const resuelta = await resolverVersionPedida(supabaseUser, { grupoId: vinculo.estado === 'con_grupo' ? vinculo.grupoId : null, conversacionId: conversacion, nombre: pedido.nombre, version: pedido.version })
+      if (resuelta?.tipo === 'texto') return respuestaTexto(resuelta.texto)
+      if (resuelta?.tipo === 'version') {
+        const archivo = await obtenerArchivoDeVersion(dependenciasArchivoVersion(supabaseRAG), { sb: supabaseUser, docenteId: userId, versionId: resuelta.version.id, formato: formatoOriginal, zonaHoraria: zonaHoraria ?? null })
+        console.log(`[PLANEACION_ARCHIVO] ${formatoOriginal} de la versión ${resuelta.version.numero}: ${archivo.tipo}${archivo.tipo === 'archivo' ? (archivo.generado ? ' (generado)' : ' (original)') : ''} — sin IA`)
+        return respuestaTexto(`${respuestaArchivoVersion(archivo)}\n${MARCADOR_DOCUMENTO_RECUPERADO}`)
+      }
+    }
   }
 
   if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento && !formatoDelAjuste) {
@@ -1295,7 +1319,7 @@ async function atenderChat(req: NextRequest) {
           const conversacionAprobacion = vinculoAprobacion.estado === 'con_grupo' || vinculoAprobacion.estado === 'sin_grupo' || vinculoAprobacion.estado === 'antigua' ? vinculoAprobacion.id : null
           // Hito 2 (3b): un borrador de ajuste se publica como versión N+1.
           const aprobacionAjuste = await aprobarAjusteSiCorresponde(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion, undefined, zonaHoraria)
-          if (aprobacionAjuste) return respuestaTexto(`${aprobacionAjuste.mensaje}${avisoHojaReemplazada(aprobacionAjuste.hoja)}${aprobacionAjuste.hoja ? `\n${marcadorHoja(aprobacionAjuste.hoja)}` : ''}`)
+          if (aprobacionAjuste) return respuestaTexto(`${aprobacionAjuste.mensaje}${avisoHojaReemplazada(aprobacionAjuste.hoja)}${aprobacionAjuste.hoja ? `\n${marcadorHoja(aprobacionAjuste.hoja)}` : ''}${await archivoPedidoConAjuste(aprobacionAjuste, { servidor: supabaseRAG, sb: supabaseUser, docenteId: userId, zonaHoraria: zonaHoraria ?? null })}`)
           const resultado = await aprobarBorradorPlaneacion(supabaseUser, sesion, historialMensajes, esEdicionDocumento ? '' : String(mensaje ?? ''), conversacionAprobacion)
           if (!resultado.ok) {
             console.log(`[NIVEL0] planeacion_generar — aprobación no completada (${resultado.codigo}): ${resultado.mensaje}`)

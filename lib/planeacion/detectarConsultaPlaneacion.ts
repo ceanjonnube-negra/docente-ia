@@ -198,3 +198,23 @@ export function consultaPlaneacionEnServidor(texto: string, hoy: string, documen
   }
   return !consulta && !!documentoActivo && esConsultaDocumentoActual(texto, documentoActivo) && esPlaneacionYaGuardada(documentoActivo, respuestasPosteriores)
 }
+
+// ------------------------------------------------------------------
+// Word o PDF de una planeación guardada ("Dame en PDF la planeación de
+// cuentos propios", "el Word de la versión 2 de la planeación"). El
+// formato lo decide quien llama; aquí solo el referente: nombre (o '' si
+// es la planeación de la conversación) y versión pedida. null si no es
+// sobre una planeación guardada (crear, modificar o aprobar sigue su camino).
+// ------------------------------------------------------------------
+// Sin nombre ni versión ("dame el Word de la planeación") sigue el camino
+// de siempre: el documento abierto puede ser un borrador sin aprobar.
+export function pedidoArchivoPlaneacion(texto: string): { nombre: string; version: VersionSolicitada | null } | null {
+  // "genera / prepárame el PDF de…" pide el archivo, no una planeación nueva.
+  const pideElArchivo = /\b(genera|generar|generame|prepara|preparar|preparame|hazme)\s+(?:el\s+|un\s+|en\s+)?(?:archivo\s+)?(?:en\s+)?(word|pdf)\b/.test(normalizar(texto))
+  const sinFormato = texto.replace(/\b(?:(?:en|a|como|el|un|su)\s+)?(?:(?:archivo|documento|formato)\s+(?:de\s+|en\s+)?)?(word|pdf)\b(?:\s+de)?/gi, ' ')
+  const n = normalizar(sinFormato)
+  if (!SUSTANTIVO.test(n) || (GENERAR.test(n) && !pideElArchivo) || MODIFICAR.test(n.replace(/^\s*hazme\b/, '')) || APROBAR.test(n)) return null
+  if (/\b(una|un|otra|otro|nueva|nuevo|ejemplo|ejemplos|modelo)\s+planeacion/.test(n)) return null
+  const pedido = { nombre: nombreTrasPlaneacion(sinFormato), version: versionEnTexto(n) }
+  return pedido.nombre || pedido.version !== null ? pedido : null
+}

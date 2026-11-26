@@ -330,7 +330,7 @@ async function main() {
     const r = await aprobar(bd, texto)
     verificar(r?.codigo === 'VERSION_PUBLICADA' && r.hoja === null && !r.mensaje.includes('hoja'), '8g. Sin evaluación vinculada: sin tarjeta ni aviso')
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    verificar(ruta.includes('if (aprobacionAjuste) return respuestaTexto(`${aprobacionAjuste.mensaje}${avisoHojaReemplazada(aprobacionAjuste.hoja)}${aprobacionAjuste.hoja ? `\\n${marcadorHoja(aprobacionAjuste.hoja)}` : \'\'}`)')
+    verificar(ruta.includes('if (aprobacionAjuste) return respuestaTexto(`${aprobacionAjuste.mensaje}${avisoHojaReemplazada(aprobacionAjuste.hoja)}${aprobacionAjuste.hoja ? `\\n${marcadorHoja(aprobacionAjuste.hoja)}` : \'\'}${await archivoPedidoConAjuste(aprobacionAjuste, ')
       && ruta.includes('if (hoja) marcadores.push(marcadorHoja(hoja))'), '8h. La ruta usa el mismo marcador de tarjeta (y aviso de hoja reemplazada) que la primera aprobación')
   }
 

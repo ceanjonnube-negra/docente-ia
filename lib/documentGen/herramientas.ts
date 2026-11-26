@@ -33,7 +33,7 @@ import { generarPdfBuffer, nombreArchivoPdf } from './generarPdfServidor'
 import { generarPptxBuffer, nombreArchivoPptx } from './generarPptxServidor'
 import { generarXlsxBuffer, nombreArchivoXlsx } from './generarXlsxServidor'
 import { subirBuffer, crearUrlFirmada, rutaArchivo, type ArchivoGenerado } from './almacenamiento'
-import { clasificarArchivo, confirmarArchivo, marcarArchivoFallido, registrarArchivo, type RegistroArchivoSolicitado } from './registroArchivos'
+import { clasificarArchivo, confirmarArchivo, marcarArchivoFallido, registrarArchivo, type OrigenVersion, type RegistroArchivoSolicitado } from './registroArchivos'
 import { extraerTitulo } from './parseContenido'
 
 export class HerramientaNoDisponibleError extends Error {}
@@ -122,7 +122,10 @@ export async function ejecutarHerramientaDocumento(
   // 3B-2A). Sin ella el archivo queda como 'conservar' (protegido); solo
   // una señal estructurada ({ clase: 'efimero', conversacionId }) lo hace
   // efímero, nunca el texto del documento (ver clasificarArchivo).
-  opciones?: { seccionesEsperadas?: number; registro?: RegistroArchivoSolicitado }
+  // sufijoNombre: se agrega al nombre del archivo antes de su extensión
+  // (p. ej. 'version_4' para el Word/PDF de una versión de planeación).
+  // origenVersion: identidad de la ejecución que lo produce (ver registroArchivos).
+  opciones?: { seccionesEsperadas?: number; registro?: RegistroArchivoSolicitado; sufijoNombre?: string; origenVersion?: OrigenVersion }
 ): Promise<ArchivoGenerado> {
   // Etapa 1 (detección de la intención) ya ocurrió antes de llegar aquí
   // — ver detectarHerramientaDocumento / FINALIZAR ARCHIVO en
@@ -153,6 +156,7 @@ export async function ejecutarHerramientaDocumento(
   let nombre: string
   try {
     ;({ buffer, nombre } = await medirEtapa(`${etiqueta}:conversion`, generadores[tipo]))
+    if (opciones?.sufijoNombre) nombre = nombre.replace(/(\.[a-z]+)$/i, `_${opciones.sufijoNombre}$1`)
   } catch {
     throw new ErrorHerramientaDocumento(`${etiqueta}-GEN`, `Fallo generando el archivo ${tipo}`)
   }
@@ -188,6 +192,7 @@ export async function ejecutarHerramientaDocumento(
       tipoMime: CONTENT_TYPES[tipo],
       tamanoBytes: buffer.length,
       ...clasificarArchivo(opciones?.registro),
+      ...(opciones?.origenVersion ? { origenVersion: opciones.origenVersion } : {}),
     })))
   } catch (err) {
     console.error(`[REGISTRO] ${etiqueta} — no se pudo registrar ${nombre} (no se sube):`, err)

@@ -250,7 +250,7 @@ async function main() {
     verificar(/ultimaRespuestaEsPregunta\(historialMensajes\)/.test(ruta) && /referencia\?\.opciones\.length/.test(ruta), '8b. "la 2" solo tras la pregunta de elegir y con opciones guardadas')
     const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) || instruccion }')
     const iConversion = ruta.indexOf('if (supabaseUser && userId && tipoHerramientaSolicitado && !esEdicionDocumento && !formatoDelAjuste) {')
-    verificar(iGuard > 0 && iGuard < iConversion && /respuestaArchivoOriginal\(consultada, formatoOriginal, firmarOriginalPropio/.test(ruta), '8c. Modificar (como ajuste sobre su base canónica) o convertir la planeación consultada se resuelve antes de editar o regenerar')
+    verificar(iGuard > 0 && iGuard < iConversion && /obtenerArchivoDeVersion\(dependenciasArchivoVersion\(supabaseRAG\), \{ sb: supabaseUser, docenteId: userId, versionId: consultada\.id, formato: formatoOriginal/.test(ruta), '8c. Modificar (como ajuste sobre su base canónica) o convertir la planeación consultada se resuelve antes de editar o regenerar')
     const herramienta = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'herramientasModulo.ts'), 'utf-8')
     verificar(/versionesDePlaneacion\(ctx\.sb, p\.id\)/.test(herramienta) && !/planeacion_proyectos/.test(herramienta) && !/obtenerPlaneacionPorId/.test(herramienta), '8d. La consulta lee planeacion_versiones, nunca la proyección')
   }
@@ -359,7 +359,7 @@ ${MARCADOR_DOCUMENTO_RECUPERADO}` // lo que añade la ruta a toda consulta
     verificar(extraerMarcadorRecuperado(servidor('hola')).texto === 'hola' && !extraerMarcadorRecuperado(servidor(sinArchivos.texto)).texto.includes('[['.concat('DOCUMENTO_RECUPERADO')), '10c. El marcador nunca se muestra')
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     const motor = readFileSync(join(__dirname, '..', 'lib', 'asistente', 'motores', 'motorTextoClaude.ts'), 'utf-8')
-    verificar(ruta.includes("intencion_principal === 'planeacion_consultar' ? `${respuestaDeModulo}\\n${MARCADOR_DOCUMENTO_RECUPERADO}`") && ruta.includes('firmarOriginalPropio(userId))}\\n${MARCADOR_DOCUMENTO_RECUPERADO}`')
+    verificar(ruta.includes("intencion_principal === 'planeacion_consultar' ? `${respuestaDeModulo}\\n${MARCADOR_DOCUMENTO_RECUPERADO}`") && (ruta.match(/respuestaArchivoVersion\(archivo\)\}\\n\$\{MARCADOR_DOCUMENTO_RECUPERADO\}`/g) ?? []).length === 2
       && motor.includes('documentoParaHistorial(respuestaLimpia, { contenidoOriginal, archivos, recuperado })') && motor.indexOf('extraerMarcadorRecuperado(respuesta)') < motor.indexOf('extraerTextoFinal(respuestaSinRecuperado)'),
       '10d. La ruta marca toda consulta y entrega de originales; el cliente lo respeta antes de decidir el Historial')
   }
