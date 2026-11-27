@@ -10,6 +10,8 @@
 
 import { Document, Paragraph, TextRun, Header, AlignmentType, ShadingType, BorderStyle, Table, TableRow, TableCell, WidthType } from 'docx'
 import { agregarFirmaAutomatica, prepararEncabezado } from './encabezadoDocumento'
+import { esPlaneacionDidactica } from './maquetaDocumento'
+import { construirWordPlaneacion } from './wordPlaneacion'
 
 const preprocesarTexto = (texto: string): string[] => {
   return texto
@@ -96,6 +98,9 @@ const generarTablaAlumnos = (lineas: string[]): Table => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function construirDocumentoWord(texto: string, perfil?: any, zonaHoraria?: string | null): Document {
   const enc = prepararEncabezado(perfil, zonaHoraria)
+  // Planeación didáctica: misma maqueta e identidad visual que el PDF.
+  // Los demás documentos siguen exactamente igual.
+  if (esPlaneacionDidactica(texto)) return construirWordPlaneacion(texto, enc, agregarFirmaAutomatica(texto, enc))
 
   // Encabezado institucional — UNO solo, siempre igual, nunca lo
   // escribe la IA en el cuerpo (ver regla 9 de MODO DOCUMENTO en

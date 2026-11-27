@@ -18,31 +18,10 @@
 
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib'
 import { analizarContenido } from './parseContenido'
+import { quitarEmoji, sanearParaWinAnsi } from './textoPdf'
+import { esPlaneacionDidactica } from './maquetaDocumento'
+import { generarPdfPlaneacion } from './pdfPlaneacion'
 import { agregarFirmaAutomatica, prepararEncabezado, quitarDuplicadosInstitucionales } from './encabezadoDocumento'
-
-// Igual que en el motor anterior: los emoji del formato MODO DOCUMENTO
-// (📋, 🎯, 📅...) no tienen glifo en las fuentes estándar — se quitan
-// del texto visible antes de dibujar nada.
-function quitarEmoji(texto: string): string {
-  return texto.replace(/\p{Extended_Pictographic}/gu, '').replace(/\s{2,}/g, ' ').trim()
-}
-
-// Las fuentes estándar de pdf-lib codifican con WinAnsi (cp1252), que
-// cubre todos los acentos y la ñ del español, pero no cualquier
-// símbolo Unicode que el modelo pudiera colar (flechas, viñetas
-// exóticas, etc.) — drawText lanzaría una excepción real ante un
-// carácter no codificable. Se normalizan los signos tipográficos más
-// comunes a su equivalente ASCII y se descarta cualquier otro carácter
-// fuera de ASCII imprimible + Latin-1 (acentos/ñ/ü), en vez de arriesgar
-// que una comilla rara tumbe la generación completa del documento.
-function sanearParaWinAnsi(texto: string): string {
-  return texto
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/[^\x20-\x7E -ÿ]/g, '')
-}
 
 // "EQUIPO 1", "EQUIPO 2"... — nunca se dibuja con caracteres Unicode de
 // caja (━), que las fuentes estándar de pdf-lib no pueden codificar; en
@@ -92,6 +71,9 @@ export async function generarPdfBuffer(texto: string, perfil: any, zonaHoraria: 
   // El encabezado institucional lo agrega el documento: se quitan sus
   // duplicados inequívocos del texto (ver encabezadoDocumento.ts).
   texto = quitarDuplicadosInstitucionales(texto, enc)
+  // Planeación didáctica: composición editorial compartida (maqueta y
+  // paginación por bloques). Los demás documentos siguen igual que siempre.
+  if (esPlaneacionDidactica(texto)) return Buffer.from((await generarPdfPlaneacion(texto, enc, agregarFirmaAutomatica(texto, enc))).bytes)
   const pdfDoc = await PDFDocument.create()
   const fuentes: Fuentes = {
     regular: await pdfDoc.embedFont(StandardFonts.Helvetica),

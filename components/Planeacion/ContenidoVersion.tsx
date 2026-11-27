@@ -8,73 +8,10 @@
 
 import { analizarContenido, type LineaDocumento } from '@/lib/documentGen/parseContenido'
 import { textoDocumentoVersion } from '@/lib/planeacion/documentoVersion'
+import { EMOJI_INICIAL, ETIQUETA, agrupar, estructurarSesion, sinEmoji, type Sesion } from '@/lib/documentGen/maquetaDocumento'
 
-const EMOJI_INICIAL = /^[\p{Extended_Pictographic}\u{1F300}-\u{1FAFF}\u{2190}-\u{2BFF}\uFE0F\s]+/u
-const ETIQUETA = /^([A-Za-zÁÉÍÓÚÑÜáéíóúñü ]{3,40}):\s+(.+)$/
-const SESION = /^D[IÍ]A\s+(\d+)\s*(?:[—–-]\s*)?(.*)$/i
-const FECHA = /^Fecha(?:\s+estimada)?:\s+(.+)$/i
-const EVALUACION = /^Evaluaci[oó]n:\s+(.+)$/i
-const MOMENTO_SIN_EMOJI = /^(Inicio|Desarrollo|Cierre)\b/i
-const MINUTOS = /^(.*?)\s*\((\d+)\s*min(?:utos)?\)\s*$/i
-const sinEmoji = (texto: string) => texto.replace(EMOJI_INICIAL, '').trim()
-
-// ------------------------------------------------------------------
-// Estructura (pura)
-// ------------------------------------------------------------------
-type Bloque = { titulo: string | null; lineas: LineaDocumento[] }
-
-function agrupar(lineas: LineaDocumento[]): Bloque[] {
-  const bloques: Bloque[] = [{ titulo: null, lineas: [] }]
-  for (const l of lineas) {
-    if (l.tipo === 'seccion') bloques.push({ titulo: sinEmoji(l.texto), lineas: [] })
-    else bloques[bloques.length - 1].lineas.push(l)
-  }
-  return bloques.filter((b) => b.titulo || b.lineas.length)
-}
-
-// "🔷 Inicio (15 min)", "🔶 Desarrollo — Actividad en equipos: … (35 min)":
-// momento de la sesión. Con emoji: línea corta, con sus minutos o que
-// empieza con Inicio/Desarrollo/Cierre. Sin emoji: solo Inicio/Desarrollo/
-// Cierre en una línea corta o con sus minutos (nunca un párrafo largo).
-function esMomento(l: LineaDocumento): boolean {
-  if (l.tipo !== 'parrafo') return false
-  const texto = sinEmoji(l.texto)
-  if (ETIQUETA.test(texto)) return false
-  const breve = texto.length <= 60 || MINUTOS.test(texto)
-  return EMOJI_INICIAL.test(l.texto) ? breve || MOMENTO_SIN_EMOJI.test(texto) : MOMENTO_SIN_EMOJI.test(texto) && breve
-}
-
-type Momento = { nombre: string; minutos: number | null; lineas: LineaDocumento[] }
-export type Sesion = {
-  numero: string
-  titulo: string
-  fecha: string | null
-  minutosTotales: number | null
-  antes: LineaDocumento[]
-  momentos: Momento[]
-  evaluaciones: string[]
-}
-
-export function estructurarSesion(titulo: string, lineas: LineaDocumento[]): Sesion | null {
-  const m = titulo.match(SESION)
-  if (!m) return null
-  const sesion: Sesion = { numero: m[1], titulo: m[2].trim(), fecha: null, minutosTotales: null, antes: [], momentos: [], evaluaciones: [] }
-  for (const l of lineas) {
-    const texto = sinEmoji(l.texto)
-    const fecha = l.tipo === 'parrafo' && sesion.fecha === null && sesion.momentos.length === 0 ? texto.match(FECHA) : null
-    const evaluacion = l.tipo === 'parrafo' ? texto.match(EVALUACION) : null
-    if (fecha) sesion.fecha = fecha[1]
-    else if (evaluacion) sesion.evaluaciones.push(evaluacion[1])
-    else if (esMomento(l)) {
-      const d = texto.match(MINUTOS)
-      sesion.momentos.push({ nombre: d ? d[1] : texto, minutos: d ? Number(d[2]) : null, lineas: [] })
-    } else if (sesion.momentos.length) sesion.momentos[sesion.momentos.length - 1].lineas.push(l)
-    else sesion.antes.push(l)
-  }
-  // Duración: solo si TODOS los momentos declaran sus minutos.
-  if (sesion.momentos.length && sesion.momentos.every((x) => x.minutos !== null)) sesion.minutosTotales = sesion.momentos.reduce((s, x) => s + (x.minutos ?? 0), 0)
-  return sesion
-}
+// Interpretación de sesiones compartida con los documentos (maquetaDocumento.ts).
+export { estructurarSesion, type Sesion }
 
 // ------------------------------------------------------------------
 // Presentación
