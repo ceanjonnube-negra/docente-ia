@@ -34,8 +34,11 @@ import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/Time
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
 import { COLOR_ESTADO_HOJA, ETIQUETA_ESTADO_HOJA } from '@/lib/seguimiento/etiquetasEstadoHoja'
+import { CODIGO_SIN_CAPTURA_AUTOMATICA } from '@/lib/seguimiento/capturaAutomatica'
 
-type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string } | null
+// admite_captura (GET /api/proyectos-seguimiento): false en una hoja histórica
+// sin registro de alumnos congelado — su estado es permanente, no se consulta.
+type HojaEmbebida = { identificador_visible: string; storage_path: string | null; generado_en: string; admite_captura?: boolean } | null
 
 type Proyecto = {
   id: string
@@ -99,6 +102,9 @@ export default function EvaluacionPage() {
   const [proyectos, setProyectos] = useState<Proyecto[]>([])
   const [estados, setEstados] = useState<Record<string, EstadoCapturaHoja>>({})
   const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
+  // Hojas que el servidor reconoció como sin captura automática (código
+  // estable de estado-captura), aunque el listado no lo indicara.
+  const [sinCapturaDetectada, setSinCapturaDetectada] = useState<Record<string, true>>({})
   const [seleccionado, setSeleccionado] = useState<string | null>(null)
   const [cargandoUrl, setCargandoUrl] = useState<string | null>(null)
   // Proyecto confirmado cuyos resultados están abiertos (solo lectura).
@@ -112,17 +118,28 @@ export default function EvaluacionPage() {
   // independiente, ej. desde la tarjeta del Chat) — pero a partir de
   // ahí, cualquier cambio real se refleja aquí vía onEstadoCambiado,
   // nunca repitiendo esta consulta.
+  // Una hoja histórica sin registro de alumnos congelado (admite_captura
+  // false) nunca se consulta: su estado es permanente.
   const cargarEstadosDe = useCallback(async (accessToken: string, lista: Proyecto[]) => {
     const resultados = await Promise.all(
-      lista.map(async (p) => {
-        const res = await fetch(`/api/proyectos-seguimiento/${p.id}/estado-captura`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        })
-        const json = await res.json()
-        if (!res.ok) return { id: p.id, estado: null, error: json.error as string | undefined }
-        return { id: p.id, estado: json.estado as EstadoCapturaHoja, error: undefined }
+      lista.filter((p) => p.hojas_evaluacion?.admite_captura !== false).map(async (p) => {
+        try {
+          const res = await fetch(`/api/proyectos-seguimiento/${p.id}/estado-captura`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          const json = await res.json()
+          if (!res.ok) return { id: p.id, estado: null, sinCaptura: json.codigo === CODIGO_SIN_CAPTURA_AUTOMATICA, error: json.error as string | undefined }
+          return { id: p.id, estado: json.estado as EstadoCapturaHoja, sinCaptura: false, error: undefined }
+        } catch {
+          return { id: p.id, estado: null, sinCaptura: false, error: 'No se pudo consultar el estado.' }
+        }
       })
     )
+    setSinCapturaDetectada((prev) => {
+      const siguiente = { ...prev }
+      for (const r of resultados) if (r.sinCaptura) siguiente[r.id] = true
+      return siguiente
+    })
     setEstados((prev) => {
       const siguiente = { ...prev }
       for (const r of resultados) if (r.estado) siguiente[r.id] = r.estado
@@ -130,7 +147,7 @@ export default function EvaluacionPage() {
     })
     setErroresEstado((prev) => {
       const siguiente = { ...prev }
-      for (const r of resultados) if (r.error) siguiente[r.id] = r.error
+      for (const r of resultados) if (r.error && !r.sinCaptura) siguiente[r.id] = r.error
       return siguiente
     })
   }, [])
@@ -255,6 +272,7 @@ export default function EvaluacionPage() {
         {proyectos.map((proyecto) => {
           const estado = estados[proyecto.id]
           const errorEstado = erroresEstado[proyecto.id]
+          const sinCaptura = proyecto.hojas_evaluacion?.admite_captura === false || !!sinCapturaDetectada[proyecto.id]
           const expandido = seleccionado === proyecto.id
           const fecha = proyecto.fecha_inicio ? formatearFecha(proyecto.fecha_inicio, obtenerZonaHorariaDispositivo()) : null
           const accion = estado ? ETIQUETA_ACCION[estado] : undefined
@@ -269,9 +287,10 @@ export default function EvaluacionPage() {
                   <p className="text-sm font-bold text-gray-900 truncate">{proyecto.nombre}</p>
                   <p className="text-xs text-gray-400">
                     {fecha}
-                    {fecha && (estado || errorEstado) ? ' · ' : ''}
+                    {fecha && (estado || errorEstado || sinCaptura) ? ' · ' : ''}
                     {estado && <span className={`font-medium ${COLOR_ESTADO[estado]}`}>{ETIQUETA_ESTADO[estado]}</span>}
-                    {!estado && errorEstado && <span className="font-medium text-amber-600">No disponible para captura automática</span>}
+                    {!estado && sinCaptura && <span className="font-medium text-amber-600">No disponible para captura automática</span>}
+                    {!estado && !sinCaptura && errorEstado && <span className="font-medium text-red-600">No se pudo consultar el estado</span>}
                   </p>
                 </div>
               </div>

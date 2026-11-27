@@ -155,7 +155,7 @@ function VistaLista({ sesion, onAbrir, onAbrirChat }: { sesion: Sesion; onAbrir:
       .then((lista) => {
         if (!vigente) return
         setPlaneaciones(lista)
-        const proyectos = lista.map((p) => p.hoja?.proyectoId).filter((x): x is string => !!x)
+        const proyectos = lista.map((p) => (p.hoja?.admiteCaptura ? p.hoja.proyectoId : null)).filter((x): x is string => !!x)
         if (proyectos.length) void cargarEstadosEvaluacion(sesion.token, proyectos).then((e) => { if (vigente) setEstados(e) })
       })
       .catch((e) => { if (vigente) setError(mensajeDe(e)) })
@@ -187,7 +187,7 @@ function VistaDetalle({ sesion, planeacionId, onVolver }: { sesion: Sesion; plan
         setDetalle(d)
         if (!d) return
         setNumero(d.versionVigente)
-        const proyectos = d.versiones.map((v) => v.hoja?.proyectoId).filter((x): x is string => !!x)
+        const proyectos = d.versiones.map((v) => (v.hoja?.admiteCaptura ? v.hoja.proyectoId : null)).filter((x): x is string => !!x)
         if (proyectos.length) void cargarEstadosEvaluacion(sesion.token, proyectos).then((e) => { if (vigente) setEstados(e) })
       })
       .catch((e) => { if (vigente) setError(mensajeDe(e)) })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { gzipSync } from 'node:zlib'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
+import { clasificacionAjustePlaneacion, clasificacionAprobarPlaneacion, clasificacionConsultaPlaneacion, clasificacionPreguntaPlaneacion, clasificarNivel0 } from '@/lib/clasificadorNivel0'
 import { aprobarAjusteSiCorresponde, avisoAjustePublicado, cicloDelAjuste, mensajeAjusteObsoleto, ordenAprobarDesdeEdicion } from '@/lib/planeacion/aprobarAjuste'
 import { ajusteDesdeConsultada, anotarFormatoPendiente, decidirEdicionGuardada, guardarReferenciaPlaneacion, resolverAjustePendiente, resolverVersionPedida, type ResolucionAjuste } from '@/lib/planeacion/consultaPlaneaciones'
 import { ajustePublicable, anotarFormatoDelAjuste, baseDeVersion, estructuraDesdeResumen, sinPeticionDeFormato, soloPideFormato, type AjusteRegistrado, type FormatoAjuste, type ReferenciaAjuste } from '@/lib/planeacion/modificarPlaneacion'
@@ -601,6 +601,9 @@ async function atenderChat(req: NextRequest) {
   // planeación consultada (p. ej. un cliente anterior): se atiende como
   // consulta, sin editar ni pasar por el clasificador.
   let consultaDesdeEdicion: string | null = null
+  // Pregunta sobre la planeación guardada abierta: se responde sobre el texto
+  // canónico de la versión consultada, nunca como edición ni ajuste.
+  let preguntaSobreVersion: { pregunta: string; numero: number; contenido: string | null } | null = null
   // Modificar la planeación consultada desde su documento activo (Hito 2,
   // etapa 3a): ajuste sobre su versión vigente, resuelto más abajo.
   let ajusteDesdeEdicion: { planeacionId: string; instruccion: string } | null = null
@@ -672,7 +675,10 @@ async function atenderChat(req: NextRequest) {
       if (decision === 'ajuste') {
         ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) || instruccion }
         formatoDelAjuste = formatoOriginal
-      } else if (decision === 'consulta' && !formatoOriginal) consultaDesdeEdicion = instruccion
+      } else if (decision === 'consulta' && !formatoOriginal) {
+        consultaDesdeEdicion = instruccion
+        preguntaSobreVersion = { pregunta: instruccion, numero: consultada.numero, contenido: consultada.contenido }
+      }
       else if (decision === 'negativa') return respuestaTexto('De acuerdo, la planeación queda como está.')
       else if (decision === 'nuevo') return respuestaTexto('Tienes abierta una planeación guardada. Si quieres un documento nuevo, pídemelo como algo nuevo (por ejemplo: «Haz una planeación nueva de…»); si es un cambio para esta planeación, dime qué cambiar.')
       else if (decision === 'otro_tema' || (decision === 'archivo' && !formatoOriginal)) return respuestaTexto('No me queda claro si es un cambio para la planeación que tienes abierta. Si quieres modificarla, dime qué cambiar (por ejemplo: «Haz más dinámica la sesión 2»).')
@@ -1090,13 +1096,25 @@ async function atenderChat(req: NextRequest) {
         if (contextual?.tipo === 'aclaracion') return respuestaTexto(contextual.texto)
         if (contextual?.tipo === 'vigente') consultaPlaneacion = { tipo: 'version', version: 'vigente' }
       }
+      // Pregunta sobre el contenido de la planeación abierta (no es consulta
+      // de planeaciones ni pide volver a mostrarla): el modelo recibe la
+      // pregunta y el texto canónico de la versión, nunca el prompt de edición.
+      const preguntaContenido = !consultaPlaneacion && !ajusteDelTurno && !ordenAprobarPlaneacion ? preguntaSobreVersion : null
+      if (preguntaContenido) {
+        mensajeConDocumento = preguntaContenido.contenido?.trim()
+          ? `${preguntaContenido.pregunta}\n\n[Pregunta sobre la planeación guardada que está abierta en esta conversación (versión ${preguntaContenido.numero}). Respóndela con base en su texto canónico, en prosa breve; no la reescribas ni la modifiques. Si la respuesta no está en el texto, dilo.]\n${preguntaContenido.contenido}`
+          : `${preguntaContenido.pregunta}\n\n[Pregunta sobre la planeación guardada que está abierta en esta conversación (versión ${preguntaContenido.numero}), de la que no hay texto completo guardado. Respóndela con lo que muestra la conversación, sin inventar ni modificar la planeación.]`
+        console.log(`[PLANEACION_CONSULTA] pregunta sobre la versión ${preguntaContenido.numero} — sin clasificador`)
+      }
       const clasificacion = ajusteDelTurno
         ? clasificacionAjustePlaneacion()
         : ordenAprobarPlaneacion
         ? clasificacionAprobarPlaneacion()
         : consultaPlaneacion
           ? clasificacionConsultaPlaneacion(consultaPlaneacion)
-          : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
+          : preguntaContenido
+            ? clasificacionPreguntaPlaneacion()
+            : await clasificarNivel0(mensaje, sesion, historialMensajes.slice(-4))
       if (consultaPlaneacion) console.log(`[PLANEACION_CONSULTA] determinista tipo=${consultaPlaneacion.tipo} — sin clasificador`)
       marcarTelemetria('intent:classification_finished')
       // Duración de una planeación expresada en sesiones, clases, días o

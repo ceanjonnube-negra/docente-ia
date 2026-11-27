@@ -237,6 +237,27 @@ export function esRespuestaDeCambio(mensaje: string, hoy: string): boolean {
   return pideModificar(mensaje) || RESPUESTA_CAMBIO.test(n)
 }
 
+// Pregunta o pedido de información sobre la planeación abierta («¿Cuál es
+// el producto final?», «Dime cuántas sesiones tiene», «¿Puedes explicarme
+// el cierre del día 2?»), nunca un cambio expresado como pregunta («¿Puedes
+// cambiar el cierre?», «¿Le agregas un juego?», «¿Y si la sesión 3 es al
+// aire libre?»). Se decide por la FORMA (pregunta o pedido de información)
+// y la ausencia de intención de cambio, no por una palabra aislada.
+const PREGUNTA_SIN_SIGNO = /^(cual|cuales|cuanto|cuanta|cuantos|cuantas|cuando|donde|quien|quienes|por que|para que|dime|dimelo|explicame|recuerdame|mencioname|resumeme|describeme|enumerame)\b/
+const PEDIDO_INFORMACION = /\b(decir|decirme|dime|explicar|explicarme|recordar|recordarme|mencionar|mencionarme|resumir|resumirme|describir|describirme|enumerar|aclarar|aclararme|leer|leerme)\b/
+const CORTESIA = /^(me |nos )?(puedes|podrias|podria|pudieras|quieres|quisieras|me ayudas a|nos ayudas a|ayudame a)\b/
+const SUGERENCIA = /^(y si|si|que tal si|seria bueno|crees que (podriamos|podemos|deberiamos|seria))\b/
+const CAMBIO_PEDIDO = /\b(agregas|anades|cambias|pones|quitas|haces|modificas|ajustas|incluyes|mejoras|simplificas|reduces|amplias|alargas|acortas|sustituyes|reemplazas|corriges|conviertes|eliminas|actualizas)\b/
+export function esPreguntaSobrePlaneacion(instruccion: string): boolean {
+  const n = normalizar(instruccion)
+  if (!n) return false
+  const pregunta = /[¿?]/.test(instruccion) || PREGUNTA_SIN_SIGNO.test(n)
+  if (!pregunta || pideModificar(instruccion) || CAMBIO_PEDIDO.test(n) || SUGERENCIA.test(n)) return false
+  return !CORTESIA.test(n) || PEDIDO_INFORMACION.test(n)
+}
+// Temas ajenos a la planeación abierta (preguntas sobre el grupo o la app).
+const TEMA_AJENO = /\b(alumnos? (falt|asist)|faltaron|faltas|asistencias?|pasa lista|incidencias?|calificaciones?|calendario escolar|recordatorios?)\b/
+
 // Edición (documento activo) cuyo texto es una planeación GUARDADA que el
 // servidor confirmó (versión consultada en esta conversación). El contexto
 // confirmado manda: es un AJUSTE salvo que sea una consulta, solo pida el
@@ -251,6 +272,14 @@ export function decidirEdicionGuardada(instruccion: string, opciones: { hoy: str
   if (NEGATIVA.test(n)) return 'negativa'
   if (GENERAR.test(n) && !PARTES_PLANEACION.test(n) && !SENALA_DOCUMENTO.test(n)) return 'nuevo'
   if (pideModificar(instruccion)) return 'ajuste'
+  // Una pregunta sobre la planeación abierta es una consulta de su texto
+  // canónico; una sobre otro tema (asistencia, el grupo…) no es de ella.
+  if (esPreguntaSobrePlaneacion(instruccion)) {
+    if (PARTES_PLANEACION.test(n) || SUSTANTIVO.test(n) || /\b(esta|este|aqui|el documento)\b/.test(n)) return 'consulta'
+    return NUEVO_TEMA.test(n) || TEMA_AJENO.test(n) ? 'otro_tema' : 'consulta'
+  }
+  // Pedido de cambio por cortesía («¿Podrías hacerla más dinámica?»).
+  if ((CORTESIA.test(n) || SUGERENCIA.test(n) || CAMBIO_PEDIDO.test(n)) && !NUEVO_TEMA.test(n) && !TEMA_AJENO.test(n)) return 'ajuste'
   if (NUEVO_TEMA.test(n) || (/\?/.test(instruccion) && !PARTES_PLANEACION.test(n))) return 'otro_tema'
   return 'ajuste'
 }

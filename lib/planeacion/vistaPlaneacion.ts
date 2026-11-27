@@ -16,6 +16,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { EstadoCapturaHoja } from '../seguimiento/estadoCapturaHoja'
+import { admiteCapturaAutomatica } from '../seguimiento/capturaAutomatica'
 
 // ------------------------------------------------------------------
 // Presentación (pura)
@@ -62,7 +63,9 @@ export function sesionesDe(estructura: EstructuraVersion): number | null {
   return Array.isArray(p?.actividades) && p.actividades.length > 0 ? p.actividades.length : null
 }
 
-export type HojaResumen = { id: string; codigo: string; proyectoId: string; reemplazada: boolean }
+// admiteCaptura: false en una hoja histórica sin registro de alumnos congelado
+// (su estado es permanente: no se consulta estado-captura).
+export type HojaResumen = { id: string; codigo: string; proyectoId: string; reemplazada: boolean; admiteCaptura: boolean }
 
 export type ResumenPlaneacion = {
   id: string
@@ -104,15 +107,15 @@ export const ORIGEN_VERSION: Record<string, string> = { aprobacion: 'Aprobación
 // ------------------------------------------------------------------
 type FilaPlaneacion = { id: string; nombre: string | null; fecha_inicio: string | null; fecha_fin: string | null; version: number; creado_en: string }
 type FilaVersionResumen = { planeacion_id: string; numero: number; hoja_id: string | null; campos: string[] | null; dias: number | null; actividades: unknown[] | null }
-type FilaHoja = { id: string; identificador_visible: string; proyecto_id: string; reemplazada_por: string | null }
+type FilaHoja = { id: string; identificador_visible: string; proyecto_id: string; reemplazada_por: string | null; primer_alumno: unknown }
 
 export class ErrorVistaPlaneacion extends Error {}
 
 async function hojasPorId(sb: SupabaseClient, ids: string[]): Promise<Map<string, HojaResumen>> {
   if (ids.length === 0) return new Map()
-  const { data, error } = await sb.from('hojas_evaluacion').select('id, identificador_visible, proyecto_id, reemplazada_por').in('id', ids)
+  const { data, error } = await sb.from('hojas_evaluacion').select('id, identificador_visible, proyecto_id, reemplazada_por, primer_alumno:roster_congelado->0').in('id', ids)
   if (error) throw new ErrorVistaPlaneacion('No se pudieron leer las hojas de evaluación.')
-  return new Map(((data ?? []) as FilaHoja[]).map((h) => [h.id, { id: h.id, codigo: h.identificador_visible, proyectoId: h.proyecto_id, reemplazada: h.reemplazada_por !== null }]))
+  return new Map(((data ?? []) as FilaHoja[]).map((h) => [h.id, { id: h.id, codigo: h.identificador_visible, proyectoId: h.proyecto_id, reemplazada: h.reemplazada_por !== null, admiteCaptura: admiteCapturaAutomatica(h.primer_alumno) }]))
 }
 
 // Planeaciones publicadas del grupo, con los datos de su versión vigente.

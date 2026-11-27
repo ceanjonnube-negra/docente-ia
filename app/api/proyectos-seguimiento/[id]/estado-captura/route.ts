@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { CODIGO_SIN_CAPTURA_AUTOMATICA } from '@/lib/seguimiento/capturaAutomatica'
 import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
 import { calcularCantidadPaginasHoja } from '@/lib/documentGen/generarHojaSeguimientoPdf'
 import { extraerFotosCapturaPendiente } from '@/lib/seguimiento/analisisHojaEvaluacion'
@@ -69,7 +70,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const rosterCongelado = hoja.roster_congelado as AlumnoRosterCongelado[] | null
     if (!rosterCongelado || rosterCongelado.length === 0) {
-      return NextResponse.json({ error: 'Esta hoja fue generada antes de que existiera el registro de alumnos congelado y no admite captura automática.' }, { status: 409 })
+      // Estado permanente de una hoja histórica (no un fallo): código estable
+      // para que el cliente lo reconozca y no vuelva a consultarla.
+      return NextResponse.json({ error: 'Esta hoja fue generada antes de que existiera el registro de alumnos congelado y no admite captura automática.', codigo: CODIGO_SIN_CAPTURA_AUTOMATICA }, { status: 409 })
     }
     const indicadoresCongelados = hoja.indicadores as IndicadorCongelado[]
 

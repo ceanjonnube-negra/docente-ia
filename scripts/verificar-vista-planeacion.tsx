@@ -77,6 +77,7 @@ function cliente(bd: Bd, docente: string) {
       // estructura->proyecto->x como alias (lo que hace PostgREST).
       const r: Fila = { ...f }
       for (const m of c.columnas.matchAll(/(\w+):estructura->proyecto->(\w+)/g)) r[m[1]] = ((f.estructura as Fila)?.proyecto as Fila)?.[m[2]] ?? null
+      for (const m of c.columnas.matchAll(/(\w+):(\w+)->0\b/g)) r[m[1]] = Array.isArray(f[m[2]]) ? (f[m[2]] as unknown[])[0] ?? null : null
       return r
     }
     const resultado = () => {
@@ -192,7 +193,7 @@ async function main() {
     }
     verificar(integro(CON_SESIONES) === null && integro(CONTENIDO) === null, '3c6. Contenido canónico íntegro y en orden (nada se resume, omite ni reordena)')
     const { default: TarjetaPlaneacion } = await import('../components/Planeacion/TarjetaPlaneacion')
-    const tarjeta = renderToStaticMarkup(<TarjetaPlaneacion planeacion={{ id: 'x', nombre: 'Las Leyendas de Nuestra Comunidad', fechaInicio: '2026-11-24', fechaFin: '2026-12-07', versionVigente: 1, campoFormativo: 'Lenguajes', sesiones: 10, hoja: { id: 'h', codigo: 'SG-T6MU', proyectoId: 'pr', reemplazada: false }, creadoEn: '' }} estadoHoja="sin_fotografia" onAbrir={() => {}} />)
+    const tarjeta = renderToStaticMarkup(<TarjetaPlaneacion planeacion={{ id: 'x', nombre: 'Las Leyendas de Nuestra Comunidad', fechaInicio: '2026-11-24', fechaFin: '2026-12-07', versionVigente: 1, campoFormativo: 'Lenguajes', sesiones: 10, hoja: { id: 'h', codigo: 'SG-T6MU', proyectoId: 'pr', reemplazada: false, admiteCaptura: true }, creadoEn: '' }} estadoHoja="sin_fotografia" onAbrir={() => {}} />)
     verificar(tarjeta.includes('· Pendiente de resultados') && !/truncate/.test(tarjeta) && /flex flex-wrap items-center gap-x-3 gap-y-1\.5/.test(tarjeta), '3c7. Estado de evaluación completo en la tarjeta (puede pasar a otra línea, nunca se trunca)')
     verificar(/<main className="[^"]*pb-\[calc\(7rem\+env\(safe-area-inset-bottom\)\)\]/.test(leer('app/dashboard/planeacion/page.tsx')), '3c8. Espacio final para el botón flotante del Chat (112 px > 76 px que ocupa)')
     const bd = base()

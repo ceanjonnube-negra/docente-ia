@@ -245,7 +245,7 @@ async function main() {
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
     const iDetecta = ruta.indexOf('detectarConsultaPlaneacion(textoConsulta')
     const iClasifica = ruta.indexOf('await clasificarNivel0(mensaje, sesion')
-    verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*await clasificarNivel0/.test(ruta),
+    verificar(iDetecta > 0 && iDetecta < iClasifica && /consultaPlaneacion\s*\?\s*clasificacionConsultaPlaneacion\(consultaPlaneacion\)\s*:\s*preguntaContenido\s*\?\s*clasificacionPreguntaPlaneacion\(\)\s*:\s*await clasificarNivel0/.test(ruta),
       '8a. La consulta inequívoca se resuelve antes del clasificador (sin llamada de IA)')
     verificar(/ultimaRespuestaEsPregunta\(historialMensajes\)/.test(ruta) && /referencia\?\.opciones\.length/.test(ruta), '8b. "la 2" solo tras la pregunta de elegir y con opciones guardadas')
     const iGuard = ruta.indexOf('ajusteDesdeEdicion = { planeacionId: consultada.planeacion_id, instruccion: sinPeticionDeFormato(instruccion) || instruccion }')
@@ -389,7 +389,7 @@ ${MARCADOR_DOCUMENTO_RECUPERADO}` // lo que añade la ruta a toda consulta
     verificar(!!porClasificador?.includes('Trabajaste 4 planeaciones en noviembre') && rangoDeFechasEnTexto('noviembre de 2026', HOY)?.desde === '2026-11-01' && rangoDeFechasEnTexto('noviembre 2025', HOY)?.desde === '2025-11-01',
       '11d. El periodo dicho sin preposición ("noviembre", como lo entrega el clasificador) y con año explícito se interpreta igual')
     const ruta = readFileSync(join(__dirname, '..', 'app', 'api', 'chat', 'route.ts'), 'utf-8')
-    verificar(ruta.includes("else if (decision === 'consulta' && !formatoOriginal) consultaDesdeEdicion = instruccion") && /if \(detectarConsultaPlaneacion\(instruccion, opciones\.hoy\)\) return 'consulta'/.test(readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'consultaPlaneaciones.ts'), 'utf-8')) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),
+    verificar(/else if \(decision === 'consulta' && !formatoOriginal\) \{\n\s+consultaDesdeEdicion = instruccion\n/.test(ruta) && /if \(detectarConsultaPlaneacion\(instruccion, opciones\.hoy\)\) return 'consulta'/.test(readFileSync(join(__dirname, '..', 'lib', 'planeacion', 'consultaPlaneaciones.ts'), 'utf-8')) && /const textoConsulta = consultaDesdeEdicion \?\?/.test(ruta),
       '11e. Servidor: una consulta enviada como edición de la planeación consultada (cliente anterior) se atiende como consulta, sin IA')
   }
 

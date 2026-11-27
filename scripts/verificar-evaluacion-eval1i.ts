@@ -37,7 +37,7 @@ function main() {
   // ============================================================
   // 1. GET /api/proyectos-seguimiento — extensión mínima.
   // ============================================================
-  verificar(listaRuta.includes("hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en)"), '1. El GET de listado embebe la hoja relacionada (identificador_visible/storage_path/generado_en) EN LA MISMA consulta — evita un patrón N+1')
+  verificar(listaRuta.includes("hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en, primer_alumno:roster_congelado->0)"), '1. El GET de listado embebe la hoja relacionada (identificador_visible/storage_path/generado_en) EN LA MISMA consulta — evita un patrón N+1')
   verificar(!listaRuta.includes('createSignedUrl') && !listaRuta.includes('crearUrlFirmada'), '2. El GET de listado NUNCA genera una URL firmada — eso vive exclusivamente en hoja-url/route.ts, a demanda')
   verificar(listaRuta.includes("grupo.docente_id !== docenteId"), '3. El GET de listado sigue verificando explícitamente que el grupo pertenece al docente real (sin cambios)')
   verificar(!listaRuta.includes('SERVICE_ROLE') && !listaRuta.includes('createClient('), '4. El GET de listado sigue sin SERVICE_ROLE ni cliente propio')

@@ -226,6 +226,14 @@ export function clasificacionAjustePlaneacion(): ClasificacionNivel0 {
   return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 4, requiere_ia: true, requiere_contexto_memoria: true, accion_planeacion_generar: 'ajustar', datos_faltantes: [], nivel_confianza: 1 };
 }
 
+// Pregunta sobre la planeación guardada abierta (decidirEdicionGuardada →
+// 'consulta' sin consulta de planeaciones ni del documento actual): una
+// conversación sobre su texto canónico, sin clasificador; la única llamada
+// de IA es la respuesta.
+export function clasificacionPreguntaPlaneacion(): ClasificacionNivel0 {
+  return { ...FALLBACK, intencion_principal: 'conversacion_general', nivel_ejecucion: 3, requiere_ia: true, requiere_contexto_memoria: true, datos_faltantes: [], nivel_confianza: 1 };
+}
+
 export function clasificacionAprobarPlaneacion(): ClasificacionNivel0 {
   return { ...FALLBACK, intencion_principal: 'planeacion_generar', nivel_ejecucion: 1, requiere_ia: false, accion_planeacion_generar: 'aprobar', nivel_confianza: 1 };
 }
