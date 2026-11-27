@@ -27,6 +27,9 @@ const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const V2 = 'e2000000-0000-4000-8000-000000000002'
 const V4 = 'e4000000-0000-4000-8000-000000000004'
 const VB = 'eb000000-0000-4000-8000-000000000001'
+// Versiones históricas sin contenido canónico: sin archivos / con su PDF original.
+const V0 = 'e0000000-0000-4000-8000-000000000001'
+const V0F = 'e0000000-0000-4000-8000-000000000002'
 const MIME = { word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', pdf: 'application/pdf' } as const
 type Fila = Record<string, unknown>
 
@@ -36,6 +39,8 @@ function escenario(opciones: { demora?: number } = {}) {
     planeacion_versiones: [
       { id: V2, docente_id: A, planeacion_id: 'p1', grupo_id: 'g1', numero: 2, contenido: '📋 PLANEACIÓN\nTexto v2', estructura: { proyecto: { indicadores: ['Ind v2'] } }, hoja_id: null, documento_word_archivo_id: 'w2', documento_pdf_archivo_id: null },
       { id: V4, docente_id: A, planeacion_id: 'p1', grupo_id: 'g1', numero: 4, contenido: '📋 PLANEACIÓN\nTexto v4', estructura: { proyecto: { indicadores: ['Ind v4'] } }, hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: 'f4' },
+      { id: V0, docente_id: A, planeacion_id: 'p0', grupo_id: 'g1', numero: 1, contenido: null, estructura: {}, hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: null },
+      { id: V0F, docente_id: A, planeacion_id: 'p0f', grupo_id: 'g1', numero: 1, contenido: null, estructura: {}, hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: 'f0' },
       { id: VB, docente_id: B, planeacion_id: 'pb', grupo_id: 'gb', numero: 1, contenido: 'ajeno', estructura: {}, hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: null },
     ] as Fila[],
     perfiles_docentes: [{ id: A, docente_id: A }] as Fila[],
@@ -207,13 +212,24 @@ async function main() {
 
   console.log('== 3. Pantalla')
   const { default: DocumentoVersion, avisoDocumento } = await import('../components/Planeacion/DocumentoVersion')
-  const falta = renderToStaticMarkup(<DocumentoVersion versionId={V4} formato="word" disponible={false} onGenerado={() => {}} />)
-  const pdf = renderToStaticMarkup(<DocumentoVersion versionId={V4} formato="pdf" disponible onGenerado={() => {}} />)
-  const word = renderToStaticMarkup(<DocumentoVersion versionId={V2} formato="word" disponible onGenerado={() => {}} />)
+  const falta = renderToStaticMarkup(<DocumentoVersion versionId={V4} formato="word" disponible={false} generable onGenerado={() => {}} />)
+  const pdf = renderToStaticMarkup(<DocumentoVersion versionId={V4} formato="pdf" disponible generable onGenerado={() => {}} />)
+  const word = renderToStaticMarkup(<DocumentoVersion versionId={V2} formato="word" disponible generable onGenerado={() => {}} />)
+  const sinContenido = renderToStaticMarkup(<DocumentoVersion versionId={V0} formato="word" disponible={false} generable={false} onGenerado={() => {}} />)
+  const sinContenidoConOriginal = renderToStaticMarkup(<DocumentoVersion versionId={V0F} formato="pdf" disponible generable={false} onGenerado={() => {}} />)
   const botones = (h: string) => [...h.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1])
   verificar(botones(falta).join() === 'Generar Word' && falta.includes('Aún no generado'), '3a. Sin archivo: solo «Generar Word»')
   verificar(botones(pdf).join() === 'Ver,Descargar' && pdf.includes('Original guardado'), '3b. PDF existente: Ver y Descargar')
   verificar(botones(word).join() === 'Descargar', '3c. Word existente: solo Descargar (el navegador no lo muestra en línea)')
+  verificar(botones(sinContenido).length === 0 && sinContenido.includes('Sin contenido para generar') && !sinContenido.includes('Aún no generado'), '3f. Sin contenido canónico ni original: no se ofrece generar')
+  verificar(botones(sinContenidoConOriginal).join() === 'Ver,Descargar' && sinContenidoConOriginal.includes('Original guardado'), '3g. Sin contenido pero con original: conserva Ver y Descargar')
+  verificar(/generable=\{!!version\.contenido\?\.trim\(\)\}/.test(leer('components/Planeacion/DetallePlaneacion.tsx')), '3h. La pantalla decide con el contenido canónico real de la versión')
+  {
+    const e = escenario()
+    const r = await e.pedir(V0, { formato: 'pdf' })
+    const r2 = await e.pedir(V0F, { formato: 'pdf' })
+    verificar(r.estado !== 'archivo' && e.generados.length === 0 && !e.rpcs.includes('reservar_archivo_version') && r2.estado === 'archivo' && !('generado' in r2 && r2.generado), `3i. Servidor: sin contenido no reserva ni genera (${r.estado}); con original lo entrega sin regenerar`)
+  }
   verificar(avisoDocumento({ estado: 'inexistente' }, 'pdf')!.includes('ya no está disponible') && avisoDocumento({ estado: 'en_proceso' }, 'word')!.includes('se está preparando')
     && avisoDocumento({ estado: 'sesion' }, 'pdf')!.includes('sesión') && avisoDocumento({ estado: 'archivo', archivoId: 'x', generado: false }, 'pdf') === null, '3d. Mensajes claros para cada resultado')
   const detalle = leer('components/Planeacion/DetallePlaneacion.tsx')

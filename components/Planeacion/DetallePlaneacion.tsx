@@ -103,8 +103,8 @@ export default function DetallePlaneacion({
 
       <Seccion titulo="Documentos" icono={<IconoDocumento className="w-4 h-4" />}>
         <div className="flex gap-2">
-          <DocumentoVersion key={`${version.id}-word`} versionId={version.id} formato="word" disponible={version.tieneWord} onGenerado={() => onArchivoGenerado(version.id, 'word')} />
-          <DocumentoVersion key={`${version.id}-pdf`} versionId={version.id} formato="pdf" disponible={version.tienePdf} onGenerado={() => onArchivoGenerado(version.id, 'pdf')} />
+          <DocumentoVersion key={`${version.id}-word`} versionId={version.id} formato="word" disponible={version.tieneWord} generable={!!version.contenido?.trim()} onGenerado={() => onArchivoGenerado(version.id, 'word')} />
+          <DocumentoVersion key={`${version.id}-pdf`} versionId={version.id} formato="pdf" disponible={version.tienePdf} generable={!!version.contenido?.trim()} onGenerado={() => onArchivoGenerado(version.id, 'pdf')} />
         </div>
       </Seccion>
 

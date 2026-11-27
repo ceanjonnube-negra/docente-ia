@@ -30,7 +30,9 @@ export function avisoDocumento(r: ResultadoArchivoVersionCliente, formato: Forma
 
 type Ocupado = ModoRecuperacion | 'generar' | null
 
-export default function DocumentoVersion({ versionId, formato, disponible, onGenerado }: { versionId: string; formato: FormatoVersionArchivo; disponible: boolean; onGenerado: () => void }) {
+// generable: la versión guarda su contenido canónico. Sin contenido ni
+// archivo original no se ofrece generar (el servidor también lo rechaza).
+export default function DocumentoVersion({ versionId, formato, disponible, generable, onGenerado }: { versionId: string; formato: FormatoVersionArchivo; disponible: boolean; generable: boolean; onGenerado: () => void }) {
   const [ocupado, setOcupado] = useState<Ocupado>(null)
   const [aviso, setAviso] = useState<string | null>(null)
 
@@ -53,7 +55,7 @@ export default function DocumentoVersion({ versionId, formato, disponible, onGen
     if (r.estado === 'archivo') onGenerado()
   }
 
-  const estado = ocupado === 'generar' ? 'Preparando…' : disponible ? 'Original guardado' : 'Aún no generado'
+  const estado = ocupado === 'generar' ? 'Preparando…' : disponible ? 'Original guardado' : generable ? 'Aún no generado' : 'Sin contenido para generar'
   return (
     <div className="flex-1 min-w-0 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5">
       <div className="flex items-center gap-2.5">
@@ -63,7 +65,7 @@ export default function DocumentoVersion({ versionId, formato, disponible, onGen
           <p className={`text-[11px] ${disponible ? 'text-green-700' : 'text-gray-500'}`}>{estado}</p>
         </div>
       </div>
-      <div className="mt-2.5 flex gap-1.5">
+      {(disponible || generable) && <div className="mt-2.5 flex gap-1.5">
         {disponible ? (
           modosRecuperacion(formato).map((modo) => (
             <button
@@ -86,7 +88,7 @@ export default function DocumentoVersion({ versionId, formato, disponible, onGen
             {ocupado === 'generar' ? 'Preparando…' : `Generar ${NOMBRE[formato]}`}
           </button>
         )}
-      </div>
+      </div>}
       {aviso && <p role="status" className="mt-2 text-[11px] leading-snug text-amber-700">{aviso}</p>}
     </div>
   )
