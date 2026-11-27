@@ -34,6 +34,7 @@ import type { AspectoGeneral } from './tipos'
 import { ASPECTOS_GENERALES } from './tipos'
 import type { NivelTextoCanonico } from './conversionCalificacion'
 import { resolverPeriodoDeProyecto, type PeriodoReferencia, type PeriodoResuelto } from './periodoProyecto'
+import type { ProyectoDeResultado } from '../motorContexto'
 
 // Único lugar de este archivo donde se escriben los 5 valores
 // literales — tanto la plantilla de conteo (distribucionNivelesVacia)
@@ -174,6 +175,30 @@ function claveIdentidad(fila: ResultadoProyectoGrupo): string {
 // Pura, determinista, 0 IA, 0 I/O. Recibe exactamente lo que
 // resultadosProyectoGrupo() ya devuelve — nunca consulta Supabase ni
 // conoce cómo se obtuvieron esas filas.
+// Metadata de un proyecto (una sola regla para proyectos con o sin
+// resultados del alumno): datos reales del registro + periodo resuelto
+// con los periodos de SU ciclo.
+export function metadataDeProyecto(
+  proyectoId: string,
+  ps: ProyectoDeResultado | null,
+  periodos: (PeriodoReferencia & { ciclo_escolar_id?: string })[]
+): ProyectoHistorialGrupo {
+  const cicloEscolarId = ps?.ciclo_escolar_id ?? null
+  const camposFormativos = (ps?.campos_formativos ?? []).slice()
+  const meta = { periodoEvaluacionId: ps?.periodo_evaluacion_id ?? null, fechaInicio: ps?.fecha_inicio ?? null, fechaFin: ps?.fecha_fin ?? null }
+  return {
+    proyectoId,
+    confirmadoEn: ps?.confirmado_en ?? null,
+    ...meta,
+    nombre: ps?.nombre ?? null,
+    grupoId: ps?.grupo_id ?? null,
+    cicloEscolarId,
+    camposFormativos,
+    campoFormativo: camposFormativos.length === 1 ? camposFormativos[0] : null,
+    periodo: resolverPeriodoDeProyecto(meta, periodos.filter((p) => !p.ciclo_escolar_id || p.ciclo_escolar_id === cicloEscolarId)),
+  }
+}
+
 // Filtro opcional (concentrado, Chat): por periodo resuelto ('sin_periodo'
 // = proyectos sin periodo asignado) y/o por campo formativo del proyecto.
 // Se aplica ANTES de construir, así estructura y resumen son coherentes.
@@ -228,27 +253,7 @@ export function construirHistorialGrupo(
   // cada fila, nunca de una consulta adicional).
   const proyectosPorId = new Map<string, ProyectoHistorialGrupo>()
   for (const fila of filasValidas) {
-    if (proyectosPorId.has(fila.proyecto_id)) continue
-    const ps = fila.proyectos_seguimiento
-    const cicloEscolarId = ps?.ciclo_escolar_id ?? null
-    const camposFormativos = (ps?.campos_formativos ?? []).slice()
-    const meta = {
-      periodoEvaluacionId: ps?.periodo_evaluacion_id ?? null,
-      fechaInicio: ps?.fecha_inicio ?? null,
-      fechaFin: ps?.fecha_fin ?? null,
-    }
-    const periodosDelCiclo = periodos.filter((p) => !p.ciclo_escolar_id || p.ciclo_escolar_id === cicloEscolarId)
-    proyectosPorId.set(fila.proyecto_id, {
-      proyectoId: fila.proyecto_id,
-      confirmadoEn: ps?.confirmado_en ?? null,
-      ...meta,
-      nombre: ps?.nombre ?? null,
-      grupoId: ps?.grupo_id ?? null,
-      cicloEscolarId,
-      camposFormativos,
-      campoFormativo: camposFormativos.length === 1 ? camposFormativos[0] : null,
-      periodo: resolverPeriodoDeProyecto(meta, periodosDelCiclo),
-    })
+    if (!proyectosPorId.has(fila.proyecto_id)) proyectosPorId.set(fila.proyecto_id, metadataDeProyecto(fila.proyecto_id, fila.proyectos_seguimiento, periodos))
   }
   // Filtro (periodo / campo formativo) sobre proyectos completos.
   for (const [id, p] of proyectosPorId) {
@@ -360,4 +365,103 @@ export function celdaHistorial(historial: HistorialGrupo, inscripcionId: string,
 export type IndicadorConApoyo = { proyectoId: string; indicadorNumero: number; indicadorEspecifico: string }
 export function indicadoresQueRequierenApoyo(alumno: AlumnoHistorialGrupo): IndicadorConApoyo[] {
   return alumno.proyectos.flatMap((p) => p.indicadores.filter((i) => i.nivel === 'requiere_apoyo').map((i) => ({ proyectoId: p.proyectoId, indicadorNumero: i.indicadorNumero, indicadorEspecifico: i.indicadorEspecifico })))
+}
+
+// ------------------------------------------------------------------
+// Historial individual (Hito 3b): organiza el MISMO historial por ciclo →
+// inscripción → periodo → proyecto. Pura y determinista. Un proyecto
+// confirmado del grupo de una inscripción sin resultados de ese alumno es
+// «sin registro» (distinto de «sin evaluar», que es un indicador sin marca
+// dentro de un proyecto con resultados).
+// ------------------------------------------------------------------
+export type InscripcionHistorial = {
+  inscripcionId: string
+  grupoId: string
+  cicloEscolarId: string
+  estatus: string | null
+  fechaInscripcion: string | null
+  grupoNombre: string | null
+  cicloNombre: string | null
+}
+
+export type ProyectoEnHistorialAlumno =
+  | { estado: 'con_resultados'; proyecto: ProyectoHistorialGrupo; resultado: ProyectoDeAlumno; distribucion: Record<NivelTextoCanonico, number> }
+  | { estado: 'sin_registro'; proyecto: ProyectoHistorialGrupo }
+
+export type PeriodoEnHistorialAlumno = { periodo: PeriodoPresente | null; proyectos: ProyectoEnHistorialAlumno[] }
+export type InscripcionEnHistorialAlumno = { inscripcion: InscripcionHistorial; periodos: PeriodoEnHistorialAlumno[] }
+export type CicloEnHistorialAlumno = { cicloEscolarId: string; cicloNombre: string | null; inscripciones: InscripcionEnHistorialAlumno[] }
+
+export type HistorialAlumno = {
+  ciclos: CicloEnHistorialAlumno[]
+  // Proyectos con resultados confirmados del alumno (todas sus inscripciones).
+  proyectosConResultados: { proyecto: ProyectoHistorialGrupo; resultado: ProyectoDeAlumno }[]
+  ultimaConfirmacion: string | null
+  entradasExcluidas: number
+}
+
+const ordenFecha = (a: string | null, b: string | null) => (b ?? '').localeCompare(a ?? '')
+
+export function organizarHistorialAlumno(
+  historial: HistorialGrupo,
+  inscripciones: InscripcionHistorial[],
+  proyectosDeSusGrupos: ProyectoHistorialGrupo[]
+): HistorialAlumno {
+  const metaPorId = new Map(historial.proyectos.map((p) => [p.proyectoId, p]))
+  const porInscripcion = new Map<string, InscripcionHistorial>(inscripciones.map((i) => [i.inscripcionId, i]))
+  // Resultados de una inscripción que no llegó en la lista (no debería
+  // ocurrir): se conserva con los datos reales del proyecto, nunca se pierde.
+  for (const a of historial.alumnos) {
+    if (porInscripcion.has(a.inscripcionId)) continue
+    const m = metaPorId.get(a.proyectos[0]?.proyectoId ?? '')
+    if (m?.grupoId && m.cicloEscolarId) porInscripcion.set(a.inscripcionId, { inscripcionId: a.inscripcionId, grupoId: m.grupoId, cicloEscolarId: m.cicloEscolarId, estatus: null, fechaInscripcion: null, grupoNombre: null, cicloNombre: null })
+  }
+
+  const conResultados: HistorialAlumno['proyectosConResultados'] = []
+  const proyectosPorInscripcion = new Map<string, ProyectoEnHistorialAlumno[]>()
+  const agregar = (ins: string, p: ProyectoEnHistorialAlumno) => proyectosPorInscripcion.set(ins, [...(proyectosPorInscripcion.get(ins) ?? []), p])
+  for (const a of historial.alumnos) {
+    for (const r of a.proyectos) {
+      const proyecto = metaPorId.get(r.proyectoId)
+      if (!proyecto) continue
+      const distribucion = distribucionNivelesVacia()
+      for (const i of r.indicadores) distribucion[i.nivel]++
+      agregar(a.inscripcionId, { estado: 'con_resultados', proyecto, resultado: r, distribucion })
+      conResultados.push({ proyecto, resultado: r })
+    }
+  }
+  // «Sin registro»: proyectos confirmados del grupo y ciclo de la inscripción sin resultados del alumno.
+  for (const ins of porInscripcion.values()) {
+    const propios = new Set((proyectosPorInscripcion.get(ins.inscripcionId) ?? []).map((p) => p.proyecto.proyectoId))
+    for (const p of proyectosDeSusGrupos) {
+      if (p.grupoId === ins.grupoId && p.cicloEscolarId === ins.cicloEscolarId && !propios.has(p.proyectoId)) agregar(ins.inscripcionId, { estado: 'sin_registro', proyecto: p })
+    }
+  }
+
+  const ciclos = new Map<string, CicloEnHistorialAlumno>()
+  const inscripcionesOrdenadas = [...porInscripcion.values()].sort((a, b) =>
+    (a.estatus === 'activo' ? 0 : 1) - (b.estatus === 'activo' ? 0 : 1) || ordenFecha(a.fechaInscripcion, b.fechaInscripcion) || a.inscripcionId.localeCompare(b.inscripcionId))
+  for (const ins of inscripcionesOrdenadas) {
+    const proyectos = proyectosPorInscripcion.get(ins.inscripcionId) ?? []
+    const porPeriodo = new Map<string, PeriodoEnHistorialAlumno>()
+    for (const p of proyectos) {
+      const clave = p.proyecto.periodo?.id ?? ''
+      if (!porPeriodo.has(clave)) porPeriodo.set(clave, { periodo: p.proyecto.periodo ? { id: p.proyecto.periodo.id, nombre: p.proyecto.periodo.nombre, numero: p.proyecto.periodo.numero } : null, proyectos: [] })
+      porPeriodo.get(clave)!.proyectos.push(p)
+    }
+    const periodos = [...porPeriodo.values()]
+      .map((g) => ({ ...g, proyectos: g.proyectos.sort((a, b) => ordenFecha(a.proyecto.confirmadoEn, b.proyecto.confirmadoEn) || a.proyecto.proyectoId.localeCompare(b.proyecto.proyectoId)) }))
+      // Periodos por número; «Sin periodo asignado» al final.
+      .sort((a, b) => (a.periodo ? a.periodo.numero : Infinity) - (b.periodo ? b.periodo.numero : Infinity) || (a.periodo?.id ?? '').localeCompare(b.periodo?.id ?? ''))
+    if (!ciclos.has(ins.cicloEscolarId)) ciclos.set(ins.cicloEscolarId, { cicloEscolarId: ins.cicloEscolarId, cicloNombre: ins.cicloNombre, inscripciones: [] })
+    ciclos.get(ins.cicloEscolarId)!.inscripciones.push({ inscripcion: ins, periodos })
+  }
+
+  conResultados.sort((a, b) => ordenFecha(a.proyecto.confirmadoEn, b.proyecto.confirmadoEn) || a.proyecto.proyectoId.localeCompare(b.proyecto.proyectoId))
+  return {
+    ciclos: [...ciclos.values()],
+    proyectosConResultados: conResultados,
+    ultimaConfirmacion: conResultados[0]?.proyecto.confirmadoEn ?? null,
+    entradasExcluidas: historial.entradasAmbiguasExcluidas + historial.entradasInvalidasExcluidas,
+  }
 }

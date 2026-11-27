@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { ASPECTOS_GENERALES, NIVELES_EVALUACION, type NivelEvaluacion } from '@/lib/seguimiento/tipos'
-import type { NivelTextoCanonico } from '@/lib/seguimiento/conversionCalificacion'
+import { COLOR_NIVEL_CANONICO, type NivelTextoCanonico } from '@/lib/seguimiento/conversionCalificacion'
 import type { MatrizResultadosConfirmados } from '@/lib/seguimiento/resultadosConfirmados'
 
 // Inversa de nivelATextoCanonico (conversionCalificacion.ts): misma
@@ -25,13 +25,8 @@ const NUMERO_NIVEL: Record<NivelTextoCanonico, NivelEvaluacion | null> = {
   no_evaluado: null,
 }
 
-const COLOR_NIVEL: Record<NivelTextoCanonico, string> = {
-  destacado: 'bg-green-100 text-green-800',
-  logrado: 'bg-teal-100 text-teal-800',
-  en_proceso: 'bg-amber-100 text-amber-800',
-  requiere_apoyo: 'bg-red-100 text-red-800',
-  no_evaluado: 'bg-gray-100 text-gray-500',
-}
+// Paleta compartida con la ficha del alumno (conversionCalificacion.ts).
+const COLOR_NIVEL = COLOR_NIVEL_CANONICO
 
 function textoNivel(nivel: NivelTextoCanonico | null): string {
   if (nivel === null) return '—'

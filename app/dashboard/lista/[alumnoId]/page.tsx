@@ -7,6 +7,9 @@ import { eliminarAlumnoDefinitivamente } from '@/lib/motorContexto'
 import { useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { historialAlumnoCompleto } from '@/lib/seguimiento/historialAcademico'
+import type { HistorialAlumno } from '@/lib/seguimiento/historialGrupo'
+import HistorialAcademicoAlumno from '@/components/Lista/HistorialAcademicoAlumno'
 
 type Alumno = {
   id: string
@@ -20,7 +23,6 @@ type Grupo = { grado: string | null; grupo: string | null; nombre_grupo: string 
 
 type Asistencia = { fecha: string; presente: boolean }
 type Incidencia = { id: string; fecha: string; tipo: string; descripcion: string; seguimiento: unknown }
-type Evaluacion = { id: string; campo_formativo: string | null; periodo: string | null; calificacion: string | null; rubrica: unknown; creado_en: string }
 type Evidencia = { id: string; tipo: string | null; descripcion: string | null; archivo_url: string | null; creado_en: string }
 type NecesidadApoyo = { id: string; tipo: string | null; descripcion: string | null; activa: boolean; creado_en: string }
 type FichaDescriptiva = { id: string; periodo: string | null; contenido: unknown; creado_en: string }
@@ -155,7 +157,9 @@ export default function FichaAlumnoPage() {
   const [posicion, setPosicion] = useState<number | null>(null)
   const [asistencias, setAsistencias] = useState<Asistencia[]>([])
   const [incidencias, setIncidencias] = useState<Incidencia[]>([])
-  const [evaluaciones, setEvaluaciones] = useState<Evaluacion[]>([])
+  // Hito 3b: resultados confirmados (historial académico canónico); la
+  // tabla antigua «evaluaciones» ya no se lee.
+  const [historialAcademico, setHistorialAcademico] = useState<HistorialAlumno | null>(null)
   const [evidencias, setEvidencias] = useState<Evidencia[]>([])
   const [necesidadesApoyo, setNecesidadesApoyo] = useState<NecesidadApoyo[]>([])
   const [fichasDescriptivas, setFichasDescriptivas] = useState<FichaDescriptiva[]>([])
@@ -254,7 +258,10 @@ export default function FichaAlumnoPage() {
           : Promise.resolve({ data: [], error: null }),
         supabase.from('asistencias').select('fecha, presente').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
         supabase.from('incidencias').select('id, fecha, tipo, descripcion, seguimiento').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
-        supabase.from('evaluaciones').select('id, campo_formativo, periodo, calificacion, rubrica, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
+        supabase.auth.getSession().then(({ data }) => {
+          if (!data.session) throw new Error('Sin sesión')
+          return historialAlumnoCompleto(supabase, alumnoId, data.session.user.id)
+        }),
         supabase.from('evidencias').select('id, tipo, descripcion, archivo_url, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('necesidades_apoyo').select('id, tipo, descripcion, activa, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
         supabase.from('fichas_descriptivas').select('id, periodo, contenido, creado_en').eq('alumno_id', alumnoId).order('creado_en', { ascending: false }),
@@ -313,11 +320,12 @@ export default function FichaAlumnoPage() {
         )
       }
 
-      if (evaluacionesRes.status === 'fulfilled' && !evaluacionesRes.value.error) {
-        setEvaluaciones(evaluacionesRes.value.data || [])
+      if (evaluacionesRes.status === 'fulfilled') {
+        setHistorialAcademico(evaluacionesRes.value)
         setErrorEvaluaciones(false)
       } else {
-        setEvaluaciones([])
+        console.error('No se pudo cargar el historial académico del alumno:', evaluacionesRes.reason)
+        setHistorialAcademico(null)
         setErrorEvaluaciones(true)
       }
 
@@ -506,7 +514,7 @@ export default function FichaAlumnoPage() {
   const fechasActividad = [
     asistencias[0]?.fecha,
     incidencias[0]?.fecha,
-    evaluaciones[0]?.creado_en,
+    historialAcademico?.ultimaConfirmacion,
     evidencias[0]?.creado_en,
   ].filter(Boolean) as string[]
   const ultimaActividad = fechasActividad.length > 0 ? fechasActividad.reduce((max, f) => (f > max ? f : max)) : null
@@ -520,9 +528,9 @@ export default function FichaAlumnoPage() {
   // inteligencia vive únicamente dentro de la pestaña Ficha descriptiva.
   const faltantesExpediente: string[] = []
   periodosEvaluacion.forEach(p => {
-    const tieneEvaluacion = evaluaciones.some(
-      ev => ev.periodo && ev.periodo.trim().toLowerCase() === p.nombre.trim().toLowerCase()
-    )
+    // Resultados confirmados de un proyecto de ese periodo (periodo
+    // resuelto por el historial académico, nunca por nombre).
+    const tieneEvaluacion = (historialAcademico?.proyectosConResultados ?? []).some(x => x.proyecto.periodo?.id === p.id)
     if (!tieneEvaluacion) faltantesExpediente.push(`Falta evaluación del ${p.nombre}.`)
   })
   if (evidencias.length === 0) faltantesExpediente.push('No existen evidencias.')
@@ -555,12 +563,20 @@ export default function FichaAlumnoPage() {
       titulo: i.tipo || 'Incidencia',
       descripcion: i.descripcion || '',
     })),
-    ...evaluaciones.map(ev => ({
-      key: `evaluacion-${ev.id}`,
+    // Una entrada por proyecto con resultados confirmados (misma fuente
+    // que la pestaña Evaluaciones, sin otra consulta).
+    ...(historialAcademico?.proyectosConResultados ?? []).map(({ proyecto, resultado }) => ({
+      key: `evaluacion-${proyecto.proyectoId}-${resultado.proyectoId}`,
       origen: 'Evaluación',
-      fecha: ev.creado_en,
-      titulo: ev.campo_formativo || 'Evaluación',
-      descripcion: [ev.periodo ? `Periodo: ${ev.periodo}` : null, ev.calificacion ? `Calificación: ${ev.calificacion}` : null].filter(Boolean).join(' · '),
+      fecha: proyecto.confirmadoEn ?? '',
+      titulo: proyecto.nombre || 'Proyecto',
+      descripcion: [
+        'Resultados confirmados',
+        `${resultado.indicadores.length} indicadores`,
+        resultado.conteo.requiereApoyo ? `${resultado.conteo.requiereApoyo} en Requiere apoyo` : null,
+        resultado.conteo.sinEvaluar ? `${resultado.conteo.sinEvaluar} sin evaluar` : null,
+        proyecto.periodo?.nombre ?? null,
+      ].filter(Boolean).join(' · '),
     })),
     ...evidencias.map(ev => ({
       key: `evidencia-${ev.id}`,
@@ -671,7 +687,7 @@ export default function FichaAlumnoPage() {
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-sm flex-shrink-0">🏆</span>
                   <p className="text-xs font-medium text-gray-500">Evaluaciones</p>
                 </div>
-                <p className="text-xl font-bold text-gray-900">{evaluaciones.length > 0 ? evaluaciones.length : 'Sin registros'}</p>
+                <p className="text-xl font-bold text-gray-900">{historialAcademico?.proyectosConResultados.length ? `${historialAcademico.proyectosConResultados.length} ${historialAcademico.proyectosConResultados.length === 1 ? 'proyecto' : 'proyectos'}` : 'Sin registros'}</p>
               </button>
               <button onClick={() => setPestana('evidencias')} className="col-span-2 text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
@@ -811,31 +827,7 @@ export default function FichaAlumnoPage() {
         )}
 
         {pestana === 'evaluaciones' && (
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {errorEvaluaciones && <BannerError mensaje="No se pudieron cargar las evaluaciones." />}
-            {!errorEvaluaciones && evaluaciones.length === 0 && <EstadoVacio icono="🏆" mensaje="Sin evaluaciones registradas." />}
-            {evaluaciones.map(ev => (
-              <div key={ev.id} className="px-4 py-3.5 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                    <span aria-hidden="true" className="w-6 h-6 rounded-md bg-violet-50 text-violet-600 flex items-center justify-center text-xs flex-shrink-0">🏆</span>
-                    {ev.campo_formativo || 'Campo formativo sin registrar'}
-                  </span>
-                  <span className="text-xs text-gray-400">{formatFecha(ev.creado_en)}</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5 mb-1">
-                  <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Periodo: {ev.periodo || '—'}</span>
-                  <span className="text-xs text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">Calificación: {ev.calificacion || '—'}</span>
-                </div>
-                {ev.rubrica != null && (
-                  <div className="mt-2 pt-2 border-t border-gray-100">
-                    <p className="text-xs font-semibold text-gray-500 mb-1">Rúbrica</p>
-                    <ResumenJson valor={ev.rubrica} vacio="Sin detalle de rúbrica." />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          <HistorialAcademicoAlumno historial={historialAcademico} error={errorEvaluaciones} />
         )}
 
         {pestana === 'evidencias' && (

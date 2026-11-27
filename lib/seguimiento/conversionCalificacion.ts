@@ -14,7 +14,7 @@
 // ResultadoIndicadorEvaluado) — para poder recalcular con otra regla
 // más adelante sin perder información.
 
-import type { NivelEvaluacion } from './tipos'
+import { NIVELES_EVALUACION, type NivelEvaluacion } from './tipos'
 
 // EVAL-1B — única función que traduce la escala numérica de
 // captura/impresión (1-4, NivelEvaluacion) al enum textual que
@@ -35,6 +35,24 @@ const MAPA_NIVEL_A_TEXTO_CANONICO: Record<NivelEvaluacion, NivelTextoCanonico> =
 export function nivelATextoCanonico(nivel: NivelEvaluacion | null): NivelTextoCanonico {
   return nivel == null ? 'no_evaluado' : MAPA_NIVEL_A_TEXTO_CANONICO[nivel]
 }
+
+// Etiqueta visible de cada nivel canónico: las mismas de la hoja impresa
+// (NIVELES_EVALUACION); 'no_evaluado' es AUSENCIA de evaluación (casilla
+// sin marca), nunca un nivel de desempeño.
+export const ETIQUETA_NIVEL_CANONICO: Record<NivelTextoCanonico, string> = {
+  ...(Object.fromEntries(NIVELES_EVALUACION.map((n) => [MAPA_NIVEL_A_TEXTO_CANONICO[n.valor], n.etiqueta])) as Record<Exclude<NivelTextoCanonico, 'no_evaluado'>, string>),
+  no_evaluado: 'Sin evaluar',
+}
+// Colores de cada nivel (matriz de Evaluación y ficha del alumno).
+export const COLOR_NIVEL_CANONICO: Record<NivelTextoCanonico, string> = {
+  destacado: 'bg-green-100 text-green-800',
+  logrado: 'bg-teal-100 text-teal-800',
+  en_proceso: 'bg-amber-100 text-amber-800',
+  requiere_apoyo: 'bg-red-100 text-red-800',
+  no_evaluado: 'bg-gray-100 text-gray-500',
+}
+// Orden de mayor a menor desempeño, con «Sin evaluar» al final.
+export const ORDEN_NIVELES_CANONICOS: NivelTextoCanonico[] = ['destacado', 'logrado', 'en_proceso', 'requiere_apoyo', 'no_evaluado']
 
 export type ReglaConversionCalificacion = {
   id: string
