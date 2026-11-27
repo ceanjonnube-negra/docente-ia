@@ -29,6 +29,8 @@ import {
   ejecutarRegistroEscolar,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
+import { historialAlumnoCompleto } from '@/lib/seguimiento/historialAcademico'
+import { alumnoEnPantallaDelGrupo, contextoFichaDescriptiva } from '@/lib/seguimiento/consultaHistorial'
 import { fechaISOHoy, obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
 import { INSTRUCCIONES_PLANEACION_GENERAR } from '@/lib/asistente/instruccionesPlaneacionGenerar'
@@ -1191,6 +1193,10 @@ async function atenderChat(req: NextRequest) {
         zonaHoraria,
         canal: channel === 'voice' ? 'voice' : 'text',
         conversacionId: clasificacion.intencion_principal === 'planeacion_consultar' ? await conversacionPropia() : null,
+        // Hito 3d: periodo/campo/proyecto se leen del texto; «este alumno»
+        // = el abierto en pantalla, solo si es del grupo activo.
+        mensaje: String(mensaje ?? ''),
+        alumnoEnPantalla: alumnoEnPantallaDelGrupo(contexto, sesion.alumnos_del_grupo_activo),
       })
       marcarTelemetria('tool:execution_finished')
       if (respuestaDeModulo !== null) {
@@ -1515,6 +1521,16 @@ async function atenderChat(req: NextRequest) {
           if (clasificacion.intencion_principal === 'ficha_descriptiva' && clasificacion.entidades_resueltas.alumno_id && sesion.ciclo_escolar_id) {
             const ctxAlumno = await contextoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, sesion.ciclo_escolar_id)
             contextoEnriquecido += `\n\nCONTEXTO REAL DEL ALUMNO (usa estos datos, no inventes otros):\n${JSON.stringify(ctxAlumno)}`
+            // Hito 3d: resultados confirmados de las hojas de evaluación
+            // (mismo llamado de IA, más datos reales). Si fallan, se avisa.
+            try {
+              if (!userId) throw new Error('Sin docente identificado')
+              const historialAlumno = await historialAlumnoCompleto(supabaseUser, clasificacion.entidades_resueltas.alumno_id, userId)
+              contextoEnriquecido += `\n\n${contextoFichaDescriptiva(historialAlumno, sesion.grupo_activo_id, sesion.ciclo_escolar_id)}`
+            } catch (e) {
+              console.error('[NIVEL0] ficha_descriptiva — no se pudieron leer los resultados confirmados:', e)
+              contextoEnriquecido += '\n\nRESULTADOS ACADÉMICOS CONFIRMADOS: no se pudieron consultar en este momento; no supongas desempeño.'
+            }
           } else if (clasificacion.intencion_principal === 'planeacion_generar' && sesion.grupo_activo_id) {
             // C-005, Paso 3B — reemplaza lo que antes era planeacion_nueva
             // (solo inyectaba contextoGrupo). Ahora también calcula fechas
@@ -1709,7 +1725,7 @@ CONSULTA DE INFORMACIÓN OFICIAL VIGENTE — este turno SÍ tiene acceso a la he
 
 CAPACIDADES — Docente IA SÍ genera archivos reales y descargables (Word, PDF, PowerPoint, Excel) directamente desde esta conversación. La gran mayoría de las veces que el maestro pide el archivo (dice "Word", "DOCX", "archivo Word", "documento oficial", "para imprimir", "descárgalo", "pásamelo en Word" o equivalente) esta petición NUNCA llega hasta ti — el servidor ya la intercepta antes y ejecuta la herramienta de generación directamente, sin pasar por ti. Si de todos modos ves una de estas peticiones (caso raro: el maestro pide el archivo en el mismo mensaje en el que pide el documento por primera vez, sin haberlo platicado antes), tienes PROHIBIDO decir o insinuar cualquiera de estas frases o equivalentes: "no puedo crear archivos", "no puedo enviar Word", "no puedo generar documentos", "no pude generar el archivo", "aquí tienes el contenido para copiar", "pega esto en Word", "formato tipo Word", "puedes copiarlo", "cópialo en Word" — todas son falsas dentro de esta aplicación y tienes terminantemente prohibido escribir el contenido del documento como texto plano en el chat cuando el maestro pidió un archivo. En ese caso, ve directo al documento completo en MODO DOCUMENTO (ver abajo) empezando con su título en mayúsculas y emoji, SIN ninguna frase de confirmación antes ("Perfecto...", "Claro...", etc.) y SIN narrar ni explicar el contenido en prosa conversacional — la aplicación intercepta esa respuesta y genera el archivo real a partir de ella automáticamente; tu única salida válida es el documento en MODO DOCUMENTO, nunca una explicación de cómo obtenerlo manualmente.
 
-LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes). Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta, editar, ni ELIMINAR alumnos (ni uno solo ni el grupo completo), ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
+LÍMITES REALES DE ACCIÓN — nunca prometas, afirmes ni insinúes que puedes ejecutar una acción que no está entre las que sí tienes conectadas de verdad; una respuesta sobre esto es exactamente tan real como cualquier dato de la aplicación, y prometer una acción que no existe rompe la confianza del maestro igual que inventar una cifra. Hoy SÍ puedes ejecutar de verdad: consultar asistencia, faltas, retardos y totales de un alumno o del grupo; registrar o marcar asistencia (de un alumno o de todo el grupo); registrar una incidencia nueva de un alumno; consultar incidencias, necesidades de apoyo, documentos guardados y el calendario; consultar los resultados confirmados de las hojas de evaluación de un alumno o del grupo (por periodo, campo formativo o proyecto); mostrar, abrir o filtrar la Lista de alumnos; actualizar el grado/grupo del docente; generar documentos (planeaciones, rúbricas, exámenes, citatorios, fichas descriptivas, resúmenes). Hoy NO puedes — no existe ninguna función conectada para esto, sin importar qué tan razonable suene la petición — dar de alta, editar, ni ELIMINAR alumnos (ni uno solo ni el grupo completo), ni ninguna otra acción sobre alumnos o el grupo fuera de la lista anterior. Si el maestro pide eliminar a uno o varios alumnos, o toda la lista, respóndele con honestidad que esa función todavía no está disponible desde el chat, y sugiérele hacerlo manualmente desde la pantalla de Lista (la ficha del alumno para uno solo; la opción "Eliminar lista completa", si ya está disponible en su versión de la app, para el grupo completo). Tienes PROHIBIDO decir "listo, lo elimino", "ya lo borré", "hecho" ni ninguna otra confirmación de una acción de este tipo que no ejecutaste de verdad.
 
 VOZ Y AUDIO — cuando el maestro te habla por micrófono, la aplicación transcribe su voz a texto (así te llega el mensaje) y, en cuanto respondes, la propia aplicación lee tu respuesta en voz alta con síntesis de voz del dispositivo — eso ocurre siempre, automáticamente, fuera de esta conversación; tú nunca lo gestionas ni lo mencionas. El asistente NUNCA debe afirmar que no tiene voz o audio: tienes PROHIBIDO decir o insinuar "solo me comunico por texto", "no tengo voz", "no puedo hablar", "no tengo audio", "no puedo reproducir sonido" ni ninguna frase equivalente — todas son falsas dentro de esta aplicación. La reproducción de voz es responsabilidad de la aplicación, no del modelo; tu única tarea es responder con el texto correcto.
 

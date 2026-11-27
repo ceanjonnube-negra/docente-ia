@@ -42,10 +42,15 @@ import {
   incidenciasAlumno,
   necesidadesApoyoGrupo,
   periodosEvaluacionDelCiclo,
+  periodosEvaluacionDeCiclos,
   type ConteoAsistencia,
   type PeriodoEvaluacion,
 } from '../motorContexto'
 import { formatearFecha } from '../tiempo/TimeService'
+import { datosConcentradoGrupo, historialAlumnoCompleto } from '../seguimiento/historialAcademico'
+import { construirConcentradoGrupo, type ConcentradoGrupo, type FiltroHistorial, type InscripcionEnHistorialAlumno } from '../seguimiento/historialGrupo'
+import { campoEnTexto, inscripcionActiva, periodoEnTexto, proyectoEnTexto, textoFiltro, textoResultadosAlumno, textoResultadosGrupo } from '../seguimiento/consultaHistorial'
+import type { AccionNavegacion } from './tipos'
 import { listarPlaneaciones } from '../planeacion/persistencia'
 import {
   MAXIMO_OPCIONES,
@@ -82,6 +87,11 @@ export type ContextoEjecucionHerramienta = {
   // Conversación propia validada (RLS) — referencia contextual de la
   // consulta de planeaciones (conversaciones_chat.planeacion_activa).
   conversacionId?: string | null
+  // Hito 3d: texto del turno (periodo, campo o proyecto pedidos, leídos
+  // con reglas fijas) y el alumno abierto en pantalla («este alumno»),
+  // ya validado contra el grupo activo por quien llama.
+  mensaje?: string
+  alumnoEnPantalla?: { alumno_id: string; nombre: string } | null
 }
 
 type DisponibilidadHerramienta = { listo: true } | { listo: false; mensaje: string }
@@ -260,17 +270,37 @@ const herramientaConsultarApoyo = definir({
   },
   ejecutar: async (_clasificacion, ctx) => {
     try {
-      const datos = await necesidadesApoyoGrupo(ctx.sb, ctx.sesion.grupo_activo_id!)
-      return { exito: true, datos }
+      // Hito 3d: además, los indicadores CONFIRMADOS en Requiere apoyo de
+      // las hojas de evaluación (otro hecho, presentado por separado). Si
+      // esa lectura falla, se responde con lo registrado y se avisa.
+      const [necesidades, academico] = await Promise.all([
+        necesidadesApoyoGrupo(ctx.sb, ctx.sesion.grupo_activo_id!),
+        ctx.sesion.ciclo_escolar_id
+          ? datosConcentradoGrupo(ctx.sb, ctx.sesion.grupo_activo_id!, ctx.sesion.ciclo_escolar_id).then((d) => construirConcentradoGrupo(d.historial, d.inscripciones)).catch((e) => { console.error('[HERRAMIENTA] consultar_apoyo — fallo leyendo resultados confirmados:', e); return 'error' as const })
+          : Promise.resolve(null),
+      ])
+      return { exito: true, datos: { necesidades, academico } }
     } catch (e) {
       console.error('[HERRAMIENTA] consultar_apoyo — fallo consultando:', e)
       return { exito: false, error: 'No fue posible consultar las necesidades de apoyo registradas' }
     }
   },
-  formatearRespuesta: (datos: { nombre: string; tipo: string | null; descripcion: string | null }[]) => {
-    if (datos.length === 0) return 'No hay alumnos con necesidad de apoyo registrada todavía.'
-    const lineas = [`Alumnos con necesidad de apoyo registrada (${datos.length}):`]
-    datos.forEach((a) => lineas.push(`• ${a.nombre}${a.tipo ? ` — ${a.tipo}` : ''}`))
+  formatearRespuesta: (datos: { necesidades: { nombre: string; tipo: string | null; descripcion: string | null }[]; academico: ConcentradoGrupo | 'error' | null }) => {
+    const lineas: string[] = []
+    if (datos.necesidades.length === 0) lineas.push('No hay alumnos con necesidad de apoyo registrada todavía.')
+    else {
+      lineas.push(`Alumnos con necesidad de apoyo registrada (${datos.necesidades.length}):`)
+      datos.necesidades.forEach((a) => lineas.push(`• ${a.nombre}${a.tipo ? ` — ${a.tipo}` : ''}`))
+    }
+    const c = datos.academico
+    if (c === 'error') lineas.push('No pude consultar los resultados confirmados de las hojas de evaluación en este momento.')
+    else if (c && c.proyectos.length) {
+      if (c.indicadoresRequierenApoyo === 0) lineas.push('En las hojas de evaluación confirmadas, ningún indicador está en Requiere apoyo.')
+      else {
+        lineas.push(`Indicadores confirmados en Requiere apoyo en las hojas de evaluación (${c.indicadoresRequierenApoyo}):`)
+        c.alumnos.filter((a) => a.apoyo.length).forEach((a) => lineas.push(`• ${a.inscripcion.nombre}: ${a.apoyo.map((x) => `${x.indicadorNumero}. ${x.indicadorEspecifico}`).join('; ')}`))
+      }
+    }
     return lineas.join('\n')
   },
 })
@@ -485,6 +515,106 @@ const herramientaConsultarPlaneaciones = definir({
   },
 })
 
+// --- Hito 3d: historial académico (resultados confirmados) ---
+type FiltroPedido = { filtro: FiltroHistorial; texto: string } | { aclaracion: string }
+
+// Periodo, campo y proyecto pedidos en el mensaje, contra datos reales.
+function filtroDelMensaje(
+  mensaje: string,
+  periodos: { id: string; nombre: string; numero_periodo: number; fecha_inicio: string | null; fecha_fin: string | null }[],
+  proyectos: Parameters<typeof proyectoEnTexto>[1],
+  hoy: string
+): FiltroPedido {
+  const filtro: FiltroHistorial = {}
+  const etiquetas: { periodo?: string; campo?: string; proyecto?: string } = {}
+  const periodo = periodoEnTexto(mensaje, periodos, hoy)
+  if (periodo.tipo === 'no_existe') {
+    return { aclaracion: periodos.length
+      ? `No encontré «${periodo.texto}» entre los periodos de evaluación del ciclo (${periodos.map((p) => p.nombre).join(', ')}).`
+      : 'Todavía no hay periodos de evaluación registrados en este ciclo, así que no puedo filtrar por trimestre. Puedo mostrarte todos los resultados confirmados.' }
+  }
+  if (periodo.tipo === 'encontrado') { filtro.periodoId = periodo.periodo.id; etiquetas.periodo = periodo.periodo.nombre }
+  if (periodo.tipo === 'sin_periodo') filtro.periodoId = 'sin_periodo'
+  const campo = campoEnTexto(mensaje)
+  if (campo) { filtro.campoFormativo = campo; etiquetas.campo = campo }
+  const proyecto = proyectoEnTexto(mensaje, proyectos)
+  if (proyecto.tipo === 'ambiguo') return { aclaracion: `¿De cuál proyecto? ${proyecto.opciones.map((p) => `«${p.nombre}»`).join(' o ')}.` }
+  if (proyecto.tipo === 'encontrado') { filtro.proyectoId = proyecto.proyecto.proyectoId; etiquetas.proyecto = proyecto.proyecto.nombre ?? undefined }
+  let texto = textoFiltro(filtro, etiquetas)
+  if (campo) texto += ' (proyectos que trabajan ese campo; los indicadores no se atribuyen a un campo en particular)'
+  return { filtro, texto }
+}
+
+const nombreGrupo = (ctx: ContextoEjecucionHerramienta) => {
+  const g = ctx.sesion.grupo_activo_datos
+  return g?.grado ? `${g.grado}${String(g.grado).includes('°') ? '' : '°'} ${g.grupo ?? ''}`.trim() : null
+}
+
+type DatosResultadosGrupo = { aclaracion: string } | { concentrado: ConcentradoGrupo; filtroTexto: string }
+const herramientaResultadosGrupo = definir({
+  intent: 'consultar_resultados_grupo',
+  puedeEjecutar: (_clasificacion, ctx) => {
+    if (!ctx.sesion.grupo_activo_id || !ctx.sesion.ciclo_escolar_id) return { listo: false, mensaje: 'No tengo un grupo activo con ciclo escolar configurado para consultar sus resultados.' }
+    return { listo: true }
+  },
+  ejecutar: async (_clasificacion, ctx) => {
+    try {
+      const d = await datosConcentradoGrupo(ctx.sb, ctx.sesion.grupo_activo_id!, ctx.sesion.ciclo_escolar_id!)
+      const pedido = filtroDelMensaje(ctx.mensaje ?? '', d.periodos, d.historial.proyectos, ctx.sesion.fecha_actual)
+      if ('aclaracion' in pedido) return { exito: true, datos: pedido as DatosResultadosGrupo }
+      return { exito: true, datos: { concentrado: construirConcentradoGrupo(d.historial, d.inscripciones, pedido.filtro), filtroTexto: pedido.texto } as DatosResultadosGrupo }
+    } catch (e) {
+      console.error('[HERRAMIENTA] consultar_resultados_grupo — fallo consultando:', e)
+      return { exito: false, error: 'No fue posible consultar los resultados confirmados del grupo' }
+    }
+  },
+  formatearRespuesta: (datos: DatosResultadosGrupo, _clasificacion, ctx) =>
+    'aclaracion' in datos ? datos.aclaracion : textoResultadosGrupo(datos.concentrado, nombreGrupo(ctx), datos.filtroTexto, ctx.canal === 'voice'),
+})
+
+// Alumno: el que nombró el docente o, si dijo «este alumno», el abierto en pantalla.
+const alumnoPedido = (clasificacion: ClasificacionNivel0, ctx: ContextoEjecucionHerramienta) =>
+  clasificacion.entidades_resueltas.alumno_id
+    ? { alumno_id: clasificacion.entidades_resueltas.alumno_id, nombre: clasificacion.entidades_resueltas.alumno_nombre_detectado || 'Ese alumno' }
+    : ctx.alumnoEnPantalla ?? null
+
+type DatosResultadosAlumno = { aclaracion: string } | { alumnoId: string; nombre: string; ins: InscripcionEnHistorialAlumno | null; filtro: FiltroHistorial; filtroTexto: string }
+const herramientaResultadosAlumno = definir({
+  intent: 'consultar_resultados_alumno',
+  puedeEjecutar: (clasificacion, ctx) => {
+    const e = clasificacion.entidades_resueltas
+    if (e.alumno_ambiguo && e.opciones_alumno_ambiguo.length) return { listo: false, mensaje: `¿Te refieres a ${e.opciones_alumno_ambiguo.join(' o a ')}?` }
+    if (!alumnoPedido(clasificacion, ctx)) return { listo: false, mensaje: '¿De qué alumno quieres consultar los resultados?' }
+    if (!ctx.sesion.grupo_activo_id || !ctx.sesion.ciclo_escolar_id || !ctx.userId) return { listo: false, mensaje: 'No tengo un grupo activo con ciclo escolar configurado para consultar sus resultados.' }
+    return { listo: true }
+  },
+  ejecutar: async (clasificacion, ctx) => {
+    const alumno = alumnoPedido(clasificacion, ctx)!
+    try {
+      const [h, periodos] = await Promise.all([
+        historialAlumnoCompleto(ctx.sb, alumno.alumno_id, ctx.userId!),
+        periodosEvaluacionDeCiclos(ctx.sb, [ctx.sesion.ciclo_escolar_id!]),
+      ])
+      // Separación estricta: solo su inscripción en el grupo y ciclo activos.
+      const ins = inscripcionActiva(h, ctx.sesion.grupo_activo_id!, ctx.sesion.ciclo_escolar_id!)
+      const proyectos = (ins?.periodos ?? []).flatMap((g) => g.proyectos.map((x) => x.proyecto))
+      const pedido = filtroDelMensaje(ctx.mensaje ?? '', periodos, proyectos, ctx.sesion.fecha_actual)
+      if ('aclaracion' in pedido) return { exito: true, datos: pedido as DatosResultadosAlumno }
+      return { exito: true, datos: { alumnoId: alumno.alumno_id, nombre: alumno.nombre, ins, filtro: pedido.filtro, filtroTexto: pedido.texto } as DatosResultadosAlumno }
+    } catch (e) {
+      console.error('[HERRAMIENTA] consultar_resultados_alumno — fallo consultando:', e)
+      return { exito: false, error: 'No fue posible consultar los resultados confirmados del alumno' }
+    }
+  },
+  formatearRespuesta: (datos: DatosResultadosAlumno, _clasificacion, ctx) => {
+    if ('aclaracion' in datos) return datos.aclaracion
+    const texto = textoResultadosAlumno(datos.nombre, datos.ins, datos.filtro, datos.filtroTexto, ctx.canal === 'voice')
+    // Botón «Abrir en Lista» (pestaña Evaluaciones), mismo marcador que la consulta de Lista.
+    const accion: AccionNavegacion = { modulo: 'lista', accion: 'abrir_registro', alumnoId: datos.alumnoId, pestana: 'evaluaciones', automatica: false }
+    return `${texto}\n[[NAVEGACION:${Buffer.from(JSON.stringify(accion), 'utf-8').toString('base64')}]]`
+  },
+})
+
 const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_asistencia: herramientaConsultarAsistencia,
   consultar_asistencia_grupo: herramientaConsultarAsistenciaGrupo,
@@ -492,6 +622,8 @@ const REGISTRO: Record<string, DefinicionHerramientaModulo<unknown>> = {
   consultar_apoyo: herramientaConsultarApoyo,
   consultar_documentos: herramientaConsultarDocumentos,
   planeacion_consultar: herramientaConsultarPlaneaciones,
+  consultar_resultados_grupo: herramientaResultadosGrupo,
+  consultar_resultados_alumno: herramientaResultadosAlumno,
 }
 
 // Único punto de entrada: si la intención clasificada tiene una

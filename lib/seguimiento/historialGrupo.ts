@@ -202,13 +202,14 @@ export function metadataDeProyecto(
 // Filtro opcional (concentrado, Chat): por periodo resuelto ('sin_periodo'
 // = proyectos sin periodo asignado) y/o por campo formativo del proyecto.
 // Se aplica ANTES de construir, así estructura y resumen son coherentes.
-export type FiltroHistorial = { periodoId?: string | 'sin_periodo'; campoFormativo?: string }
+export type FiltroHistorial = { periodoId?: string | 'sin_periodo'; campoFormativo?: string; proyectoId?: string }
 
 // Regla única del filtro (historial, concentrado, Chat).
 export function cumpleFiltro(p: ProyectoHistorialGrupo, filtro: FiltroHistorial): boolean {
   const porPeriodo = filtro.periodoId === undefined || (filtro.periodoId === 'sin_periodo' ? p.periodo === null : p.periodo?.id === filtro.periodoId)
   const porCampo = filtro.campoFormativo === undefined || p.camposFormativos.includes(filtro.campoFormativo)
-  return porPeriodo && porCampo
+  const porProyecto = filtro.proyectoId === undefined || p.proyectoId === filtro.proyectoId
+  return porPeriodo && porCampo && porProyecto
 }
 
 // Conteo directo de niveles de una lista de indicadores (las 5 claves).

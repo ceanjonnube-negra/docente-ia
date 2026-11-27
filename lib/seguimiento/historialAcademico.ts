@@ -87,3 +87,15 @@ export async function inscripcionesDelGrupo(sb: SupabaseClient, grupoId: string,
   return ((data ?? []) as unknown as { id: string; alumno_id: string; estatus: string | null; alumnos: { nombre: string | null } | null }[])
     .map((i) => ({ inscripcionId: i.id, alumnoId: i.alumno_id, nombre: i.alumnos?.nombre ?? 'Alumno sin nombre registrado', estatus: i.estatus }))
 }
+
+// Datos del concentrado para el Chat IA (Hito 3d): resultados, periodos
+// del ciclo e inscripciones del grupo en 3 consultas paralelas; los
+// periodos se devuelven completos para leer «primer trimestre», etc.
+export async function datosConcentradoGrupo(sb: SupabaseClient, grupoId: string, cicloEscolarId: string) {
+  const [filas, periodos, inscripciones] = await Promise.all([
+    resultadosProyectoGrupo(sb, grupoId, cicloEscolarId),
+    periodosEvaluacionDeCiclos(sb, [cicloEscolarId]),
+    inscripcionesDelGrupo(sb, grupoId, cicloEscolarId),
+  ])
+  return { historial: construirHistorialGrupo(filas, periodos), periodos, inscripciones }
+}
