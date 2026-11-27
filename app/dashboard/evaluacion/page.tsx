@@ -33,6 +33,7 @@ import { resolverGrupoActivo } from '@/lib/grupoActivo'
 import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
 import CapturaHoja, { type EstadoCapturaHoja } from '@/components/Asistente/CapturaHoja'
 import ResultadosConfirmados from '@/components/Asistente/ResultadosConfirmados'
+import ConcentradoGrupo from '@/components/Evaluacion/ConcentradoGrupo'
 import { COLOR_ESTADO_HOJA, ETIQUETA_ESTADO_HOJA } from '@/lib/seguimiento/etiquetasEstadoHoja'
 import { CODIGO_SIN_CAPTURA_AUTOMATICA } from '@/lib/seguimiento/capturaAutomatica'
 
@@ -99,6 +100,9 @@ export default function EvaluacionPage() {
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [nombreGrupo, setNombreGrupo] = useState('')
+  const [grupoId, setGrupoId] = useState<string | null>(null)
+  // Hito 3c: «Hojas» (lista de siempre) o «Concentrado» del grupo.
+  const [vista, setVista] = useState<'hojas' | 'concentrado'>('hojas')
   const [proyectos, setProyectos] = useState<Proyecto[]>([])
   const [estados, setEstados] = useState<Record<string, EstadoCapturaHoja>>({})
   const [erroresEstado, setErroresEstado] = useState<Record<string, string>>({})
@@ -176,6 +180,7 @@ export default function EvaluacionPage() {
     }
     const grupoActivo = resolucion.grupo
     setNombreGrupo(grupoActivo.nombre_grupo)
+    setGrupoId(grupoActivo.id)
 
     const res = await fetch(`/api/proyectos-seguimiento?grupo_id=${grupoActivo.id}`, {
       headers: { Authorization: `Bearer ${session.access_token}` },
@@ -215,6 +220,15 @@ export default function EvaluacionPage() {
     setDestacado(id)
     document.getElementById(`proyecto-${id}`)?.scrollIntoView({ block: 'center' })
   }, [cargando, proyectos])
+
+  // Desde el concentrado: vuelve a «Hojas», resalta el proyecto y abre sus
+  // resultados confirmados (la evaluación original).
+  const verProyecto = (proyectoId: string) => {
+    setVista('hojas')
+    setDestacado(proyectoId)
+    setResultadosAbiertos(proyectoId)
+    requestAnimationFrame(() => document.getElementById(`proyecto-${proyectoId}`)?.scrollIntoView({ block: 'center' }))
+  }
 
   const verHoja = async (proyectoId: string) => {
     if (cargandoUrl) return
@@ -260,6 +274,18 @@ export default function EvaluacionPage() {
       <div className="flex-1 px-4 py-4 space-y-3 max-w-2xl mx-auto w-full">
         {error && <p className="text-sm text-red-600">{error}</p>}
 
+        {!error && grupoId && proyectos.length > 0 && (
+          <div role="tablist" className="grid grid-cols-2 rounded-full bg-gray-100 p-0.5 text-xs font-semibold">
+            {(['hojas', 'concentrado'] as const).map((v) => (
+              <button key={v} type="button" role="tab" aria-selected={vista === v} onClick={() => setVista(v)} className={`rounded-full py-1.5 ${vista === v ? 'bg-white text-green-800 shadow-sm' : 'text-gray-500'}`}>
+                {v === 'hojas' ? 'Hojas' : 'Concentrado'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!error && grupoId && vista === 'concentrado' && <ConcentradoGrupo grupoId={grupoId} onVerProyecto={verProyecto} />}
+
         {!error && proyectos.length === 0 && (
           <div className="text-center py-12">
             <div className="w-14 h-14 bg-teal-50 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-3">✅</div>
@@ -269,7 +295,7 @@ export default function EvaluacionPage() {
           </div>
         )}
 
-        {proyectos.map((proyecto) => {
+        {vista === 'hojas' && proyectos.map((proyecto) => {
           const estado = estados[proyecto.id]
           const errorEstado = erroresEstado[proyecto.id]
           const sinCaptura = proyecto.hojas_evaluacion?.admite_captura === false || !!sinCapturaDetectada[proyecto.id]

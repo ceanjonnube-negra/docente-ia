@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
-import { historialAcademicoGrupo } from '@/lib/seguimiento/historialAcademico'
+import { historialAcademicoGrupo, inscripcionesDelGrupo } from '@/lib/seguimiento/historialAcademico'
 
 export const runtime = 'nodejs'
 
@@ -71,15 +71,21 @@ export async function GET(req: NextRequest) {
     // Hito 3: resultados confirmados + periodos del ciclo (2 consultas),
     // con el modelo de lectura compartido (periodo resuelto, campos
     // formativos, conteos por alumno).
+    // Hito 3c: + inscripciones del grupo (nombres y «sin registro» del
+    // concentrado), en paralelo y en la misma respuesta.
     let historial
+    let inscripciones
     try {
-      historial = await historialAcademicoGrupo(supabase, grupo.id, grupo.ciclo_escolar_id)
+      ;[historial, inscripciones] = await Promise.all([
+        historialAcademicoGrupo(supabase, grupo.id, grupo.ciclo_escolar_id),
+        inscripcionesDelGrupo(supabase, grupo.id, grupo.ciclo_escolar_id),
+      ])
     } catch (err) {
       console.error('Error en historialAcademicoGrupo() dentro de GET historial-grupo:', err)
       return NextResponse.json({ error: 'No se pudieron recuperar los resultados del grupo.' }, { status: 500 })
     }
 
-    return NextResponse.json({ historial })
+    return NextResponse.json({ historial, inscripciones })
   } catch (err) {
     console.error('Error en GET /api/proyectos-seguimiento/historial-grupo:', err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error inesperado.' }, { status: 500 })

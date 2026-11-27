@@ -9,40 +9,11 @@
 // calificaciones, promedios ni conclusiones.
 
 import { IconoCampo, IconoHoja } from '@/components/Planeacion/Iconos'
-import { COLOR_NIVEL_CANONICO as COLOR_NIVEL, ETIQUETA_NIVEL_CANONICO, ORDEN_NIVELES_CANONICOS, type NivelTextoCanonico } from '@/lib/seguimiento/conversionCalificacion'
+import DistribucionNiveles from '@/components/ui/DistribucionNiveles'
+import { COLOR_NIVEL_CANONICO as COLOR_NIVEL, ETIQUETA_NIVEL_CANONICO } from '@/lib/seguimiento/conversionCalificacion'
 import type { HistorialAlumno, ProyectoEnHistorialAlumno } from '@/lib/seguimiento/historialGrupo'
 
-// Segmentos de la barra de distribución (mismos tonos que la matriz de
-// Evaluación, en versión sólida).
-const BARRA_NIVEL: Record<NivelTextoCanonico, string> = {
-  destacado: 'bg-green-600',
-  logrado: 'bg-teal-500',
-  en_proceso: 'bg-amber-400',
-  requiere_apoyo: 'bg-red-500',
-  no_evaluado: 'bg-gray-300',
-}
-
 const fecha = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) : null)
-
-function Distribucion({ distribucion }: { distribucion: Record<NivelTextoCanonico, number> }) {
-  const total = ORDEN_NIVELES_CANONICOS.reduce((s, n) => s + distribucion[n], 0)
-  const presentes = ORDEN_NIVELES_CANONICOS.filter((n) => distribucion[n] > 0)
-  return (
-    <div className="mt-2.5">
-      <div className="flex h-1.5 overflow-hidden rounded-full bg-gray-100" aria-hidden="true">
-        {presentes.map((n) => <span key={n} className={BARRA_NIVEL[n]} style={{ width: `${(distribucion[n] / total) * 100}%` }} />)}
-      </div>
-      <p className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] text-gray-600">
-        {presentes.map((n) => (
-          <span key={n} className="inline-flex items-center gap-1">
-            <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${BARRA_NIVEL[n]}`} />
-            {distribucion[n]} {ETIQUETA_NIVEL_CANONICO[n]}
-          </span>
-        ))}
-      </p>
-    </div>
-  )
-}
 
 function TarjetaProyecto({ item }: { item: ProyectoEnHistorialAlumno }) {
   const p = item.proyecto
@@ -63,7 +34,7 @@ function TarjetaProyecto({ item }: { item: ProyectoEnHistorialAlumno }) {
         <p className="mt-2 text-xs text-gray-500">Sin registro: este alumno no tiene resultados en este proyecto.</p>
       ) : (
         <>
-          <Distribucion distribucion={item.distribucion} />
+          <DistribucionNiveles distribucion={item.distribucion} />
           {item.resultado.conteo.requiereApoyo > 0 && (
             <p className="mt-1.5 text-xs font-medium text-red-700">
               {item.resultado.conteo.requiereApoyo === 1 ? '1 indicador en Requiere apoyo' : `${item.resultado.conteo.requiereApoyo} indicadores en Requiere apoyo`}

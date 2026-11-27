@@ -204,6 +204,20 @@ export function metadataDeProyecto(
 // Se aplica ANTES de construir, así estructura y resumen son coherentes.
 export type FiltroHistorial = { periodoId?: string | 'sin_periodo'; campoFormativo?: string }
 
+// Regla única del filtro (historial, concentrado, Chat).
+export function cumpleFiltro(p: ProyectoHistorialGrupo, filtro: FiltroHistorial): boolean {
+  const porPeriodo = filtro.periodoId === undefined || (filtro.periodoId === 'sin_periodo' ? p.periodo === null : p.periodo?.id === filtro.periodoId)
+  const porCampo = filtro.campoFormativo === undefined || p.camposFormativos.includes(filtro.campoFormativo)
+  return porPeriodo && porCampo
+}
+
+// Conteo directo de niveles de una lista de indicadores (las 5 claves).
+export function distribucionDe(indicadores: { nivel: NivelTextoCanonico }[]): Record<NivelTextoCanonico, number> {
+  const d = distribucionNivelesVacia()
+  for (const i of indicadores) d[i.nivel]++
+  return d
+}
+
 // periodos: los del ciclo (o de varios ciclos, con ciclo_escolar_id) para
 // resolver el periodo de cada proyecto. Sin ellos, solo se usa nada: todo
 // proyecto queda «Sin periodo asignado» salvo que el periodo registrado
@@ -256,11 +270,7 @@ export function construirHistorialGrupo(
     if (!proyectosPorId.has(fila.proyecto_id)) proyectosPorId.set(fila.proyecto_id, metadataDeProyecto(fila.proyecto_id, fila.proyectos_seguimiento, periodos))
   }
   // Filtro (periodo / campo formativo) sobre proyectos completos.
-  for (const [id, p] of proyectosPorId) {
-    const porPeriodo = filtro.periodoId === undefined || (filtro.periodoId === 'sin_periodo' ? p.periodo === null : p.periodo?.id === filtro.periodoId)
-    const porCampo = filtro.campoFormativo === undefined || p.camposFormativos.includes(filtro.campoFormativo)
-    if (!porPeriodo || !porCampo) proyectosPorId.delete(id)
-  }
+  for (const [id, p] of proyectosPorId) if (!cumpleFiltro(p, filtro)) proyectosPorId.delete(id)
   const filasIncluidas = filasValidas.filter((f) => proyectosPorId.has(f.proyecto_id))
   const compararProyectos = (a: { proyectoId: string; confirmadoEn: string | null }, b: { proyectoId: string; confirmadoEn: string | null }): number => {
     const confirmadoA = a.confirmadoEn ?? ''
@@ -424,8 +434,7 @@ export function organizarHistorialAlumno(
     for (const r of a.proyectos) {
       const proyecto = metaPorId.get(r.proyectoId)
       if (!proyecto) continue
-      const distribucion = distribucionNivelesVacia()
-      for (const i of r.indicadores) distribucion[i.nivel]++
+      const distribucion = distribucionDe(r.indicadores)
       agregar(a.inscripcionId, { estado: 'con_resultados', proyecto, resultado: r, distribucion })
       conResultados.push({ proyecto, resultado: r })
     }
@@ -462,6 +471,102 @@ export function organizarHistorialAlumno(
     ciclos: [...ciclos.values()],
     proyectosConResultados: conResultados,
     ultimaConfirmacion: conResultados[0]?.proyecto.confirmadoEn ?? null,
+    entradasExcluidas: historial.entradasAmbiguasExcluidas + historial.entradasInvalidasExcluidas,
+  }
+}
+
+// ------------------------------------------------------------------
+// Concentrado grupal (Hito 3c): el MISMO historial del grupo, filtrado con
+// cumpleFiltro, visto por proyecto y por alumno. Pura y determinista; solo
+// conteos directos (nunca promedios, calificaciones ni conclusiones).
+// «Sin registro» solo para inscripciones ACTIVAS sin resultados en un
+// proyecto; una baja aparece únicamente si tiene resultados.
+// ------------------------------------------------------------------
+export type InscripcionDelGrupo = { inscripcionId: string; alumnoId: string; nombre: string; estatus: string | null }
+
+export type ProyectoEnConcentrado = {
+  proyecto: ProyectoHistorialGrupo
+  distribucion: Record<NivelTextoCanonico, number>
+  alumnosConResultados: number
+  sinRegistro: number
+  indicadoresRequierenApoyo: number
+}
+export type CeldaConcentrado =
+  | { estado: 'con_resultados'; proyecto: ProyectoHistorialGrupo; resultado: ProyectoDeAlumno; distribucion: Record<NivelTextoCanonico, number> }
+  | { estado: 'sin_registro'; proyecto: ProyectoHistorialGrupo }
+export type AlumnoEnConcentrado = {
+  inscripcion: InscripcionDelGrupo
+  distribucion: Record<NivelTextoCanonico, number>
+  requiereApoyo: number
+  sinEvaluar: number
+  sinRegistro: number
+  proyectos: CeldaConcentrado[]
+  apoyo: IndicadorConApoyo[]
+}
+export type ConcentradoGrupo = {
+  // Opciones de filtro: de TODOS los proyectos (no solo los filtrados).
+  opciones: { periodos: PeriodoPresente[]; haySinPeriodo: boolean; campos: string[] }
+  proyectos: ProyectoEnConcentrado[]
+  alumnos: AlumnoEnConcentrado[]
+  distribucion: Record<NivelTextoCanonico, number>
+  indicadoresRequierenApoyo: number
+  alumnosConIndicadoresEnApoyo: number
+  entradasExcluidas: number
+}
+
+export function construirConcentradoGrupo(historial: HistorialGrupo, inscripciones: InscripcionDelGrupo[], filtro: FiltroHistorial = {}): ConcentradoGrupo {
+  const proyectos = historial.proyectos.filter((p) => cumpleFiltro(p, filtro))
+  const resultadosPorInscripcion = new Map(historial.alumnos.map((a) => [a.inscripcionId, a]))
+  const porInscripcion = new Map(inscripciones.map((i) => [i.inscripcionId, i]))
+  for (const a of historial.alumnos) {
+    if (!porInscripcion.has(a.inscripcionId)) porInscripcion.set(a.inscripcionId, { inscripcionId: a.inscripcionId, alumnoId: a.alumnoId, nombre: 'Alumno sin nombre registrado', estatus: null })
+  }
+  // Activas + cualquiera con resultados en los proyectos filtrados.
+  const visibles = [...porInscripcion.values()].filter((i) => i.estatus === 'activo' || resultadosPorInscripcion.get(i.inscripcionId)?.proyectos.some((r) => proyectos.some((p) => p.proyectoId === r.proyectoId)))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es') || a.inscripcionId.localeCompare(b.inscripcionId))
+
+  const alumnos: AlumnoEnConcentrado[] = visibles.map((ins) => {
+    const propio = resultadosPorInscripcion.get(ins.inscripcionId)
+    const celdas: CeldaConcentrado[] = []
+    for (const p of proyectos) {
+      const r = propio?.proyectos.find((x) => x.proyectoId === p.proyectoId)
+      if (r) celdas.push({ estado: 'con_resultados', proyecto: p, resultado: r, distribucion: distribucionDe(r.indicadores) })
+      else if (ins.estatus === 'activo') celdas.push({ estado: 'sin_registro', proyecto: p })
+    }
+    const indicadores = celdas.flatMap((c) => (c.estado === 'con_resultados' ? c.resultado.indicadores : []))
+    const ids = new Set(proyectos.map((p) => p.proyectoId))
+    return {
+      inscripcion: ins,
+      distribucion: distribucionDe(indicadores),
+      requiereApoyo: indicadores.filter((i) => i.nivel === 'requiere_apoyo').length,
+      sinEvaluar: indicadores.filter((i) => i.nivel === 'no_evaluado').length,
+      sinRegistro: celdas.filter((c) => c.estado === 'sin_registro').length,
+      proyectos: celdas,
+      apoyo: propio ? indicadoresQueRequierenApoyo(propio).filter((x) => ids.has(x.proyectoId)) : [],
+    }
+  })
+
+  const enProyectos: ProyectoEnConcentrado[] = proyectos.map((p) => {
+    const celdas = alumnos.map((a) => a.proyectos.find((c) => c.proyecto.proyectoId === p.proyectoId)).filter((c): c is CeldaConcentrado => !!c)
+    const indicadores = celdas.flatMap((c) => (c.estado === 'con_resultados' ? c.resultado.indicadores : []))
+    return {
+      proyecto: p,
+      distribucion: distribucionDe(indicadores),
+      alumnosConResultados: celdas.filter((c) => c.estado === 'con_resultados').length,
+      sinRegistro: celdas.filter((c) => c.estado === 'sin_registro').length,
+      indicadoresRequierenApoyo: indicadores.filter((i) => i.nivel === 'requiere_apoyo').length,
+    }
+  })
+
+  const todos = alumnos.flatMap((a) => a.proyectos.flatMap((c) => (c.estado === 'con_resultados' ? c.resultado.indicadores : [])))
+  const campos = [...new Set(historial.proyectos.flatMap((p) => p.camposFormativos))].sort((a, b) => a.localeCompare(b, 'es'))
+  return {
+    opciones: { periodos: historial.periodos, haySinPeriodo: historial.proyectosSinPeriodo > 0, campos },
+    proyectos: enProyectos,
+    alumnos,
+    distribucion: distribucionDe(todos),
+    indicadoresRequierenApoyo: todos.filter((i) => i.nivel === 'requiere_apoyo').length,
+    alumnosConIndicadoresEnApoyo: alumnos.filter((a) => a.requiereApoyo > 0).length,
     entradasExcluidas: historial.entradasAmbiguasExcluidas + historial.entradasInvalidasExcluidas,
   }
 }

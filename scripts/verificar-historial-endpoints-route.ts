@@ -155,7 +155,7 @@ async function main() {
   verificar(h?.resumen?.totalIndicadoresConfirmados === 4 && h?.resumen?.alumnosConResultados === 2, '1k. historial: 4 indicadores de 2 alumnos')
   verificar(h?.alumnos?.find((a: { inscripcionId: string }) => a.inscripcionId === INS_1)?.alumnoId === ALU_1, '1l. historial: alumno asociado por inscripción')
   verificar(h?.entradasAmbiguasExcluidas === 0 && h?.entradasInvalidasExcluidas === 0, '1m. historial: 0 exclusiones con datos válidos')
-  verificar(registro.tablasLeidas.join() === 'grupos,seguimiento_resultados,periodos_evaluacion', '1n. historial: exactamente 3 consultas (grupo, resultados y periodos del ciclo; sin N+1), ciclo ignorado del cliente')
+  verificar([...registro.tablasLeidas].sort().join() === 'grupos,inscripciones,periodos_evaluacion,seguimiento_resultados' && Array.isArray(ok.cuerpo.inscripciones), '1n. historial: exactamente 4 consultas (grupo, resultados, periodos e inscripciones del ciclo; sin N+1), ciclo ignorado del cliente')
 
   fallarTabla = 'seguimiento_resultados'
   verificar((await historial(`?grupo_id=${G_A}`, 'token-a')).status === 500, '1o. historial: error de Supabase → 500 (nunca lista vacía)')

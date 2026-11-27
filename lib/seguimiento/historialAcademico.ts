@@ -9,7 +9,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { periodosEvaluacionDeCiclos, resultadosProyectoAlumno, resultadosProyectoGrupo, type ProyectoDeResultado } from '../motorContexto'
-import { construirHistorialGrupo, metadataDeProyecto, organizarHistorialAlumno, type FiltroHistorial, type HistorialAlumno, type HistorialGrupo, type InscripcionHistorial } from './historialGrupo'
+import { construirHistorialGrupo, metadataDeProyecto, organizarHistorialAlumno, type FiltroHistorial, type HistorialAlumno, type HistorialGrupo, type InscripcionDelGrupo, type InscripcionHistorial } from './historialGrupo'
 
 // Grupo + ciclo (el grupo ya verificado como del docente por quien llama).
 export async function historialAcademicoGrupo(sb: SupabaseClient, grupoId: string, cicloEscolarId: string, filtro: FiltroHistorial = {}): Promise<HistorialGrupo> {
@@ -73,4 +73,17 @@ export async function historialAlumnoCompleto(sb: SupabaseClient, alumnoId: stri
   if (proyectos.error) throw proyectos.error
   const deSusGrupos = ((proyectos.data ?? []) as (ProyectoDeResultado & { id: string })[]).map((p) => metadataDeProyecto(p.id, p, periodos))
   return organizarHistorialAlumno(construirHistorialGrupo(filas, periodos), inscripciones, deSusGrupos)
+}
+
+// Inscripciones del grupo en el ciclo (todas, con su estatus y el nombre
+// del alumno) para el concentrado: nombres y «sin registro». Una consulta.
+export async function inscripcionesDelGrupo(sb: SupabaseClient, grupoId: string, cicloEscolarId: string): Promise<InscripcionDelGrupo[]> {
+  const { data, error } = await sb
+    .from('inscripciones')
+    .select('id, alumno_id, estatus, alumnos(nombre)')
+    .eq('grupo_id', grupoId)
+    .eq('ciclo_escolar_id', cicloEscolarId)
+  if (error) throw error
+  return ((data ?? []) as unknown as { id: string; alumno_id: string; estatus: string | null; alumnos: { nombre: string | null } | null }[])
+    .map((i) => ({ inscripcionId: i.id, alumnoId: i.alumno_id, nombre: i.alumnos?.nombre ?? 'Alumno sin nombre registrado', estatus: i.estatus }))
 }
