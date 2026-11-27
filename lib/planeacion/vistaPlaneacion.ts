@@ -107,15 +107,15 @@ export const ORIGEN_VERSION: Record<string, string> = { aprobacion: 'Aprobación
 // ------------------------------------------------------------------
 type FilaPlaneacion = { id: string; nombre: string | null; fecha_inicio: string | null; fecha_fin: string | null; version: number; creado_en: string }
 type FilaVersionResumen = { planeacion_id: string; numero: number; hoja_id: string | null; campos: string[] | null; dias: number | null; actividades: unknown[] | null }
-type FilaHoja = { id: string; identificador_visible: string; proyecto_id: string; reemplazada_por: string | null; primer_alumno: unknown }
+type FilaHoja = { id: string; identificador_visible: string; proyecto_id: string; reemplazada_por: string | null; roster_congelado: unknown }
 
 export class ErrorVistaPlaneacion extends Error {}
 
 async function hojasPorId(sb: SupabaseClient, ids: string[]): Promise<Map<string, HojaResumen>> {
   if (ids.length === 0) return new Map()
-  const { data, error } = await sb.from('hojas_evaluacion').select('id, identificador_visible, proyecto_id, reemplazada_por, primer_alumno:roster_congelado->0').in('id', ids)
+  const { data, error } = await sb.from('hojas_evaluacion').select('id, identificador_visible, proyecto_id, reemplazada_por, roster_congelado').in('id', ids)
   if (error) throw new ErrorVistaPlaneacion('No se pudieron leer las hojas de evaluación.')
-  return new Map(((data ?? []) as FilaHoja[]).map((h) => [h.id, { id: h.id, codigo: h.identificador_visible, proyectoId: h.proyecto_id, reemplazada: h.reemplazada_por !== null, admiteCaptura: admiteCapturaAutomatica(h.primer_alumno) }]))
+  return new Map(((data ?? []) as FilaHoja[]).map((h) => [h.id, { id: h.id, codigo: h.identificador_visible, proyectoId: h.proyecto_id, reemplazada: h.reemplazada_por !== null, admiteCaptura: admiteCapturaAutomatica(h.roster_congelado) }]))
 }
 
 // Planeaciones publicadas del grupo, con los datos de su versión vigente.

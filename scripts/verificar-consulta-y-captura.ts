@@ -69,18 +69,35 @@ verificar(preguntas.every((t) => detectarConsultaPlaneacion(t, '2026-11-26') ===
   '1i. Las preguntas de contenido no se confunden con consultas de planeaciones ni con «muéstramela»: llegan a la respuesta sobre el texto canónico')
 
 console.log('== 2. Hojas históricas sin captura automática')
-verificar(!admiteCapturaAutomatica(null) && !admiteCapturaAutomatica(undefined) && admiteCapturaAutomatica({ inscripcion_id: 'x' }), '2a. Mismo criterio que estado-captura: sin registro de alumnos (o vacío) no admite captura')
-const historica = conCapturaAutomatica({ id: 'p1', hojas_evaluacion: { identificador_visible: 'SG-VXKR', storage_path: 'x', generado_en: '2026-09-23', primer_alumno: null } })
-const compatible = conCapturaAutomatica({ id: 'p2', hojas_evaluacion: { identificador_visible: 'SG-W4W2', storage_path: 'y', generado_en: '2026-11-25', primer_alumno: { inscripcion_id: 'i' } } })
-const sinHoja = conCapturaAutomatica({ id: 'p3', hojas_evaluacion: null })
-verificar(JSON.stringify(historica.hojas_evaluacion) === JSON.stringify({ identificador_visible: 'SG-VXKR', storage_path: 'x', generado_en: '2026-09-23', admite_captura: false })
-  && compatible.hojas_evaluacion?.admite_captura === true && sinHoja.hojas_evaluacion === null,
-  '2b. El listado de proyectos indica admite_captura (sin exponer la lista de alumnos; documentos históricos intactos)')
+// Estructura REAL de roster_congelado en E2E (jsonb → arreglo de objetos con
+// alumno_id, inscripcion_id, nombre y posicion; valores anonimizados).
+const alumno = (n: number) => ({ alumno_id: `a${n}`, inscripcion_id: `i${n}`, nombre: `Alumno ${n}`, posicion: n })
+verificar(!admiteCapturaAutomatica(null) && !admiteCapturaAutomatica(undefined) && !admiteCapturaAutomatica([]) && admiteCapturaAutomatica([alumno(1), alumno(2)]),
+  '2a. Mismo criterio que estado-captura: sin registro de alumnos (o vacío) no admite captura; con alumnos, sí')
+// Respuesta de GET /api/proyectos-seguimiento tal como la entrega Supabase
+// (hoja embebida a uno: objeto; jsonb: arreglo), serializada como en la red.
+const respuestaSupabase = JSON.parse(JSON.stringify([
+  { id: 'p-fbgc', estado: 'hoja_generada', hoja_id: 'h1', hojas_evaluacion: { identificador_visible: 'SG-FBGC', storage_path: 'd/SG-FBGC.pdf', generado_en: '2026-11-23T10:00:00+00:00', roster_congelado: [alumno(1), alumno(2)] } },
+  { id: 'p-gjcd', estado: 'hoja_generada', hoja_id: 'h2', hojas_evaluacion: { identificador_visible: 'SG-GJCD', storage_path: 'd/SG-GJCD.pdf', generado_en: '2026-11-24T10:00:00+00:00', roster_congelado: [alumno(1), alumno(2)] } },
+  { id: 'p-t6mu', estado: 'hoja_generada', hoja_id: 'h3', hojas_evaluacion: { identificador_visible: 'SG-T6MU', storage_path: 'd/SG-T6MU.pdf', generado_en: '2026-11-24T11:00:00+00:00', roster_congelado: [alumno(1), alumno(2)] } },
+  { id: 'p-3uaa', estado: 'confirmado', hoja_id: 'h4', hojas_evaluacion: { identificador_visible: 'SG-3UAA', storage_path: 'd/SG-3UAA.pdf', generado_en: '2026-11-24T12:00:00+00:00', roster_congelado: [alumno(1), alumno(2)] } },
+  { id: 'p-prbt', estado: 'hoja_generada', hoja_id: 'h5', hojas_evaluacion: { identificador_visible: 'SG-PRBT', storage_path: null, generado_en: '2026-11-26T18:08:00+00:00', roster_congelado: null } },
+  { id: 'p-sin-hoja', estado: 'planeado', hoja_id: null, hojas_evaluacion: null },
+])) as { id: string; hojas_evaluacion: unknown }[]
+const listados = respuestaSupabase.map(conCapturaAutomatica)
+const admite = Object.fromEntries(listados.filter((p) => p.hojas_evaluacion).map((p) => [p.hojas_evaluacion!.identificador_visible, p.hojas_evaluacion!.admite_captura]))
+verificar(JSON.stringify(admite) === JSON.stringify({ 'SG-FBGC': true, 'SG-GJCD': true, 'SG-T6MU': true, 'SG-3UAA': true, 'SG-PRBT': false }),
+  '2b. Con la estructura real de Supabase: las 4 hojas con alumnos admiten captura y solo SG-PRBT no (regresión de las 18:11)')
+verificar(listados.every((p) => !p.hojas_evaluacion || !('roster_congelado' in p.hojas_evaluacion)) && listados.find((p) => p.id === 'p-sin-hoja')!.hojas_evaluacion === null,
+  '2b2. El registro de alumnos nunca llega al cliente; un proyecto sin hoja queda igual')
+const consultadas = listados.filter((p) => p.hojas_evaluacion && (p.hojas_evaluacion as { admite_captura?: boolean }).admite_captura !== false).map((p) => p.id)
+verificar(consultadas.join() === 'p-fbgc,p-gjcd,p-t6mu,p-3uaa', '2b3. Evaluación consulta el estado real de las 4 compatibles (SG-3UAA conserva «Resultados registrados») y no el de SG-PRBT')
 const listado = leer('app/api/proyectos-seguimiento/route.ts')
-verificar(listado.includes('primer_alumno:roster_congelado->0') && listado.includes('.map(conCapturaAutomatica)'), '2c. Se lee solo el primer alumno, en la misma consulta del listado')
+verificar(listado.includes('hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en, roster_congelado)') && listado.includes('.map(conCapturaAutomatica)') && !/->\s*0/.test(listado),
+  '2c. Sin rutas JSON por índice: se lee la columna real y se resume en el servidor')
 const estadoCaptura = leer('app/api/proyectos-seguimiento/[id]/estado-captura/route.ts')
-verificar(/no admite captura automática\.', codigo: CODIGO_SIN_CAPTURA_AUTOMATICA \}, \{ status: 409 \}/.test(estadoCaptura) && CODIGO_SIN_CAPTURA_AUTOMATICA === 'sin_captura_automatica',
-  '2d. estado-captura conserva su 409 y agrega un código estable (los errores no se ocultan)')
+verificar(/no admite captura automática\.', codigo: CODIGO_SIN_CAPTURA_AUTOMATICA \}, \{ status: 409 \}/.test(estadoCaptura) && /if \(!rosterCongelado \|\| !admiteCapturaAutomatica\(rosterCongelado\)\)/.test(estadoCaptura) && CODIGO_SIN_CAPTURA_AUTOMATICA === 'sin_captura_automatica',
+  '2d. estado-captura usa la MISMA regla, conserva su 409 y agrega un código estable (los errores no se ocultan)')
 const evaluacion = leer('app/dashboard/evaluacion/page.tsx')
 verificar(/lista\.filter\(\(p\) => p\.hojas_evaluacion\?\.admite_captura !== false\)\.map/.test(evaluacion), '2e. Evaluación no consulta las hojas que no admiten captura')
 verificar(/sinCaptura: json\.codigo === CODIGO_SIN_CAPTURA_AUTOMATICA/.test(evaluacion) && /if \(r\.error && !r\.sinCaptura\)/.test(evaluacion), '2f. Si aun así el servidor lo indica (datos viejos), lo reconoce como estado permanente, no como error')
@@ -88,7 +105,7 @@ verificar(evaluacion.includes('{!estado && sinCaptura && <span className="font-m
   && evaluacion.includes('{!estado && !sinCaptura && errorEstado && <span className="font-medium text-red-600">No se pudo consultar el estado</span>}'),
   '2g. La hoja histórica se muestra como siempre; un error real ya no se disfraza de «no disponible»')
 const planeacion = leer('app/dashboard/planeacion/page.tsx')
-verificar((planeacion.match(/\.hoja\?\.admiteCaptura \? [a-z]\.hoja\.proyectoId : null/g) ?? []).length === 2 && leer('lib/planeacion/vistaPlaneacion.ts').includes('admiteCaptura: admiteCapturaAutomatica(h.primer_alumno)'),
+verificar((planeacion.match(/\.hoja\?\.admiteCaptura \? [a-z]\.hoja\.proyectoId : null/g) ?? []).length === 2 && leer('lib/planeacion/vistaPlaneacion.ts').includes('admiteCaptura: admiteCapturaAutomatica(h.roster_congelado)') && !/->\s*0/.test(leer('lib/planeacion/vistaPlaneacion.ts')),
   '2h. Planeación (lista y detalle) tampoco las consulta')
 
 console.log(`\n${total - fallos}/${total} pruebas pasaron.`)

@@ -60,15 +60,15 @@ export async function GET(req: NextRequest) {
     const { data, error } = await supabase
       .from('proyectos_seguimiento')
       .select(
-        'id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, estado, hoja_id, creado_en, hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en, primer_alumno:roster_congelado->0)'
+        'id, nombre, campos_formativos, periodo_evaluacion_id, fecha_inicio, fecha_fin, estado, hoja_id, creado_en, hojas_evaluacion!hoja_id(identificador_visible, storage_path, generado_en, roster_congelado)'
       )
       .eq('grupo_id', grupoId)
       .order('creado_en', { ascending: false })
 
     if (error) return NextResponse.json({ error: 'No se pudieron leer los proyectos.' }, { status: 500 })
-    // admite_captura: la hoja tiene registro de alumnos congelado (el mismo
-    // criterio de estado-captura: sin él o vacío no admite captura
-    // automática). Se lee solo su primer alumno, nunca la lista completa.
+    // admite_captura: la hoja tiene registro de alumnos congelado (la misma
+    // regla que estado-captura, admiteCapturaAutomatica). El registro se lee
+    // solo en el servidor y nunca se envía al cliente.
     return NextResponse.json({ proyectos: (data ?? []).map(conCapturaAutomatica) })
   } catch (err) {
     console.error('Error en GET /api/proyectos-seguimiento:', err)

@@ -60,7 +60,7 @@ function base() {
       { id: 'vp4', planeacion_id: 'p4', docente_id: A, grupo_id: G2, numero: 1, origen: 'aprobacion', contenido: 'otro grupo', estructura: est(['Ética'], 3, []), hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: null, creada_en: '2026-11-20T10:00:00Z' },
       { id: 'vp5', planeacion_id: 'p5', docente_id: B, grupo_id: G1, numero: 1, origen: 'aprobacion', contenido: 'ajeno', estructura: est(['Ética'], 3, []), hoja_id: null, documento_word_archivo_id: null, documento_pdf_archivo_id: null, creada_en: '2026-11-21T10:00:00Z' },
     ] as Fila[],
-    hojas_evaluacion: [{ id: 'h1', docente_id: A, identificador_visible: 'SG-3UAA', proyecto_id: 'pr1', reemplazada_por: null, indicadores: [{ indicador_especifico: 'Indicador original' }] }] as Fila[],
+    hojas_evaluacion: [{ id: 'h1', docente_id: A, identificador_visible: 'SG-3UAA', proyecto_id: 'pr1', reemplazada_por: null, indicadores: [{ indicador_especifico: 'Indicador original' }], roster_congelado: [{ alumno_id: 'a1', inscripcion_id: 'i1', nombre: 'Alumno 1', posicion: 1 }] }] as Fila[],
   }
 }
 type Bd = ReturnType<typeof base>
@@ -77,7 +77,6 @@ function cliente(bd: Bd, docente: string) {
       // estructura->proyecto->x como alias (lo que hace PostgREST).
       const r: Fila = { ...f }
       for (const m of c.columnas.matchAll(/(\w+):estructura->proyecto->(\w+)/g)) r[m[1]] = ((f.estructura as Fila)?.proyecto as Fila)?.[m[2]] ?? null
-      for (const m of c.columnas.matchAll(/(\w+):(\w+)->0\b/g)) r[m[1]] = Array.isArray(f[m[2]]) ? (f[m[2]] as unknown[])[0] ?? null : null
       return r
     }
     const resultado = () => {
