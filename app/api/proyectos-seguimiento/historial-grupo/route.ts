@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
-import { resultadosProyectoGrupo } from '@/lib/motorContexto'
-import { construirHistorialGrupo } from '@/lib/seguimiento/historialGrupo'
+import { historialAcademicoGrupo } from '@/lib/seguimiento/historialAcademico'
 
 export const runtime = 'nodejs'
 
@@ -69,15 +68,16 @@ export async function GET(req: NextRequest) {
     // Query 2 — la única lectura de resultadosProyectoGrupo(), sin
     // modificarla. Un error real de Supabase se propaga como 500 (esa
     // función relanza, nunca convierte un error en []).
-    let filas
+    // Hito 3: resultados confirmados + periodos del ciclo (2 consultas),
+    // con el modelo de lectura compartido (periodo resuelto, campos
+    // formativos, conteos por alumno).
+    let historial
     try {
-      filas = await resultadosProyectoGrupo(supabase, grupo.id, grupo.ciclo_escolar_id)
+      historial = await historialAcademicoGrupo(supabase, grupo.id, grupo.ciclo_escolar_id)
     } catch (err) {
-      console.error('Error en resultadosProyectoGrupo() dentro de GET historial-grupo:', err)
+      console.error('Error en historialAcademicoGrupo() dentro de GET historial-grupo:', err)
       return NextResponse.json({ error: 'No se pudieron recuperar los resultados del grupo.' }, { status: 500 })
     }
-
-    const historial = construirHistorialGrupo(filas)
 
     return NextResponse.json({ historial })
   } catch (err) {

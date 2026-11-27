@@ -60,7 +60,7 @@ function fila(p: Partial<ResultadoProyectoGrupo> & { proyecto_id: string; inscri
     confianza: 1,
     corregido_manualmente: false,
     observacion: null,
-    proyectos_seguimiento: { nombre: 'Proyecto', grupo_id: 'g', ciclo_escolar_id: 'c', periodo_evaluacion_id: periodo, origen_resultados: 'fotografia', confirmado_en: confirmadoEn },
+    proyectos_seguimiento: { nombre: 'Proyecto', docente_id: 'd', grupo_id: 'g', ciclo_escolar_id: 'c', periodo_evaluacion_id: periodo, campos_formativos: ['Lenguajes'], fecha_inicio: null, fecha_fin: null, origen_resultados: 'fotografia', confirmado_en: confirmadoEn },
     ...p,
   }
 }
@@ -70,7 +70,7 @@ async function main() {
   {
     const filas = [{ proyecto_id: P1 }]
     const { sb, llamadas } = clienteFalso({ data: filas, error: null })
-    const r = await resultadosProyectoAlumno(sb, ALU_A)
+    const r = await resultadosProyectoAlumno(sb, ALU_A, 'docente-1')
     const select = String(llamadas.find((l) => l.metodo === 'select')?.args[0] ?? '')
     verificar(llamadas[0]?.metodo === 'from' && llamadas[0].args[0] === 'seguimiento_resultados', '1a. Alumno: lee únicamente seguimiento_resultados')
     verificar(/proyectos_seguimiento!inner/.test(select), '1b. Alumno: embed !inner con proyectos_seguimiento')
@@ -79,9 +79,10 @@ async function main() {
     verificar(llamadas.some((l) => l.metodo === 'not' && l.args[0] === 'proyectos_seguimiento.confirmado_en' && l.args[1] === 'is' && l.args[2] === null), '1e. Alumno: solo proyectos confirmados (confirmado_en no nulo)')
     verificar(!llamadas.some((l) => ESCRITURA.has(l.metodo)), '1f. Alumno: ninguna escritura ni RPC')
     verificar(r.length === 1, '1g. Alumno: devuelve las filas recibidas')
+    verificar(llamadas.some((l) => l.metodo === 'eq' && l.args[0] === 'proyectos_seguimiento.docente_id' && l.args[1] === 'docente-1') && /inscripcion_id/.test(select), '1i. Alumno (Hito 3): separado por docente y con inscripción explícita')
     const { sb: sbError } = clienteFalso({ data: null, error: { code: 'XX' } })
     let lanzo = false
-    try { await resultadosProyectoAlumno(sbError, ALU_A) } catch { lanzo = true }
+    try { await resultadosProyectoAlumno(sbError, ALU_A, 'docente-1') } catch { lanzo = true }
     verificar(lanzo, '1h. Alumno: un error de Supabase se relanza (nunca se convierte en [])')
   }
 

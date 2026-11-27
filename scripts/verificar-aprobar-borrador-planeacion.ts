@@ -12,6 +12,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { resolverPeriodoDeProyecto } from '../lib/seguimiento/periodoProyecto'
 import { join } from 'node:path'
 import { inflateSync } from 'node:zlib'
 import JSZip from 'jszip'
@@ -1009,6 +1010,17 @@ async function main() {
     }
     verificar(resolverPeriodoPorFechaInicio(PERIODOS, '2026-12-01')?.id === 'p2' && resolverPeriodoPorFechaInicio(PERIODOS, '2026-11-30')?.id === 'p1' && resolverPeriodoPorFechaInicio(PERIODOS, '2027-04-01') === null,
       'H4b. El periodo se decide por la fecha de inicio, con límites inclusivos')
+    // H4c. Hito 3 — regla compartida (resolverPeriodoDeProyecto) con inicio y fin.
+    {
+      const rp = (ini: string | null, fin: string | null, lista: typeof PERIODOS | Fila[] = PERIODOS) => resolverPeriodoDeProyecto({ periodoEvaluacionId: null, fechaInicio: ini, fechaFin: fin }, lista as Parameters<typeof resolverPeriodoDeProyecto>[1])?.id ?? null
+      verificar(rp('2026-11-24', '2026-11-28') === 'p1' && rp('2026-12-01', '2026-12-05') === 'p2' && rp('2026-11-30', '2026-11-30') === 'p1', 'H4c. Proyecto completamente contenido en un periodo (límites inclusivos): ese periodo')
+      verificar(rp('2026-11-28', '2026-12-04') === null, 'H4d. Proyecto que abarca dos periodos: sin periodo')
+      verificar(rp('2026-09-01', '2026-09-05', [...PERIODOS, { id: 'p-solapado', ciclo_escolar_id: 'ciclo-1', numero_periodo: 9, nombre: 'Solapado', fecha_inicio: '2026-08-05', fecha_fin: '2026-09-30' }]) === null
+        && rp('2026-09-01', '2026-09-05', [{ id: 'p-sin', ciclo_escolar_id: 'ciclo-1', numero_periodo: 1, nombre: 'Sin fechas', fecha_inicio: null, fecha_fin: null }]) === null, 'H4e. Periodos superpuestos o sin fechas: sin periodo')
+      verificar(rp('2027-04-01', '2027-04-05') === null && rp('2026-09-01', '2026-09-05', []) === null, 'H4f. Sin periodo válido (fuera de rango o sin periodos): sin periodo')
+      verificar(/resolverPeriodoDeProyecto\(\{ periodoEvaluacionId: null, fechaInicio: resumen\.fechaInicio, fechaFin: resumen\.fechaFin \}, periodos\)/.test(readFileSync('lib/planeacion/aprobarBorrador.ts', 'utf-8'))
+        && /resolverPeriodoDeProyecto\(/.test(readFileSync('app/api/proyectos-seguimiento/route.ts', 'utf-8')), 'H4g. Aprobación y creación manual usan la misma regla compartida (inicio y fin)')
+    }
 
     // H5. Programa Analítico, docente, propuestas, cambios y alteraciones (regla pura).
     const ctxCarga = async (curriculo: Record<string, Fila[]>, grupo: string) => cargarCandidatosCurricularesGrupo(clienteFalso(DOCENTE_1, datosCurriculares(curriculo)).sb, grupo)

@@ -309,6 +309,36 @@ export async function periodosEvaluacionDelCiclo(sb: SupabaseClient, cicloEscola
 // datos del proyecto va anidado bajo proyectos_seguimiento. En esta
 // rama todavía no tiene consumidores y la lectura con RLS de un docente
 // real aún no se ha verificado contra Supabase.
+// Datos reales del proyecto que acompañan a cada resultado (un solo embed,
+// sin consultas adicionales por proyecto).
+export type ProyectoDeResultado = {
+  nombre: string
+  docente_id: string
+  grupo_id: string
+  ciclo_escolar_id: string
+  periodo_evaluacion_id: string | null
+  campos_formativos: string[] | null
+  fecha_inicio: string | null
+  fecha_fin: string | null
+  origen_resultados: string | null
+  confirmado_en: string
+}
+
+// Periodos de varios ciclos en UNA consulta (historial individual: un
+// alumno puede tener inscripciones en más de un ciclo). Un error se
+// relanza: nunca se confunde con "sin periodos".
+export async function periodosEvaluacionDeCiclos(sb: SupabaseClient, cicloIds: string[]): Promise<(PeriodoEvaluacion & { ciclo_escolar_id: string })[]> {
+  const ids = [...new Set(cicloIds)].filter(Boolean)
+  if (!ids.length) return []
+  const { data, error } = await sb
+    .from('periodos_evaluacion')
+    .select('id, nombre, numero_periodo, fecha_inicio, fecha_fin, ciclo_escolar_id')
+    .in('ciclo_escolar_id', ids)
+    .order('numero_periodo');
+  if (error) throw error;
+  return (data || []) as (PeriodoEvaluacion & { ciclo_escolar_id: string })[];
+}
+
 export type ResultadoProyectoConfirmado = {
   proyecto_id: string
   indicador_numero: number
@@ -318,14 +348,7 @@ export type ResultadoProyectoConfirmado = {
   confianza: number
   corregido_manualmente: boolean
   observacion: string | null
-  proyectos_seguimiento: {
-    nombre: string
-    grupo_id: string
-    ciclo_escolar_id: string
-    periodo_evaluacion_id: string | null
-    origen_resultados: string | null
-    confirmado_en: string
-  } | null
+  proyectos_seguimiento: ProyectoDeResultado | null
 }
 
 // Lectura server-side de los resultados académicos CANÓNICOS CONFIRMADOS
@@ -346,11 +369,18 @@ export type ResultadoProyectoConfirmado = {
 // - 1 sola query, 0 llamadas IA. No se agrupa por proyecto ni se
 //   calcula ninguna conclusión pedagógica aquí — eso es responsabilidad
 //   de una capa posterior (síntesis), no de esta lectura.
-export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: string): Promise<ResultadoProyectoConfirmado[]> {
+// Hito 3: devuelve la MISMA forma que resultadosProyectoGrupo (alumno_id e
+// inscripcion_id explícitos) para construir el historial individual con
+// el mismo modelo de lectura; filtra además por el docente dueño del
+// proyecto (separación explícita, además de RLS). Todas sus inscripciones:
+// cada una conserva su grupo y ciclo.
+export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: string, docenteId: string): Promise<ResultadoProyectoGrupo[]> {
   const { data, error } = await sb
     .from('seguimiento_resultados')
     .select(`
       proyecto_id,
+      alumno_id,
+      inscripcion_id,
       indicador_numero,
       indicador_especifico,
       aspecto_general,
@@ -360,18 +390,23 @@ export async function resultadosProyectoAlumno(sb: SupabaseClient, alumnoId: str
       observacion,
       proyectos_seguimiento!inner (
         nombre,
+        docente_id,
         grupo_id,
         ciclo_escolar_id,
         periodo_evaluacion_id,
+        campos_formativos,
+        fecha_inicio,
+        fecha_fin,
         origen_resultados,
         confirmado_en
       )
     `)
     .eq('alumno_id', alumnoId)
+    .eq('proyectos_seguimiento.docente_id', docenteId)
     .not('proyectos_seguimiento.confirmado_en', 'is', null)
     .order('confirmado_en', { ascending: false, referencedTable: 'proyectos_seguimiento' });
   if (error) throw error;
-  return (data || []) as unknown as ResultadoProyectoConfirmado[];
+  return (data || []) as unknown as ResultadoProyectoGrupo[];
 }
 
 // Misma fuente/filosofía que ResultadoProyectoConfirmado (ver arriba) —
@@ -392,14 +427,7 @@ export type ResultadoProyectoGrupo = {
   confianza: number
   corregido_manualmente: boolean
   observacion: string | null
-  proyectos_seguimiento: {
-    nombre: string
-    grupo_id: string
-    ciclo_escolar_id: string
-    periodo_evaluacion_id: string | null
-    origen_resultados: string | null
-    confirmado_en: string
-  } | null
+  proyectos_seguimiento: ProyectoDeResultado | null
 }
 
 // Lectura server-side CANÓNICA de los resultados confirmados de TODO un
@@ -446,9 +474,13 @@ export async function resultadosProyectoGrupo(sb: SupabaseClient, grupoId: strin
       observacion,
       proyectos_seguimiento!inner (
         nombre,
+        docente_id,
         grupo_id,
         ciclo_escolar_id,
         periodo_evaluacion_id,
+        campos_formativos,
+        fecha_inicio,
+        fecha_fin,
         origen_resultados,
         confirmado_en
       )

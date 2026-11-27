@@ -33,6 +33,7 @@ import type { ResultadoProyectoGrupo } from '../motorContexto'
 import type { AspectoGeneral } from './tipos'
 import { ASPECTOS_GENERALES } from './tipos'
 import type { NivelTextoCanonico } from './conversionCalificacion'
+import { resolverPeriodoDeProyecto, type PeriodoReferencia, type PeriodoResuelto } from './periodoProyecto'
 
 // Único lugar de este archivo donde se escriben los 5 valores
 // literales — tanto la plantilla de conteo (distribucionNivelesVacia)
@@ -75,16 +76,42 @@ export type IndicadorConfirmadoGrupo = {
   nivel: NivelTextoCanonico
 }
 
-// Metadata de un proyecto — deliberadamente SOLO estos 3 campos (los
-// únicos que resultadosProyectoGrupo() ya conoce por proyecto): nunca
-// se inventa un nombre/fecha que esa función no devuelve.
+// Metadata de un proyecto: SOLO lo que el embed de resultadosProyecto*()
+// ya trae (Hito 3: nombre, grupo, ciclo, campos formativos y fechas
+// reales) más el periodo resuelto de forma determinista
+// (periodoProyecto.ts). Nunca se inventa un dato que no venga del embed.
 export type ProyectoHistorialGrupo = {
   proyectoId: string
   confirmadoEn: string | null
   periodoEvaluacionId: string | null
+  nombre: string | null
+  grupoId: string | null
+  cicloEscolarId: string | null
+  camposFormativos: string[]
+  // Solo si el proyecto tiene UN campo formativo: los indicadores no
+  // guardan su campo, así que con varios no se atribuye a ninguno.
+  campoFormativo: string | null
+  fechaInicio: string | null
+  fechaFin: string | null
+  periodo: PeriodoResuelto | null
 }
 
-export type ProyectoDeAlumno = ProyectoHistorialGrupo & {
+// Conteo directo por alumno y proyecto. «Sin evaluar» (no_evaluado: la
+// hoja no tiene marca) es AUSENCIA de evaluación, nunca un nivel bajo;
+// «Requiere apoyo» es un nivel confirmado. Nunca se mezclan.
+export type ConteoAlumnoProyecto = {
+  evaluados: number
+  sinEvaluar: number
+  requiereApoyo: number
+}
+
+// Solo identidad del proyecto: el resto de su metadata vive una sola vez
+// en HistorialGrupo.proyectos (no se duplica por alumno).
+export type ProyectoDeAlumno = {
+  proyectoId: string
+  confirmadoEn: string | null
+  periodoEvaluacionId: string | null
+  conteo: ConteoAlumnoProyecto
   // Ordenados por indicadorNumero ascendente (sección 8) — nunca se
   // repite proyectoId/alumnoId/inscripcionId aquí dentro: ya los fija
   // el nodo padre (alumno) y el nodo abuelo (este mismo proyecto), ver
@@ -113,8 +140,14 @@ export type ResumenHistorialGrupo = {
   distribucionNivelesPorAspecto: Record<AspectoGeneral, Record<NivelTextoCanonico, number>>
 }
 
+export type PeriodoPresente = { id: string; nombre: string; numero: number }
+
 export type HistorialGrupo = {
   proyectos: ProyectoHistorialGrupo[]
+  // Periodos con al menos un proyecto (por número), y cuántos proyectos
+  // quedaron «Sin periodo asignado».
+  periodos: PeriodoPresente[]
+  proyectosSinPeriodo: number
   alumnos: AlumnoHistorialGrupo[]
   resumen: ResumenHistorialGrupo
   // Nunca "primero gana" ni "último gana" (sección 9): cuenta cuántas
@@ -141,7 +174,20 @@ function claveIdentidad(fila: ResultadoProyectoGrupo): string {
 // Pura, determinista, 0 IA, 0 I/O. Recibe exactamente lo que
 // resultadosProyectoGrupo() ya devuelve — nunca consulta Supabase ni
 // conoce cómo se obtuvieron esas filas.
-export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): HistorialGrupo {
+// Filtro opcional (concentrado, Chat): por periodo resuelto ('sin_periodo'
+// = proyectos sin periodo asignado) y/o por campo formativo del proyecto.
+// Se aplica ANTES de construir, así estructura y resumen son coherentes.
+export type FiltroHistorial = { periodoId?: string | 'sin_periodo'; campoFormativo?: string }
+
+// periodos: los del ciclo (o de varios ciclos, con ciclo_escolar_id) para
+// resolver el periodo de cada proyecto. Sin ellos, solo se usa nada: todo
+// proyecto queda «Sin periodo asignado» salvo que el periodo registrado
+// esté en la lista.
+export function construirHistorialGrupo(
+  filas: ResultadoProyectoGrupo[],
+  periodos: (PeriodoReferencia & { ciclo_escolar_id?: string })[] = [],
+  filtro: FiltroHistorial = {}
+): HistorialGrupo {
   // Paso 1a — detectar duplicados de identidad ANTES de construir
   // nada: una clave vista más de una vez se marca ambigua (las N
   // filas que la comparten, no solo la 2ª en adelante) — nunca
@@ -182,15 +228,36 @@ export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): Histor
   // cada fila, nunca de una consulta adicional).
   const proyectosPorId = new Map<string, ProyectoHistorialGrupo>()
   for (const fila of filasValidas) {
-    if (!proyectosPorId.has(fila.proyecto_id)) {
-      proyectosPorId.set(fila.proyecto_id, {
-        proyectoId: fila.proyecto_id,
-        confirmadoEn: fila.proyectos_seguimiento?.confirmado_en ?? null,
-        periodoEvaluacionId: fila.proyectos_seguimiento?.periodo_evaluacion_id ?? null,
-      })
+    if (proyectosPorId.has(fila.proyecto_id)) continue
+    const ps = fila.proyectos_seguimiento
+    const cicloEscolarId = ps?.ciclo_escolar_id ?? null
+    const camposFormativos = (ps?.campos_formativos ?? []).slice()
+    const meta = {
+      periodoEvaluacionId: ps?.periodo_evaluacion_id ?? null,
+      fechaInicio: ps?.fecha_inicio ?? null,
+      fechaFin: ps?.fecha_fin ?? null,
     }
+    const periodosDelCiclo = periodos.filter((p) => !p.ciclo_escolar_id || p.ciclo_escolar_id === cicloEscolarId)
+    proyectosPorId.set(fila.proyecto_id, {
+      proyectoId: fila.proyecto_id,
+      confirmadoEn: ps?.confirmado_en ?? null,
+      ...meta,
+      nombre: ps?.nombre ?? null,
+      grupoId: ps?.grupo_id ?? null,
+      cicloEscolarId,
+      camposFormativos,
+      campoFormativo: camposFormativos.length === 1 ? camposFormativos[0] : null,
+      periodo: resolverPeriodoDeProyecto(meta, periodosDelCiclo),
+    })
   }
-  const compararProyectos = (a: ProyectoHistorialGrupo, b: ProyectoHistorialGrupo): number => {
+  // Filtro (periodo / campo formativo) sobre proyectos completos.
+  for (const [id, p] of proyectosPorId) {
+    const porPeriodo = filtro.periodoId === undefined || (filtro.periodoId === 'sin_periodo' ? p.periodo === null : p.periodo?.id === filtro.periodoId)
+    const porCampo = filtro.campoFormativo === undefined || p.camposFormativos.includes(filtro.campoFormativo)
+    if (!porPeriodo || !porCampo) proyectosPorId.delete(id)
+  }
+  const filasIncluidas = filasValidas.filter((f) => proyectosPorId.has(f.proyecto_id))
+  const compararProyectos = (a: { proyectoId: string; confirmadoEn: string | null }, b: { proyectoId: string; confirmadoEn: string | null }): number => {
     const confirmadoA = a.confirmadoEn ?? ''
     const confirmadoB = b.confirmadoEn ?? ''
     if (confirmadoA !== confirmadoB) return confirmadoB.localeCompare(confirmadoA)
@@ -203,10 +270,10 @@ export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): Histor
   // agrupación (identidad canónica real de un resultado, ver UNIQUE de
   // seguimiento_resultados) — alumno_id se conserva como dato, nunca
   // como clave, porque un alumno puede tener más de una inscripción.
-  type ProyectoDeAlumnoMutable = ProyectoHistorialGrupo & { indicadores: IndicadorConfirmadoGrupo[] }
+  type ProyectoDeAlumnoMutable = ProyectoDeAlumno
   const alumnosPorInscripcion = new Map<string, { alumnoId: string; inscripcionId: string; proyectos: Map<string, ProyectoDeAlumnoMutable> }>()
 
-  for (const fila of filasValidas) {
+  for (const fila of filasIncluidas) {
     let alumno = alumnosPorInscripcion.get(fila.inscripcion_id)
     if (!alumno) {
       alumno = { alumnoId: fila.alumno_id, inscripcionId: fila.inscripcion_id, proyectos: new Map() }
@@ -218,10 +285,14 @@ export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): Histor
         proyectoId: fila.proyecto_id,
         confirmadoEn: fila.proyectos_seguimiento?.confirmado_en ?? null,
         periodoEvaluacionId: fila.proyectos_seguimiento?.periodo_evaluacion_id ?? null,
+        conteo: { evaluados: 0, sinEvaluar: 0, requiereApoyo: 0 },
         indicadores: [],
       }
       alumno.proyectos.set(fila.proyecto_id, proyectoDeAlumno)
     }
+    if (fila.nivel === 'no_evaluado') proyectoDeAlumno.conteo.sinEvaluar++
+    else proyectoDeAlumno.conteo.evaluados++
+    if (fila.nivel === 'requiere_apoyo') proyectoDeAlumno.conteo.requiereApoyo++
     proyectoDeAlumno.indicadores.push({
       indicadorNumero: fila.indicador_numero,
       indicadorEspecifico: fila.indicador_especifico,
@@ -248,7 +319,7 @@ export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): Histor
     ASPECTOS_GENERALES.map((a) => [a.valor, distribucionNivelesVacia()])
   ) as Record<AspectoGeneral, Record<NivelTextoCanonico, number>>
 
-  for (const fila of filasValidas) {
+  for (const fila of filasIncluidas) {
     distribucionNiveles[fila.nivel]++
     distribucionNivelesPorAspecto[fila.aspecto_general][fila.nivel]++
   }
@@ -256,10 +327,37 @@ export function construirHistorialGrupo(filas: ResultadoProyectoGrupo[]): Histor
   const resumen: ResumenHistorialGrupo = {
     proyectosConfirmados: proyectos.length,
     alumnosConResultados: alumnos.length,
-    totalIndicadoresConfirmados: filasValidas.length,
+    totalIndicadoresConfirmados: filasIncluidas.length,
     distribucionNiveles,
     distribucionNivelesPorAspecto,
   }
 
-  return { proyectos, alumnos, resumen, entradasAmbiguasExcluidas, entradasInvalidasExcluidas }
+  const periodosPresentes = new Map<string, PeriodoPresente>()
+  for (const p of proyectos) if (p.periodo) periodosPresentes.set(p.periodo.id, { id: p.periodo.id, nombre: p.periodo.nombre, numero: p.periodo.numero })
+  return {
+    proyectos,
+    periodos: [...periodosPresentes.values()].sort((a, b) => a.numero - b.numero || a.id.localeCompare(b.id)),
+    proyectosSinPeriodo: proyectos.filter((p) => !p.periodo).length,
+    alumnos,
+    resumen,
+    entradasAmbiguasExcluidas,
+    entradasInvalidasExcluidas,
+  }
+}
+
+// Celda alumno × proyecto: distingue «sin registro» (la inscripción no
+// tiene resultados en ese proyecto) de un proyecto con resultados (y,
+// dentro, «sin evaluar» de un nivel confirmado).
+export type CeldaHistorial = { estado: 'sin_registro' } | { estado: 'con_resultados'; proyecto: ProyectoDeAlumno }
+export function celdaHistorial(historial: HistorialGrupo, inscripcionId: string, proyectoId: string): CeldaHistorial {
+  const p = historial.alumnos.find((a) => a.inscripcionId === inscripcionId)?.proyectos.find((x) => x.proyectoId === proyectoId)
+  return p ? { estado: 'con_resultados', proyecto: p } : { estado: 'sin_registro' }
+}
+
+// Necesidades de apoyo: EXCLUSIVAMENTE indicadores confirmados en
+// «Requiere apoyo», con su proyecto — un hecho verificable, nunca una
+// etiqueta del alumno ni una conclusión inferida.
+export type IndicadorConApoyo = { proyectoId: string; indicadorNumero: number; indicadorEspecifico: string }
+export function indicadoresQueRequierenApoyo(alumno: AlumnoHistorialGrupo): IndicadorConApoyo[] {
+  return alumno.proyectos.flatMap((p) => p.indicadores.filter((i) => i.nivel === 'requiere_apoyo').map((i) => ({ proyectoId: p.proyectoId, indicadorNumero: i.indicadorNumero, indicadorEspecifico: i.indicadorEspecifico })))
 }

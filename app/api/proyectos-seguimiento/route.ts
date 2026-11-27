@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { conCapturaAutomatica } from '@/lib/seguimiento/capturaAutomatica'
 import { CAMPOS_FORMATIVOS } from '@/lib/seguimiento/tipos'
 import { autenticarRequestApi, extraerBearerToken } from '@/lib/server/authApi'
+import { periodosEvaluacionDeCiclos } from '@/lib/motorContexto'
+import { resolverPeriodoDeProyecto } from '@/lib/seguimiento/periodoProyecto'
 
 export const runtime = 'nodejs'
 
@@ -141,13 +143,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No tienes acceso a este grupo.' }, { status: 403 })
     }
 
+    // Periodo: el indicado; si no, el que las fechas determinan con
+    // certeza (regla compartida, periodoProyecto.ts); si no, ninguno.
+    let periodoId = periodo_evaluacion_id || null
+    if (!periodoId && grupo.ciclo_escolar_id && (fecha_inicio || fecha_fin)) {
+      try {
+        const periodos = await periodosEvaluacionDeCiclos(supabase, [grupo.ciclo_escolar_id])
+        periodoId = resolverPeriodoDeProyecto({ periodoEvaluacionId: null, fechaInicio: fecha_inicio || null, fechaFin: fecha_fin || null }, periodos)?.id ?? null
+      } catch (err) {
+        console.error('No se pudo resolver el periodo del proyecto nuevo (se crea sin periodo):', err)
+      }
+    }
+
     const { data: proyecto, error: errorProyecto } = await supabase
       .from('proyectos_seguimiento')
       .insert({
         grupo_id,
         docente_id: docenteId,
         ciclo_escolar_id: grupo.ciclo_escolar_id,
-        periodo_evaluacion_id: periodo_evaluacion_id || null,
+        periodo_evaluacion_id: periodoId,
         nombre: nombre.trim(),
         campos_formativos: camposValidos,
         fecha_inicio: fecha_inicio || null,

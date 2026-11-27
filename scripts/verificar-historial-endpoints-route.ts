@@ -100,6 +100,7 @@ function consulta(tabla: string) {
     select: () => b,
     order: () => b,
     eq: (c: string, v: unknown) => { filtros.push((f) => valorEn(f, c) === v); return b },
+    in: (c: string, vs: unknown[]) => { filtros.push((f) => vs.includes(valorEn(f, c))); return b },
     not: (c: string, op: string, v: unknown) => { if (op === 'is' && v === null) filtros.push((f) => valorEn(f, c) != null); return b },
     maybeSingle: async () => { const r = resolver(); return r.error ? r : { data: (r.data as Fila[])[0] ?? null, error: null } },
     then: (ok: (v: unknown) => unknown, ko: (e: unknown) => unknown) => Promise.resolve(resolver()).then(ok, ko),
@@ -154,7 +155,7 @@ async function main() {
   verificar(h?.resumen?.totalIndicadoresConfirmados === 4 && h?.resumen?.alumnosConResultados === 2, '1k. historial: 4 indicadores de 2 alumnos')
   verificar(h?.alumnos?.find((a: { inscripcionId: string }) => a.inscripcionId === INS_1)?.alumnoId === ALU_1, '1l. historial: alumno asociado por inscripción')
   verificar(h?.entradasAmbiguasExcluidas === 0 && h?.entradasInvalidasExcluidas === 0, '1m. historial: 0 exclusiones con datos válidos')
-  verificar(registro.tablasLeidas.join() === 'grupos,seguimiento_resultados', '1n. historial: exactamente 2 consultas (grupo y resultados), ciclo ignorado del cliente')
+  verificar(registro.tablasLeidas.join() === 'grupos,seguimiento_resultados,periodos_evaluacion', '1n. historial: exactamente 3 consultas (grupo, resultados y periodos del ciclo; sin N+1), ciclo ignorado del cliente')
 
   fallarTabla = 'seguimiento_resultados'
   verificar((await historial(`?grupo_id=${G_A}`, 'token-a')).status === 500, '1o. historial: error de Supabase → 500 (nunca lista vacía)')
@@ -191,7 +192,7 @@ async function main() {
     verificar(!/SERVICE_ROLE|anthropic|openai|@ai-sdk|from ['"]ai['"]/i.test(codigo), `3d. ${archivo}: sin service_role ni IA`)
   }
   const historialCodigo = readFileSync('app/api/proyectos-seguimiento/historial-grupo/route.ts', 'utf8')
-  verificar(/resultadosProyectoGrupo\(/.test(historialCodigo) && /construirHistorialGrupo\(/.test(historialCodigo) && !/from\('seguimiento_resultados'\)/.test(historialCodigo), '3e. historial reutiliza las funciones de la Etapa 1 (sin consulta duplicada)')
+  verificar(/historialAcademicoGrupo\(/.test(historialCodigo) && !/from\('seguimiento_resultados'\)/.test(historialCodigo), '3e. historial reutiliza el modelo de lectura compartido (sin consulta duplicada)')
   const matrizCodigo = readFileSync('app/api/proyectos-seguimiento/[id]/resultados-confirmados/route.ts', 'utf8')
   verificar(/construirMatrizResultadosConfirmados\(/.test(matrizCodigo), '3f. matriz reutiliza construirMatrizResultadosConfirmados()')
 

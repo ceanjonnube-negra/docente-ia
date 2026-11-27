@@ -36,7 +36,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { mensajeGrupoNoDisponible, type SesionContexto } from '../sesionContexto'
 import { periodosEvaluacionDelCiclo } from '../motorContexto'
 import { extraerResumenBorrador, seleccionarBorradorVigente, PREFIJO_PLANEACION_YA_GUARDADA, type ResumenBorrador } from './extraerBorrador'
-import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, resolverPeriodoPorFechaInicio, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
+import { resolverPeriodoDeProyecto } from '../seguimiento/periodoProyecto'
+import { esTrazabilidadCanonica, identidadDesdeTrazabilidad, resolverCurricularAprobacion, textoDefinitivoConIdentidad, type CurricularAprobado, type TrazabilidadCurricularAprobada } from './curricularAprobacion'
 import { validarContenidoBorrador } from './validarContenidoBorrador'
 import { crearPlaneacion, type DatosProyectoPlaneacion } from './persistencia'
 import { randomUUID } from 'node:crypto'
@@ -461,12 +462,14 @@ export async function aprobarBorradorPlaneacion(
     const textosDocente = [...historial.filter((h) => h.role === 'user').map((h) => h.content), mensajeDocente]
     const curricular = await resolverCurricularAprobacion(sb, sesion.grupo_activo_id, seleccion.contenido, resumen, textosDocente)
 
-    // Periodo de evaluación: el único del ciclo del grupo que contiene la
-    // fecha de inicio de la planeación. Sin periodos o con ambigüedad,
-    // ninguno (nunca uno arbitrario) y la aprobación sigue.
+    // Periodo de evaluación: regla compartida con la creación manual de
+    // proyectos y el historial (periodoProyecto.ts) — el único periodo del
+    // ciclo del grupo que contiene las fechas de inicio Y fin de la
+    // planeación. Sin periodos, cruzando dos o con ambigüedad, ninguno
+    // (nunca uno arbitrario) y la aprobación sigue.
     const cicloDelGrupo = curricular.cicloEscolarGrupo ?? sesion.ciclo_escolar_id
     const periodos = cicloDelGrupo ? await periodosEvaluacionDelCiclo(sb, cicloDelGrupo) : []
-    const periodoActual = resolverPeriodoPorFechaInicio(periodos, resumen.fechaInicio)
+    const periodoActual = resolverPeriodoDeProyecto({ periodoEvaluacionId: null, fechaInicio: resumen.fechaInicio, fechaFin: resumen.fechaFin }, periodos)
 
     // Identidad del BORRADOR (no nombre ni fechas): ya guardada de verdad
     // (version>=1), intento anterior sin terminar (version=0, se reanuda
