@@ -11,6 +11,7 @@ import { ejecutarHerramientaDeModulo, type ContextoEjecucionHerramienta } from '
 import { clasificacionPreguntaPlaneacion, type ClasificacionNivel0 } from '../lib/clasificadorNivel0'
 import { alumnoEnPantallaDelGrupo, campoEnTexto, contextoFichaDescriptiva, periodoEnTexto, proyectoEnTexto } from '../lib/seguimiento/consultaHistorial'
 import { construirHistorialGrupo, metadataDeProyecto, organizarHistorialAlumno } from '../lib/seguimiento/historialGrupo'
+import { contratoAlumno } from '../lib/seguimiento/contratoHistorial'
 import { detectarConsultaPlaneacion } from '../lib/planeacion/detectarConsultaPlaneacion'
 import type { SesionContexto } from '../lib/sesionContexto'
 
@@ -138,11 +139,11 @@ const SIN_CONCLUSIONES = /promedio|calificaci[oó]n|reprob|aprob[oó]|en riesgo|
   verificar(alumnoEnPantallaDelGrupo('Pantalla actual: ficha_alumno\nAlumno seleccionado: ana lópez', alumnos)?.alumno_id === 'ana' && alumnoEnPantallaDelGrupo('Alumno seleccionado: Ana', alumnos) === null && alumnoEnPantallaDelGrupo('Alumno seleccionado: Zoe Paz', alumnos) === null && alumnoEnPantallaDelGrupo(undefined, alumnos) === null, '5a. Alumno en pantalla: solo coincidencia exacta con el grupo activo')
   const ins = INSCRIPCIONES.filter((i) => i.alumno_id === 'ana').map((i) => ({ inscripcionId: i.id, grupoId: i.grupo_id, cicloEscolarId: i.ciclo_escolar_id, estatus: i.estatus, fechaInscripcion: i.fecha_inscripcion, grupoNombre: '3° A', cicloNombre: i.ciclos_escolares.nombre }))
   const hAna = organizarHistorialAlumno(construirHistorialGrupo(RESULTADOS.filter((f) => f.alumno_id === 'ana') as never, PER), ins, PROYECTOS.map((p) => metadataDeProyecto(p.id, p as never, PER)))
-  const ficha = contextoFichaDescriptiva(hAna, G, C)
+  const ficha = contextoFichaDescriptiva(contratoAlumno(hAna, 'ana', G, C))
   verificar(ficha.includes('RESULTADOS ACADÉMICOS CONFIRMADOS') && ficha.includes('2. Indicador 2 de A — Requiere apoyo') && ficha.includes('Sin registro') && !ficha.includes('Indicador 1 de V') && ficha.includes('no los conviertas en calificaciones'), '5b. Ficha descriptiva: resultados confirmados reales del grupo y ciclo activos, sin convertirlos en calificaciones')
-  verificar(contextoFichaDescriptiva(organizarHistorialAlumno(construirHistorialGrupo([], PER), [], []), G, C).includes('No hay resultados confirmados'), '5c. Ficha sin resultados: se indica, sin suponer desempeño')
+  verificar(contextoFichaDescriptiva(contratoAlumno(organizarHistorialAlumno(construirHistorialGrupo([], PER), [], []), 'ana', G, C)).includes('No hay resultados confirmados'), '5c. Ficha sin resultados: se indica, sin suponer desempeño')
   const ruta = leer('app/api/chat/route.ts')
-  verificar(/contextoFichaDescriptiva\(historialAlumno, sesion\.grupo_activo_id, sesion\.ciclo_escolar_id\)/.test(ruta) && /alumnoEnPantalla: alumnoEnPantallaDelGrupo\(contexto, sesion\.alumnos_del_grupo_activo\)/.test(ruta), '5d. Ruta: ficha con resultados en su contexto; «este alumno» validado contra el grupo activo')
+  verificar(/obtenerHistorialAcademicoAlumno\(supabaseUser, clasificacion\.entidades_resueltas\.alumno_id, userId, sesion\.grupo_activo_id, sesion\.ciclo_escolar_id\)/.test(ruta) && /contextoFichaDescriptiva\(contrato\)/.test(ruta) && /alumnoEnPantalla: alumnoEnPantallaDelGrupo\(contexto, sesion\.alumnos_del_grupo_activo\)/.test(ruta), '5d. Ruta: ficha con resultados en su contexto; «este alumno» validado contra el grupo activo')
 
   // 6. Clasificador y ausencia de IA nueva.
   const clasificador = leer('lib/clasificadorNivel0.ts')

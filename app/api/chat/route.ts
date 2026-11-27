@@ -29,7 +29,7 @@ import {
   ejecutarRegistroEscolar,
 } from '@/lib/motorContexto'
 import { ejecutarHerramientaDeModulo } from '@/lib/asistente/herramientasModulo'
-import { historialAlumnoCompleto } from '@/lib/seguimiento/historialAcademico'
+import { obtenerHistorialAcademicoAlumno } from '@/lib/seguimiento/contratoHistorial'
 import { alumnoEnPantallaDelGrupo, contextoFichaDescriptiva } from '@/lib/seguimiento/consultaHistorial'
 import { fechaISOHoy, obtenerFechaHora } from '@/lib/tiempo/TimeService'
 import { MARCO_CURRICULAR_VIGENTE } from '@/lib/asistente/marcoCurricular'
@@ -1525,8 +1525,12 @@ async function atenderChat(req: NextRequest) {
             // (mismo llamado de IA, más datos reales). Si fallan, se avisa.
             try {
               if (!userId) throw new Error('Sin docente identificado')
-              const historialAlumno = await historialAlumnoCompleto(supabaseUser, clasificacion.entidades_resueltas.alumno_id, userId)
-              contextoEnriquecido += `\n\n${contextoFichaDescriptiva(historialAlumno, sesion.grupo_activo_id, sesion.ciclo_escolar_id)}`
+              // Contrato estable del historial (Hito 3e): solo la inscripción
+              // del grupo y ciclo activos; sin ellos, «sin resultados».
+              const contrato = sesion.grupo_activo_id && sesion.ciclo_escolar_id
+                ? await obtenerHistorialAcademicoAlumno(supabaseUser, clasificacion.entidades_resueltas.alumno_id, userId, sesion.grupo_activo_id, sesion.ciclo_escolar_id)
+                : null
+              contextoEnriquecido += `\n\n${contextoFichaDescriptiva(contrato)}`
             } catch (e) {
               console.error('[NIVEL0] ficha_descriptiva — no se pudieron leer los resultados confirmados:', e)
               contextoEnriquecido += '\n\nRESULTADOS ACADÉMICOS CONFIRMADOS: no se pudieron consultar en este momento; no supongas desempeño.'

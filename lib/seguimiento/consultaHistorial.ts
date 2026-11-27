@@ -14,6 +14,7 @@
 
 import { CAMPOS_FORMATIVOS } from './tipos'
 import { ETIQUETA_NIVEL_CANONICO, ORDEN_NIVELES_CANONICOS, type NivelTextoCanonico } from './conversionCalificacion'
+import type { HistorialAcademicoAlumnoV1 } from './contratoHistorial'
 import { cumpleFiltro, type ConcentradoGrupo, type FiltroHistorial, type HistorialAlumno, type InscripcionEnHistorialAlumno, type PeriodoPresente, type ProyectoHistorialGrupo } from './historialGrupo'
 
 const normalizar = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -159,21 +160,22 @@ export function textoResultadosAlumno(nombre: string, ins: InscripcionEnHistoria
 }
 
 // Bloque de datos reales para la ficha descriptiva (contexto del mismo
-// llamado de IA). Solo hechos: proyectos, periodos, niveles e indicadores.
-export function contextoFichaDescriptiva(h: HistorialAlumno, grupoId: string | null, cicloId: string | null): string {
-  const ins = grupoId && cicloId ? inscripcionActiva(h, grupoId, cicloId) : null
-  const items = (ins?.periodos ?? []).flatMap((g) => g.proyectos)
-  const con = items.filter((x) => x.estado === 'con_resultados')
+// llamado de IA). Hito 3e: se redacta desde el contrato estable del
+// historial (contratoHistorial.ts), el mismo que usarán fichas y reportes.
+// Solo hechos: proyectos, periodos, niveles e indicadores.
+export function contextoFichaDescriptiva(contrato: HistorialAcademicoAlumnoV1 | null): string {
+  const resultados = (contrato?.periodos ?? []).flatMap((g) => g.proyectos)
+  const con = resultados.filter((r) => r.estado === 'con_resultados')
   const encabezado = 'RESULTADOS ACADÉMICOS CONFIRMADOS (hojas de evaluación; niveles reales, sin calificación numérica ni promedio — no inventes otros, no los conviertas en calificaciones):'
   if (!con.length) return `${encabezado}\nNo hay resultados confirmados en el grupo y ciclo actuales. Dilo con naturalidad si la ficha lo requiere; no supongas desempeño.`
   const lineas = [encabezado]
-  for (const x of con) {
-    if (x.estado !== 'con_resultados') continue
-    lineas.push(`- Proyecto «${x.proyecto.nombre ?? 'Proyecto'}» (${x.proyecto.periodo?.nombre ?? 'sin periodo asignado'}; ${x.proyecto.camposFormativos.join(', ') || 'campo no registrado'}): ${textoDistribucion(x.distribucion)}.`)
-    for (const i of x.resultado.indicadores) lineas.push(`  · ${i.indicadorNumero}. ${i.indicadorEspecifico} — ${ETIQUETA_NIVEL_CANONICO[i.nivel]}`)
+  for (const r of con) {
+    if (r.estado !== 'con_resultados') continue
+    lineas.push(`- Proyecto «${r.proyecto.nombre ?? 'Proyecto'}» (${r.proyecto.periodo?.nombre ?? 'sin periodo asignado'}; ${r.proyecto.camposFormativos.join(', ') || 'campo no registrado'}): ${textoDistribucion(r.distribucion)}.`)
+    for (const i of r.indicadores) lineas.push(`  · ${i.numero}. ${i.texto} — ${i.etiquetaNivel}`)
   }
-  const sinRegistro = items.filter((x) => x.estado === 'sin_registro')
-  if (sinRegistro.length) lineas.push(`- Sin registro (no tiene resultados) en: ${sinRegistro.map((x) => x.proyecto.nombre ?? 'Proyecto').join(', ')}.`)
+  const sinRegistro = resultados.filter((r) => r.estado === 'sin_registro')
+  if (sinRegistro.length) lineas.push(`- Sin registro (no tiene resultados) en: ${sinRegistro.map((r) => r.proyecto.nombre ?? 'Proyecto').join(', ')}.`)
   lineas.push('«Sin evaluar» significa que la hoja no tiene marca en ese indicador: no es un nivel de desempeño.')
   return lineas.join('\n')
 }
