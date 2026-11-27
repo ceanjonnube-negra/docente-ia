@@ -2747,6 +2747,9 @@ class AsistenteServiceImpl {
     if (!mensaje || mensaje.accionElegida || !mensaje.datosAccionNavegacion) return
     this.mensajes = this.mensajes.map((m) => (m.id === mensajeId ? { ...m, accionElegida: 'abrir_en_lista' } : m))
     this.accionNavegacionPendiente = mensaje.datosAccionNavegacion
+    // «Abrir en Lista»: el panel se cierra para mostrar la ficha; la
+    // conversación se conserva (cerrar solo oculta el panel).
+    this.panelAbierto = false
     this.notificar()
     this.persistirConversacion()
   }

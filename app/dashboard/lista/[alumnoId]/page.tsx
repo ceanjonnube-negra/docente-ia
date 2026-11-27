@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 import { eliminarAlumnoDefinitivamente } from '@/lib/motorContexto'
@@ -10,6 +10,7 @@ import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/Time
 import { historialAlumnoCompleto } from '@/lib/seguimiento/historialAcademico'
 import type { HistorialAlumno } from '@/lib/seguimiento/historialGrupo'
 import HistorialAcademicoAlumno from '@/components/Lista/HistorialAcademicoAlumno'
+import { ajustarPestana, consultaConPestana, esPestana, type Pestana } from '@/lib/lista/pestanasFicha'
 
 type Alumno = {
   id: string
@@ -45,7 +46,6 @@ const CAMPOS_BORRADOR: { campo: keyof BorradorFicha; etiqueta: string }[] = [
   { campo: 'recomendaciones', etiqueta: 'Recomendaciones' },
 ]
 
-type Pestana = 'resumen' | 'datos' | 'asistencia' | 'incidencias' | 'evaluaciones' | 'evidencias' | 'fichas' | 'historial'
 
 type HistorialItem = { key: string; origen: string; fecha: string; titulo: string; descripcion: string }
 
@@ -182,19 +182,26 @@ export default function FichaAlumnoPage() {
     clase: 'bg-gray-100 text-gray-500',
   })
 
-  // Pestaña inicial desde ?tab=... (ver "Integración de comandos
-  // verbales con navegación y consulta interna" — AsistentePanel
-  // navega aquí con router.push incluyendo este parámetro). Leído
-  // directo de window.location.search en vez de useSearchParams() para
-  // no exigirle un límite de Suspense a toda esta pantalla por un
-  // parámetro opcional — mismo patrón que voiceDebug en
-  // AsistentePanel.tsx.
-  const [pestana, setPestana] = useState<Pestana>(() => {
-    if (typeof window === 'undefined') return 'resumen'
-    const tab = new URLSearchParams(window.location.search).get('tab')
-    const validas: Pestana[] = ['resumen', 'datos', 'asistencia', 'incidencias', 'evaluaciones', 'evidencias', 'fichas', 'historial']
-    return validas.includes(tab as Pestana) ? (tab as Pestana) : 'resumen'
-  })
+  // Pestaña sincronizada con ?tab= (ver "Integración de comandos verbales
+  // con navegación y consulta interna"): el Chat IA navega aquí con
+  // router.push(...?tab=...), también cuando esta misma ficha ya está
+  // abierta (Next.js conserva la página montada; solo cambia ?tab).
+  // useSearchParams en esta ruta dinámica no se prerenderiza. Al cambiar
+  // ?tab se ajusta la pestaña durante el render (sin efecto ni recarga);
+  // la navegación manual actualiza ?tab con history.replaceState (sin
+  // solicitud al servidor ni nueva entrada de historial).
+  const tabUrl = useSearchParams().get('tab')
+  const [pestana, setPestana] = useState<Pestana>(() => (esPestana(tabUrl) ? tabUrl : 'resumen'))
+  const [tabSincronizada, setTabSincronizada] = useState(tabUrl)
+  if (tabUrl !== tabSincronizada) {
+    const ajuste = ajustarPestana(pestana, tabSincronizada, tabUrl)
+    setTabSincronizada(ajuste.tabSincronizada)
+    setPestana(ajuste.pestana)
+  }
+  const elegirPestana = (p: Pestana) => {
+    setPestana(p)
+    window.history.replaceState(null, '', consultaConPestana(window.location.search, p))
+  }
   const [cargando, setCargando] = useState(true)
   const [guardando, setGuardando] = useState(false)
   const [mensaje, setMensaje] = useState('')
@@ -643,7 +650,7 @@ export default function FichaAlumnoPage() {
             {pestanas.map(p => (
               <button
                 key={p.id}
-                onClick={() => setPestana(p.id)}
+                onClick={() => elegirPestana(p.id)}
                 className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full whitespace-nowrap font-medium flex-shrink-0 transition-all focus:outline-none focus:ring-2 focus:ring-purple-400 ${pestana === p.id ? 'bg-gradient-to-r from-purple-600 to-blue-500 text-white shadow-sm' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 active:bg-gray-200'}`}
               >
                 <span aria-hidden="true" className="text-sm leading-none opacity-80">{ICONOS_PESTANA[p.id]}</span>
@@ -660,7 +667,7 @@ export default function FichaAlumnoPage() {
         {pestana === 'resumen' && (
           <div className="space-y-3">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <button onClick={() => setPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
+              <button onClick={() => elegirPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-sm flex-shrink-0">✅</span>
                   <p className="text-xs font-medium text-gray-500">Asistencia</p>
@@ -668,28 +675,28 @@ export default function FichaAlumnoPage() {
                 <p className="text-xl font-bold text-gray-900">{porcentajeAsistencia !== null ? `${porcentajeAsistencia}%` : 'Sin registros'}</p>
                 {porcentajeAsistencia !== null && <p className="text-xs text-gray-400 mt-0.5">{totalAsistencias} de {asistencias.length} días</p>}
               </button>
-              <button onClick={() => setPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
+              <button onClick={() => elegirPestana('asistencia')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center text-sm flex-shrink-0">❌</span>
                   <p className="text-xs font-medium text-gray-500">Faltas</p>
                 </div>
                 <p className="text-xl font-bold text-gray-900">{asistencias.length > 0 ? totalFaltas : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('incidencias')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
+              <button onClick={() => elegirPestana('incidencias')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-sm flex-shrink-0">⚠️</span>
                   <p className="text-xs font-medium text-gray-500">Incidencias</p>
                 </div>
                 <p className="text-xl font-bold text-gray-900">{incidencias.length > 0 ? incidencias.length : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('evaluaciones')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
+              <button onClick={() => elegirPestana('evaluaciones')} className="text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-sm flex-shrink-0">🏆</span>
                   <p className="text-xs font-medium text-gray-500">Evaluaciones</p>
                 </div>
                 <p className="text-xl font-bold text-gray-900">{historialAcademico?.proyectosConResultados.length ? `${historialAcademico.proyectosConResultados.length} ${historialAcademico.proyectosConResultados.length === 1 ? 'proyecto' : 'proyectos'}` : 'Sin registros'}</p>
               </button>
-              <button onClick={() => setPestana('evidencias')} className="col-span-2 text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
+              <button onClick={() => elegirPestana('evidencias')} className="col-span-2 text-left bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md active:scale-[0.98] transition-all focus:outline-none focus:ring-2 focus:ring-purple-400">
                 <div className="flex items-center gap-2 mb-2">
                   <span aria-hidden="true" className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-sm flex-shrink-0">📎</span>
                   <p className="text-xs font-medium text-gray-500">Evidencias</p>
