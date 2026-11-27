@@ -41,6 +41,13 @@ type FilaInscripcion = {
   ciclos_escolares: { nombre: string | null } | null
 }
 export async function historialAlumnoCompleto(sb: SupabaseClient, alumnoId: string, docenteId: string): Promise<HistorialAlumno> {
+  return (await cargarHistorialAlumno(sb, alumnoId, docenteId)).historial
+}
+
+// Igual que historialAlumnoCompleto, pero devuelve además los periodos de
+// sus ciclos (ya consultados) para el expediente (Hito 4a): sin repetir la
+// consulta de periodos.
+export async function cargarHistorialAlumno(sb: SupabaseClient, alumnoId: string, docenteId: string) {
   const [{ data: insData, error: insError }, filas] = await Promise.all([
     sb.from('inscripciones')
       .select('id, grupo_id, ciclo_escolar_id, estatus, fecha_inscripcion, grupos!inner(grado, grupo, nombre_grupo, docente_id), ciclos_escolares(nombre)')
@@ -72,7 +79,7 @@ export async function historialAlumnoCompleto(sb: SupabaseClient, alumnoId: stri
   ])
   if (proyectos.error) throw proyectos.error
   const deSusGrupos = ((proyectos.data ?? []) as (ProyectoDeResultado & { id: string })[]).map((p) => metadataDeProyecto(p.id, p, periodos))
-  return organizarHistorialAlumno(construirHistorialGrupo(filas, periodos), inscripciones, deSusGrupos)
+  return { historial: organizarHistorialAlumno(construirHistorialGrupo(filas, periodos), inscripciones, deSusGrupos), periodos }
 }
 
 // Inscripciones del grupo en el ciclo (todas, con su estatus y el nombre
@@ -80,12 +87,12 @@ export async function historialAlumnoCompleto(sb: SupabaseClient, alumnoId: stri
 export async function inscripcionesDelGrupo(sb: SupabaseClient, grupoId: string, cicloEscolarId: string): Promise<InscripcionDelGrupo[]> {
   const { data, error } = await sb
     .from('inscripciones')
-    .select('id, alumno_id, estatus, alumnos(nombre)')
+    .select('id, alumno_id, estatus, fecha_inscripcion, fecha_baja, alumnos(nombre)')
     .eq('grupo_id', grupoId)
     .eq('ciclo_escolar_id', cicloEscolarId)
   if (error) throw error
-  return ((data ?? []) as unknown as { id: string; alumno_id: string; estatus: string | null; alumnos: { nombre: string | null } | null }[])
-    .map((i) => ({ inscripcionId: i.id, alumnoId: i.alumno_id, nombre: i.alumnos?.nombre ?? 'Alumno sin nombre registrado', estatus: i.estatus }))
+  return ((data ?? []) as unknown as { id: string; alumno_id: string; estatus: string | null; fecha_inscripcion: string | null; fecha_baja: string | null; alumnos: { nombre: string | null } | null }[])
+    .map((i) => ({ inscripcionId: i.id, alumnoId: i.alumno_id, nombre: i.alumnos?.nombre ?? 'Alumno sin nombre registrado', estatus: i.estatus, fechaInscripcion: i.fecha_inscripcion, fechaBaja: i.fecha_baja }))
 }
 
 // Datos del concentrado para el Chat IA (Hito 3d): resultados, periodos

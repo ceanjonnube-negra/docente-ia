@@ -75,6 +75,8 @@ export type IndicadorConfirmadoGrupo = {
   indicadorEspecifico: string
   aspectoGeneral: AspectoGeneral
   nivel: NivelTextoCanonico
+  // Hito 4a: observación real capturada con el resultado (null si no hay).
+  observacion: string | null
 }
 
 // Metadata de un proyecto: SOLO lo que el embed de resultadosProyecto*()
@@ -314,6 +316,7 @@ export function construirHistorialGrupo(
       indicadorEspecifico: fila.indicador_especifico,
       aspectoGeneral: fila.aspecto_general,
       nivel: fila.nivel,
+      observacion: fila.observacion?.trim() || null,
     })
   }
 
@@ -483,7 +486,7 @@ export function organizarHistorialAlumno(
 // «Sin registro» solo para inscripciones ACTIVAS sin resultados en un
 // proyecto; una baja aparece únicamente si tiene resultados.
 // ------------------------------------------------------------------
-export type InscripcionDelGrupo = { inscripcionId: string; alumnoId: string; nombre: string; estatus: string | null }
+export type InscripcionDelGrupo = { inscripcionId: string; alumnoId: string; nombre: string; estatus: string | null; fechaInscripcion?: string | null; fechaBaja?: string | null }
 
 export type ProyectoEnConcentrado = {
   proyecto: ProyectoHistorialGrupo

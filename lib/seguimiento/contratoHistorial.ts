@@ -44,6 +44,8 @@ export type IndicadorContrato = {
   etiquetaNivel: string
   // false = «Sin evaluar» (casilla sin marca), nunca un nivel bajo.
   evaluado: boolean
+  // v1, aditivo (Hito 4a): observación real del resultado; null si no hay.
+  observacion: string | null
 }
 
 export type PeriodoContrato = { id: string; nombre: string; numero: number }
@@ -130,6 +132,7 @@ function indicadorContrato(i: IndicadorConfirmadoGrupo): IndicadorContrato {
     nivel: i.nivel,
     etiquetaNivel: ETIQUETA_NIVEL_CANONICO[i.nivel],
     evaluado: i.nivel !== 'no_evaluado',
+    observacion: i.observacion,
   }
 }
 

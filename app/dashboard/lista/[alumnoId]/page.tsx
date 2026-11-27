@@ -6,7 +6,8 @@ import { obtenerRosterConPosicion } from '@/lib/rosterGrupo'
 import { eliminarAlumnoDefinitivamente } from '@/lib/motorContexto'
 import { useContextoAsistente, useHerramientasAsistente } from '@/lib/asistente/hooks'
 import { herramientaMarcarAsistencia } from '@/lib/asistente/herramientas/asistencia'
-import { formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { fechaISOHoy, formatearFecha, obtenerZonaHorariaDispositivo } from '@/lib/tiempo/TimeService'
+import { avisoIdentidad, contarAsistencia, estadoAtencion, estadoDeRegistro, type EstadoRegistroAsistencia } from '@/lib/seguimiento/expedienteAlumno'
 import { historialAlumnoCompleto } from '@/lib/seguimiento/historialAcademico'
 import type { HistorialAlumno } from '@/lib/seguimiento/historialGrupo'
 import HistorialAcademicoAlumno from '@/components/Lista/HistorialAcademicoAlumno'
@@ -22,7 +23,8 @@ type Alumno = {
 
 type Grupo = { grado: string | null; grupo: string | null; nombre_grupo: string | null; docente_id: string | null }
 
-type Asistencia = { fecha: string; presente: boolean }
+// Hito 4a: asistencia canónica (asistencia_registro) de la inscripción activa.
+type Asistencia = { fecha: string; estatus: string | null }
 type Incidencia = { id: string; fecha: string; tipo: string; descripcion: string; seguimiento: unknown }
 type Evidencia = { id: string; tipo: string | null; descripcion: string | null; archivo_url: string | null; creado_en: string }
 type NecesidadApoyo = { id: string; tipo: string | null; descripcion: string | null; activa: boolean; creado_en: string }
@@ -96,6 +98,15 @@ const CHIP_ORIGEN: Record<string, string> = {
   Evaluación: 'bg-violet-50 text-violet-600',
   Evidencia: 'bg-blue-50 text-blue-600',
   Nota: 'bg-indigo-50 text-indigo-600',
+}
+
+// Etiquetas de los estados reales de asistencia_registro.
+const ETIQUETA_REGISTRO: Record<EstadoRegistroAsistencia, { texto: string; icono: string; clase: string }> = {
+  presente: { texto: 'Presente', icono: '✅', clase: 'bg-green-100 text-green-700' },
+  retardo: { texto: 'Retardo', icono: '🕒', clase: 'bg-amber-100 text-amber-700' },
+  falta: { texto: 'Falta', icono: '❌', clase: 'bg-red-100 text-red-700' },
+  justificada: { texto: 'Falta justificada', icono: '📄', clase: 'bg-blue-100 text-blue-700' },
+  otro: { texto: 'Sin registrar', icono: '•', clase: 'bg-gray-100 text-gray-500' },
 }
 
 function EstadoVacio({ icono, mensaje }: { icono: string; mensaje: string }) {
@@ -245,7 +256,7 @@ export default function FichaAlumnoPage() {
       // no desde un campo almacenado en alumnos.
       const { data: inscripcionActiva } = await supabase
         .from('inscripciones')
-        .select('grupo_id, ciclo_escolar_id, observaciones')
+        .select('id, grupo_id, ciclo_escolar_id, observaciones, fecha_inscripcion')
         .eq('alumno_id', alumnoId)
         .eq('estatus', 'activo')
         .maybeSingle()
@@ -263,8 +274,21 @@ export default function FichaAlumnoPage() {
         grupoIdActivo
           ? obtenerRosterConPosicion(supabase, grupoIdActivo)
           : Promise.resolve({ data: [], error: null }),
-        supabase.from('asistencias').select('fecha, presente').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
-        supabase.from('incidencias').select('id, fecha, tipo, descripcion, seguimiento').eq('alumno_id', alumnoId).order('fecha', { ascending: false }),
+        // Hito 4a — separación contextual: asistencia canónica de la
+        // inscripción activa (nunca la tabla legada «asistencias») e
+        // incidencias del alumno en su grupo activo. Sin inscripción activa,
+        // no hay contexto: sin registros.
+        inscripcionActiva?.id
+          ? supabase.from('asistencia_registro').select('fecha, estatus').eq('inscripcion_id', inscripcionActiva.id).order('fecha', { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+        grupoIdActivo
+          ? supabase.from('incidencias').select('id, fecha, tipo, descripcion, seguimiento')
+              .eq('alumno_id', alumnoId).eq('grupo_id', grupoIdActivo)
+              // Vigencia de la inscripción activa (desde su alta; de esa inscripción o sin inscripción registrada).
+              .or(`inscripcion_id.is.null,inscripcion_id.eq.${inscripcionActiva!.id}`)
+              .gte('fecha', (inscripcionActiva?.fecha_inscripcion ?? '0000-01-01').slice(0, 10))
+              .order('fecha', { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
         supabase.auth.getSession().then(({ data }) => {
           if (!data.session) throw new Error('Sin sesión')
           return historialAlumnoCompleto(supabase, alumnoId, data.session.user.id)
@@ -313,19 +337,14 @@ export default function FichaAlumnoPage() {
         setErrorIncidencias(true)
       }
 
-      const totalFaltasCarga = asistenciasData.length - asistenciasData.filter(a => a.presente).length
-      if (asistenciasData.length === 0) {
-        setEstadoGeneral({ texto: 'Sin datos suficientes', clase: 'bg-gray-100 text-gray-500' })
-      } else {
-        const tasaFaltas = totalFaltasCarga / asistenciasData.length
-        const hace30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        const incidenciaReciente = incidenciasData.some(i => new Date(`${i.fecha}T12:00:00`) >= hace30)
-        setEstadoGeneral(
-          tasaFaltas > 0.2 || incidenciaReciente
-            ? { texto: 'Requiere atención', clase: 'bg-amber-100 text-amber-700' }
+      // Misma regla de siempre (faltas > 20 % o incidencia en 30 días),
+      // compartida con el expediente y solo con datos del contexto activo.
+      const atencion = estadoAtencion(asistenciasData, incidenciasData, fechaISOHoy(obtenerZonaHorariaDispositivo()))
+      setEstadoGeneral(
+        atencion.estado === 'sin_datos' ? { texto: 'Sin datos suficientes', clase: 'bg-gray-100 text-gray-500' }
+          : atencion.estado === 'requiere_atencion' ? { texto: 'Requiere atención', clase: 'bg-amber-100 text-amber-700' }
             : { texto: 'Al corriente', clase: 'bg-green-100 text-green-700' }
-        )
-      }
+      )
 
       if (evaluacionesRes.status === 'fulfilled') {
         setHistorialAcademico(evaluacionesRes.value)
@@ -514,9 +533,12 @@ export default function FichaAlumnoPage() {
     )
   }
 
-  const totalAsistencias = asistencias.filter(a => a.presente).length
-  const totalFaltas = asistencias.length - totalAsistencias
-  const porcentajeAsistencia = asistencias.length > 0 ? Math.round((totalAsistencias / asistencias.length) * 100) : null
+  const conteoAsistencia = contarAsistencia(asistencias)
+  const avisoCurp = avisoIdentidad(curp, fechaNacimiento)
+  // Asistió = presente o retardo; «sin registros» es null, nunca 0 %.
+  const totalAsistencias = conteoAsistencia.presentes + conteoAsistencia.retardos
+  const totalFaltas = conteoAsistencia.faltas
+  const porcentajeAsistencia = conteoAsistencia.porcentajeAsistencia
 
   const fechasActividad = [
     asistencias[0]?.fecha,
@@ -560,7 +582,7 @@ export default function FichaAlumnoPage() {
       key: `asistencia-${a.fecha}`,
       origen: 'Asistencia',
       fecha: a.fecha,
-      titulo: a.presente ? 'Presente' : 'Falta',
+      titulo: ETIQUETA_REGISTRO[estadoDeRegistro(a.estatus)].texto,
       descripcion: '',
     })),
     ...incidencias.map(i => ({
@@ -757,6 +779,12 @@ export default function FichaAlumnoPage() {
                   onChange={e => setFechaNacimiento(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-shadow"
                 />
+                {/* Hito 4a: advertencia discreta, solo para el docente; nunca corrige datos. */}
+                {avisoCurp && (
+                  <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
+                    La CURP indica {formatFecha(avisoCurp.fechaSegunCurp)}. Revisa cuál de los dos datos es el correcto.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -799,8 +827,8 @@ export default function FichaAlumnoPage() {
               {asistencias.map((a, i) => (
                 <div key={i} className="flex items-center justify-between px-4 py-3 bg-white border border-gray-100 rounded-2xl shadow-sm text-sm">
                   <span className="text-gray-700 font-medium">{formatFecha(a.fecha)}</span>
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${a.presente ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                    {a.presente ? '✅ Presente' : '❌ Falta'}
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${ETIQUETA_REGISTRO[estadoDeRegistro(a.estatus)].clase}`}>
+                    {ETIQUETA_REGISTRO[estadoDeRegistro(a.estatus)].icono} {ETIQUETA_REGISTRO[estadoDeRegistro(a.estatus)].texto}
                   </span>
                 </div>
               ))}
